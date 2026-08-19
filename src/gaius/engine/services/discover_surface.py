@@ -86,6 +86,7 @@ class DiscoverFacet:
     kind: str
     count: int
     salience: float = 0.0
+    label: str = ""
 
 
 @dataclass
@@ -668,18 +669,28 @@ async def _feature_facets(pool: Any, start) -> list[DiscoverFacet]:
             """,
             start,
         )
-    from .clt_skos_propose import feature_chip_label
+    from .clt_skos_propose import (
+        feature_chip_label,
+        is_minted_pref_label,
+        load_pref_labels,
+    )
 
+    minted = load_pref_labels()
     out: list[DiscoverFacet] = []
     for r in rows:
+        layer, feat = int(r["layer"]), int(r["feature_idx"])
+        notation = f"{layer}:{feat}"
+        pref = minted.get(notation, "")
+        label = pref if is_minted_pref_label(pref) else feature_chip_label(layer, feat)
         n = int(r["n"])
         a = float(r["a"] or 0.0)
         out.append(
             DiscoverFacet(
-                key=feature_chip_label(int(r["layer"]), int(r["feature_idx"])),
+                key=notation,
                 kind="feature",
                 count=n,
                 salience=n * a,
+                label=label,
             )
         )
     return out

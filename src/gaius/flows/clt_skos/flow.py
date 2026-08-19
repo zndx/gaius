@@ -1,7 +1,7 @@
 """CltSkosEvalFlow — admit Gaius inbound, extract CLT, ground spans.
 
 P0: ingest → extract/ground. SKOS publish to sdg-corpora/contrib/ is P1.
-ACP alignment is P2. SAE extract is P3.
+ACP prefLabel mint is P2a. ACP alignment is P2b. SAE extract is P3.
 
     uv run python -m gaius.flows.clt_skos.flow run --limit 4
 """
@@ -177,6 +177,25 @@ class CltSkosEvalFlow(GaiusFlow):
 
         self.propose_stats = asyncio.run(_run())
         print(f"clt_skos.propose {self.propose_stats}")
+        self.next(self.acp_label)
+
+    @step
+    def acp_label(self):
+        from gaius.engine.services.clt_skos_label import run_acp_label
+        from gaius.storage.database import get_database_url
+        import asyncpg
+
+        run_id = str(getattr(self, "_lineage_run_id", "") or "clt-skos")
+
+        async def _run() -> dict:
+            pool = await asyncpg.create_pool(get_database_url())
+            try:
+                return await run_acp_label(pool, run_id=run_id)
+            finally:
+                await pool.close()
+
+        self.label_stats = asyncio.run(_run())
+        print(f"clt_skos.acp_label {self.label_stats}")
         self.next(self.acp_align)
 
     @step
@@ -203,6 +222,7 @@ class CltSkosEvalFlow(GaiusFlow):
         print(
             f"clt_skos.end admit={self.admit_stats} extract={self.extract_stats} "
             f"propose={getattr(self, 'propose_stats', {})} "
+            f"label={getattr(self, 'label_stats', {})} "
             f"align={getattr(self, 'align_stats', {})}"
         )
         self.emit_lineage_complete(

@@ -152,6 +152,7 @@ impl Gaius {
                     "kind": f.kind,
                     "count": f.count,
                     "salience": f.salience,
+                    "label": f.label,
                 })
             })
             .collect();

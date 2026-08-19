@@ -190,13 +190,14 @@
             : f.kind === "feature"
               ? "feature:" + (feat ? feat[1] : f.key)
               : f.kind + ":" + f.key;
+        var shown = f.label || f.key;
         return (
           '<button type="button" class="chip" data-add="' +
           esc(tok) +
           '" title="' +
           esc(f.key) +
           '">' +
-          esc(f.key) +
+          esc(shown) +
           " <span class=\"muted\">" +
           f.count +
           "</span></button>"

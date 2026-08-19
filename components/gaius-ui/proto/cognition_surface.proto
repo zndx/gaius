@@ -362,6 +362,7 @@ message DiscoverFacet {
   string kind = 2;
   int32 count = 3;
   double salience = 4;
+  string label = 5;
 }
 
 message DiscoverSurfaceResponse {

@@ -3183,6 +3183,7 @@ message DiscoverFacet {
   string kind = 2;                   // stream | source | feature
   int32 count = 3;
   double salience = 4;
+  string label = 5;                  // display; empty = use key
 }
 
 message DiscoverSurfaceResponse {

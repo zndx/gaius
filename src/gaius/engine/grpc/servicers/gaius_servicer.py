@@ -2068,7 +2068,11 @@ class GaiusServicer(GaiusServiceServicer):
             ],
             facets=[
                 ProtoDiscoverFacet(
-                    key=f.key, kind=f.kind, count=f.count, salience=f.salience
+                    key=f.key,
+                    kind=f.kind,
+                    count=f.count,
+                    salience=f.salience,
+                    label=f.label,
                 )
                 for f in snap.facets
             ],

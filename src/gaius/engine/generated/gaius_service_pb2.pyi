@@ -4833,16 +4833,18 @@ class DiscoverDoc(_message.Message):
     def __init__(self, id: _Optional[str] = ..., stream: _Optional[str] = ..., source: _Optional[str] = ..., ts: _Optional[str] = ..., title: _Optional[str] = ..., body: _Optional[str] = ..., source_id: _Optional[str] = ..., url: _Optional[str] = ...) -> None: ...
 
 class DiscoverFacet(_message.Message):
-    __slots__ = ("key", "kind", "count", "salience")
+    __slots__ = ("key", "kind", "count", "salience", "label")
     KEY_FIELD_NUMBER: _ClassVar[int]
     KIND_FIELD_NUMBER: _ClassVar[int]
     COUNT_FIELD_NUMBER: _ClassVar[int]
     SALIENCE_FIELD_NUMBER: _ClassVar[int]
+    LABEL_FIELD_NUMBER: _ClassVar[int]
     key: str
     kind: str
     count: int
     salience: float
-    def __init__(self, key: _Optional[str] = ..., kind: _Optional[str] = ..., count: _Optional[int] = ..., salience: _Optional[float] = ...) -> None: ...
+    label: str
+    def __init__(self, key: _Optional[str] = ..., kind: _Optional[str] = ..., count: _Optional[int] = ..., salience: _Optional[float] = ..., label: _Optional[str] = ...) -> None: ...
 
 class DiscoverSurfaceResponse(_message.Message):
     __slots__ = ("buckets", "docs", "facets", "total", "window", "query", "scraped_at", "interval", "error", "last_salience_at", "next_episode", "clock")

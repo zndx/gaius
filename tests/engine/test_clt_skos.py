@@ -77,6 +77,65 @@ def test_feature_chip_label_is_notation_plus_words() -> None:
     assert "L9 F8260" not in feature_chip_label(9, 8260, ["swear"])
 
 
+def test_is_minted_pref_label() -> None:
+    from gaius.engine.services.clt_skos_propose import is_minted_pref_label
+
+    assert is_minted_pref_label("Temporal workflow debugging")
+    assert not is_minted_pref_label("9:8260")
+    assert not is_minted_pref_label("9:8260 · elight · swear")
+    assert not is_minted_pref_label("L9 F8260 (ersh)")
+
+
+def test_set_pref_label_roundtrip(tmp_path) -> None:
+    from gaius.engine.services.clt_skos_propose import (
+        load_pref_labels,
+        set_pref_label,
+        write_candidate_ttl,
+    )
+
+    dest = tmp_path / "clt.skos.ttl"
+    write_candidate_ttl([(9, 8260, 2)], dest=dest)
+    set_pref_label("9:8260", "Temporal workflow debugging", dest=dest)
+    assert load_pref_labels(dest)["9:8260"] == "Temporal workflow debugging"
+    write_candidate_ttl([(9, 8260, 3), (2, 2855, 1)], dest=dest)
+    assert load_pref_labels(dest)["9:8260"] == "Temporal workflow debugging"
+
+
+def test_parse_label_reply() -> None:
+    from gaius.engine.services.clt_skos_label import parse_label_reply
+
+    got = parse_label_reply(
+        'Sure.\n{"prefLabel":"Temporal workflow debugging","reason":"items are Replay/Temporal posts; logits include swear/elight fragments"}\n'
+    )
+    assert got["prefLabel"] == "Temporal workflow debugging"
+
+
+def test_label_prompt_uses_item_and_logits() -> None:
+    from gaius.engine.services.clt_skos_label import LabelCase, build_label_prompt
+
+    case = LabelCase(
+        layer=9,
+        feature_idx=8260,
+        notation="9:8260",
+        clt_uri="https://signals.zndx.org/clt/qwen3-1.7b-20k#L9F8260",
+        logits=["ersh", "elight", "swear"],
+        items=[
+            {
+                "aperture": "DATAENG",
+                "span": "Temp",
+                "excerpt": "Replay 26: My introduction to Temporal",
+            }
+        ],
+        item_ids=[1],
+    )
+    prompt = build_label_prompt(case)
+    assert "top_logits" in prompt
+    assert "ersh" in prompt
+    assert "introduction to Temporal" in prompt
+    assert "9:8260" in prompt
+    assert "prefLabel" in prompt
+
+
 def test_write_candidate_ttl(tmp_path) -> None:
     from gaius.engine.services.clt_skos_propose import write_candidate_ttl
 

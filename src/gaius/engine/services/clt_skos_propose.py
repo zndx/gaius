@@ -126,6 +126,65 @@ def _pref_label(layer: int, feat: int, logits: list[str]) -> str:
     return feature_chip_label(layer, feat, logits)
 
 
+def is_minted_pref_label(s: str | None) -> bool:
+    """True when the label is a display phrase, not notation or logit chips."""
+    if not s or not str(s).strip():
+        return False
+    t = str(s).strip()
+    if re.match(r"^\d+:\d+", t):
+        return False
+    if re.match(r"^L\d+\s+F\d+", t, re.I):
+        return False
+    return True
+
+
+def set_pref_label(
+    notation: str, label: str, dest: Path | None = None
+) -> Path:
+    """Write skos:prefLabel for an existing (or new) CLT concept."""
+    dest = dest or CONTRIB
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    if not dest.is_file():
+        layer, feat = (int(x) for x in notation.split(":", 1))
+        write_candidate_ttl([(layer, feat, 1)], dest=dest)
+    lines = dest.read_text(encoding="utf-8").splitlines()
+    out: list[str] = []
+    pending = False
+    found = False
+    for line in lines:
+        if f'skos:notation "{notation}"' in line:
+            pending = True
+            out.append(line)
+            continue
+        if pending and "skos:prefLabel" in line:
+            out.append(f'    skos:prefLabel "{_ttl_escape(label)}" ;')
+            pending = False
+            found = True
+            continue
+        if pending and (not line.strip() or line.startswith("<")):
+            out.append(f'    skos:prefLabel "{_ttl_escape(label)}" ;')
+            pending = False
+            found = True
+        out.append(line)
+    if not found:
+        layer, feat = (int(x) for x in notation.split(":", 1))
+        slug, _ = _band(layer)
+        iri = f"{CONCEPT_NS}L{layer}F{feat}"
+        band_iri = f"{CONCEPT_NS}band_{slug}"
+        out.extend(
+            [
+                "",
+                f"<{iri}> a skos:Concept ;",
+                f"    skos:inScheme <{SCHEME_IRI}> ;",
+                f'    skos:notation "{notation}" ;',
+                f'    skos:prefLabel "{_ttl_escape(label)}" ;',
+                f"    skos:broader <{band_iri}> .",
+            ]
+        )
+    dest.write_text("\n".join(out) + "\n", encoding="utf-8")
+    return dest
+
+
 async def observed_features(pool: Any, *, min_items: int = 1) -> list[tuple[int, int, int]]:
     """(layer, feature_idx, n_items) from the grounded ledger, else the tape."""
     async with pool.acquire() as conn:
@@ -162,6 +221,11 @@ def write_candidate_ttl(
 ) -> Path:
     dest = dest or CONTRIB
     dest.parent.mkdir(parents=True, exist_ok=True)
+    minted = {
+        k: v
+        for k, v in load_pref_labels(dest if dest.is_file() else None).items()
+        if is_minted_pref_label(v)
+    }
     bands_used: dict[str, str] = {}
     lines = [
         "@prefix skos: <http://www.w3.org/2004/02/skos/core#> .",
@@ -178,7 +242,7 @@ def write_candidate_ttl(
         slug, band_label = _band(layer)
         bands_used[slug] = band_label
         logits = _read_logits(layer, feat)
-        pref = _pref_label(layer, feat, logits)
+        pref = minted.get(f"{layer}:{feat}") or _pref_label(layer, feat, logits)
         iri = f"{CONCEPT_NS}L{layer}F{feat}"
         band_iri = f"{CONCEPT_NS}band_{slug}"
         alts = " , ".join(f'"{_ttl_escape(t)}"' for t in logits) if logits else ""
