@@ -668,19 +668,15 @@ async def _feature_facets(pool: Any, start) -> list[DiscoverFacet]:
             """,
             start,
         )
-    from .clt_skos_propose import load_pref_labels
+    from .clt_skos_propose import feature_chip_label
 
-    labels = load_pref_labels()
     out: list[DiscoverFacet] = []
     for r in rows:
-        notation = f"{int(r['layer'])}:{int(r['feature_idx'])}"
-        pref = labels.get(notation)
-        key = f"{notation} · {pref}" if pref else notation
         n = int(r["n"])
         a = float(r["a"] or 0.0)
         out.append(
             DiscoverFacet(
-                key=key,
+                key=feature_chip_label(int(r["layer"]), int(r["feature_idx"])),
                 kind="feature",
                 count=n,
                 salience=n * a,

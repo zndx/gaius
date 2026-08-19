@@ -51,6 +51,32 @@ def test_admit_windows_with_mock_maxsim() -> None:
     assert all(w.admitted and w.code == "DATAENG" for w in kept)
 
 
+def test_readable_logits_drop_punctuation_soup() -> None:
+    from gaius.engine.services.clt_skos_propose import readable_logit_tokens
+
+    assert readable_logit_tokens(
+        ["–", "‒", "/********************************************************", "[…]"]
+    ) == []
+    assert readable_logit_tokens(["ersh", "elight", " swear", "ancode"]) == [
+        "elight",
+        "ancode",
+    ]
+    assert readable_logit_tokens([" Karma", "IU", "HeaderValue", "les"]) == [
+        "HeaderValue",
+        "Karma",
+    ]
+
+
+def test_feature_chip_label_is_notation_plus_words() -> None:
+    from gaius.engine.services.clt_skos_propose import feature_chip_label
+
+    assert feature_chip_label(2, 2855, ["–", "‒", "/***"]) == "2:2855"
+    assert feature_chip_label(9, 8260, ["ersh", "elight", "swear"]) == (
+        "9:8260 · elight · swear"
+    )
+    assert "L9 F8260" not in feature_chip_label(9, 8260, ["swear"])
+
+
 def test_write_candidate_ttl(tmp_path) -> None:
     from gaius.engine.services.clt_skos_propose import write_candidate_ttl
 

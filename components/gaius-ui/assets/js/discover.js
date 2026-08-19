@@ -193,6 +193,8 @@
         return (
           '<button type="button" class="chip" data-add="' +
           esc(tok) +
+          '" title="' +
+          esc(f.key) +
           '">' +
           esc(f.key) +
           " <span class=\"muted\">" +

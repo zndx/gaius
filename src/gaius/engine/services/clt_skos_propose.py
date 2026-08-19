@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import gzip
 import json
-from collections import defaultdict
+import re
 from pathlib import Path
 from typing import Any
 
@@ -25,6 +25,24 @@ _LAYER_BANDS = (
     (8, 18, "mid", "Mid-layer (argument / structure) CLT activations"),
     (19, 27, "late", "Late-layer (next-token / planning) CLT activations"),
 )
+_LOGIT_WORD = re.compile(r"^[A-Za-z][A-Za-z0-9_-]{2,23}$")
+_LOGIT_STOP = frozenset(
+    {
+        "the",
+        "and",
+        "for",
+        "you",
+        "are",
+        "this",
+        "that",
+        "with",
+        "from",
+        "have",
+        "was",
+        "not",
+    }
+)
+_IDX: dict[str, Any] | None = None
 
 
 def _band(layer: int) -> tuple[str, str]:
@@ -38,12 +56,19 @@ def _ttl_escape(s: str) -> str:
     return s.replace("\\", "\\\\").replace('"', '\\"').replace("\n", " ")
 
 
+def _index() -> dict[str, Any]:
+    global _IDX
+    if _IDX is None:
+        idx_path = SNAP / "index.json.gz"
+        if not idx_path.is_file():
+            _IDX = {}
+        else:
+            _IDX = json.loads(gzip.decompress(idx_path.read_bytes()))
+    return _IDX
+
+
 def _read_logits(layer: int, feat: int) -> list[str]:
-    idx_path = SNAP / "index.json.gz"
-    if not idx_path.is_file():
-        return []
-    idx = json.loads(gzip.decompress(idx_path.read_bytes()))
-    meta = idx.get(str(layer))
+    meta = _index().get(str(layer))
     if not meta:
         return []
     offs = meta["offsets"]
@@ -56,11 +81,49 @@ def _read_logits(layer: int, feat: int) -> list[str]:
     return [str(t).strip() for t in (obj.get("top_logits") or []) if str(t).strip()][:5]
 
 
+def readable_logit_tokens(logits: list[str], *, limit: int = 2) -> list[str]:
+    """Keep decoder fragments that look like words; drop punctuation soup."""
+    out: list[str] = []
+    seen: set[str] = set()
+    for raw in logits:
+        s = (
+            str(raw)
+            .replace("▁", "")
+            .replace("Ġ", "")
+            .replace("Ċ", "")
+            .replace("⏎", "")
+            .strip()
+        )
+        if not _LOGIT_WORD.fullmatch(s):
+            continue
+        if not any(c in "aeiouAEIOU" for c in s):
+            continue
+        if s.lower() in _LOGIT_STOP:
+            continue
+        key = s.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(s)
+    out.sort(key=len, reverse=True)
+    return out[:limit]
+
+
+def feature_chip_label(
+    layer: int, feat: int, logits: list[str] | None = None
+) -> str:
+    """Discover chip text: notation once, optional readable tokens."""
+    notation = f"{layer}:{feat}"
+    toks = readable_logit_tokens(
+        logits if logits is not None else _read_logits(layer, feat)
+    )
+    if not toks:
+        return notation
+    return f"{notation} · " + " · ".join(toks)
+
+
 def _pref_label(layer: int, feat: int, logits: list[str]) -> str:
-    if logits:
-        chips = ", ".join(logits[:3])
-        return f"L{layer} F{feat} ({chips})"
-    return f"L{layer} F{feat}"
+    return feature_chip_label(layer, feat, logits)
 
 
 async def observed_features(pool: Any, *, min_items: int = 1) -> list[tuple[int, int, int]]:
