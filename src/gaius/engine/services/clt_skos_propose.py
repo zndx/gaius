@@ -126,6 +126,48 @@ def _pref_label(layer: int, feat: int, logits: list[str]) -> str:
     return feature_chip_label(layer, feat, logits)
 
 
+_ADMIN_NAMES = frozenset(
+    {
+        "html markup",
+        "html",
+        "markup",
+        "punctuation marks",
+        "punctuation",
+        "css",
+        "javascript",
+        "example phrase",
+        "noun phrase",
+        "pref label",
+        "label",
+    }
+)
+_HTML_LOGIT = re.compile(
+    r"^</?[a-zA-Z]|</[a-zA-Z]|html|markup|<strong|<button|<div|<span|<b\b",
+    re.I,
+)
+_PUNCT_LOGIT = re.compile(r"^[\W_]+$", re.UNICODE)
+
+
+def is_admin_logits(logits: list[str]) -> bool:
+    """True when top logits are HTML/punctuation machinery, not content."""
+    html = 0
+    punct = 0
+    for raw in logits[:5]:
+        s = str(raw).strip()
+        if not s:
+            continue
+        if _HTML_LOGIT.search(s):
+            html += 1
+        if _PUNCT_LOGIT.match(s) or set(s) <= set(".,;:()[]{}<>|/\\-*+#…–‒。，）…"):
+            punct += 1
+    return html >= 2 or punct >= 3
+
+
+def is_admin_pref_label(s: str | None) -> bool:
+    t = str(s or "").strip().lower()
+    return t in _ADMIN_NAMES or "html" in t or "punctuation" in t or "markup" in t
+
+
 def is_minted_pref_label(s: str | None) -> bool:
     """True when the label is a display phrase, not notation or logit chips."""
     if not s or not str(s).strip():
@@ -134,6 +176,8 @@ def is_minted_pref_label(s: str | None) -> bool:
     if re.match(r"^\d+:\d+", t):
         return False
     if re.match(r"^L\d+\s+F\d+", t, re.I):
+        return False
+    if is_admin_pref_label(t):
         return False
     if t.lower() in {"example phrase", "noun phrase", "pref label", "label"}:
         return False

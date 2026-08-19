@@ -116,12 +116,20 @@ def test_minted_feature_facet_hides_unlabeled() -> None:
 
 
 def test_is_minted_pref_label() -> None:
-    from gaius.engine.services.clt_skos_propose import is_minted_pref_label
+    from gaius.engine.services.clt_skos_propose import (
+        is_admin_logits,
+        is_minted_pref_label,
+    )
 
     assert is_minted_pref_label("Temporal workflow debugging")
     assert not is_minted_pref_label("9:8260")
     assert not is_minted_pref_label("9:8260 · elight · swear")
     assert not is_minted_pref_label("L9 F8260 (ersh)")
+    assert not is_minted_pref_label("HTML markup")
+    assert not is_minted_pref_label("Punctuation Marks")
+    assert is_admin_logits(["<strong", "tics", "&T", "<b", "<button"])
+    assert is_admin_logits(["）", "...", "。", "，", ")"])
+    assert not is_admin_logits(["ersh", "elight", "swear", "ancode"])
 
 
 def test_set_pref_label_roundtrip(tmp_path) -> None:

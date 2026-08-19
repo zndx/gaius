@@ -92,6 +92,10 @@ async def find_unlabeled(pool: Any, *, limit: int = 8) -> list[LabelCase]:
         notation = f"{layer}:{feat}"
         if notation in minted and notation not in stale:
             continue
+        from gaius.engine.services.clt_skos_propose import _read_logits, is_admin_logits
+
+        if is_admin_logits(_read_logits(layer, feat)):
+            continue
         out.append(
             LabelCase(
                 layer=layer,
@@ -157,7 +161,9 @@ def build_label_prompt(case: LabelCase) -> str:
         "The label is for faceted search over admitted items: a short noun "
         "phrase (2–5 words) a reader would click to explore this feature.\n"
         "Use the admitted item text and the feature's top_logits together. "
-        "Think about how they relate, then name the feature.\n"
+        "Think about how they relate, then name the feature as it appears "
+        "in the admitted aperture content. Do not name HTML, CSS, "
+        "punctuation, or other document machinery.\n"
         "Do not call tools. After thinking, reply with only a JSON object "
         "whose prefLabel is the noun phrase and whose reason is one sentence.\n"
         f"notation: {case.notation}\n"
@@ -168,7 +174,10 @@ def build_label_prompt(case: LabelCase) -> str:
 
 
 def parse_label_reply(text: str) -> dict[str, str]:
-    from gaius.engine.services.clt_skos_propose import is_minted_pref_label
+    from gaius.engine.services.clt_skos_propose import (
+        is_admin_pref_label,
+        is_minted_pref_label,
+    )
 
     blob = text.strip()
     m = re.search(r"\{.*\}", blob, re.S)
@@ -192,6 +201,8 @@ def parse_label_reply(text: str) -> dict[str, str]:
     if label.startswith("skos:"):
         label = label[5:].strip()
     if label.lower() in {"example phrase", "noun phrase", "pref label", "label"}:
+        label = ""
+    if is_admin_pref_label(label):
         label = ""
     if not is_minted_pref_label(label):
         raise ValueError(f"{GURU_EMPTY}\n  prefLabel={label!r}")
