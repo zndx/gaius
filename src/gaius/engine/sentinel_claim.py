@@ -165,9 +165,21 @@ _KIND_CLASS: dict[str, ResourceClass] = {
     "clt_probe": EXTRACT,
     "clt-skos-admit": EXTRACT,
     "clt_skos_admit": EXTRACT,
+    "clt-skos-eval": EXTRACT,
+    "clt_skos_eval": EXTRACT,
     # Label uses standing thinking Complete — no extra GPU token.
     "clt-skos-label": COMPUTE,
     "clt_skos_label": COMPUTE,
+    "knowledge-summary": EXTRACT,
+    "knowledge_summary": EXTRACT,
+    "article-curation": EXTRACT,
+    "article_curation": EXTRACT,
+    "card-upkeep": EXTRACT,
+    "card_upkeep": EXTRACT,
+    "docling": EXTRACT,
+    "research": EXTRACT,
+    "search": EXTRACT,
+    "metaflow": EXTRACT,
 }
 
 
@@ -269,6 +281,22 @@ _KIND_PHASE: dict[str, str] = {
     "ask-medium": "ask",
     "clt-probe": "probe",
     "clt_probe": "probe",
+    "clt-skos-admit": "extract",
+    "clt_skos_admit": "extract",
+    "clt-skos-eval": "extract",
+    "clt_skos_eval": "extract",
+    "clt-skos-label": "label",
+    "clt_skos_label": "label",
+    "knowledge-summary": "summary",
+    "knowledge_summary": "summary",
+    "article-curation": "extract",
+    "article_curation": "extract",
+    "card-upkeep": "extract",
+    "card_upkeep": "extract",
+    "docling": "extract",
+    "research": "extract",
+    "search": "extract",
+    "metaflow": "work",
 }
 
 
@@ -316,6 +344,15 @@ def disk_paths_for(kind: str) -> tuple[str, ...]:
         # Tape is Postgres. Root 99% must not block understanding.
         return ("/raid",)
     if kind.replace("_", "-") == "article-curate":
+        return ("/raid",)
+    if kind.replace("_", "-") in {
+        "knowledge-summary",
+        "clt-skos-admit",
+        "clt-skos-eval",
+        "article-curation",
+        "card-upkeep",
+        "docling",
+    }:
         return ("/raid",)
     return ("/", "/raid")
 

@@ -394,7 +394,7 @@ def local_response(
 
 def declared_queues() -> list[zpb.QueueHint]:
     """Leaves this engine needs. Signals merges + PromoteScratch. No YK REST."""
-    from gaius.engine.sentinel_claim import EXTRACT, HEAVY, LIGHT, MEDIUM
+    from gaius.engine.sentinel_claim import COMPUTE, EXTRACT, HEAVY, LIGHT, MEDIUM
 
     return [
         zpb.QueueHint(
@@ -434,7 +434,16 @@ def declared_queues() -> list[zpb.QueueHint]:
             gpu_max=2,
             max_applications=16,
             role="offline",
-            examples="gaius.extract;docling",
+            examples="gaius.extract;docling;clt-skos-admit",
+        ),
+        zpb.QueueHint(
+            path=COMPUTE.queue,
+            resource_class=COMPUTE.name,
+            gpu_guarantee=0,
+            gpu_max=0,
+            max_applications=8,
+            role="offline",
+            examples="gaius.ambient;clt-skos-label",
         ),
     ]
 

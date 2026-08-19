@@ -11,6 +11,7 @@ from gaius.engine.sentinel_claim import (
     GURU_NOAPP,
     RATE_METERED,
     application_yaml,
+    disk_paths_for,
     gpu_start_allowed,
     resource_class_for,
 )
@@ -85,7 +86,18 @@ def test_unknown_kind_fail_fast() -> None:
     from gaius.engine.sentinel_claim import YkAdmitError
 
     with pytest.raises(YkAdmitError, match="no resource class"):
-        resource_class_for("docling")
+        resource_class_for("not-a-flow")
+
+
+def test_every_registered_flow_has_yk_class() -> None:
+    from gaius.engine.sentinel_claim import COMPUTE, EXTRACT, RATE_METERED
+    from gaius.flows import FLOW_REGISTRY, _register_builtin_flows
+
+    _register_builtin_flows()
+    for name, cls in FLOW_REGISTRY.items():
+        kind = getattr(cls, "yk_kind", name.replace("_", "-"))
+        rc = resource_class_for(kind)
+        assert rc in (EXTRACT, COMPUTE, RATE_METERED), (name, kind, rc)
 
 
 def test_yaml_stamps_and_gpu_token() -> None:
@@ -287,6 +299,10 @@ def test_prospects_disk_floor_is_raid_only() -> None:
     assert disk_paths_for("fmp") == ("/raid",)
     assert disk_paths_for("ambient") == ()
     assert disk_paths_for("article-curate") == ("/raid",)
+    assert disk_paths_for("clt-skos-admit") == ("/raid",)
+    assert disk_paths_for("knowledge-summary") == ("/raid",)
+    assert resource_class_for("clt-skos-label") == COMPUTE
+    assert resource_class_for("docling") == EXTRACT
 
 
 def test_prospects_check_ignores_full_root(monkeypatch: pytest.MonkeyPatch) -> None:

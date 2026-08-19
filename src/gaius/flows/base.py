@@ -109,6 +109,8 @@ class GaiusFlow(FlowSpec):
         self._lineage_run_id: UUID | None = None
         self._lineage_inputs: list[Dataset] = []
         self._lineage_job: Job | None = None
+        self._yk_workload_id: str = ""
+        self._yk_minted: bool = False
 
     @property
     def kb_root(self) -> Path:
@@ -129,6 +131,44 @@ class GaiusFlow(FlowSpec):
         if extension and not filename.endswith(extension):
             filename = f"{filename}{extension}"
         return f"current/archive/{quarter}/attachments/{filename}"
+
+    def _yk_kind(self) -> str:
+        env = (os.environ.get("GAIUS_YK_KIND") or "").strip()
+        if env:
+            return env.replace("_", "-")
+        raw = getattr(self, "yk_kind", None) or getattr(
+            type(self), "yk_kind", None
+        )
+        if raw:
+            return str(raw).replace("_", "-")
+        return "metaflow"
+
+    def _claim_yk(self) -> None:
+        """Admit this Metaflow run as a YK Application via Signals sentinels."""
+        from gaius.engine.sentinel_claim import apply_and_admit
+
+        kind = self._yk_kind()
+        env_wid = (os.environ.get("GAIUS_YK_APPLICATION_ID") or "").strip()
+        if env_wid:
+            self._yk_workload_id = env_wid
+            self._yk_minted = False
+            apply_and_admit(env_wid, kind)
+            return
+        rid = str(self._lineage_run_id or "").replace("-", "")[:12] or "local"
+        wid = f"gaius-mf-{kind}-{rid}".lower()
+        wid = "".join(c if c.isalnum() or c == "-" else "-" for c in wid)[:63]
+        self._yk_workload_id = wid
+        self._yk_minted = True
+        apply_and_admit(wid, kind)
+        os.environ["GAIUS_YK_APPLICATION_ID"] = wid
+
+    def _release_yk(self) -> None:
+        if not self._yk_minted or not self._yk_workload_id:
+            return
+        from gaius.engine.sentinel_claim import delete_flow_sentinel
+
+        delete_flow_sentinel(self._yk_workload_id)
+        self._yk_minted = False
 
     def emit_lineage_start(
         self,
@@ -167,6 +207,7 @@ class GaiusFlow(FlowSpec):
                 f"  Or: PGPASSWORD=gaius psql -h localhost -p {os.environ.get('PGPORT', '5444')} -U gaius -d zndx_gaius"
             )
             raise RuntimeError(error_msg) from e
+        self._claim_yk()
 
     def emit_lineage_complete(self, outputs: list[Dataset]) -> None:
         """Emit COMPLETE lineage event.
@@ -192,6 +233,7 @@ class GaiusFlow(FlowSpec):
                 f"Lineage COMPLETE recorded at Signals Atlas "
                 f"(run_id={self._lineage_run_id})"
             )
+            self._release_yk()
 
         except Exception as e:
             # FAIL-FAST: Lineage tracking is critical infrastructure
@@ -227,6 +269,7 @@ class GaiusFlow(FlowSpec):
                 f"Lineage FAIL recorded at Signals Atlas "
                 f"(run_id={self._lineage_run_id})"
             )
+            self._release_yk()
 
         except Exception as e:
             # FAIL-FAST: Lineage tracking is critical infrastructure
