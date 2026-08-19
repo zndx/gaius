@@ -1,9 +1,8 @@
-"""ACP-minted skos:prefLabel for CLT features.
+"""Mint skos:prefLabel for CLT features via Engine/Complete thinking.
 
 Each feature is named from the admitted item text that fired it and that
-feature's top_logits. Default ACP is grok-build on local thinking
-(Qwen3.8-27B). Thinking must already be HEALTHY — Complete does not
-cold-start vLLM.
+feature's top_logits. Qwen3.8-27B (capability=thinking) does the naming.
+Thinking must already be HEALTHY — Complete does not cold-start vLLM.
 """
 
 from __future__ import annotations
@@ -135,8 +134,8 @@ def build_label_prompt(case: LabelCase) -> str:
         "phrase (2–5 words) a reader would click to explore this feature.\n"
         "Use the admitted item text and the feature's top_logits together. "
         "Think about how they relate, then name the feature.\n"
-        "Reply with ONLY JSON: "
-        '{"prefLabel":"","reason":""}.\n'
+        "Do not call tools. After thinking, reply with only a JSON object "
+        "whose prefLabel is the noun phrase and whose reason is one sentence.\n"
         f"notation: {case.notation}\n"
         f"top_logits: {case.logits}\n"
         f"{body}\n"
@@ -149,13 +148,27 @@ def parse_label_reply(text: str) -> dict[str, str]:
 
     blob = text.strip()
     m = re.search(r"\{.*\}", blob, re.S)
-    if not m:
-        raise ValueError(GURU_PARSE)
-    data = json.loads(m.group(0))
+    data: dict[str, Any] = {}
+    if m:
+        raw_json = m.group(0)
+        try:
+            data = json.loads(raw_json)
+        except json.JSONDecodeError:
+            repaired = re.sub(r"([{,]\s*)([A-Za-z_][A-Za-z0-9_]*)\s*:", r'\1"\2":', raw_json)
+            try:
+                data = json.loads(repaired)
+            except json.JSONDecodeError:
+                data = {}
+    if not data.get("prefLabel"):
+        km = re.search(r"prefLabel['\"]?\s*:\s*['\"]([^'\"]+)['\"]", blob)
+        if km:
+            data["prefLabel"] = km.group(1)
     label = re.sub(r"\s+", " ", str(data.get("prefLabel") or "").strip())
     label = label[:48]
     if label.startswith("skos:"):
         label = label[5:].strip()
+    if label.lower() in {"example phrase", "noun phrase", "pref label", "label"}:
+        label = ""
     if not is_minted_pref_label(label):
         raise ValueError(f"{GURU_EMPTY}\n  prefLabel={label!r}")
     return {
@@ -164,13 +177,38 @@ def parse_label_reply(text: str) -> dict[str, str]:
     }
 
 
+_LABEL_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "prefLabel": {"type": "string"},
+        "reason": {"type": "string"},
+    },
+    "required": ["prefLabel"],
+}
+
+
+def _thinking_label(prompt: str) -> str:
+    from gaius.flows.lattice import complete
+
+    got = complete(
+        prompt,
+        capability="thinking",
+        max_tokens=2048,
+        temperature=0.3,
+        json_schema=_LABEL_SCHEMA,
+        timeout_s=600.0,
+    )
+    return (got.text or "") + ("\n" + got.reasoning_content if got.reasoning_content else "")
+
+
 async def run_acp_label(
     pool: Any,
     *,
     run_id: str,
     max_cases: int = MAX_LABEL,
 ) -> dict[str, Any]:
-    from gaius.acp import GaiusACPClient
+    import asyncio
+
     from gaius.engine.services.clt_skos_align import record_alignment
     from gaius.engine.services.clt_skos_propose import set_pref_label
 
@@ -180,55 +218,34 @@ async def run_acp_label(
 
     labeled = 0
     pending = 0
-    try:
-        client = GaiusACPClient()
-        await client.connect()
-    except Exception as e:
-        for case in cases:
+    for case in cases[:max_cases]:
+        case = await attach_label_evidence(pool, case)
+        prompt = build_label_prompt(case)
+        try:
+            reply = await asyncio.to_thread(_thinking_label, prompt)
+            parsed = parse_label_reply(reply)
+            set_pref_label(case.notation, parsed["prefLabel"])
+            await record_alignment(
+                pool,
+                clt_uri=case.clt_uri,
+                sdg_uri="",
+                match_kind="prefLabel",
+                verdict="labeled",
+                reason=parsed["reason"],
+                item_ids=case.item_ids,
+                run_id=run_id,
+            )
+            labeled += 1
+        except Exception as e:
             await record_alignment(
                 pool,
                 clt_uri=case.clt_uri,
                 sdg_uri="",
                 match_kind="prefLabel",
                 verdict="pending",
-                reason=f"#ACP.00000001.CONNFAIL {e}",
+                reason=str(e)[:400],
                 item_ids=case.item_ids,
                 run_id=run_id,
             )
             pending += 1
-        return {"cases": len(cases), "labeled": 0, "pending": pending}
-
-    try:
-        for case in cases[:max_cases]:
-            case = await attach_label_evidence(pool, case)
-            prompt = build_label_prompt(case)
-            try:
-                reply = await client.prompt(prompt, timeout=180.0)
-                parsed = parse_label_reply(reply)
-                set_pref_label(case.notation, parsed["prefLabel"])
-                await record_alignment(
-                    pool,
-                    clt_uri=case.clt_uri,
-                    sdg_uri="",
-                    match_kind="prefLabel",
-                    verdict="labeled",
-                    reason=parsed["reason"],
-                    item_ids=case.item_ids,
-                    run_id=run_id,
-                )
-                labeled += 1
-            except Exception as e:
-                await record_alignment(
-                    pool,
-                    clt_uri=case.clt_uri,
-                    sdg_uri="",
-                    match_kind="prefLabel",
-                    verdict="pending",
-                    reason=str(e)[:400],
-                    item_ids=case.item_ids,
-                    run_id=run_id,
-                )
-                pending += 1
-    finally:
-        await client.close()
     return {"cases": len(cases), "labeled": labeled, "pending": pending}

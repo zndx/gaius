@@ -135,6 +135,8 @@ def is_minted_pref_label(s: str | None) -> bool:
         return False
     if re.match(r"^L\d+\s+F\d+", t, re.I):
         return False
+    if t.lower() in {"example phrase", "noun phrase", "pref label", "label"}:
+        return False
     return True
 
 

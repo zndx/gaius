@@ -108,6 +108,8 @@ def test_parse_label_reply() -> None:
         'Sure.\n{"prefLabel":"Temporal workflow debugging","reason":"items are Replay/Temporal posts; logits include swear/elight fragments"}\n'
     )
     assert got["prefLabel"] == "Temporal workflow debugging"
+    loose = parse_label_reply("{prefLabel: 'Replay keynote', reason: 'ok'}")
+    assert loose["prefLabel"] == "Replay keynote"
 
 
 def test_label_prompt_uses_item_and_logits() -> None:
