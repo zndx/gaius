@@ -44,10 +44,21 @@ def _excerpt(text: str, start: int, end: int, *, radius: int = 140) -> str:
 
 
 async def find_unlabeled(pool: Any, *, limit: int = 8) -> list[LabelCase]:
-    """Features with admitted activations that still lack a minted prefLabel."""
+    """Tape-hot features that lack a fresh minted prefLabel (or are stale)."""
     from gaius.engine.services.clt_skos_propose import is_minted_pref_label, load_pref_labels
 
     minted = {k for k, v in load_pref_labels().items() if is_minted_pref_label(v)}
+    stale: set[str] = set()
+    try:
+        async with pool.acquire() as conn:
+            stale = {
+                str(r["notation"])
+                for r in await conn.fetch(
+                    "SELECT notation FROM skos_pref_label WHERE stale"
+                )
+            }
+    except Exception:
+        stale = set()
     async with pool.acquire() as conn:
         rows = await conn.fetch(
             """
@@ -83,7 +94,7 @@ async def find_unlabeled(pool: Any, *, limit: int = 8) -> list[LabelCase]:
     for r in rows:
         layer, feat = int(r["layer"]), int(r["feature_idx"])
         notation = f"{layer}:{feat}"
-        if notation in minted:
+        if notation in minted and notation not in stale:
             continue
         out.append(
             LabelCase(
@@ -204,7 +215,7 @@ _LABEL_SCHEMA = {
 }
 
 
-def _thinking_label(prompt: str) -> str:
+def _thinking_label(prompt: str) -> tuple[str, str]:
     from gaius.flows.lattice import complete
 
     got = complete(
@@ -215,7 +226,8 @@ def _thinking_label(prompt: str) -> str:
         json_schema=_LABEL_SCHEMA,
         timeout_s=600.0,
     )
-    return (got.text or "") + ("\n" + got.reasoning_content if got.reasoning_content else "")
+    text = (got.text or "") + ("\n" + got.reasoning_content if got.reasoning_content else "")
+    return text, str(got.model or "")
 
 
 async def run_acp_label(
@@ -223,15 +235,29 @@ async def run_acp_label(
     *,
     run_id: str,
     max_cases: int = MAX_LABEL,
+    task_id: int = 0,
 ) -> dict[str, Any]:
     import asyncio
 
     from gaius.engine.services.clt_skos_align import record_alignment
+    from gaius.engine.services.clt_skos_clock import (
+        current_exemplars,
+        ensure_clock,
+        exemplar_hash,
+        mark_clock_started,
+        mark_stale_labels,
+        upsert_pref_label,
+        write_task_run_id,
+    )
     from gaius.engine.services.clt_skos_propose import set_pref_label
 
+    await ensure_clock(pool)
+    await write_task_run_id(pool, task_id, run_id)
+    await mark_clock_started(pool, "label", run_id)
+    stale_n = await mark_stale_labels(pool)
     cases = await find_unlabeled(pool, limit=max_cases)
     if not cases:
-        return {"cases": 0, "labeled": 0, "pending": 0}
+        return {"cases": 0, "labeled": 0, "pending": 0, "stale": stale_n, "run_id": run_id}
 
     labeled = 0
     pending = 0
@@ -239,9 +265,21 @@ async def run_acp_label(
         case = await attach_label_evidence(pool, case)
         prompt = build_label_prompt(case)
         try:
-            reply = await asyncio.to_thread(_thinking_label, prompt)
+            reply, model = await asyncio.to_thread(_thinking_label, prompt)
             parsed = parse_label_reply(reply)
             set_pref_label(case.notation, parsed["prefLabel"])
+            exemplars = await current_exemplars(pool, case.layer, case.feature_idx)
+            await upsert_pref_label(
+                pool,
+                notation=case.notation,
+                pref_label=parsed["prefLabel"],
+                clt_uri=case.clt_uri,
+                labeler_model=model,
+                labeler_version=model,
+                exemplar_hash_s=exemplar_hash(exemplars),
+                item_ids=[t[0] for t in exemplars] or case.item_ids,
+                run_id=run_id,
+            )
             await record_alignment(
                 pool,
                 clt_uri=case.clt_uri,
@@ -265,4 +303,10 @@ async def run_acp_label(
                 run_id=run_id,
             )
             pending += 1
-    return {"cases": len(cases), "labeled": labeled, "pending": pending}
+    return {
+        "cases": len(cases),
+        "labeled": labeled,
+        "pending": pending,
+        "stale": stale_n,
+        "run_id": run_id,
+    }

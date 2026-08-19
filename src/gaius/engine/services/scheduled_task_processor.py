@@ -693,6 +693,43 @@ class ScheduledTaskProcessor(BaseDaemon):
 
         self.register_handler("feature_probe", handle_feature_probe)
 
+        async def handle_clt_skos_admit(task: ScheduledTask) -> dict[str, Any]:
+            return await self._run_spawned_metaflow(
+                kind="clt-skos-admit",
+                task=task,
+                argv=[
+                    "uv",
+                    "run",
+                    "python",
+                    "-m",
+                    "gaius.flows.clt_skos.admit",
+                    "run",
+                    "--scheduled-task-id",
+                    str(task.id),
+                ],
+                log_prefix="CltSkosAdmit",
+            )
+
+        async def handle_clt_skos_label(task: ScheduledTask) -> dict[str, Any]:
+            return await self._run_spawned_metaflow(
+                kind="clt-skos-label",
+                task=task,
+                argv=[
+                    "uv",
+                    "run",
+                    "python",
+                    "-m",
+                    "gaius.flows.clt_skos.label",
+                    "run",
+                    "--scheduled-task-id",
+                    str(task.id),
+                ],
+                log_prefix="CltSkosLabel",
+            )
+
+        self.register_handler("clt_skos_admit", handle_clt_skos_admit)
+        self.register_handler("clt_skos_label", handle_clt_skos_label)
+
     async def _enqueue_knowledge_summary(self, *, week: str, source: str) -> None:
         """Fan out KNOWLEDGE pages after the weekly zettel. Does not block it."""
         if not self._pool:

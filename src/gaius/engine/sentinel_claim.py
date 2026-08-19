@@ -163,6 +163,11 @@ _KIND_CLASS: dict[str, ResourceClass] = {
     # loaded). Probe is offline batch — extract is the existing 1-GPU leaf.
     "clt-probe": EXTRACT,
     "clt_probe": EXTRACT,
+    "clt-skos-admit": EXTRACT,
+    "clt_skos_admit": EXTRACT,
+    # Label uses standing thinking Complete — no extra GPU token.
+    "clt-skos-label": COMPUTE,
+    "clt_skos_label": COMPUTE,
 }
 
 

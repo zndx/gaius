@@ -63,7 +63,11 @@ def _register_builtin_flows():
         pass
 
     try:
-        from gaius.flows.clt_skos import CltSkosEvalFlow  # noqa: F401
+        from gaius.flows.clt_skos import (  # noqa: F401
+            CltSkosAdmitFlow,
+            CltSkosEvalFlow,
+            CltSkosLabelFlow,
+        )
     except ImportError:
         pass
 

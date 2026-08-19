@@ -14,6 +14,7 @@ CREATE TABLE IF NOT EXISTS admitted_item (
     aperture_code TEXT NOT NULL DEFAULT '',
     margin DOUBLE PRECISION NOT NULL DEFAULT 0,
     admitted_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    run_id TEXT NOT NULL DEFAULT '',
     UNIQUE (source_id, char_start, char_end)
 );
 CREATE INDEX IF NOT EXISTS admitted_item_source ON admitted_item (source_id);
@@ -48,13 +49,14 @@ async def upsert_admitted(
     text: str,
     aperture_code: str,
     margin: float,
+    run_id: str = "",
 ) -> int:
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
             """
             INSERT INTO admitted_item
-                (source_id, char_start, char_end, text, aperture_code, margin)
-            VALUES ($1, $2, $3, $4, $5, $6)
+                (source_id, char_start, char_end, text, aperture_code, margin, run_id)
+            VALUES ($1, $2, $3, $4, $5, $6, $7)
             ON CONFLICT (source_id, char_start, char_end) DO UPDATE
               SET text = EXCLUDED.text,
                   aperture_code = EXCLUDED.aperture_code,
@@ -67,6 +69,7 @@ async def upsert_admitted(
             text,
             aperture_code,
             margin,
+            run_id,
         )
     return int(row["id"])
 
