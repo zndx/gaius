@@ -116,11 +116,22 @@ def metaflow_child_env(
             "(set SIGNALS_ROOT or add config/metaflow/platform.json)",
         )
 
-    force = resolved == "platform"
+    # Explicit mode (local sentinel spawn) must overwrite engine-process
+    # platform env (S3/K8s). Otherwise host ticks hang after start.
+    force = resolved == "platform" or mode is not None
     for key, value in config.items():
         if force or key not in env:
             env[key] = str(value)
     env["GAIUS_METAFLOW_MODE"] = resolved
+    if resolved == "local":
+        env["METAFLOW_DEFAULT_DATASTORE"] = "local"
+        for k in (
+            "METAFLOW_KUBERNETES_NAMESPACE",
+            "METAFLOW_KUBERNETES_SECRETS",
+            "METAFLOW_KUBERNETES_SERVICE_ACCOUNT",
+            "METAFLOW_AIRFLOW_KUBERNETES_CONN_ID",
+        ):
+            env.pop(k, None)
     if resolved == "platform":
         from gaius.flows.prospects.product_env import apply_product_env
 
