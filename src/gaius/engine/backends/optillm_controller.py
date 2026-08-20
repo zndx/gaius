@@ -943,6 +943,8 @@ class OptillmController:
             OptillmResponse with generated content
         """
         if not self._client:
+            await self.start()
+        if not self._client:
             return OptillmResponse(
                 content="",
                 model=request.model,
