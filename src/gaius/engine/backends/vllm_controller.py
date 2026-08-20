@@ -35,9 +35,9 @@ _TINYBOX_NVCC_SRC = _REPO_ROOT / "scripts" / "lib" / "tinybox-nvcc.sh"
 _TINYBOX_NINJA_SRC = _REPO_ROOT / "scripts" / "lib" / "tinybox-ninja.sh"
 
 # Health checks pass timeout=5 on the same client. Complete must outlast
-# Qwen thinking + a queued peer on the shared thinking endpoint. Grok's
-# stream idle is 300s; stay under that so the façade can still emit SSE.
-VLLM_HTTP_TIMEOUT = httpx.Timeout(connect=10.0, read=180.0, write=30.0, pool=30.0)
+# Qwen3.8-27B thinking (prefLabel JSON after <think>). 180s ReadTimeout
+# aborted clt_skos_label while the model was still generating.
+VLLM_HTTP_TIMEOUT = httpx.Timeout(connect=10.0, read=420.0, write=30.0, pool=30.0)
 GURU_VLLM_TIMEOUT = "#EP.00000006.VLLMTIMEOUT"
 
 
