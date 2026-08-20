@@ -4086,10 +4086,10 @@ Respond with:
             /discover 36h feature:12:4412
         """
         parts = (args or "").split()
-        window = "1h"
+        window = "36h"
         query_parts: list[str] = []
         if parts and (
-            parts[0].lower() in ("salience", "1h", "24h")
+            parts[0].lower() in ("salience", "1h", "24h", "36h")
             or (parts[0][-1:].lower() in "mhd" and parts[0][:-1].isdigit())
         ):
             window = parts[0]

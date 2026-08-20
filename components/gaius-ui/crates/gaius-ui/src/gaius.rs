@@ -89,7 +89,7 @@ impl Gaius {
         let r = c
             .discover_surface(DiscoverSurfaceRequest {
                 window: if window.is_empty() {
-                    "1h".into()
+                    "36h".into()
                 } else {
                     window
                 },

@@ -210,9 +210,9 @@ def _cron_field(expr: str, lo: int, hi: int) -> set[int]:
 
 
 def _window_token(window: str) -> str:
-    w = (window or "1h").strip().lower()
+    w = (window or "36h").strip().lower()
     if w in ("", "salience"):
-        return "1h"
+        return "36h"
     return w
 
 
@@ -406,7 +406,7 @@ def _fill_minutes(
 async def load_discover(
     db_pool: Any,
     *,
-    window: str = "1h",
+    window: str = "36h",
     query: str = "",
     breakdown: str = "source",
     limit: int = 50,

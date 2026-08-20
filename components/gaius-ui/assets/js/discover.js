@@ -234,7 +234,7 @@
 
   async function load() {
     if (document.hidden) return;
-    var windowV = wEl ? wEl.value : "1h";
+    var windowV = wEl ? wEl.value : "36h";
     var breakdown = bEl ? bEl.value : "source";
     var query = currentQuery();
     var url =

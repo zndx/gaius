@@ -2020,7 +2020,7 @@ class GaiusServicer(GaiusServiceServicer):
         try:
             snap = await load_discover(
                 pool,
-                window=request.window or "1h",
+                window=request.window or "36h",
                 query=request.query or "",
                 breakdown=request.breakdown or "source",
                 limit=request.limit or 50,

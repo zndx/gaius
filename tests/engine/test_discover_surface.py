@@ -52,8 +52,8 @@ def test_rolling_ma_trailing() -> None:
 
 
 def test_window_tokens() -> None:
-    assert _window_token("") == "1h"
-    assert _window_token("salience") == "1h"
+    assert _window_token("") == "36h"
+    assert _window_token("salience") == "36h"
     assert _window_token("24h") == "24h"
     assert _window_token("36h") == "36h"
     assert parse_window("24h") == timedelta(hours=24)

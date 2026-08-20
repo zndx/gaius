@@ -1328,7 +1328,7 @@ class GrpcEngineClient:
 
         response = await self._stub.DiscoverSurface(
             DiscoverSurfaceRequest(
-                window=str(params.get("window") or "1h"),
+                window=str(params.get("window") or "36h"),
                 query=str(params.get("query") or ""),
                 breakdown=str(params.get("breakdown") or "source"),
                 limit=int(params.get("limit") or 50),

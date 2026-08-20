@@ -3138,7 +3138,7 @@ message SignalsTelemetryResponse {
 
 // Discover landing — ELK hist + Activation Examples on our corpus.
 message DiscoverSurfaceRequest {
-  string window = 1;                 // 36h | 7d | 1d | 1h
+  string window = 1;                 // default 36h; also 1h | 24h | 7d | 30d
   string query = 2;                  // stream: source: feature: + free text
   string breakdown = 3;              // stream | source | layer
   int32 limit = 4;                   // docs page size, default 50
