@@ -302,6 +302,52 @@ def test_pending_extract_is_not_a_live_envelope(
     )
 
 
+def test_apply_and_admit_stz_unplaced_sentinel(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from gaius.engine.sentinel_claim import (
+        GURU_NOTADMITTED,
+        YkAdmitError,
+        apply_and_admit,
+    )
+
+    deleted: list[str] = []
+    monkeypatch.setattr(
+        "gaius.engine.sentinel_claim.assert_host_envelope", lambda **_k: None
+    )
+    monkeypatch.setattr("gaius.engine.sentinel_claim.sentinels_enabled", lambda: True)
+    monkeypatch.setattr("gaius.engine.sentinel_claim.federation_required", lambda: True)
+    monkeypatch.setattr(
+        "gaius.engine.sentinel_claim._pod_phase", lambda _wid: "Pending"
+    )
+    monkeypatch.setattr(
+        "gaius.engine.sentinel_claim._wait_running", lambda *_a, **_k: False
+    )
+    monkeypatch.setattr(
+        "gaius.engine.sentinel_claim._delete_pod",
+        lambda wid: deleted.append(wid),
+    )
+
+    class Ok:
+        returncode = 0
+        stdout = "created"
+        stderr = ""
+
+    monkeypatch.setattr(
+        "gaius.engine.sentinel_claim.subprocess.run", lambda *_a, **_k: Ok()
+    )
+    with pytest.raises(YkAdmitError, match=GURU_NOTADMITTED):
+        apply_and_admit("gaius-mf-docling-leak", "docling", timeout_s=0.1)
+    assert deleted == ["gaius-mf-docling-leak"]
+
+
+def test_docling_flow_is_compute_not_extract() -> None:
+    from gaius.engine.sentinel_claim import COMPUTE, EXTRACT, resource_class_for
+
+    assert resource_class_for("docling") == COMPUTE
+    assert resource_class_for("article-curate") == EXTRACT
+
+
 def test_host_envelope_disk_fail(monkeypatch: pytest.MonkeyPatch) -> None:
     from gaius.engine.sentinel_claim import (
         GURU_DISK,
@@ -405,7 +451,7 @@ def test_prospects_disk_floor_is_raid_only() -> None:
     assert disk_paths_for("clt-skos-admit") == ("/raid",)
     assert disk_paths_for("knowledge-summary") == ("/raid",)
     assert resource_class_for("clt-skos-label") == COMPUTE
-    assert resource_class_for("docling") == EXTRACT
+    assert resource_class_for("docling") == COMPUTE
     assert resource_class_for("thinking") == HEAVY
     assert resource_class_for("thinking").gpu_tokens == 4
 

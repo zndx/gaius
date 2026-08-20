@@ -204,8 +204,15 @@ class GaiusFlow(FlowSpec):
         wid = f"gaius-mf-{kind}-{rid}".lower()
         wid = "".join(c if c.isalnum() or c == "-" else "-" for c in wid)[:63]
         self._yk_workload_id = wid
+        try:
+            apply_and_admit(wid, kind)
+        except Exception:
+            from gaius.engine.sentinel_claim import delete_flow_sentinel
+
+            delete_flow_sentinel(wid)
+            self._yk_workload_id = None
+            raise
         self._yk_minted = True
-        apply_and_admit(wid, kind)
         os.environ["GAIUS_YK_APPLICATION_ID"] = wid
 
     def _release_yk(self) -> None:

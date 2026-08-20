@@ -154,6 +154,7 @@ class ScheduledTaskProcessor(BaseDaemon):
             apply_and_admit(wid, kind)
         except YkAdmitError as e:
             logger.error(f"{log_prefix} YK admit failed: {e}")
+            delete_flow_sentinel(wid)
             return {"status": "error", "error": str(e), "workload_id": wid}
         try:
             proc = await asyncio.create_subprocess_exec(

@@ -151,9 +151,11 @@ _KIND_CLASS: dict[str, ResourceClass] = {
     "article_curation": EXTRACT,
     "prospects-update": EXTRACT,
     "prospects_update": EXTRACT,
-    "docling": EXTRACT,
-    "card-upkeep": EXTRACT,
-    "card_upkeep": EXTRACT,
+    # Metaflow / host Python ticks are compute. EXTRACT is the Docling GPU
+    # process only (article-curate), not the wrapping flow.
+    "docling": COMPUTE,
+    "card-upkeep": COMPUTE,
+    "card_upkeep": COMPUTE,
     "prospects-check": RATE_METERED,
     "prospects_check": RATE_METERED,
     "fmp": RATE_METERED,
@@ -303,7 +305,7 @@ _KIND_PHASE: dict[str, str] = {
     "article_curation": "extract",
     "card-upkeep": "extract",
     "card_upkeep": "extract",
-    "docling": "extract",
+    "docling": "flow",
     "research": "extract",
     "search": "extract",
     "metaflow": "work",
@@ -572,8 +574,15 @@ def apply_and_admit(
         return row
 
     if not _wait_running(workload_id, timeout_s):
-        # Do not delete: YK may already have placed this app-id. Killing the
-        # claim pod here is "delete at host-flow start" and 404s extract.
+        # Unplaced claim occupies the YK Application id. STZ it so the
+        # next process can admit — do not leak Pending pause pods.
+        log.error(
+            "sentinel not Running in %.0fs; STZ %s on %s",
+            timeout_s,
+            workload_id,
+            rc.queue,
+        )
+        _delete_pod(workload_id)
         row = AdmittedApplication(
             workload_id=workload_id,
             resource_class=rc,
