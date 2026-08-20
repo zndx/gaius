@@ -8,14 +8,14 @@ The Application is the Yield victim: YK preempt → C2 last-gasp :50561 →
 ``federation.zndx.org/gpu`` only — never ``nvidia.com/gpu`` on this
 CPU-only sentinel (that would bind the card into an empty pod).
 
-Signals / YK shows three Gaius lanes on existing leaves (no
-``root.gaius``):
+Signals / YK shows Gaius lanes on existing leaves (no ``root.gaius``):
 
 - ``external.rate-metered`` — FMP ingest. Comes and goes.
-- ``internal.compute`` — Ambient RAM FIFO. Standing while the daemon
-  runs. Never a disk write.
-- ``internal.inference.extract`` — one GPU token. Article/prospects
-  GPU children and agentic summarization bind this id.
+- ``internal.compute`` — Ambient RAM FIFO and CPU Metaflow ticks.
+  Standing while the daemon runs. Never a disk write.
+- ``internal.inference.extract`` — Docling / article GPU children only.
+- ``internal.inference.heavy`` — standing Qwen3.8 thinking. Ambient
+  summarize rides this Application (thinking channel → later CLT/SAE).
 
 Host disk and RAM are not YK resources — Gaius refuses new disk-writing
 children when those floors are crossed so the box cannot fill past the
@@ -135,29 +135,37 @@ COMPUTE = ResourceClass(
 
 AMBIENT_WORKLOAD_ID = "gaius-ambient"
 
-# GPU summarization (docling / VLM / instruct) always binds EXTRACT.
-# FMP ingest and Ambient buffer are other queues so YK can show them.
+# EXTRACT is Docling / article GPU only. Thinking Complete (Qwen3.8)
+# rides HEAVY so summarize does not steal extract slots from Docling.
 _KIND_CLASS: dict[str, ResourceClass] = {
     "article-curate": EXTRACT,
     "article_curate": EXTRACT,
+    "article-curation": EXTRACT,
+    "article_curation": EXTRACT,
     "prospects-update": EXTRACT,
     "prospects_update": EXTRACT,
-    # Compact/summary ride the standing extract token (same envelope as
-    # ambient-summarize). They must not mint a second GPU Application.
-    "prospects-compact": EXTRACT,
-    "prospects_compact": EXTRACT,
-    "prospects-summary": EXTRACT,
-    "prospects_summary": EXTRACT,
-    "ambient-summarize": EXTRACT,
-    "ambient_summarize": EXTRACT,
-    # Planned RAM→sitrep compaction: same extract token as summarize
-    # so Aegir fine-tune preempts one GPU claim, not two.
-    "ambient-compact": EXTRACT,
-    "ambient_compact": EXTRACT,
+    "docling": EXTRACT,
+    "card-upkeep": EXTRACT,
+    "card_upkeep": EXTRACT,
     "prospects-check": RATE_METERED,
     "prospects_check": RATE_METERED,
     "fmp": RATE_METERED,
     "ambient": COMPUTE,
+    "ambient-compact": COMPUTE,
+    "ambient_compact": COMPUTE,
+    "clt-probe": COMPUTE,
+    "clt_probe": COMPUTE,
+    "clt-skos-admit": COMPUTE,
+    "clt_skos_admit": COMPUTE,
+    "clt-skos-eval": COMPUTE,
+    "clt_skos_eval": COMPUTE,
+    "clt-skos-label": COMPUTE,
+    "clt_skos_label": COMPUTE,
+    "knowledge-summary": COMPUTE,
+    "knowledge_summary": COMPUTE,
+    "research": COMPUTE,
+    "search": COMPUTE,
+    "metaflow": COMPUTE,
     # Ask 1.7B: one whole GPU per replica (light).
     "ask-agent": LIGHT,
     "ask_agent": LIGHT,
@@ -166,29 +174,16 @@ _KIND_CLASS: dict[str, ResourceClass] = {
     "ask-sae": MEDIUM,
     "ask_sae": MEDIUM,
     "ask-medium": MEDIUM,
-    # Live YK has extract, not light yet (light is in Signals yaml, not
-    # loaded). Probe is offline batch — extract is the existing 1-GPU leaf.
-    "clt-probe": EXTRACT,
-    "clt_probe": EXTRACT,
-    "clt-skos-admit": EXTRACT,
-    "clt_skos_admit": EXTRACT,
-    "clt-skos-eval": EXTRACT,
-    "clt_skos_eval": EXTRACT,
-    # Label uses standing thinking Complete — no extra GPU token.
-    "clt-skos-label": COMPUTE,
-    "clt_skos_label": COMPUTE,
-    "knowledge-summary": EXTRACT,
-    "knowledge_summary": EXTRACT,
-    "article-curation": EXTRACT,
-    "article_curation": EXTRACT,
-    "card-upkeep": EXTRACT,
-    "card_upkeep": EXTRACT,
-    "docling": EXTRACT,
-    "research": EXTRACT,
-    "search": EXTRACT,
-    "metaflow": EXTRACT,
+    # Qwen3.8 thinking. Ambient summarize / prospects compact Complete
+    # reuse gaius-thinking (heavy cap 1) — thinking channel is CLT/SAE input.
     "thinking": HEAVY,
     "gaius-thinking": HEAVY,
+    "ambient-summarize": HEAVY,
+    "ambient_summarize": HEAVY,
+    "prospects-compact": HEAVY,
+    "prospects_compact": HEAVY,
+    "prospects-summary": HEAVY,
+    "prospects_summary": HEAVY,
 }
 
 
@@ -199,9 +194,10 @@ def resource_class_for(kind: str) -> ResourceClass:
         raise YkAdmitError(
             GURU_NOADMIT,
             f"no resource class for kind={kind!r}; "
-            "light: ask-agent (1 GPU); medium: ask-sae (2 GPU); "
-            "extract (offline): article_curate / prospects_update / …; "
-            "rate-metered: prospects-check / fmp; compute: ambient",
+            "heavy: thinking / ambient-summarize; "
+            "extract (Docling): article-curate / prospects-update / docling; "
+            "light: ask-agent; medium: ask-sae; "
+            "rate-metered: prospects-check / fmp; compute: ambient / clt-*",
         ) from e
 
 
@@ -262,9 +258,7 @@ def _signals_scheduler_present() -> bool:
         channel.close()
 
 
-# Phase is what YK/operators see: buffer is CPU+RAM only; summarize
-# and compact borrow the one extract GPU token (Aegir fine-tune preempts
-# that token — they must not mint a second).
+# Phase is what YK/operators see. Summarize is heavy thinking, not extract.
 _KIND_PHASE: dict[str, str] = {
     "ambient": "buffer",
     "ambient-summarize": "summarize",
@@ -290,10 +284,10 @@ _KIND_PHASE: dict[str, str] = {
     "ask-medium": "ask",
     "clt-probe": "probe",
     "clt_probe": "probe",
-    "clt-skos-admit": "extract",
-    "clt_skos_admit": "extract",
-    "clt-skos-eval": "extract",
-    "clt_skos_eval": "extract",
+    "clt-skos-admit": "admit",
+    "clt_skos_admit": "admit",
+    "clt-skos-eval": "eval",
+    "clt_skos_eval": "eval",
     "clt-skos-label": "label",
     "clt_skos_label": "label",
     "knowledge-summary": "summary",
@@ -345,9 +339,15 @@ def disk_paths_for(kind: str) -> tuple[str, ...]:
     ``/raid/signals/var/kb/dev`` (``./build/dev`` is a symlink).
     """
     rc = resource_class_for(kind)
-    if rc.queue in (COMPUTE.queue, HEAVY.queue, LIGHT.queue, MEDIUM.queue):
+    if rc.queue in (HEAVY.queue, LIGHT.queue, MEDIUM.queue):
         # vLLM / thinking occupancy — not KB writers. A full root must not
         # refuse Complete(capability=thinking).
+        return ()
+    if kind.replace("_", "-") in {
+        "ambient",
+        "ambient-compact",
+        "clt-skos-label",
+    }:
         return ()
     if rc.queue == RATE_METERED.queue:
         return ("/raid",)
@@ -653,6 +653,8 @@ def _cluster_gaius_app_ids(queue: str) -> list[str]:
             "pods",
             "-l",
             f"federation.project=gaius,queue={queue}",
+            "--field-selector",
+            "status.phase=Running",
             "-o",
             "jsonpath={.items[*].metadata.name}",
         ],
@@ -664,7 +666,10 @@ def _cluster_gaius_app_ids(queue: str) -> list[str]:
 
 
 def live_apps_on_queue(kind: str) -> list[str]:
-    """Gaius Application ids currently on this kind's YK leaf."""
+    """Gaius Application ids currently Running on this kind's YK leaf.
+
+    Pending is not a live envelope — reusing it is a 60s NOTADMITTED loop.
+    """
     rc = resource_class_for(kind)
     names: list[str] = []
     with _MU:
@@ -672,7 +677,13 @@ def live_apps_on_queue(kind: str) -> list[str]:
             if row.admitted and row.resource_class.queue == rc.queue:
                 names.append(row.workload_id)
     names.extend(_cluster_gaius_app_ids(rc.queue))
-    return list(dict.fromkeys(names))
+    uniq = list(dict.fromkeys(names))
+    live: list[str] = []
+    for wid in uniq:
+        phase = _pod_phase(wid)
+        if phase in ("", "Running"):
+            live.append(wid)
+    return live
 
 
 def live_workload_id(kind: str) -> str | None:

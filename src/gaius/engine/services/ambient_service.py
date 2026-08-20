@@ -1306,21 +1306,22 @@ class AmbientWorkloadService:
                     "skipped": True,
                 }
 
-            # GPU summarization rides the extract token (same lane as
-            # article/prospects). Do not mint a second GPU Application.
+            # Summarize is Qwen3.8 thinking on heavy — reuse gaius-thinking.
+            # Do not occupy Docling extract.
             from gaius.engine.sentinel_claim import (
                 YkAdmitError,
                 apply_and_admit,
                 bind_workload_id,
+                capability_workload_id,
                 gpu_start_allowed,
             )
 
             try:
-                extract_id = bind_workload_id(
+                think_id = bind_workload_id(
                     "ambient-summarize",
-                    f"article-curate-{int(time.time())}",
+                    capability_workload_id("thinking"),
                 )
-                apply_and_admit(extract_id, "ambient-summarize")
+                apply_and_admit(think_id, "ambient-summarize")
             except YkAdmitError as e:
                 return {
                     "success": False,
@@ -1328,10 +1329,10 @@ class AmbientWorkloadService:
                     "latency_ms": int((time.time() - start_time) * 1000),
                 }
 
-            if not gpu_start_allowed(extract_id):
+            if not gpu_start_allowed(think_id):
                 return {
                     "success": True,
-                    "message": "extract not admitted; skip think-summarize",
+                    "message": "thinking not admitted; skip think-summarize",
                     "skipped": True,
                     "latency_ms": int((time.time() - start_time) * 1000),
                 }

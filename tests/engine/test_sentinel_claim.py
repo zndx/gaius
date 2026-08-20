@@ -22,9 +22,9 @@ from gaius.engine.sentinel_claim import (
 def test_article_and_prospects_map_to_extract() -> None:
     assert resource_class_for("article-curate") == EXTRACT
     assert resource_class_for("prospects-update") == EXTRACT
-    assert resource_class_for("prospects-compact") == EXTRACT
-    assert resource_class_for("prospects-summary") == EXTRACT
-    assert resource_class_for("ambient-summarize") == EXTRACT
+    assert resource_class_for("prospects-compact") == HEAVY
+    assert resource_class_for("prospects-summary") == HEAVY
+    assert resource_class_for("ambient-summarize") == HEAVY
     assert EXTRACT.queue == "root.internal.inference.extract"
     assert EXTRACT.gpu_tokens == 1
     assert EXTRACT.max_applications == 2
@@ -40,6 +40,7 @@ def test_ambient_phases_split_cpu_from_gpu() -> None:
         resource_class_for,
         COMPUTE,
         EXTRACT,
+        HEAVY,
         extract_wait_available,
         LIGHT,
         MEDIUM,
@@ -48,9 +49,9 @@ def test_ambient_phases_split_cpu_from_gpu() -> None:
     assert yk_phase_for("ambient") == "buffer"
     assert resource_class_for("ambient") == COMPUTE
     assert yk_phase_for("ambient-summarize") == "summarize"
-    assert resource_class_for("ambient-summarize") == EXTRACT
+    assert resource_class_for("ambient-summarize") == HEAVY
     assert yk_phase_for("ambient-compact") == "compact"
-    assert resource_class_for("ambient-compact") == EXTRACT
+    assert resource_class_for("ambient-compact") == COMPUTE
     assert yk_phase_for("prospects-update") == "extract"
     assert yk_phase_for("prospects-compact") == "compact"
     assert yk_phase_for("prospects-summary") == "summarize"
@@ -63,9 +64,12 @@ def test_ambient_phases_split_cpu_from_gpu() -> None:
     buf = yaml.safe_load(application_yaml("gaius-ambient", "ambient"))
     assert buf["metadata"]["labels"]["federation.phase"] == "buffer"
     assert "federation.zndx.org/gpu" not in buf["spec"]["containers"][0]["resources"]["requests"]
-    sm = yaml.safe_load(application_yaml("gaius-sum", "ambient-summarize"))
+    sm = yaml.safe_load(application_yaml("gaius-thinking", "ambient-summarize"))
     assert sm["metadata"]["annotations"]["federation.zndx.org/phase"] == "summarize"
-    assert sm["spec"]["containers"][0]["resources"]["requests"]["federation.zndx.org/gpu"] == "1"
+    assert sm["metadata"]["annotations"]["yunikorn.apache.org/queue"] == (
+        "root.internal.inference.heavy"
+    )
+    assert sm["spec"]["containers"][0]["resources"]["requests"]["federation.zndx.org/gpu"] == "4"
 
 
 def test_fmp_and_ambient_are_not_extract() -> None:
@@ -97,14 +101,18 @@ def test_unknown_kind_fail_fast() -> None:
 
 
 def test_every_registered_flow_has_yk_class() -> None:
-    from gaius.engine.sentinel_claim import COMPUTE, EXTRACT, RATE_METERED
+    from gaius.engine.sentinel_claim import COMPUTE, EXTRACT, HEAVY, LIGHT, MEDIUM, RATE_METERED
     from gaius.flows import FLOW_REGISTRY, _register_builtin_flows
 
     _register_builtin_flows()
     for name, cls in FLOW_REGISTRY.items():
         kind = getattr(cls, "yk_kind", name.replace("_", "-"))
         rc = resource_class_for(kind)
-        assert rc in (EXTRACT, COMPUTE, RATE_METERED), (name, kind, rc)
+        assert rc in (EXTRACT, COMPUTE, RATE_METERED, HEAVY, LIGHT, MEDIUM), (
+            name,
+            kind,
+            rc,
+        )
 
 
 def test_yaml_stamps_and_gpu_token() -> None:
@@ -155,6 +163,9 @@ def test_bind_mints_extract_until_cap(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         "gaius.engine.sentinel_claim._cluster_gaius_app_ids", lambda _q: []
     )
+    monkeypatch.setattr(
+        "gaius.engine.sentinel_claim._pod_phase", lambda _wid: "Running"
+    )
     a = AdmittedApplication(
         workload_id="article-curate-1",
         resource_class=EXTRACT,
@@ -203,6 +214,9 @@ def test_bind_does_not_cross_queues(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         "gaius.engine.sentinel_claim._cluster_gaius_app_ids", lambda _q: []
     )
+    monkeypatch.setattr(
+        "gaius.engine.sentinel_claim._pod_phase", lambda _wid: "Running"
+    )
     row = AdmittedApplication(
         workload_id="article-curate-1786767299",
         resource_class=EXTRACT,
@@ -216,14 +230,66 @@ def test_bind_does_not_cross_queues(monkeypatch: pytest.MonkeyPatch) -> None:
     try:
         assert bind_workload_id("prospects-check", "gaius-fmp-1") == "gaius-fmp-1"
         assert bind_workload_id("ambient", "gaius-ambient") == "gaius-ambient"
-        # Extract still under cap (2) — summarize may mint its own token.
-        assert (
-            bind_workload_id("ambient-summarize", "article-curate-ambient")
-            == "article-curate-ambient"
+        # Summarize is heavy — must not reuse a Pending extract article-curate.
+        assert bind_workload_id("ambient-summarize", "gaius-thinking") == (
+            "gaius-thinking"
         )
     finally:
         with _MU:
             _ADMITTED.pop(row.workload_id, None)
+
+
+def test_summarize_reuses_standing_thinking(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from gaius.engine.sentinel_claim import (
+        HEAVY,
+        AdmittedApplication,
+        bind_workload_id,
+        _ADMITTED,
+        _MU,
+    )
+
+    monkeypatch.setattr(
+        "gaius.engine.sentinel_claim._cluster_gaius_app_ids", lambda _q: []
+    )
+    monkeypatch.setattr(
+        "gaius.engine.sentinel_claim._pod_phase", lambda _wid: "Running"
+    )
+    row = AdmittedApplication(
+        workload_id="gaius-thinking",
+        resource_class=HEAVY,
+        namespace="federation-signals",
+        admitted=True,
+        required=True,
+        kind="thinking",
+    )
+    with _MU:
+        _ADMITTED[row.workload_id] = row
+    try:
+        assert bind_workload_id("ambient-summarize", "gaius-thinking-extra") == (
+            "gaius-thinking"
+        )
+    finally:
+        with _MU:
+            _ADMITTED.pop(row.workload_id, None)
+
+
+def test_pending_extract_is_not_a_live_envelope(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from gaius.engine.sentinel_claim import bind_workload_id
+
+    monkeypatch.setattr(
+        "gaius.engine.sentinel_claim._cluster_gaius_app_ids",
+        lambda _q: ["article-curate-1786767299"],
+    )
+    monkeypatch.setattr(
+        "gaius.engine.sentinel_claim._pod_phase", lambda _wid: "Pending"
+    )
+    assert bind_workload_id("article-curate", "article-curate-new") == (
+        "article-curate-new"
+    )
 
 
 def test_host_envelope_disk_fail(monkeypatch: pytest.MonkeyPatch) -> None:
