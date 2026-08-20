@@ -2016,21 +2016,56 @@ class GaiusServicer(GaiusServiceServicer):
         request: DiscoverSurfaceRequest,
         context: aio.ServicerContext,
     ) -> DiscoverSurfaceResponse:
-        from ...services.discover_surface import DiscoverError, load_discover
+        from ...services.discover_landing import peek_landing, uses_landing_mv
+        from ...services.discover_surface import (
+            DiscoverError,
+            load_discover,
+            parse_query,
+        )
+
+        parsed = parse_query(
+            request.query or "", list(request.feature_pins or [])
+        )
+        if uses_landing_mv(
+            request.window or "36h",
+            parsed,
+            request.from_ts or "",
+            request.to_ts or "",
+        ):
+            cached = peek_landing()
+            if cached is not None:
+                return self._discover_proto(cached)
 
         pool = _summary_db(self._services)
         try:
-            snap = await load_discover(
-                pool,
-                window=request.window or "36h",
-                query=request.query or "",
-                breakdown=request.breakdown or "source",
-                limit=request.limit or 50,
-                feature_pins=list(request.feature_pins or []),
-                from_ts=request.from_ts or "",
-                to_ts=request.to_ts or "",
+            snap = await asyncio.wait_for(
+                load_discover(
+                    pool,
+                    window=request.window or "36h",
+                    query=request.query or "",
+                    breakdown=request.breakdown or "source",
+                    limit=request.limit or 50,
+                    feature_pins=list(request.feature_pins or []),
+                    from_ts=request.from_ts or "",
+                    to_ts=request.to_ts or "",
+                ),
+                timeout=2.5,
+            )
+        except TimeoutError:
+            cached = peek_landing()
+            if cached is not None:
+                return self._discover_proto(cached)
+            return DiscoverSurfaceResponse(
+                error=(
+                    "Discover surface timed out.\n"
+                    "Guru Meditation: #DI.00000009.SLOWPOOL\n"
+                    "  Try: /discover refresh"
+                )
             )
         except DiscoverError as e:
+            cached = peek_landing()
+            if cached is not None:
+                return self._discover_proto(cached)
             return DiscoverSurfaceResponse(error=str(e))
         except Exception as e:
             return DiscoverSurfaceResponse(
@@ -2040,6 +2075,9 @@ class GaiusServicer(GaiusServiceServicer):
                     "  Try: /health fix postgres"
                 ),
             )
+        return self._discover_proto(snap)
+
+    def _discover_proto(self, snap: object) -> DiscoverSurfaceResponse:
         return DiscoverSurfaceResponse(
             buckets=[
                 ProtoDiscoverBucket(

@@ -1,5 +1,7 @@
 //! GaiusService client — CognitionSurface (federation attention).
 
+use std::time::Duration;
+
 use serde::Serialize;
 use thiserror::Error;
 use tonic::transport::Channel;
@@ -85,7 +87,7 @@ impl Gaius {
         breakdown: String,
         limit: i32,
     ) -> Result<serde_json::Value, GaiusError> {
-        let mut c = self.client().await?;
+        let mut c = self.discover_client().await?;
         let r = c
             .discover_surface(DiscoverSurfaceRequest {
                 window: if window.is_empty() {
@@ -258,6 +260,17 @@ impl Gaius {
         let endpoint = format!("http://{}", self.target.trim());
         let ch = Channel::from_shared(endpoint)
             .map_err(|e| GaiusError::Message(e.to_string()))?
+            .connect()
+            .await?;
+        Ok(GaiusServiceClient::new(ch))
+    }
+
+    async fn discover_client(&self) -> Result<GaiusServiceClient<Channel>, GaiusError> {
+        let endpoint = format!("http://{}", self.target.trim());
+        let ch = Channel::from_shared(endpoint)
+            .map_err(|e| GaiusError::Message(e.to_string()))?
+            .connect_timeout(Duration::from_secs(2))
+            .timeout(Duration::from_secs(4))
             .connect()
             .await?;
         Ok(GaiusServiceClient::new(ch))

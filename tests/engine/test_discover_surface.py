@@ -59,6 +59,48 @@ def test_window_tokens() -> None:
     assert parse_window("24h") == timedelta(hours=24)
 
 
+def test_remember_and_peek_landing() -> None:
+    from gaius.engine.services.discover_landing import (
+        peek_landing,
+        remember_landing,
+        surface_from_landing_rows,
+    )
+
+    rows = [
+        {
+            "kind": "meta",
+            "key": "snapshot",
+            "payload": {
+                "start_ts": "2026-08-18T12:00:00+00:00",
+                "end_ts": "2026-08-20T00:00:00+00:00",
+                "last_salience_at": "2026-08-20T00:00:00+00:00",
+                "total": 1,
+                "refreshed_at": "2026-08-20T00:01:00+00:00",
+                "interval": "hour",
+                "window": "36h",
+            },
+        },
+        {
+            "kind": "doc",
+            "key": "1",
+            "payload": {
+                "id": 1,
+                "title": "T",
+                "body": "b",
+                "fetched_at": "2026-08-19T12:00:00+00:00",
+                "url": "",
+                "source": "arxiv",
+            },
+        },
+    ]
+    snap = surface_from_landing_rows(rows, limit=50, gpu_rows=[], episode=None)
+    remember_landing(snap)
+    got = peek_landing()
+    assert got is not None
+    assert got.total == 1
+    assert got.docs[0].title == "T"
+
+
 def test_uses_landing_mv_default_only() -> None:
     from gaius.engine.services.discover_landing import uses_landing_mv
     from gaius.engine.services.discover_surface import parse_query

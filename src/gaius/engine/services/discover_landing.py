@@ -22,7 +22,6 @@ from gaius.engine.services.discover_surface import (
     DiscoverQuery,
     DiscoverSurface,
     minted_feature_facet,
-    next_salience_episode,
     _fill_minutes,
     _window_token,
 )
@@ -52,6 +51,21 @@ _refresh_lock = asyncio.Lock()
 _refresh_task: asyncio.Task[None] | None = None
 _refresh_again = False
 _last_refreshed_at = ""
+_landing_snap: DiscoverSurface | None = None
+
+ACQUIRE_S = 1.0
+
+
+def peek_landing() -> DiscoverSurface | None:
+    """Last default-landing snapshot. No I/O."""
+    return _landing_snap
+
+
+def remember_landing(snap: DiscoverSurface) -> None:
+    global _landing_snap, _last_refreshed_at
+    _landing_snap = snap
+    if snap.scraped_at:
+        _last_refreshed_at = snap.scraped_at
 
 
 @dataclass(frozen=True)
@@ -203,12 +217,24 @@ def surface_from_landing_rows(
 
 
 async def load_landing_mv(db_pool: Any, *, limit: int) -> DiscoverSurface:
+    cached = peek_landing()
     if db_pool is None:
+        if cached is not None:
+            return cached
         from gaius.engine.services.discover_surface import GURU_NODB
 
         raise DiscoverError(GURU_NODB)
-    now = datetime.now(timezone.utc)
-    async with db_pool.acquire() as conn:
+    try:
+        conn = await db_pool.acquire(timeout=ACQUIRE_S)
+    except (TimeoutError, asyncio.TimeoutError, OSError) as e:
+        if cached is not None:
+            return cached
+        raise DiscoverError(
+            "Discover landing timed out waiting for postgres.\n"
+            "  Guru: #DI.00000009.SLOWPOOL\n"
+            "  Try: /discover refresh"
+        ) from e
+    try:
         try:
             rows = await conn.fetch(SELECT_SQL)
         except Exception as e:
@@ -216,36 +242,13 @@ async def load_landing_mv(db_pool: Any, *, limit: int) -> DiscoverSurface:
             if "UndefinedTable" in name or "UndefinedTableError" in name:
                 raise DiscoverError(GURU_NOLANDING) from e
             raise
-        start_s = ""
-        end_s = ""
-        for r in rows:
-            if r["kind"] == "meta":
-                p = _payload(r)
-                start_s = str(p.get("start_ts") or "")
-                end_s = str(p.get("end_ts") or "")
-                break
-        gpu_rows: list[Any] = []
-        if start_s and end_s:
-            try:
-                gpu_rows = await conn.fetch(
-                    """
-                    SELECT date_trunc('hour', minute) AS m,
-                           COALESCE(sum(power_avg_w), 0) AS watts,
-                           COALESCE(avg(util_avg_pct), 0) AS util
-                      FROM meta.gpu_minute_stats
-                     WHERE minute >= $1 AND minute <= $2
-                     GROUP BY 1
-                     ORDER BY 1
-                    """,
-                    _as_dt(start_s),
-                    _as_dt(end_s),
-                )
-            except Exception:
-                gpu_rows = []
-    episode = await next_salience_episode(db_pool, now)
-    return surface_from_landing_rows(
-        rows, limit=limit, gpu_rows=gpu_rows, episode=episode
+    finally:
+        await db_pool.release(conn)
+    snap = surface_from_landing_rows(
+        rows, limit=limit, gpu_rows=[], episode=None
     )
+    remember_landing(snap)
+    return snap
 
 
 async def last_landing_refreshed_at(db_pool: Any) -> str:
@@ -288,6 +291,7 @@ async def _refresh_loop(db_pool: Any) -> None:
             _refresh_again = False
         try:
             await refresh_discover_landing_now(db_pool)
+            await load_landing_mv(db_pool, limit=50)
         except Exception:
             logger.exception("discover_landing_36h concurrent refresh failed")
             raise

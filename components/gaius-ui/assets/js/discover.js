@@ -14,6 +14,31 @@
   var tick = null;
   var lastEpisode = null;
   var lastLabels = {};
+  var inflight = false;
+
+  function cacheKey() {
+    return (
+      "gaius-discover:" +
+      (wEl ? wEl.value : "36h") +
+      ":" +
+      currentQuery()
+    );
+  }
+
+  function readCache() {
+    try {
+      var raw = sessionStorage.getItem(cacheKey());
+      return raw ? JSON.parse(raw) : null;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  function writeCache(data) {
+    try {
+      sessionStorage.setItem(cacheKey(), JSON.stringify(data));
+    } catch (e) {}
+  }
 
   function esc(s) {
     return String(s || "")
@@ -233,7 +258,8 @@
   }
 
   async function load() {
-    if (document.hidden) return;
+    if (document.hidden || inflight) return;
+    inflight = true;
     var windowV = wEl ? wEl.value : "36h";
     var breakdown = bEl ? bEl.value : "source";
     var query = currentQuery();
@@ -245,8 +271,12 @@
       "&query=" +
       encodeURIComponent(query) +
       "&limit=50";
+    var ctrl = new AbortController();
+    var to = setTimeout(function () {
+      ctrl.abort();
+    }, 4000);
     try {
-      var r = await fetch(url);
+      var r = await fetch(url, { signal: ctrl.signal });
       var data = await r.json();
       if (!r.ok) {
         metaEl.textContent = data.error || r.statusText || "Discover unreachable";
@@ -256,13 +286,26 @@
         metaEl.textContent = data.error;
         return;
       }
+      writeCache(data);
       paint(data);
     } catch (e) {
-      metaEl.textContent = "Discover unreachable";
+      var cached = readCache();
+      if (cached) {
+        paint(cached);
+        if (metaEl) metaEl.textContent = (metaEl.textContent || "") + " · cached";
+      } else if (metaEl) {
+        metaEl.textContent = "Discover unreachable";
+      }
+    } finally {
+      clearTimeout(to);
+      inflight = false;
     }
   }
 
   function start() {
+    var cached = readCache();
+    if (cached) paint(cached);
+    else if (metaEl) metaEl.textContent = "Loading…";
     load();
     if (timer) clearInterval(timer);
     timer = setInterval(load, 5000);

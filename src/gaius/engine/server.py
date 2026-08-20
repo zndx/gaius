@@ -248,6 +248,10 @@ class GaiusEngine:
         #     This runs before the ~240s vLLM preload so XB status is available immediately
         await self._init_x_bookmarks_service()
 
+        # 2.55 Postgres pool before vLLM preload so Discover / MV reads do not
+        #      wait on thinking HEALTHY (~240s).
+        await self._ensure_db_pool()
+
         # 2.6 Prospects service moved to after db_pool is created (in _autonomous_start_cognition)
         # 2.7 Collections service moved to after db_pool is created (in _autonomous_start_cognition)
 
@@ -535,6 +539,38 @@ class GaiusEngine:
         except Exception as e:
             logger.error(f"Failed to start evolution daemon: {e}")
 
+    async def _ensure_db_pool(self) -> None:
+        """Shared asyncpg pool. Safe to call more than once."""
+        if self._db_pool is not None:
+            return
+        try:
+            import asyncpg
+
+            from gaius.core.config import get_database_url
+
+            self._db_pool = await asyncpg.create_pool(
+                get_database_url(),
+                min_size=2,
+                max_size=10,
+            )
+            logger.info("Created shared database pool (min=2, max=10)")
+            if self._grpc_server:
+                self._grpc_server.update_service("db_pool", self._db_pool)
+            try:
+                from .services.discover_landing import request_discover_landing_refresh
+
+                await request_discover_landing_refresh(
+                    self._db_pool, reason="engine-start"
+                )
+            except Exception:
+                logger.exception("discover landing seed failed")
+        except Exception as db_err:
+            logger.error(
+                f"Failed to create database pool: {db_err}\n"
+                "  Guru Meditation: #COG.00000001.NOPOOL\n"
+                "  Try: /health fix postgres"
+            )
+
     async def _autonomous_start_cognition(self) -> None:
         """Start the cognition daemon automatically.
 
@@ -544,31 +580,7 @@ class GaiusEngine:
         Creates a shared database pool FIRST, then passes it to both
         CognitionService and TopologyService.
         """
-        # Create shared database pool BEFORE services that need it
-        # This is critical - CognitionService needs db_pool to consume pg_cron tasks
-        # Store on instance so HealthObserverService can also use it
-        try:
-            import asyncpg
-
-            from gaius.core.config import get_database_url
-
-            database_url = get_database_url()
-            self._db_pool = await asyncpg.create_pool(
-                database_url,
-                min_size=2,
-                max_size=10,
-            )
-            logger.info(f"Created shared database pool (min=2, max=10)")
-            if self._grpc_server:
-                self._grpc_server.update_service("db_pool", self._db_pool)
-        except Exception as db_err:
-            # This is a critical failure - pg_cron tasks won't be consumed
-            logger.error(
-                f"Failed to create database pool: {db_err}\n"
-                "  Guru Meditation: #COG.00000001.NOPOOL\n"
-                "  Cognition and Topology services will not function properly.\n"
-                "  Try: /health fix postgres"
-            )
+        await self._ensure_db_pool()
 
         # Start CognitionService with db_pool
         try:
