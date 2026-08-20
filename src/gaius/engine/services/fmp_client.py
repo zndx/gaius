@@ -640,8 +640,21 @@ class FMPClient:
                 {
                     "symbol": sym,
                     "name": str(row.get("name") or row.get("companyName") or ""),
+                    "exchange": str(
+                        row.get("exchangeShortName") or row.get("exchange") or ""
+                    ),
                 }
             )
+        us = {"NYSE", "NASDAQ", "AMEX", "NYSEARCA", "BATS", "CBOE"}
+
+        def _rank(h: dict[str, str]) -> tuple:
+            ex = h.get("exchange", "").upper().replace(" ", "")
+            name = h.get("name", "").lower()
+            levered = "leverage" in name or "3x" in name or "2x" in name
+            home = 0 if ex in us and "." not in h["symbol"] else 1
+            return (levered, home, len(h["symbol"]), h["symbol"])
+
+        out.sort(key=_rank)
         return out
 
     async def get_historical_eod(
