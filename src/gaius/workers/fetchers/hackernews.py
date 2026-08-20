@@ -441,18 +441,6 @@ class HNFetcher(BaseFetcher):
         if not html:
             return ""
 
-        # Remove HTML tags
-        text = re.sub(r"<[^>]+>", " ", html)
+        from gaius.ingest.htmlplain import to_plain_text
 
-        # Decode common HTML entities
-        text = text.replace("&amp;", "&")
-        text = text.replace("&lt;", "<")
-        text = text.replace("&gt;", ">")
-        text = text.replace("&quot;", '"')
-        text = text.replace("&#x27;", "'")
-        text = text.replace("&nbsp;", " ")
-
-        # Normalize whitespace
-        text = re.sub(r"\s+", " ", text)
-
-        return text.strip()
+        return to_plain_text(html)

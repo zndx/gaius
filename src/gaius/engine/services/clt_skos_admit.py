@@ -42,12 +42,16 @@ def extracted_source_text(
             raise RuntimeError(f"{GURU_NOEXTRACT}\n  kb_path={rel!r}") from e
         if not path.is_file():
             raise RuntimeError(f"{GURU_NOEXTRACT}\n  kb_path={rel!r}")
-        return path.read_text(encoding="utf-8"), f"kb:{rel}"
+        from gaius.ingest.htmlplain import to_plain_text
+
+        return to_plain_text(path.read_text(encoding="utf-8")), f"kb:{rel}"
     parts = [str(title or "").strip(), str(summary or "").strip()]
     text = "\n\n".join(p for p in parts if p)
     if not text:
         raise RuntimeError(f"{GURU_NOEXTRACT}\n  no kb_path, title, or summary")
-    return text, "title+summary"
+    from gaius.ingest.htmlplain import to_plain_text
+
+    return to_plain_text(text), "title+summary"
 
 
 GURU_NOMAXSIM = (

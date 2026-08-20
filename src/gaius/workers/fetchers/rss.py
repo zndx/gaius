@@ -116,14 +116,16 @@ class RSSFetcher(BaseFetcher):
             content = None
             content_type = "text/plain"
             if include_content and "content" in entry:
+                from gaius.ingest.htmlplain import to_plain_text
+
                 for content_item in entry["content"]:
                     if content_item.get("type", "").startswith("text/html"):
-                        content = content_item.get("value", "")
-                        content_type = "text/html"
+                        content = to_plain_text(content_item.get("value", ""))
+                        content_type = "text/markdown"
                         break
                     elif content_item.get("type", "").startswith("text/"):
-                        content = content_item.get("value", "")
-                        content_type = content_item.get("type", "text/plain")
+                        content = to_plain_text(content_item.get("value", ""))
+                        content_type = "text/plain"
 
             # Parse published date
             published_at = None
@@ -172,11 +174,6 @@ class RSSFetcher(BaseFetcher):
         return hashlib.sha256(url.encode()).hexdigest()[:16]
 
     def _clean_html(self, html: str) -> str:
-        """Basic HTML tag stripping for summary text."""
-        import re
+        from gaius.ingest.htmlplain import to_plain_text
 
-        # Remove HTML tags
-        text = re.sub(r"<[^>]+>", "", html)
-        # Normalize whitespace
-        text = re.sub(r"\s+", " ", text)
-        return text.strip()
+        return to_plain_text(html)

@@ -73,6 +73,7 @@ async def pick_unprobed_inflow(pool: Any, *, since, limit: int) -> list[Any]:
         return await conn.fetch(
             """
             SELECT c.id, c.title, COALESCE(c.summary, '') AS body,
+                   COALESCE(c.kb_path, '') AS kb_path,
                    c.fetched_at, COALESCE(s.name, '') AS source
               FROM content_items c
               LEFT JOIN feed_sources s ON s.id = c.source_id

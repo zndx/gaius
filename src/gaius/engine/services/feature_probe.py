@@ -69,7 +69,18 @@ async def run_probe_batch(pool: Any, *, gpu_index: int = 4) -> dict[str, Any]:
     rows_written = 0
     worker = f"gpu{gpu_index}"
     for row in items:
-        text = f"{row['title']}\n\n{row['body']}"[:4000]
+        from gaius.engine.services.clt_skos_admit import extracted_source_text
+        from gaius.ingest.htmlplain import to_plain_text
+
+        try:
+            text, _origin = extracted_source_text(
+                title=str(row["title"] or ""),
+                summary=str(row["body"] or ""),
+                kb_path=str(row["kb_path"] or ""),
+            )
+        except RuntimeError:
+            text = to_plain_text(f"{row['title']}\n\n{row['body']}")
+        text = text[:4000]
         event_id = f"inflow:{row['id']}"
         resp = svc._send_command(
             {"method": "extract", "params": {"text": text, "top_k": 32}},
