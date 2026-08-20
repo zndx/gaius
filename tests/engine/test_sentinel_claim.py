@@ -299,6 +299,8 @@ def test_prospects_disk_floor_is_raid_only() -> None:
     assert disk_paths_for("prospects-update") == ("/raid",)
     assert disk_paths_for("fmp") == ("/raid",)
     assert disk_paths_for("ambient") == ()
+    assert disk_paths_for("thinking") == ()
+    assert disk_paths_for("ask-agent") == ()
     assert disk_paths_for("article-curate") == ("/raid",)
     assert disk_paths_for("clt-skos-admit") == ("/raid",)
     assert disk_paths_for("knowledge-summary") == ("/raid",)

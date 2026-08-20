@@ -338,7 +338,9 @@ def disk_paths_for(kind: str) -> tuple[str, ...]:
     ``/raid/signals/var/kb/dev`` (``./build/dev`` is a symlink).
     """
     rc = resource_class_for(kind)
-    if rc.queue == COMPUTE.queue:
+    if rc.queue in (COMPUTE.queue, HEAVY.queue, LIGHT.queue, MEDIUM.queue):
+        # vLLM / thinking occupancy — not KB writers. A full root must not
+        # refuse Complete(capability=thinking).
         return ()
     if rc.queue == RATE_METERED.queue:
         return ("/raid",)
