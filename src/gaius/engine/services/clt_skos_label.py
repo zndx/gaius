@@ -47,6 +47,8 @@ async def find_unlabeled(pool: Any, *, limit: int = 8) -> list[LabelCase]:
     """Tape-hot features that lack a fresh minted prefLabel (or are stale)."""
     from gaius.engine.services.clt_skos_propose import is_minted_pref_label, load_pref_labels
 
+    from gaius.engine.services.clt_skos_propose import _read_logits, is_admin_logits
+
     minted = {k for k, v in load_pref_labels().items() if is_minted_pref_label(v)}
     async with pool.acquire() as conn:
         stale = {
@@ -55,46 +57,36 @@ async def find_unlabeled(pool: Any, *, limit: int = 8) -> list[LabelCase]:
                 "SELECT notation FROM skos_pref_label WHERE stale"
             )
         }
-    async with pool.acquire() as conn:
-        rows = await conn.fetch(
+        tape = await conn.fetch(
             """
-            SELECT t.layer, t.feature_idx,
-                   count(*)::int AS n,
-                   array_agg(DISTINCT a.item_id) AS item_ids
-              FROM feature_tape t
-              JOIN activation a
-                ON a.model = 'clt'
-               AND a.layer = t.layer
-               AND a.feature_idx = t.feature_idx
+            SELECT layer, feature_idx, count(*)::int AS n
+              FROM feature_tape
              GROUP BY 1, 2
-             ORDER BY count(*) * avg(t.activation) DESC
+             ORDER BY count(*) * avg(activation) DESC
              LIMIT $1
             """,
-            max(limit * 6, 24),
+            max(limit * 8, 40),
         )
-        if not rows:
-            rows = await conn.fetch(
-                """
-                SELECT a.layer, a.feature_idx,
-                       count(DISTINCT a.item_id)::int AS n,
-                       array_agg(DISTINCT a.item_id) AS item_ids
-                  FROM activation a
-                 WHERE a.model = 'clt'
-                 GROUP BY 1, 2
-                 ORDER BY n DESC, a.layer, a.feature_idx
-                 LIMIT $1
-                """,
-                max(limit * 4, 16),
-            )
     out: list[LabelCase] = []
-    for r in rows:
+    for r in tape:
         layer, feat = int(r["layer"]), int(r["feature_idx"])
         notation = f"{layer}:{feat}"
         if notation in minted and notation not in stale:
             continue
-        from gaius.engine.services.clt_skos_propose import _read_logits, is_admin_logits
-
         if is_admin_logits(_read_logits(layer, feat)):
+            continue
+        async with pool.acquire() as conn:
+            ids = await conn.fetch(
+                """
+                SELECT DISTINCT item_id
+                  FROM activation
+                 WHERE model = 'clt' AND layer = $1 AND feature_idx = $2
+                 LIMIT 8
+                """,
+                layer,
+                feat,
+            )
+        if not ids:
             continue
         out.append(
             LabelCase(
@@ -102,7 +94,7 @@ async def find_unlabeled(pool: Any, *, limit: int = 8) -> list[LabelCase]:
                 feature_idx=feat,
                 notation=notation,
                 clt_uri=f"{CONCEPT_NS}L{layer}F{feat}",
-                item_ids=[int(x) for x in (r["item_ids"] or [])],
+                item_ids=[int(x["item_id"]) for x in ids],
             )
         )
         if len(out) >= limit:
@@ -336,14 +328,10 @@ async def pref_label_health(pool: Any, *, top: int = 20) -> dict[str, Any]:
     async with pool.acquire() as conn:
         rows = await conn.fetch(
             """
-            SELECT t.layer, t.feature_idx, count(*)::int AS n
-              FROM feature_tape t
-              JOIN activation a
-                ON a.model = 'clt'
-               AND a.layer = t.layer
-               AND a.feature_idx = t.feature_idx
+            SELECT layer, feature_idx, count(*)::int AS n
+              FROM feature_tape
              GROUP BY 1, 2
-             ORDER BY count(*) * avg(t.activation) DESC
+             ORDER BY count(*) * avg(activation) DESC
              LIMIT $1
             """,
             top * 3,

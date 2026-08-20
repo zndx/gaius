@@ -64,6 +64,8 @@ CREATE TABLE IF NOT EXISTS clt_skos_clock (
 );
 INSERT INTO clt_skos_clock (key) VALUES ('admit'), ('label')
 ON CONFLICT (key) DO NOTHING;
+CREATE INDEX IF NOT EXISTS activation_clt_feat
+    ON activation (model, layer, feature_idx);
 """
 
 
