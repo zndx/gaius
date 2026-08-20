@@ -423,6 +423,11 @@ async def load_discover(
         raise DiscoverError(GURU_BREAKDOWN)
 
     parsed = parse_query(query, feature_pins)
+    from .discover_landing import load_landing_mv, uses_landing_mv
+
+    if uses_landing_mv(window, parsed, from_ts, to_ts):
+        return await load_landing_mv(db_pool, limit=limit)
+
     now = datetime.now(timezone.utc)
     clock = "wall"
     last_sal: datetime | None = None

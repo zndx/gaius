@@ -4084,8 +4084,23 @@ Respond with:
             /discover 7d
             /discover 36h source:arxiv_cs_dc
             /discover 36h feature:12:4412
+            /discover refresh
         """
         parts = (args or "").split()
+        if parts and parts[0].lower() == "refresh":
+            try:
+                client = await self._get_engine_client_cached()
+            except Exception as e:
+                return {
+                    "error": f"Failed to connect to engine: {e}",
+                    "suggestion": "Run: systemctl restart gaius",
+                }
+            reason = " ".join(parts[1:]).strip() or "cli"
+            return await client.call(
+                "Discover",
+                "refresh",
+                {"reason": reason},
+            )
         window = "36h"
         query_parts: list[str] = []
         if parts and (

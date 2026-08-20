@@ -1322,8 +1322,24 @@ class GrpcEngineClient:
             raise ValueError(f"Unknown Health action: {action}")
 
     async def _call_discover(self, action: str, params: dict, timeout: float) -> dict:
-        if action not in ("surface", "status", ""):
+        if action not in ("surface", "status", "refresh", ""):
             raise ValueError(f"Unknown Discover action: {action}")
+        if action == "refresh":
+            from ..engine.generated import RefreshDiscoverLandingRequest
+
+            response = await self._stub.RefreshDiscoverLanding(
+                RefreshDiscoverLandingRequest(
+                    reason=str(params.get("reason") or "cli"),
+                ),
+                timeout=timeout,
+            )
+            if response.error:
+                return {"error": response.error, "accepted": False}
+            return {
+                "accepted": bool(response.accepted),
+                "started": bool(response.started),
+                "refreshed_at": response.refreshed_at,
+            }
         from ..engine.generated import DiscoverSurfaceRequest
 
         response = await self._stub.DiscoverSurface(

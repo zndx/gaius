@@ -1963,8 +1963,34 @@ asyncio.run(verify())
 # the engine's HealthObserverService via gRPC. The strategies here are for
 # client-side remediation when the engine is not available.
 #
-# Deprecated: "singletons" - use "engine" which includes gRPC singleton reset
+class DiscoverFixStrategy(ServiceFixStrategy):
+    """Concurrent refresh of the Discover 36h landing materialized view."""
+
+    def __init__(self) -> None:
+        super().__init__("discover")
+        self.port = int(os.getenv("PGPORT", "5444"))
+
+    def create_fix_actions(
+        self, check_result: dict | None = None
+    ) -> list[RemediationAction]:
+        return [
+            RemediationAction(
+                name="Refresh Discover 36h landing",
+                description="REFRESH MATERIALIZED VIEW CONCURRENTLY discover_landing_36h",
+                command=(
+                    f"PGPASSWORD=gaius psql -h localhost -p {self.port} "
+                    "-U gaius -d zndx_gaius -v ON_ERROR_STOP=1 "
+                    "-c 'REFRESH MATERIALIZED VIEW CONCURRENTLY "
+                    "public.discover_landing_36h;'"
+                ),
+                safety=SafetyLevel.SAFE,
+                timeout=120,
+            )
+        ]
+
+
 SERVICE_STRATEGIES: dict[str, ServiceFixStrategy] = {
+    "discover": DiscoverFixStrategy(),
     "engine": EngineFixStrategy(),
     "grpc": EngineFixStrategy(),  # Alias
     "postgres": PostgresFixStrategy(),

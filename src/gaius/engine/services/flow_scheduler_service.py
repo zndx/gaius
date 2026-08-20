@@ -606,6 +606,23 @@ class FlowSchedulerService:
         """
         self._events_received += 1
 
+        try:
+            from .discover_landing import request_discover_landing_refresh
+
+            pool = self._pool
+            if pool is not None:
+                await request_discover_landing_refresh(
+                    pool,
+                    reason=f"flow_event:{event.flow_type}:{event.status}:{event.run_id}",
+                )
+        except Exception:
+            logger.exception(
+                "discover_landing_36h refresh after flow event failed "
+                "(%s %s)",
+                event.flow_type,
+                event.run_id,
+            )
+
         if event.status == "completed":
             self._flows_completed += 1
             logger.info(

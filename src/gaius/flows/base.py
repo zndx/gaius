@@ -42,6 +42,41 @@ def safe_filename(title: str, max_length: int = 50) -> str:
     return safe.strip("_")
 
 
+def _request_discover_landing_refresh(reason: str) -> None:
+    """Ask the engine to refresh Discover's 36h landing concurrently."""
+    import grpc
+
+    from gaius.engine.generated import (
+        GaiusServiceStub,
+        RefreshDiscoverLandingRequest,
+    )
+    from gaius.flows.lattice import GURU_NOLATTICE, engine_target
+
+    addr = engine_target()
+    channel = grpc.insecure_channel(addr)
+    try:
+        stub = GaiusServiceStub(channel)
+        resp = stub.RefreshDiscoverLanding(
+            RefreshDiscoverLandingRequest(reason=reason),
+            timeout=8.0,
+        )
+    except grpc.RpcError as e:
+        raise RuntimeError(
+            f"{GURU_NOLATTICE} RefreshDiscoverLanding failed at {addr}: "
+            f"{e.code().name} {e.details()}\n"
+            "  Guru: #DI.00000008.REFRESH\n"
+            "  Try: /health fix discover"
+        ) from e
+    finally:
+        channel.close()
+    if resp.error or not resp.accepted:
+        raise RuntimeError(
+            f"#DI.00000008.REFRESH RefreshDiscoverLanding rejected: "
+            f"{resp.error or 'not accepted'}\n"
+            "  Try: /health fix discover"
+        )
+
+
 def _record_lineage_ol(event: object) -> None:
     """Persist a RunEvent on Signals Atlas via Engine/RecordLineage."""
     import json
@@ -242,6 +277,7 @@ class GaiusFlow(FlowSpec):
         """
         if self._lineage_run_id is None or self._lineage_job is None:
             logger.warning("Cannot emit COMPLETE: no START event recorded")
+            _request_discover_landing_refresh("complete-no-start")
             return
 
         try:
@@ -267,6 +303,9 @@ class GaiusFlow(FlowSpec):
                 f"  Or: PGPASSWORD=gaius psql -h localhost -p {os.environ.get('PGPORT', '5444')} -U gaius -d zndx_gaius"
             )
             raise RuntimeError(error_msg) from e
+        _request_discover_landing_refresh(
+            f"complete:{self._lineage_job.name if self._lineage_job else ''}"
+        )
 
     def emit_lineage_fail(self, error_message: str) -> None:
         """Emit FAIL lineage event.
@@ -278,6 +317,7 @@ class GaiusFlow(FlowSpec):
         """
         if self._lineage_run_id is None or self._lineage_job is None:
             logger.warning("Cannot emit FAIL: no START event recorded")
+            _request_discover_landing_refresh("fail-no-start")
             return
 
         try:
@@ -303,3 +343,6 @@ class GaiusFlow(FlowSpec):
                 f"  Or: PGPASSWORD=gaius psql -h localhost -p {os.environ.get('PGPORT', '5444')} -U gaius -d zndx_gaius"
             )
             raise RuntimeError(error_msg) from e
+        _request_discover_landing_refresh(
+            f"fail:{self._lineage_job.name if self._lineage_job else ''}"
+        )

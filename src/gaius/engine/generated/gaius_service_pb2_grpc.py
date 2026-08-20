@@ -755,6 +755,11 @@ class GaiusServiceStub(object):
                 request_serializer=gaius__service__pb2.DiscoverSurfaceRequest.SerializeToString,
                 response_deserializer=gaius__service__pb2.DiscoverSurfaceResponse.FromString,
                 _registered_method=True)
+        self.RefreshDiscoverLanding = channel.unary_unary(
+                '/gaius.engine.GaiusService/RefreshDiscoverLanding',
+                request_serializer=gaius__service__pb2.RefreshDiscoverLandingRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.RefreshDiscoverLandingResponse.FromString,
+                _registered_method=True)
 
 
 class GaiusServiceServicer(object):
@@ -1763,6 +1768,12 @@ class GaiusServiceServicer(object):
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def RefreshDiscoverLanding(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
 
 def add_GaiusServiceServicer_to_server(servicer, server):
     rpc_method_handlers = {
@@ -2485,6 +2496,11 @@ def add_GaiusServiceServicer_to_server(servicer, server):
                     servicer.DiscoverSurface,
                     request_deserializer=gaius__service__pb2.DiscoverSurfaceRequest.FromString,
                     response_serializer=gaius__service__pb2.DiscoverSurfaceResponse.SerializeToString,
+            ),
+            'RefreshDiscoverLanding': grpc.unary_unary_rpc_method_handler(
+                    servicer.RefreshDiscoverLanding,
+                    request_deserializer=gaius__service__pb2.RefreshDiscoverLandingRequest.FromString,
+                    response_serializer=gaius__service__pb2.RefreshDiscoverLandingResponse.SerializeToString,
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
@@ -6375,6 +6391,33 @@ class GaiusService(object):
             '/gaius.engine.GaiusService/DiscoverSurface',
             gaius__service__pb2.DiscoverSurfaceRequest.SerializeToString,
             gaius__service__pb2.DiscoverSurfaceResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def RefreshDiscoverLanding(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/gaius.engine.GaiusService/RefreshDiscoverLanding',
+            gaius__service__pb2.RefreshDiscoverLandingRequest.SerializeToString,
+            gaius__service__pb2.RefreshDiscoverLandingResponse.FromString,
             options,
             channel_credentials,
             insecure,

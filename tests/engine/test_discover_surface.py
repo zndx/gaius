@@ -59,6 +59,122 @@ def test_window_tokens() -> None:
     assert parse_window("24h") == timedelta(hours=24)
 
 
+def test_uses_landing_mv_default_only() -> None:
+    from gaius.engine.services.discover_landing import uses_landing_mv
+    from gaius.engine.services.discover_surface import parse_query
+
+    empty = parse_query("")
+    assert uses_landing_mv("36h", empty) is True
+    assert uses_landing_mv("", empty) is True
+    assert uses_landing_mv("salience", empty) is True
+    assert uses_landing_mv("1h", empty) is False
+    assert uses_landing_mv("7d", empty) is False
+    assert uses_landing_mv("36h", parse_query("feature:11:8224")) is False
+    assert uses_landing_mv("36h", parse_query("source:arxiv_cs_dc")) is False
+    assert uses_landing_mv("36h", parse_query("barrier")) is False
+    assert uses_landing_mv("36h", empty, from_ts="2026-01-01T00:00:00+00:00", to_ts="2026-01-02T00:00:00+00:00") is False
+    assert uses_landing_mv("36h", parse_query("stream:inflow")) is True
+    assert uses_landing_mv("36h", parse_query("stream:other")) is False
+
+
+def test_surface_from_landing_rows_json_string_payload() -> None:
+    from gaius.engine.services.discover_landing import surface_from_landing_rows
+    from gaius.engine.services.discover_surface import DiscoverEpisode
+
+    rows = [
+        {
+            "kind": "meta",
+            "key": "snapshot",
+            "payload": (
+                '{"start_ts":"2026-08-18T12:00:00+00:00",'
+                '"end_ts":"2026-08-20T00:00:00+00:00",'
+                '"last_salience_at":"2026-08-20T00:00:00+00:00",'
+                '"total":1,"refreshed_at":"2026-08-20T00:01:00+00:00",'
+                '"interval":"hour","window":"36h"}'
+            ),
+        },
+        {
+            "kind": "doc",
+            "key": "1",
+            "payload": '{"id":1,"title":"T","body":"b","fetched_at":"2026-08-19T12:00:00+00:00","url":"","source":"arxiv"}',
+        },
+    ]
+    ep = DiscoverEpisode(kind="feed_check", at="x", eta_s=1, label="Feed")
+    snap = surface_from_landing_rows(rows, limit=50, gpu_rows=[], episode=ep)
+    assert snap.total == 1
+    assert snap.docs[0].title == "T"
+
+
+def test_surface_from_landing_rows() -> None:
+    from gaius.engine.services.discover_landing import surface_from_landing_rows
+    from gaius.engine.services.discover_surface import DiscoverEpisode
+
+    rows = [
+        {
+            "kind": "meta",
+            "key": "snapshot",
+            "payload": {
+                "start_ts": "2026-08-18T12:00:00+00:00",
+                "end_ts": "2026-08-20T00:00:00+00:00",
+                "last_salience_at": "2026-08-20T00:00:00+00:00",
+                "total": 2,
+                "refreshed_at": "2026-08-20T00:01:00+00:00",
+                "interval": "hour",
+                "window": "36h",
+            },
+        },
+        {
+            "kind": "doc",
+            "key": "9",
+            "payload": {
+                "id": 9,
+                "title": "Later",
+                "body": "b2",
+                "fetched_at": "2026-08-19T12:00:00+00:00",
+                "url": "https://example.test/2",
+                "source": "arxiv_cs_dc",
+            },
+        },
+        {
+            "kind": "doc",
+            "key": "8",
+            "payload": {
+                "id": 8,
+                "title": "Earlier",
+                "body": "b1",
+                "fetched_at": "2026-08-19T01:00:00+00:00",
+                "url": "",
+                "source": "arxiv_cs_dc",
+            },
+        },
+        {"kind": "src", "key": "arxiv_cs_dc", "payload": {"n": 2}},
+        {
+            "kind": "bucket",
+            "key": "2026-08-19T12:00:00+00:00",
+            "payload": {"t": "2026-08-19T12:00:00+00:00", "n": 2, "sal": 1.5},
+        },
+    ]
+    ep = DiscoverEpisode(kind="feed_check", at="2026-08-20T00:17:00+00:00", eta_s=16, label="Feed")
+    snap = surface_from_landing_rows(rows, limit=50, gpu_rows=[], episode=ep)
+    assert snap.window == "36h"
+    assert snap.total == 2
+    assert snap.clock == "salience"
+    assert snap.scraped_at == "2026-08-20T00:01:00+00:00"
+    assert [d.title for d in snap.docs] == ["Later", "Earlier"]
+    assert snap.docs[0].id == "inflow:9"
+    assert any(f.kind == "source" and f.key == "arxiv_cs_dc" and f.count == 2 for f in snap.facets)
+    assert snap.interval == "hour"
+    assert len(snap.buckets) > 0
+
+
+def test_surface_from_landing_rows_requires_meta() -> None:
+    from gaius.engine.services.discover_landing import surface_from_landing_rows
+    from gaius.engine.services.discover_surface import DiscoverError
+
+    with pytest.raises(DiscoverError, match="DI.00000007"):
+        surface_from_landing_rows([], limit=50, gpu_rows=[], episode=None)
+
+
 def test_next_cron_patterns() -> None:
     now = datetime(2026, 8, 18, 12, 44, tzinfo=timezone.utc)
     assert next_cron(now, "*/5", "*") == datetime(2026, 8, 18, 12, 45, tzinfo=timezone.utc)

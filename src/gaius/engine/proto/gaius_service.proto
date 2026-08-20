@@ -3201,6 +3201,19 @@ message DiscoverSurfaceResponse {
   string clock = 12;                 // salience | wall
 }
 
+// Concurrent refresh of discover_landing_36h. Returns as soon as the
+// refresh is accepted (running or coalesced); does not wait for CONCURRENTLY.
+message RefreshDiscoverLandingRequest {
+  string reason = 1;                 // flow name / run_id
+}
+
+message RefreshDiscoverLandingResponse {
+  bool accepted = 1;
+  bool started = 2;                  // false if coalesced onto an in-flight refresh
+  string refreshed_at = 3;           // last completed refresh, may be empty if first
+  string error = 4;
+}
+
 service GaiusService {
   // ─────────────────────────────────────────────────────────────────────────
   // Orchestrator
@@ -3487,4 +3500,5 @@ service GaiusService {
   // Signals DCGM — one scrape, no store. Discover via Status.surfaces kind=telemetry.
   rpc SignalsTelemetry(SignalsTelemetryRequest) returns (SignalsTelemetryResponse);
   rpc DiscoverSurface(DiscoverSurfaceRequest) returns (DiscoverSurfaceResponse);
+  rpc RefreshDiscoverLanding(RefreshDiscoverLandingRequest) returns (RefreshDiscoverLandingResponse);
 }

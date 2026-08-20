@@ -238,6 +238,8 @@ from ...generated import (
     DiscoverDoc as ProtoDiscoverDoc,
     DiscoverFacet as ProtoDiscoverFacet,
     DiscoverEpisode as ProtoDiscoverEpisode,
+    RefreshDiscoverLandingRequest,
+    RefreshDiscoverLandingResponse,
     # CLT (Cross-Layer Transcoders)
     CLTExtractRequest,
     CLTExtractResponse,
@@ -2093,6 +2095,36 @@ class GaiusServicer(GaiusServiceServicer):
                 if snap.next_episode
                 else None
             ),
+        )
+
+    async def RefreshDiscoverLanding(
+        self,
+        request: RefreshDiscoverLandingRequest,
+        context: aio.ServicerContext,
+    ) -> RefreshDiscoverLandingResponse:
+        from ...services.discover_landing import request_discover_landing_refresh
+        from ...services.discover_surface import DiscoverError
+
+        pool = _summary_db(self._services)
+        try:
+            accepted = await request_discover_landing_refresh(
+                pool, reason=request.reason or ""
+            )
+        except DiscoverError as e:
+            return RefreshDiscoverLandingResponse(error=str(e), accepted=False)
+        except Exception as e:
+            return RefreshDiscoverLandingResponse(
+                accepted=False,
+                error=(
+                    f"Discover landing refresh failed: {e}\n"
+                    "Guru Meditation: #DI.00000008.REFRESH\n"
+                    "  Try: /health fix discover"
+                ),
+            )
+        return RefreshDiscoverLandingResponse(
+            accepted=True,
+            started=accepted.started,
+            refreshed_at=accepted.refreshed_at,
         )
 
     async def CognitionSurface(

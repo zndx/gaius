@@ -348,6 +348,7 @@ class GaiusServiceStub:
     SignalsTelemetry: grpc.UnaryUnaryMultiCallable[gaius_service_pb2.SignalsTelemetryRequest, gaius_service_pb2.SignalsTelemetryResponse]
     """Signals DCGM — one scrape, no store. Discover via Status.surfaces kind=telemetry."""
     DiscoverSurface: grpc.UnaryUnaryMultiCallable[gaius_service_pb2.DiscoverSurfaceRequest, gaius_service_pb2.DiscoverSurfaceResponse]
+    RefreshDiscoverLanding: grpc.UnaryUnaryMultiCallable[gaius_service_pb2.RefreshDiscoverLandingRequest, gaius_service_pb2.RefreshDiscoverLandingResponse]
 
 @typing.type_check_only
 class GaiusServiceAsyncStub(GaiusServiceStub):
@@ -669,6 +670,7 @@ class GaiusServiceAsyncStub(GaiusServiceStub):
     SignalsTelemetry: grpc.aio.UnaryUnaryMultiCallable[gaius_service_pb2.SignalsTelemetryRequest, gaius_service_pb2.SignalsTelemetryResponse]  # type: ignore[assignment]
     """Signals DCGM — one scrape, no store. Discover via Status.surfaces kind=telemetry."""
     DiscoverSurface: grpc.aio.UnaryUnaryMultiCallable[gaius_service_pb2.DiscoverSurfaceRequest, gaius_service_pb2.DiscoverSurfaceResponse]  # type: ignore[assignment]
+    RefreshDiscoverLanding: grpc.aio.UnaryUnaryMultiCallable[gaius_service_pb2.RefreshDiscoverLandingRequest, gaius_service_pb2.RefreshDiscoverLandingResponse]  # type: ignore[assignment]
 
 class GaiusServiceServicer(metaclass=abc.ABCMeta):
     @abc.abstractmethod
@@ -1851,5 +1853,12 @@ class GaiusServiceServicer(metaclass=abc.ABCMeta):
         request: gaius_service_pb2.DiscoverSurfaceRequest,
         context: _ServicerContext,
     ) -> typing.Union[gaius_service_pb2.DiscoverSurfaceResponse, collections.abc.Awaitable[gaius_service_pb2.DiscoverSurfaceResponse]]: ...
+
+    @abc.abstractmethod
+    def RefreshDiscoverLanding(
+        self,
+        request: gaius_service_pb2.RefreshDiscoverLandingRequest,
+        context: _ServicerContext,
+    ) -> typing.Union[gaius_service_pb2.RefreshDiscoverLandingResponse, collections.abc.Awaitable[gaius_service_pb2.RefreshDiscoverLandingResponse]]: ...
 
 def add_GaiusServiceServicer_to_server(servicer: GaiusServiceServicer, server: typing.Union[grpc.Server, grpc.aio.Server]) -> None: ...

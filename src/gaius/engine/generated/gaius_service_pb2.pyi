@@ -4873,3 +4873,21 @@ class DiscoverSurfaceResponse(_message.Message):
     next_episode: DiscoverEpisode
     clock: str
     def __init__(self, buckets: _Optional[_Iterable[_Union[DiscoverBucket, _Mapping]]] = ..., docs: _Optional[_Iterable[_Union[DiscoverDoc, _Mapping]]] = ..., facets: _Optional[_Iterable[_Union[DiscoverFacet, _Mapping]]] = ..., total: _Optional[int] = ..., window: _Optional[str] = ..., query: _Optional[str] = ..., scraped_at: _Optional[str] = ..., interval: _Optional[str] = ..., error: _Optional[str] = ..., last_salience_at: _Optional[str] = ..., next_episode: _Optional[_Union[DiscoverEpisode, _Mapping]] = ..., clock: _Optional[str] = ...) -> None: ...
+
+class RefreshDiscoverLandingRequest(_message.Message):
+    __slots__ = ("reason",)
+    REASON_FIELD_NUMBER: _ClassVar[int]
+    reason: str
+    def __init__(self, reason: _Optional[str] = ...) -> None: ...
+
+class RefreshDiscoverLandingResponse(_message.Message):
+    __slots__ = ("accepted", "started", "refreshed_at", "error")
+    ACCEPTED_FIELD_NUMBER: _ClassVar[int]
+    STARTED_FIELD_NUMBER: _ClassVar[int]
+    REFRESHED_AT_FIELD_NUMBER: _ClassVar[int]
+    ERROR_FIELD_NUMBER: _ClassVar[int]
+    accepted: bool
+    started: bool
+    refreshed_at: str
+    error: str
+    def __init__(self, accepted: bool = ..., started: bool = ..., refreshed_at: _Optional[str] = ..., error: _Optional[str] = ...) -> None: ...
