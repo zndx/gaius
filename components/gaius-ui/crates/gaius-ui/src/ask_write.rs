@@ -37,9 +37,9 @@ The user wants a stock candlestick (OHLC) in the Ask panel.\n\
 Do not invent bars. Do not draw ASCII candles.\n\
 Emit exactly one fence (symbol only):\n\
 :::gaius-artifact\n\
-{\"type\":\"ohlc\",\"symbol\":\"NVDA\"}\n\
+{\"type\":\"ohlc\",\"symbol\":\"TICKER\"}\n\
 :::\n\
-Replace NVDA with the ticker they named. Optional from/to as from_date/to_date (YYYY-MM-DD).";
+Replace TICKER with the symbol from the user message (/chart $SLB → SLB). Never use an example ticker. Optional from/to as from_date/to_date (YYYY-MM-DD).";
 
 pub const WRITE_ADDENDUM: &str = "\
 You are filling one Agenda write. Clock is the browser timezone (not the server).\n\

@@ -109,9 +109,9 @@ pub const GAIUS_SLASH: &[SlashCmd] = &[
     SlashCmd {
         name: "chart",
         hint: "<symbol>",
-        description: "OHLC chart in the Ask panel. Use for /chart NVDA or a stock candle request.",
+        description: "OHLC chart in the Ask panel. Use for /chart <ticker> (e.g. /chart $SLB).",
         mcp: "gaius__ask_present",
-        extra: "Call gaius__ask_present immediately with symbol (from_date/to_date if given). Do not read this file. Do not search the workspace. Do not invent bars. Do not wrap it in use_tool. If posted=true, say the chart is in Ask. Only print fence if posted is false.",
+        extra: "Call gaius__ask_present immediately. symbol is the ticker from the user message after /chart or $. /chart $SLB → symbol SLB. Never substitute an example ticker. Do not invent bars. Do not wrap it in use_tool. If posted=true, say the chart is in Ask. Only print fence if posted is false.",
     },
     SlashCmd {
         name: "kb",
