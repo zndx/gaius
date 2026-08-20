@@ -400,6 +400,9 @@ class AmbientWorkloadService:
             except asyncio.QueueEmpty:
                 break
 
+        # HN FIFO must roll even while thinking Complete is slow or unhealthy.
+        asyncio.create_task(self._prime_hn_buffer(), name="hn-buffer-prime")
+
         # Launch background task
         self._daemon_task = asyncio.create_task(
             self._daemon_loop(baseline_only),
@@ -549,70 +552,40 @@ class AmbientWorkloadService:
             )
             logger.info(f"Ambient daemon stopped: {self._daemon_cycle} cycles, {success_rate} tasks")
 
+    async def _prime_hn_buffer(self) -> None:
+        """Fill the HN FIFO without waiting on thinking Complete."""
+        result = await self._fetch_content()
+        if not result.get("success"):
+            logger.error(
+                "HN buffer prime failed.\n"
+                "  Guru: #AMB.00000012.HNPRIME\n"
+                "  %s",
+                result.get("error", "unknown"),
+            )
+            return
+        bytes_added = int(result.get("bytes_added") or 0)
+        if bytes_added <= 0:
+            logger.error(
+                "HN buffer prime wrote 0 bytes.\n"
+                "  Guru: #AMB.00000013.HNEMPTY\n"
+                "  Try: /ambient status"
+            )
+            return
+        logger.info(
+            "HN buffer primed items=%s bytes=%s",
+            result.get("items_fetched"),
+            bytes_added,
+        )
+
     async def _run_varied_cycle(self, baseline_only: bool) -> AsyncIterator[pb.AmbientPhaseEvent]:
         """Run a single cycle with varied task selection.
 
         Unlike run_cycle(), this selects random tasks from the varied pools.
+        HN fetch is first and does not wait on thinking Complete.
         """
         start_time = time.time()
 
-        # Phase 1: Health check
-        yield self._make_event(
-            pb.AMBIENT_PHASE_BASELINE_HEALTH,
-            "Checking endpoint health",
-            0.0,
-        )
-
-        health_results = await self._verify_baseline_health()
-        healthy_count = sum(1 for h in health_results.values() if h)
-
-        if healthy_count == 0:
-            yield self._make_event(
-                pb.AMBIENT_PHASE_ERROR,
-                f"No healthy endpoints (0/{len(self._baseline_endpoints)})",
-                0.0,
-            )
-            return
-
-        yield self._make_event(
-            pb.AMBIENT_PHASE_BASELINE_HEALTH,
-            f"{healthy_count}/{len(self._baseline_endpoints)} healthy",
-            1.0,
-            {ep: "healthy" if h else "unhealthy" for ep, h in health_results.items()},
-        )
-
-        # Phase 2: Varied baseline workload
-        yield self._make_event(
-            pb.AMBIENT_PHASE_BASELINE_WORKLOAD,
-            "Running baseline tasks",
-            0.0,
-        )
-
-        # Select 2-4 random tasks from varied pool
-        available_tasks = [
-            (ep, task) for ep, task in VARIED_BASELINE_TASKS
-            if health_results.get(ep, False)
-        ]
-        num_tasks = min(random.randint(2, 4), len(available_tasks))
-        selected_tasks = random.sample(available_tasks, num_tasks) if available_tasks else []
-
-        task_results = []
-        for ep, task in selected_tasks:
-            result = await self._execute_task(task)
-            task_results.append(result)
-            self._total_daemon_tasks += 1
-            if result.success:
-                self._successful_daemon_tasks += 1
-
-        successful = sum(1 for r in task_results if r.success)
-        yield self._make_event(
-            pb.AMBIENT_PHASE_BASELINE_WORKLOAD,
-            f"{successful}/{len(task_results)} tasks",
-            1.0,
-            {r.endpoint: f"{r.latency_ms}ms" for r in task_results if r.success},
-        )
-
-        # Phase 2.5: Fetch Content (ALWAYS - core ambient work)
+        # Phase 0: Fetch Content (ALWAYS — core ambient work; not gated on GPU)
         yield self._make_event(
             pb.AMBIENT_PHASE_FETCH_CONTENT,
             "Fetching external content",
@@ -642,6 +615,58 @@ class AmbientWorkloadService:
                 1.0,
             )
             self._total_daemon_tasks += 1
+
+        # Phase 1: Health check (after HN fetch so Complete cannot starve the FIFO)
+        yield self._make_event(
+            pb.AMBIENT_PHASE_BASELINE_HEALTH,
+            "Checking endpoint health",
+            0.0,
+        )
+
+        health_results = await self._verify_baseline_health()
+        healthy_count = sum(1 for h in health_results.values() if h)
+
+        yield self._make_event(
+            pb.AMBIENT_PHASE_BASELINE_HEALTH,
+            f"{healthy_count}/{len(self._baseline_endpoints)} healthy",
+            1.0,
+            {ep: "healthy" if h else "unhealthy" for ep, h in health_results.items()},
+        )
+
+        if healthy_count > 0:
+            yield self._make_event(
+                pb.AMBIENT_PHASE_BASELINE_WORKLOAD,
+                "Running baseline tasks",
+                0.0,
+            )
+            available_tasks = [
+                (ep, task) for ep, task in VARIED_BASELINE_TASKS
+                if health_results.get(ep, False)
+            ]
+            num_tasks = min(random.randint(2, 4), len(available_tasks))
+            selected_tasks = (
+                random.sample(available_tasks, num_tasks) if available_tasks else []
+            )
+            task_results = []
+            for ep, task in selected_tasks:
+                result = await self._execute_task(task)
+                task_results.append(result)
+                self._total_daemon_tasks += 1
+                if result.success:
+                    self._successful_daemon_tasks += 1
+            successful = sum(1 for r in task_results if r.success)
+            yield self._make_event(
+                pb.AMBIENT_PHASE_BASELINE_WORKLOAD,
+                f"{successful}/{len(task_results)} tasks",
+                1.0,
+                {r.endpoint: f"{r.latency_ms}ms" for r in task_results if r.success},
+            )
+        else:
+            logger.error(
+                "No healthy endpoints for ambient baseline tasks.\n"
+                "  Guru: #AMB.00000014.NOHEALTHY\n"
+                "  HN fetch already ran; continuing buffer analysis."
+            )
 
         # Phase 2.55: Buffer Analysis (Bytez - subscription, zero marginal cost)
         yield self._make_event(

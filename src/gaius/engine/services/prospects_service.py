@@ -213,6 +213,7 @@ class ProspectsService:
         self._last_check_at: datetime | None = None
         self._cached_candidates: dict[str, CandidateInfo] = {}
         self._cached_strategies: dict[str, StrategyInfo] = {}
+        self._ingest_task: asyncio.Task[None] | None = None
 
         # FMP client (created on start)
         self._fmp_client: FMPClient | None = None
@@ -239,9 +240,49 @@ class ProspectsService:
             await self._load_state_from_db()
 
         self._running = True
+        self._ingest_task = asyncio.create_task(
+            self._roll_fmp_buffer(), name="fmp-buffer-roll"
+        )
         logger.info(
             f"ProspectsService started with {len(self._cached_candidates)} candidates"
         )
+
+    async def _roll_fmp_buffer(self) -> None:
+        """Keep the live FMP FIFO rolling. Discover reads this instance."""
+        while self._running:
+            try:
+                result = await self.ingest_market_buffer()
+                ingested = int(result.get("ingested") or 0)
+                errors = result.get("errors") or []
+                if errors:
+                    logger.error(
+                        "FMP buffer ingest errors.\n"
+                        "  Guru: #PS.00000003.FMPFAIL\n"
+                        "  %s",
+                        "; ".join(str(e) for e in errors[:6]),
+                    )
+                if ingested <= 0:
+                    logger.error(
+                        "FMP buffer ingest wrote 0 entries.\n"
+                        "  Guru: #PS.00000007.FMPEMPTY\n"
+                        "  Try: /prospects status"
+                    )
+                else:
+                    logger.info(
+                        "FMP buffer rolled ingested=%s bytes=%s",
+                        ingested,
+                        result.get("buffer_bytes"),
+                    )
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception(
+                    "FMP buffer roll failed.\n  Guru: #PS.00000003.FMPFAIL"
+                )
+            for _ in range(60):
+                if not self._running:
+                    return
+                await asyncio.sleep(1)
 
     async def stop(self) -> None:
         """Stop the prospects service."""
@@ -250,6 +291,14 @@ class ProspectsService:
 
         logger.info("Stopping ProspectsService")
         self._running = False
+        task = self._ingest_task
+        self._ingest_task = None
+        if task is not None:
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
 
     async def ingest_market_buffer(self) -> dict[str, Any]:
         """Pull market-wide FMP streams into the RAM FIFO (not just watchlist)."""

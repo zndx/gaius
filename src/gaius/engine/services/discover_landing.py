@@ -185,8 +185,12 @@ def cognition_buffer_tokens(services: Any = None) -> int:
     total = int(_strip_cognition_tokens)
     if services is None:
         return total
-    total += _fifo_tokens(getattr(services, "ambient_service", None))
-    total += _fifo_tokens(getattr(services, "prospects_service", None))
+    ambient = getattr(services, "ambient_service", None)
+    prospects = getattr(services, "prospects_service", None)
+    hn = _fifo_tokens(ambient)
+    fmp = _fifo_tokens(prospects)
+    total += hn
+    total += fmp
     theta = getattr(services, "theta_service", None)
     agent = getattr(theta, "_agent", None) if theta is not None else None
     if agent is not None:
@@ -195,6 +199,20 @@ def cognition_buffer_tokens(services: Any = None) -> int:
         )
         if sitrep is not None:
             total += _bytes_to_tokens(len(repr(sitrep).encode("utf-8")))
+    amb_on = bool(
+        getattr(ambient, "_daemon_running", False) or getattr(ambient, "_running", False)
+    )
+    prosp_on = bool(getattr(prospects, "_running", False))
+    if (amb_on and hn == 0) or (prosp_on and fmp == 0):
+        logger.error(
+            "Cognition FIFOs empty while services are running "
+            "(hn_tokens=%s fmp_tokens=%s).\n"
+            "  Guru: #DI.00000010.EMPTYBUF\n"
+            "  HN fetch must not wait on thinking Complete; "
+            "FMP ingest must hit the live ProspectsService FIFO.",
+            hn,
+            fmp,
+        )
     return total
 
 
