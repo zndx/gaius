@@ -4,7 +4,11 @@ from __future__ import annotations
 
 from typing import Any
 
-from gaius.engine.sentinel_claim import ephemeral_claim, gpu_start_allowed
+from gaius.engine.sentinel_claim import (
+    apply_and_admit,
+    capability_workload_id,
+    gpu_start_allowed,
+)
 from gaius.engine.services.clt_service import get_clt_service
 
 KIND = "clt-probe"
@@ -16,7 +20,8 @@ def extract_positional(
     gpu_index: int = 4,
     top_k: int = 32,
 ) -> dict[str, Any]:
-    wid = ephemeral_claim(KIND, f"gaius-clt-skos-{gpu_index}")
+    wid = capability_workload_id("clt")
+    apply_and_admit(wid, KIND)
     if not gpu_start_allowed(wid):
         raise RuntimeError(
             "CLT SKOS extract GPU start refused (no admitted Application).\n"

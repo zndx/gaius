@@ -135,8 +135,12 @@ class ScheduledTaskProcessor(BaseDaemon):
         )
 
         proposed = workload_id_for(kind, task.id)
-        wid = bind_workload_id(kind, proposed)
-        minted = wid == proposed
+        try:
+            wid = bind_workload_id(kind, proposed)
+        except YkAdmitError as e:
+            logger.error(f"{log_prefix} YK bind failed: {e}")
+            return {"status": "error", "error": str(e), "workload_id": proposed}
+        minted = True
         from gaius.flows.config import metaflow_child_env
 
         # Sentinel-spawned ticks run on this host (YK pause pod + host CUDA).

@@ -7,8 +7,8 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from gaius.engine.sentinel_claim import (
-    YkAdmitError,
-    ephemeral_claim,
+    apply_and_admit,
+    capability_workload_id,
     gpu_start_allowed,
     light_wait_available,
 )
@@ -56,7 +56,9 @@ async def run_probe_batch(pool: Any, *, gpu_index: int = 4) -> dict[str, Any]:
     await ensure_tape(pool)
     if not light_wait_available():
         raise RuntimeError(GURU_NOLIGHT)
-    wid = ephemeral_claim(KIND, f"gaius-clt-probe-{gpu_index}")
+    # Standing CLT worker process ↔ gaius-clt. Not a per-batch extract claim.
+    wid = capability_workload_id("clt")
+    apply_and_admit(wid, KIND)
     if not gpu_start_allowed(wid):
         raise RuntimeError(GURU_NOSTART)
 

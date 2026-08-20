@@ -365,14 +365,9 @@ class ProspectsService:
         }
 
     async def compact_buffer(self) -> dict[str, Any]:
-        """Compact FIFO prose with local thinking. Bind extract; no new GPU app."""
+        """Compact FIFO prose with standing thinking. No new GPU Application."""
         from gaius.engine.services.ambient_buffer import BufferRole
         from gaius.engine.services.prospects_buffer import ProspectsRole, entry
-        from gaius.engine.sentinel_claim import (
-            YkAdmitError,
-            apply_and_admit,
-            bind_workload_id,
-        )
         from gaius.flows.lattice import complete
 
         items = await self._buffer.get_entries_by_role(BufferRole.CONTENT, limit=24)
@@ -391,12 +386,14 @@ class ProspectsService:
             "a closer look (3) one-line risks. Be terse.\n\n"
             + "\n".join(lines)
         )
-        proposed = f"prospects-compact-{int(time.time())}"
-        try:
-            wid = bind_workload_id("prospects-compact", proposed)
-            apply_and_admit(wid, "prospects-compact")
-        except YkAdmitError as e:
-            return {"skipped": True, "reason": str(e).split("\n", 1)[0]}
+        from gaius.engine.sentinel_claim import capability_workload_id, gpu_start_allowed
+
+        think_id = capability_workload_id("thinking")
+        if not gpu_start_allowed(think_id):
+            return {
+                "skipped": True,
+                "reason": "thinking process has no sentinel; skip compact",
+            }
         try:
             result = await asyncio.to_thread(
                 complete, prompt, max_tokens=700, temperature=0.2
@@ -713,18 +710,22 @@ class ProspectsService:
         """
         from gaius.engine.sentinel_claim import (
             YkAdmitError,
+            delete_flow_sentinel,
             ephemeral_claim,
-            release_kind,
         )
 
+        wid = ""
         try:
-            ephemeral_claim("prospects-check", f"gaius-fmp-{int(time.time())}")
+            wid = ephemeral_claim(
+                "prospects-check", f"gaius-fmp-{int(time.time())}"
+            )
         except YkAdmitError as e:
             raise ProspectsError(str(e), guru_code=e.code) from e
         try:
             return await self._run_check_body(profile, domain, force)
         finally:
-            release_kind("prospects-check")
+            if wid:
+                delete_flow_sentinel(wid)
 
     async def _run_check_body(
         self,
@@ -917,10 +918,8 @@ class ProspectsService:
         env = metaflow_child_env()
         env["GAIUS_KB_ROOT"] = self._config.kb_root
         proposed = f"prospects-update-{int(time.time())}"
-        wid = bind_workload_id("prospects-update", proposed)
-        minted = wid == proposed
-        env["GAIUS_YK_APPLICATION_ID"] = wid
         try:
+            wid = bind_workload_id("prospects-update", proposed)
             apply_and_admit(wid, "prospects-update")
         except YkAdmitError as e:
             yield {
@@ -929,6 +928,8 @@ class ProspectsService:
                 "message": str(e),
             }
             return
+        minted = True
+        env["GAIUS_YK_APPLICATION_ID"] = wid
 
         try:
             # Use Metaflow Runner API for programmatic execution
@@ -1008,8 +1009,7 @@ class ProspectsService:
                 "message": f"Flow execution failed: {e}",
             }
         finally:
-            # Reused extract claim (article-curate-*) stays; only tear down
-            # an Application this update minted.
+            # STZ: this host process's sentinel, never a borrowed claim.
             if minted:
                 delete_flow_sentinel(wid)
 

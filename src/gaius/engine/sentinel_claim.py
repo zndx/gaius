@@ -21,6 +21,13 @@ Host disk and RAM are not YK resources — Gaius refuses new disk-writing
 children when those floors are crossed so the box cannot fill past the
 physical lid. Ambient (compute) skips the disk floor.
 
+Each **non-K8s host process** is 1:1 with a sentinel Application.
+Metaflow ``@kubernetes`` steps already surface in YK as compute — they
+do not borrow extract. When the host process ends, the sentinel is
+retired (STZ / ``delete_flow_sentinel``) so the next process can admit.
+Never reuse another process's Application at queue cap: that is YK
+backpressure, not a hint to steal.
+
 Admit (pod Running) is required before exclusive GPU start when Signals
 is on the lattice. Standalone devenv skips the claim.
 """
@@ -701,33 +708,45 @@ def live_workload_id(kind: str) -> str | None:
 
 
 def bind_workload_id(kind: str, proposed: str) -> str:
-    """Reuse a live Application only when this leaf is at max_applications."""
+    """Return ``proposed``. Never steal another process's sentinel.
+
+    If ``proposed`` is already Running, that is this process's own claim.
+    If the leaf is at cap with other ids, raise ``GURU_ENVELOPE`` — YK
+    backpressure. Retire a finished sentinel (STZ) before minting another.
+    """
     rc = resource_class_for(kind)
     live = live_apps_on_queue(kind)
+    if proposed in live:
+        return proposed
     if len(live) >= rc.max_applications:
-        log.info(
-            "queue %s at cap %s, reusing %s for kind=%s (not %s)",
-            rc.queue,
-            rc.max_applications,
-            live[0],
-            kind,
-            proposed,
+        raise YkAdmitError(
+            GURU_ENVELOPE,
+            f"{rc.queue} at cap {rc.max_applications}: {live}; "
+            f"proposed {proposed}. Each host process has one sentinel; "
+            "retire the finished Application before the next admit.",
         )
-        return live[0]
     return proposed
 
 
 def release_kind(kind: str) -> None:
-    """Complete the live Application on this kind's queue (FMP / Ambient stop)."""
-    live = live_workload_id(kind)
-    if live:
-        delete_flow_sentinel(live)
+    """Retire this kind's standing sentinel only (ambient / thinking)."""
+    k = kind.replace("_", "-")
+    if k == "ambient":
+        delete_flow_sentinel(AMBIENT_WORKLOAD_ID)
+        return
+    if k in ("thinking", "gaius-thinking"):
+        delete_flow_sentinel(capability_workload_id("thinking"))
+        return
+    log.warning(
+        "release_kind(%s) is not a standing claim; "
+        "delete_flow_sentinel(workload_id) for 1:1 STZ",
+        kind,
+    )
 
 
 def ephemeral_claim(kind: str, proposed: str) -> str:
-    """Admit, return the id. Caller must ``release_kind`` in ``finally``.
-
-    FMP uses this so the rate-metered row comes and goes.
+    """Admit ``proposed``. Caller must ``delete_flow_sentinel(id)`` when the
+    host process ends (STZ). Do not ``release_kind`` — that is standing only.
     """
     wid = bind_workload_id(kind, proposed)
     apply_and_admit(wid, kind)
@@ -746,11 +765,10 @@ def capability_workload_id(alias: str) -> str:
 
 
 def gpu_start_allowed(workload_id: str) -> bool:
-    """Exclusive GPU start requires a live admitted Application when federated."""
+    """GPU start is 1:1 with this process's sentinel when federated."""
     if is_admitted(workload_id):
         return True
-    if has_admitted_application():
-        # Nested BeginWorkload (render / extract) rides the parent Application.
+    if _pod_phase(workload_id) == "Running":
         return True
     return not federation_required()
 

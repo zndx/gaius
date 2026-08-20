@@ -191,11 +191,15 @@ def test_bind_mints_extract_until_cap(monkeypatch: pytest.MonkeyPatch) -> None:
         )
         with _MU:
             _ADMITTED[b.workload_id] = b
-        # At cap — reuse, do not mint a third GPU claim.
-        assert bind_workload_id("prospects-update", "prospects-update-1") in {
-            "article-curate-1",
-            "article-curate-2",
-        }
+        from gaius.engine.sentinel_claim import GURU_ENVELOPE, YkAdmitError
+
+        # At cap — backpressure, never steal article-curate for another process.
+        with pytest.raises(YkAdmitError, match=GURU_ENVELOPE):
+            bind_workload_id("prospects-update", "prospects-update-1")
+        # Same process id already live is 1:1, not steal.
+        assert bind_workload_id("article-curate", "article-curate-1") == (
+            "article-curate-1"
+        )
     finally:
         with _MU:
             _ADMITTED.pop(a.workload_id, None)
@@ -267,9 +271,15 @@ def test_summarize_reuses_standing_thinking(
     with _MU:
         _ADMITTED[row.workload_id] = row
     try:
-        assert bind_workload_id("ambient-summarize", "gaius-thinking-extra") == (
+        from gaius.engine.sentinel_claim import GURU_ENVELOPE, YkAdmitError
+
+        # Standing thinking is this process. A second heavy Application is
+        # envelope backpressure, not reuse.
+        assert bind_workload_id("ambient-summarize", "gaius-thinking") == (
             "gaius-thinking"
         )
+        with pytest.raises(YkAdmitError, match=GURU_ENVELOPE):
+            bind_workload_id("ambient-summarize", "gaius-thinking-extra")
     finally:
         with _MU:
             _ADMITTED.pop(row.workload_id, None)

@@ -200,18 +200,6 @@ class GaiusFlow(FlowSpec):
             self._yk_minted = False
             apply_and_admit(env_wid, kind)
             return
-        from gaius.engine.sentinel_claim import COMPUTE, bind_workload_id, resource_class_for
-
-        rc = resource_class_for(kind)
-        if rc.queue == COMPUTE.queue:
-            # One compute Application (envelope cap 1). Do not mint unique
-            # gaius-mf-label-* next to ambient.
-            wid = bind_workload_id(kind, f"gaius-mf-{kind}")
-            self._yk_workload_id = wid
-            self._yk_minted = False
-            apply_and_admit(wid, kind)
-            os.environ["GAIUS_YK_APPLICATION_ID"] = wid
-            return
         rid = str(self._lineage_run_id or "").replace("-", "")[:12] or "local"
         wid = f"gaius-mf-{kind}-{rid}".lower()
         wid = "".join(c if c.isalnum() or c == "-" else "-" for c in wid)[:63]
