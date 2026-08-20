@@ -14,6 +14,7 @@ REPO="$(cd "$SCRIPT_DIR/../.." && pwd)"
 cd "$REPO"
 
 export GAIUS_UI_BIND="${GAIUS_UI_BIND:-0.0.0.0:9890}"
+export GAIUS_UI_STATE="${GAIUS_UI_STATE:-$REPO/build/gaius-ui}"
 export GAIUS_BOARD_JSON="${GAIUS_BOARD_JSON:-$REPO/build/dev/.board.json}"
 export GAIUS_ENGINE_TARGET="${GAIUS_ENGINE_TARGET:-127.0.0.1:50051}"
 export GAIUS_THINKING_CAPABILITY="${GAIUS_THINKING_CAPABILITY:-thinking}"

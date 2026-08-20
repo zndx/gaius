@@ -43,7 +43,13 @@ pub fn repo_root() -> PathBuf {
 /// (that path is a symlink onto RAID; grok sandbox write-deny refuses it).
 pub fn session_state_root() -> Result<PathBuf, String> {
     if let Ok(p) = std::env::var("GAIUS_UI_STATE") {
-        return ensure_real_dir(PathBuf::from(p));
+        let pb = PathBuf::from(p.trim());
+        let pb = if pb.is_absolute() {
+            pb
+        } else {
+            repo_root().join(pb)
+        };
+        return ensure_real_dir(pb);
     }
     let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
     let base = std::env::var("XDG_STATE_HOME")
