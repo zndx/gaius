@@ -112,10 +112,37 @@
     if (art && st) art.textContent = String(st.articles || 0);
     if (proj && st) proj.textContent = String(st.projects || 0);
     if (th && st) th.textContent = String(st.thoughts || 0);
+    var termsEl = document.getElementById("stat-terms");
+    var agendaEl = document.getElementById("stat-agenda");
+    var thetaEl = document.getElementById("stat-theta");
+    if (termsEl) {
+      termsEl.textContent = st
+        ? "Terms: " + (st.terms_skos || 0) + " / " + (st.terms_cites || 0)
+        : "Terms: —";
+    }
+    if (agendaEl) {
+      agendaEl.textContent = st
+        ? "Agenda: " +
+          Number(st.agenda_min || 0).toFixed(0) +
+          " / " +
+          Number(st.agenda_max || 0).toFixed(0) +
+          " / " +
+          Number(st.agenda_std || 0).toFixed(1)
+        : "Agenda: —";
+    }
+    if (thetaEl) {
+      thetaEl.textContent = st
+        ? "Theta: " +
+          Number(st.salience_peak || 0).toFixed(1) +
+          " / " +
+          (st.cognition_tokens || 0)
+        : "Theta: —";
+    }
     if (wattsEl) {
+      var live = st && st.watts_live;
       var w = st && typeof st.watts === "number" ? st.watts : null;
       wattsEl.textContent =
-        w != null && w > 0 ? "Watts: " + Math.round(w) : "Watts: —";
+        live && w != null ? "Watts: " + Math.round(w) : "Watts: —";
     }
     if (!eng) return;
     if (!connected) {

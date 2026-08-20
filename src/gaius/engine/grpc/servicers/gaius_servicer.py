@@ -2146,7 +2146,7 @@ class GaiusServicer(GaiusServiceServicer):
             sched = getattr(self._services, "_flow_scheduler_service", None)
         if sched is not None:
             extra = len(getattr(sched, "_active_runs", {}) or {})
-        s = landing_strip(extra_workflows=extra)
+        s = landing_strip(extra_workflows=extra, services=self._services)
         return ProtoDiscoverStatus(
             updating=s.updating,
             workflows=s.workflows,
@@ -2155,6 +2155,14 @@ class GaiusServicer(GaiusServiceServicer):
             articles=s.articles,
             projects=s.projects,
             thoughts=s.thoughts,
+            watts_live=s.watts_live,
+            terms_skos=s.terms_skos,
+            terms_cites=s.terms_cites,
+            agenda_min=s.agenda_min,
+            agenda_max=s.agenda_max,
+            agenda_std=s.agenda_std,
+            salience_peak=s.salience_peak,
+            cognition_tokens=s.cognition_tokens,
         )
 
     async def RefreshDiscoverLanding(

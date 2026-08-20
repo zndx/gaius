@@ -11,8 +11,12 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
+import statistics
+import time
+from collections import Counter
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from gaius.engine.services.discover_surface import (
@@ -57,8 +61,23 @@ _strip_watts = 0.0
 _strip_articles = 0
 _strip_projects = 0
 _strip_thoughts = 0
+_strip_watts_live = False
+_strip_watts_at = 0.0
+_strip_terms_skos = 0
+_strip_terms_cites = 0
+_strip_agenda_min = 0.0
+_strip_agenda_max = 0.0
+_strip_agenda_std = 0.0
+_strip_salience_peak = 0.0
+_strip_cognition_tokens = 0
+_watts_task: asyncio.Task[None] | None = None
 
 ACQUIRE_S = 1.0
+WATTS_TTL_S = 15.0
+_SKOS_IRI = re.compile(r"\b(?:skos|owl):[A-Za-z][\w-]*", re.I)
+_SKOS_WIKI = re.compile(
+    r"\[\[[^\]]*(?:ontology|heuristics|skos)[^\]]*\]\]", re.I
+)
 
 
 def peek_landing() -> DiscoverSurface | None:
@@ -91,52 +110,206 @@ def next_waiting_at(now: datetime | None = None) -> datetime:
     )
 
 
+CHARS_PER_TOKEN = 4
+
+
+def _bytes_to_tokens(n: int) -> int:
+    return max(0, (int(n) + CHARS_PER_TOKEN - 1) // CHARS_PER_TOKEN)
+
+
+def terms_in_text(text: str) -> set[str]:
+    """OWL/SKOS CURIE + ontology/heuristic wiki links in article prose."""
+    found: set[str] = set()
+    for m in _SKOS_IRI.findall(text or ""):
+        found.add(m.lower())
+    for m in _SKOS_WIKI.findall(text or ""):
+        found.add(m.lower())
+    return found
+
+
+def article_term_stats() -> tuple[int, int]:
+    from gaius.engine.services.agenda_notes import kb_root_from_env
+    from gaius.engine.services.summary_lineup import _article_cards
+
+    kb = kb_root_from_env()
+    cards = _article_cards(kb)
+    terms: set[str] = set()
+    cites = 0
+    for path in cards:
+        text = path.read_text(encoding="utf-8", errors="replace")
+        terms |= terms_in_text(text)
+        src = path.parent / "sources"
+        if src.is_dir():
+            cites += sum(1 for p in src.glob("*.md") if p.is_file())
+    return len(terms), cites
+
+
+def agenda_day_stats() -> tuple[float, float, float]:
+    from gaius.engine.services.agenda_notes import (
+        item_calendar_day,
+        kb_root_from_env,
+        list_items,
+    )
+
+    kb = kb_root_from_env()
+    now = datetime.now(timezone.utc)
+    items = list_items(kb, window_days=14, now=now)
+    today = now.date()
+    days: Counter[str] = Counter()
+    for i in range(14):
+        days[(today - timedelta(days=i)).isoformat()] = 0
+    for item in items:
+        day = item_calendar_day(item)
+        if day in days:
+            days[day] += 1
+    vals = list(days.values())
+    if not vals:
+        return 0.0, 0.0, 0.0
+    std = statistics.pstdev(vals) if len(vals) > 1 else 0.0
+    return float(min(vals)), float(max(vals)), float(std)
+
+
+def _fifo_tokens(svc: Any) -> int:
+    buf = getattr(svc, "_buffer", None) if svc is not None else None
+    if buf is None:
+        return 0
+    return _bytes_to_tokens(int(getattr(buf, "current_bytes", 0) or 0))
+
+
+def cognition_buffer_tokens(services: Any = None) -> int:
+    """HN ambient + FMP prospects + theta/thought tokens.
+
+    FMP is the prospects FIFO (user 'FPM'). HN is ambient. Theta-oriented
+    is sitrep/agent state plus recent cognition_thoughts chars.
+    """
+    total = int(_strip_cognition_tokens)
+    if services is None:
+        return total
+    total += _fifo_tokens(getattr(services, "ambient_service", None))
+    total += _fifo_tokens(getattr(services, "prospects_service", None))
+    theta = getattr(services, "theta_service", None)
+    agent = getattr(theta, "_agent", None) if theta is not None else None
+    if agent is not None:
+        sitrep = getattr(agent, "_last_sitrep", None) or getattr(
+            agent, "_last_validation", None
+        )
+        if sitrep is not None:
+            total += _bytes_to_tokens(len(repr(sitrep).encode("utf-8")))
+    return total
+
+
+def _peak_salience() -> float:
+    snap = _landing_snap
+    if snap is not None and snap.buckets:
+        return max((float(b.salience or 0.0) for b in snap.buckets), default=0.0)
+    return float(_strip_salience_peak)
+
+
 @dataclass(frozen=True)
 class LandingStrip:
     updating: bool
     workflows: int
     waiting_at: str
     watts: float
+    watts_live: bool
     articles: int
     projects: int
     thoughts: int
+    terms_skos: int
+    terms_cites: int
+    agenda_min: float
+    agenda_max: float
+    agenda_std: float
+    salience_peak: float
+    cognition_tokens: int
 
 
-def landing_strip(*, extra_workflows: int = 0) -> LandingStrip:
+def landing_strip(
+    *, extra_workflows: int = 0, services: Any = None
+) -> LandingStrip:
+    _maybe_kick_watts()
     wait = next_waiting_at()
     return LandingStrip(
         updating=landing_updating(),
         workflows=max(0, int(_strip_workflows) + max(0, extra_workflows)),
         waiting_at=wait.isoformat().replace("+00:00", "Z"),
         watts=float(_strip_watts or 0.0),
+        watts_live=bool(_strip_watts_live),
         articles=int(_strip_articles),
         projects=int(_strip_projects),
         thoughts=int(_strip_thoughts),
+        terms_skos=int(_strip_terms_skos),
+        terms_cites=int(_strip_terms_cites),
+        agenda_min=float(_strip_agenda_min),
+        agenda_max=float(_strip_agenda_max),
+        agenda_std=float(_strip_agenda_std),
+        salience_peak=_peak_salience(),
+        cognition_tokens=cognition_buffer_tokens(services),
     )
+
+
+def _maybe_kick_watts() -> None:
+    global _watts_task
+    if _strip_watts_live and (time.monotonic() - _strip_watts_at) < WATTS_TTL_S:
+        return
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return
+    if _watts_task is not None and not _watts_task.done():
+        return
+    _watts_task = loop.create_task(_scrape_watts_safe(), name="discover-watts")
+
+
+async def _scrape_watts_safe() -> None:
+    global _strip_watts, _strip_watts_live, _strip_watts_at
+    try:
+        from gaius.engine.services.signals_telemetry import scrape_snapshot
+
+        snap = await scrape_snapshot()
+        _strip_watts = float(snap.get("total_w") or 0.0)
+        _strip_watts_live = True
+        _strip_watts_at = time.monotonic()
+        logger.info("discover strip watts %.1f from Signals telemetry", _strip_watts)
+    except Exception:
+        logger.exception("Signals watts scrape failed")
 
 
 def _refresh_lens_counts() -> None:
     global _strip_articles, _strip_projects
+    global _strip_terms_skos, _strip_terms_cites
+    global _strip_agenda_min, _strip_agenda_max, _strip_agenda_std
     from gaius.engine.services.agenda_notes import kb_root_from_env
     from gaius.engine.services.summary_lineup import _article_cards, _project_cards
 
     kb = kb_root_from_env()
     _strip_articles = len(_article_cards(kb))
     _strip_projects = len(_project_cards(kb))
+    try:
+        _strip_terms_skos, _strip_terms_cites = article_term_stats()
+    except Exception:
+        logger.exception("discover strip article terms failed")
+    try:
+        _strip_agenda_min, _strip_agenda_max, _strip_agenda_std = agenda_day_stats()
+    except Exception:
+        logger.exception("discover strip agenda stats failed")
 
 
 async def refresh_landing_strip(db_pool: Any) -> None:
     """Fill strip cache. Must not nest an acquire on a held connection."""
-    global _strip_workflows, _strip_watts, _strip_thoughts
+    global _strip_workflows, _strip_thoughts, _strip_cognition_tokens
+    global _strip_salience_peak
     try:
         _refresh_lens_counts()
     except Exception:
         logger.exception("discover strip lens counts failed")
+    await _scrape_watts_safe()
     if db_pool is None:
         return
     try:
         conn = await db_pool.acquire(timeout=0.4)
     except Exception:
+        logger.exception("discover strip db acquire failed")
         return
     try:
         try:
@@ -144,7 +317,7 @@ async def refresh_landing_strip(db_pool: Any) -> None:
             if thoughts is not None:
                 _strip_thoughts = int(thoughts)
         except Exception:
-            pass
+            logger.exception("discover strip thoughts count failed")
         try:
             running = await conn.fetchval(
                 "SELECT count(*) FROM scheduled_tasks WHERE status = 'running'"
@@ -152,18 +325,36 @@ async def refresh_landing_strip(db_pool: Any) -> None:
             if running is not None:
                 _strip_workflows = int(running)
         except Exception:
-            pass
+            logger.exception("discover strip workflow count failed")
         try:
-            watts = await conn.fetchval(
+            chars = await conn.fetchval(
                 """
-                SELECT power_avg_w FROM meta.gpu_minute_stats
-                 ORDER BY minute DESC LIMIT 1
+                SELECT COALESCE(sum(
+                    length(coalesce(content, '')) + length(coalesce(summary, ''))
+                ), 0)
+                  FROM cognition_thoughts
+                 WHERE created_at >= now() - interval '36 hours'
                 """
             )
-            if watts is not None:
-                _strip_watts = float(watts)
+            if chars is not None:
+                _strip_cognition_tokens = _bytes_to_tokens(int(chars))
         except Exception:
-            pass
+            logger.exception("discover strip cognition tokens failed")
+        try:
+            peak = await conn.fetchval(
+                """
+                SELECT COALESCE(max(s), 0) FROM (
+                  SELECT sum(activation) AS s
+                    FROM feature_tape
+                   WHERE created_at >= now() - interval '36 hours'
+                   GROUP BY date_trunc('hour', created_at)
+                ) t
+                """
+            )
+            if peak is not None:
+                _strip_salience_peak = float(peak)
+        except Exception:
+            logger.exception("discover strip salience peak failed")
     finally:
         await db_pool.release(conn)
 

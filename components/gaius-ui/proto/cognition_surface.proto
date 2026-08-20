@@ -389,6 +389,14 @@ message DiscoverStatus {
   int32 articles = 5;
   int32 projects = 6;
   int32 thoughts = 7;
+  bool watts_live = 8;
+  int32 terms_skos = 9;
+  int32 terms_cites = 10;
+  double agenda_min = 11;
+  double agenda_max = 12;
+  double agenda_std = 13;
+  double salience_peak = 14;
+  int32 cognition_tokens = 15;
 }
 
 service GaiusService {

@@ -4877,7 +4877,7 @@ class DiscoverSurfaceResponse(_message.Message):
     def __init__(self, buckets: _Optional[_Iterable[_Union[DiscoverBucket, _Mapping]]] = ..., docs: _Optional[_Iterable[_Union[DiscoverDoc, _Mapping]]] = ..., facets: _Optional[_Iterable[_Union[DiscoverFacet, _Mapping]]] = ..., total: _Optional[int] = ..., window: _Optional[str] = ..., query: _Optional[str] = ..., scraped_at: _Optional[str] = ..., interval: _Optional[str] = ..., error: _Optional[str] = ..., last_salience_at: _Optional[str] = ..., next_episode: _Optional[_Union[DiscoverEpisode, _Mapping]] = ..., clock: _Optional[str] = ..., status: _Optional[_Union[DiscoverStatus, _Mapping]] = ...) -> None: ...
 
 class DiscoverStatus(_message.Message):
-    __slots__ = ("updating", "workflows", "waiting_at", "watts", "articles", "projects", "thoughts")
+    __slots__ = ("updating", "workflows", "waiting_at", "watts", "articles", "projects", "thoughts", "watts_live", "terms_skos", "terms_cites", "agenda_min", "agenda_max", "agenda_std", "salience_peak", "cognition_tokens")
     UPDATING_FIELD_NUMBER: _ClassVar[int]
     WORKFLOWS_FIELD_NUMBER: _ClassVar[int]
     WAITING_AT_FIELD_NUMBER: _ClassVar[int]
@@ -4885,6 +4885,14 @@ class DiscoverStatus(_message.Message):
     ARTICLES_FIELD_NUMBER: _ClassVar[int]
     PROJECTS_FIELD_NUMBER: _ClassVar[int]
     THOUGHTS_FIELD_NUMBER: _ClassVar[int]
+    WATTS_LIVE_FIELD_NUMBER: _ClassVar[int]
+    TERMS_SKOS_FIELD_NUMBER: _ClassVar[int]
+    TERMS_CITES_FIELD_NUMBER: _ClassVar[int]
+    AGENDA_MIN_FIELD_NUMBER: _ClassVar[int]
+    AGENDA_MAX_FIELD_NUMBER: _ClassVar[int]
+    AGENDA_STD_FIELD_NUMBER: _ClassVar[int]
+    SALIENCE_PEAK_FIELD_NUMBER: _ClassVar[int]
+    COGNITION_TOKENS_FIELD_NUMBER: _ClassVar[int]
     updating: bool
     workflows: int
     waiting_at: str
@@ -4892,7 +4900,15 @@ class DiscoverStatus(_message.Message):
     articles: int
     projects: int
     thoughts: int
-    def __init__(self, updating: bool = ..., workflows: _Optional[int] = ..., waiting_at: _Optional[str] = ..., watts: _Optional[float] = ..., articles: _Optional[int] = ..., projects: _Optional[int] = ..., thoughts: _Optional[int] = ...) -> None: ...
+    watts_live: bool
+    terms_skos: int
+    terms_cites: int
+    agenda_min: float
+    agenda_max: float
+    agenda_std: float
+    salience_peak: float
+    cognition_tokens: int
+    def __init__(self, updating: bool = ..., workflows: _Optional[int] = ..., waiting_at: _Optional[str] = ..., watts: _Optional[float] = ..., articles: _Optional[int] = ..., projects: _Optional[int] = ..., thoughts: _Optional[int] = ..., watts_live: bool = ..., terms_skos: _Optional[int] = ..., terms_cites: _Optional[int] = ..., agenda_min: _Optional[float] = ..., agenda_max: _Optional[float] = ..., agenda_std: _Optional[float] = ..., salience_peak: _Optional[float] = ..., cognition_tokens: _Optional[int] = ...) -> None: ...
 
 class RefreshDiscoverLandingRequest(_message.Message):
     __slots__ = ("reason",)

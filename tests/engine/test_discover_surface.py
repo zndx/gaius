@@ -59,6 +59,34 @@ def test_window_tokens() -> None:
     assert parse_window("24h") == timedelta(hours=24)
 
 
+def test_terms_in_text_skos_and_wiki() -> None:
+    from gaius.engine.services.discover_landing import terms_in_text
+
+    found = terms_in_text(
+        "see skos:prefLabel and owl:Class plus [[current/ontology/foo|Bar]]"
+    )
+    assert "skos:preflabel" in found
+    assert "owl:class" in found
+    assert any("ontology" in x for x in found)
+
+
+def test_cognition_buffer_tokens_sums_fmp_and_hn() -> None:
+    from gaius.engine.services.discover_landing import cognition_buffer_tokens
+
+    class Buf:
+        current_bytes = 8
+
+    class Svc:
+        _buffer = Buf()
+
+    class Reg:
+        ambient_service = Svc()
+        prospects_service = Svc()
+        theta_service = None
+
+    assert cognition_buffer_tokens(Reg()) == 4
+
+
 def test_landing_strip_waiting_hhmmss() -> None:
     from datetime import datetime, timezone, timedelta
     from gaius.engine.services.discover_landing import landing_strip, next_waiting_at
