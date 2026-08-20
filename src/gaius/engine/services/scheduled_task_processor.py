@@ -877,9 +877,14 @@ class ScheduledTaskProcessor(BaseDaemon):
                     self._on_notification,
                 )
 
-                # Keep alive
+                # Keep alive; pick tasks whose scheduled_for has arrived.
+                due_ticks = 0
                 while self._running and not self._connection.is_closed():
                     await asyncio.sleep(1)
+                    due_ticks += 1
+                    if due_ticks >= 15:
+                        due_ticks = 0
+                        await self._pickup_due()
 
             except asyncio.CancelledError:
                 break
@@ -942,6 +947,23 @@ class ScheduledTaskProcessor(BaseDaemon):
         except Exception as e:
             logger.error(f"Error processing notification: {e}")
 
+    async def _pickup_due(self) -> None:
+        """Run tasks whose scheduled_for is due (NOTIFY fires at INSERT)."""
+        if self._pool is None:
+            return
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT id FROM scheduled_tasks
+                 WHERE picked_up_at IS NULL
+                   AND scheduled_for <= NOW()
+                 ORDER BY scheduled_for
+                 LIMIT 4
+                """
+            )
+        for r in rows:
+            await self._execute_task(int(r["id"]))
+
     async def _execute_task(self, task_id: int) -> None:
         """Pick up and execute a task.
 
@@ -955,7 +977,9 @@ class ScheduledTaskProcessor(BaseDaemon):
                 """
                 UPDATE scheduled_tasks
                 SET picked_up_at = NOW()
-                WHERE id = $1 AND picked_up_at IS NULL
+                WHERE id = $1
+                  AND picked_up_at IS NULL
+                  AND scheduled_for <= NOW()
                 RETURNING *
                 """,
                 task_id,

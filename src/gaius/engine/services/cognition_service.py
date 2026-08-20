@@ -2421,6 +2421,7 @@ Your summary note content"""
                     SELECT id, task_type, priority, scheduled_for, source, payload
                     FROM scheduled_tasks
                     WHERE picked_up_at IS NULL
+                      AND scheduled_for <= NOW()
                     ORDER BY
                         CASE priority
                             WHEN 'critical' THEN 0
