@@ -9,6 +9,7 @@ from gaius.engine.sentinel_claim import (
     COMPUTE,
     EXTRACT,
     HEAVY,
+    LIGHT,
     GURU_NOAPP,
     RATE_METERED,
     application_yaml,
@@ -26,6 +27,11 @@ def test_article_and_prospects_map_to_extract() -> None:
     assert resource_class_for("ambient-summarize") == EXTRACT
     assert EXTRACT.queue == "root.internal.inference.extract"
     assert EXTRACT.gpu_tokens == 1
+    assert EXTRACT.max_applications == 2
+    assert HEAVY.max_applications == 1
+    assert HEAVY.gpu_tokens == 4
+    assert COMPUTE.max_applications == 8
+    assert LIGHT.max_applications == 2
 
 
 def test_ambient_phases_split_cpu_from_gpu() -> None:
@@ -137,7 +143,7 @@ def test_gpu_start_denied_when_federated_without_app(
     assert GURU_NOAPP.startswith("#YK.")
 
 
-def test_bind_reuses_live_application() -> None:
+def test_bind_mints_extract_until_cap(monkeypatch: pytest.MonkeyPatch) -> None:
     from gaius.engine.sentinel_claim import (
         EXTRACT,
         AdmittedApplication,
@@ -146,8 +152,19 @@ def test_bind_reuses_live_application() -> None:
         _MU,
     )
 
-    row = AdmittedApplication(
-        workload_id="article-curate-1786767299",
+    monkeypatch.setattr(
+        "gaius.engine.sentinel_claim._cluster_gaius_app_ids", lambda _q: []
+    )
+    a = AdmittedApplication(
+        workload_id="article-curate-1",
+        resource_class=EXTRACT,
+        namespace="federation-signals",
+        admitted=True,
+        required=True,
+        kind="article-curate",
+    )
+    b = AdmittedApplication(
+        workload_id="article-curate-2",
         resource_class=EXTRACT,
         namespace="federation-signals",
         admitted=True,
@@ -155,23 +172,26 @@ def test_bind_reuses_live_application() -> None:
         kind="article-curate",
     )
     with _MU:
-        _ADMITTED[row.workload_id] = row
+        _ADMITTED[a.workload_id] = a
     try:
-        assert (
-            bind_workload_id("article-curate", "article-curate-999")
-            == "article-curate-1786767299"
+        # One of two extract tokens in use — mint the second.
+        assert bind_workload_id("article-curate", "article-curate-999") == (
+            "article-curate-999"
         )
-        # Same extract envelope — prospects must not mint a second GPU token.
-        assert (
-            bind_workload_id("prospects-update", "prospects-update-1")
-            == "article-curate-1786767299"
-        )
+        with _MU:
+            _ADMITTED[b.workload_id] = b
+        # At cap — reuse, do not mint a third GPU claim.
+        assert bind_workload_id("prospects-update", "prospects-update-1") in {
+            "article-curate-1",
+            "article-curate-2",
+        }
     finally:
         with _MU:
-            _ADMITTED.pop(row.workload_id, None)
+            _ADMITTED.pop(a.workload_id, None)
+            _ADMITTED.pop(b.workload_id, None)
 
 
-def test_bind_does_not_cross_queues() -> None:
+def test_bind_does_not_cross_queues(monkeypatch: pytest.MonkeyPatch) -> None:
     from gaius.engine.sentinel_claim import (
         EXTRACT,
         AdmittedApplication,
@@ -180,6 +200,9 @@ def test_bind_does_not_cross_queues() -> None:
         _MU,
     )
 
+    monkeypatch.setattr(
+        "gaius.engine.sentinel_claim._cluster_gaius_app_ids", lambda _q: []
+    )
     row = AdmittedApplication(
         workload_id="article-curate-1786767299",
         resource_class=EXTRACT,
@@ -193,9 +216,10 @@ def test_bind_does_not_cross_queues() -> None:
     try:
         assert bind_workload_id("prospects-check", "gaius-fmp-1") == "gaius-fmp-1"
         assert bind_workload_id("ambient", "gaius-ambient") == "gaius-ambient"
+        # Extract still under cap (2) — summarize may mint its own token.
         assert (
             bind_workload_id("ambient-summarize", "article-curate-ambient")
-            == "article-curate-1786767299"
+            == "article-curate-ambient"
         )
     finally:
         with _MU:

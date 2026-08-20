@@ -48,11 +48,10 @@ GURU_ENVELOPE = "#YK.00000004.ENVELOPE"
 GURU_DISK = "#YK.00000005.DISK"
 GURU_MEM = "#YK.00000006.MEM"
 
-# Tinybox physical: federation.zndx.org/gpu=6, ~128Gi RAM. Gaius survey
-# takes one token so Ægir/Atelier keep the other inference leaves.
-# YK sees apps/gpu/cpu/mem on the pause claim. Disk and host RAM are
-# Gaius floors — YK cannot cap host Metaflow / Postgres / KB writes.
-ENVELOPE_MAX_APPS = 1
+# Tinybox: 6× RTX 4090 24Gi, ~128Gi RAM. Standing thinking (heavy) takes
+# 4 GPUs; 2 remain for extract/light. Compute has no GPU — many CPU
+# Metaflow ticks must not serialize on a 1-app envelope.
+# Pause-pod CPU/mem are sentinel-sized; host CUDA is not in the pod.
 ENVELOPE_GPU = 1
 ENVELOPE_CPU = "10m"
 ENVELOPE_MEMORY = "16Mi"
@@ -83,12 +82,15 @@ class ResourceClass:
     name: str
     queue: str
     gpu_tokens: int
+    max_applications: int = 1
 
 
 EXTRACT = ResourceClass(
     name="internal.inference.extract",
     queue="root.internal.inference.extract",
     gpu_tokens=ENVELOPE_GPU,
+    # 2 leftover GPUs beside standing thinking (4).
+    max_applications=2,
 )
 
 # One-GPU interactive Ask (each 1.7B replica). Not extract. Not SAE.
@@ -96,6 +98,7 @@ LIGHT = ResourceClass(
     name="internal.inference.light",
     queue="root.internal.inference.light",
     gpu_tokens=1,
+    max_applications=2,
 )
 
 # Two-GPU interactive Ask (9B SAE TP=2). Light must not land here.
@@ -103,13 +106,15 @@ MEDIUM = ResourceClass(
     name="internal.inference.medium",
     queue="root.internal.inference.medium",
     gpu_tokens=2,
+    max_applications=1,
 )
 
-# Standing thinking / large TP. Light/medium never preempt this leaf.
+# Standing thinking / large TP. One 27B TP=4 — a second heavy is 8 GPU.
 HEAVY = ResourceClass(
     name="internal.inference.heavy",
     queue="root.internal.inference.heavy",
     gpu_tokens=4,
+    max_applications=1,
 )
 
 # FMP / RPM APIs: no GPU. Application is deleted when the check ends.
@@ -117,13 +122,15 @@ RATE_METERED = ResourceClass(
     name="external.rate-metered",
     queue="root.external.rate-metered",
     gpu_tokens=0,
+    max_applications=4,
 )
 
-# Ambient RAM buffer: no GPU, no disk. Standing while the daemon runs.
+# Ambient + host Metaflow ticks (label, …). No GPU.
 COMPUTE = ResourceClass(
     name="internal.compute",
     queue="root.internal.compute",
     gpu_tokens=0,
+    max_applications=8,
 )
 
 AMBIENT_WORKLOAD_ID = "gaius-ambient"
@@ -318,7 +325,7 @@ def light_wait_available() -> bool:
             for row in _ADMITTED.values()
             if row.admitted and row.resource_class.queue == LIGHT.queue
         )
-    return n < ENVELOPE_MAX_APPS
+    return n < LIGHT.max_applications
 
 
 def extract_wait_available() -> bool:
@@ -656,8 +663,8 @@ def _cluster_gaius_app_ids(queue: str) -> list[str]:
     return [n for n in (r.stdout or "").split() if n]
 
 
-def live_workload_id(kind: str) -> str | None:
-    """Return the live Gaius Application on this kind's queue (envelope: one)."""
+def live_apps_on_queue(kind: str) -> list[str]:
+    """Gaius Application ids currently on this kind's YK leaf."""
     rc = resource_class_for(kind)
     names: list[str] = []
     with _MU:
@@ -665,31 +672,37 @@ def live_workload_id(kind: str) -> str | None:
             if row.admitted and row.resource_class.queue == rc.queue:
                 names.append(row.workload_id)
     names.extend(_cluster_gaius_app_ids(rc.queue))
-    uniq = list(dict.fromkeys(names))
-    if len(uniq) > ENVELOPE_MAX_APPS:
-        if rc.gpu_tokens == 0:
-            # Reuse the standing compute app; extras are orphans from unique
-            # gaius-mf-label-* mints. Bind does not refuse the tick.
-            return uniq[0]
-        cap = (
-            f"{ENVELOPE_MAX_APPS} app / {ENVELOPE_GPU} GPU"
-            if rc.gpu_tokens
-            else f"{ENVELOPE_MAX_APPS} app (no GPU)"
-        )
+    return list(dict.fromkeys(names))
+
+
+def live_workload_id(kind: str) -> str | None:
+    """A live Application on this kind's queue, or None."""
+    rc = resource_class_for(kind)
+    uniq = live_apps_on_queue(kind)
+    if rc.gpu_tokens and len(uniq) > rc.max_applications:
         raise YkAdmitError(
             GURU_ENVELOPE,
             f"{len(uniq)} Gaius Applications on {rc.queue}: {uniq}; "
-            f"envelope cap is {cap}",
+            f"envelope cap is {rc.max_applications} app / "
+            f"{rc.gpu_tokens} GPU each",
         )
     return uniq[0] if uniq else None
 
 
 def bind_workload_id(kind: str, proposed: str) -> str:
-    """Reuse the live Application on this kind's queue (one app per leaf)."""
-    live = live_workload_id(kind)
-    if live:
-        log.info("reusing live Application %s for kind=%s (not %s)", live, kind, proposed)
-        return live
+    """Reuse a live Application only when this leaf is at max_applications."""
+    rc = resource_class_for(kind)
+    live = live_apps_on_queue(kind)
+    if len(live) >= rc.max_applications:
+        log.info(
+            "queue %s at cap %s, reusing %s for kind=%s (not %s)",
+            rc.queue,
+            rc.max_applications,
+            live[0],
+            kind,
+            proposed,
+        )
+        return live[0]
     return proposed
 
 
