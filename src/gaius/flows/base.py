@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -54,15 +55,25 @@ def _record_lineage_ol(event: object) -> None:
     payload = event.to_ol_dict() if hasattr(event, "to_ol_dict") else event.to_dict()
     addr = engine_target()
     channel = grpc.insecure_channel(addr)
+    last: grpc.RpcError | None = None
     try:
         stub = zpb_grpc.EngineStub(channel)
-        resp = stub.RecordLineage(
-            zpb.LineageRequest(
-                event_json=json.dumps(payload, default=str),
-                event_type=str(payload.get("eventType") or ""),
-            ),
-            timeout=20.0,
+        req = zpb.LineageRequest(
+            event_json=json.dumps(payload, default=str),
+            event_type=str(payload.get("eventType") or ""),
         )
+        resp = None
+        for attempt in range(3):
+            try:
+                resp = stub.RecordLineage(req, timeout=45.0)
+                break
+            except grpc.RpcError as e:
+                last = e
+                if e.code() != grpc.StatusCode.DEADLINE_EXCEEDED:
+                    raise
+                time.sleep(0.4 * (attempt + 1))
+        if resp is None:
+            raise last  # type: ignore[misc]
     except grpc.RpcError as e:
         raise RuntimeError(
             f"{GURU_NOLATTICE} Engine/RecordLineage failed at {addr}: "
