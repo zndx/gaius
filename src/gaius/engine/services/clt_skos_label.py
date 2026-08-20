@@ -290,6 +290,23 @@ async def run_acp_label(
                 run_id=run_id,
             )
             labeled += 1
+        except ValueError as e:
+            await record_alignment(
+                pool,
+                clt_uri=case.clt_uri,
+                sdg_uri="",
+                match_kind="prefLabel",
+                verdict="error",
+                reason=str(e)[:400],
+                item_ids=case.item_ids,
+                run_id=run_id,
+            )
+            # Complete succeeded; this feature has no display phrase. Do not
+            # abort the tick — engine-model timeouts still raise below.
+            if "CLT.00000012" in str(e) or "CLT.00000013" in str(e):
+                print(f"clt_skos.label skip {case.notation}: {e}")
+                continue
+            raise
         except Exception as e:
             await record_alignment(
                 pool,
