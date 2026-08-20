@@ -317,3 +317,62 @@ async def run_acp_label(
         "stale": stale_n,
         "run_id": run_id,
     }
+
+
+async def pref_label_health(pool: Any, *, top: int = 20) -> dict[str, Any]:
+    """Tape-hot non-admin features vs minted display prefLabels.
+
+    Healthy Gaius: Discover landing shows a meaningful set of names.
+    empty = 0 names; thin = <5; ok = ≥5.
+    """
+    from gaius.engine.services.clt_skos_propose import (
+        _read_logits,
+        is_admin_logits,
+        is_minted_pref_label,
+        load_pref_labels,
+    )
+
+    minted = load_pref_labels()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT t.layer, t.feature_idx, count(*)::int AS n
+              FROM feature_tape t
+              JOIN activation a
+                ON a.model = 'clt'
+               AND a.layer = t.layer
+               AND a.feature_idx = t.feature_idx
+             GROUP BY 1, 2
+             ORDER BY count(*) * avg(t.activation) DESC
+             LIMIT $1
+            """,
+            top * 3,
+        )
+    eligible: list[str] = []
+    named: list[dict[str, Any]] = []
+    for r in rows:
+        layer, feat = int(r["layer"]), int(r["feature_idx"])
+        if is_admin_logits(_read_logits(layer, feat)):
+            continue
+        notation = f"{layer}:{feat}"
+        eligible.append(notation)
+        pref = minted.get(notation, "")
+        if is_minted_pref_label(pref):
+            named.append({"notation": notation, "prefLabel": pref, "n": int(r["n"])})
+        if len(eligible) >= top:
+            break
+    n_named = len(named)
+    n_el = len(eligible)
+    if n_named >= 5:
+        status = "ok"
+    elif n_named >= 1:
+        status = "thin"
+    else:
+        status = "empty"
+    return {
+        "status": status,
+        "eligible": n_el,
+        "named": n_named,
+        "labels": named,
+        "unlabeled": [n for n in eligible if n not in {x["notation"] for x in named}],
+    }

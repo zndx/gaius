@@ -6228,6 +6228,7 @@ Respond with:
             /health data               - Check database/KB health
             /health cognition          - Check cognition daemon
             /health inference          - Check inference endpoints
+            /health clt-labels         - Tape-hot CLT features with display prefLabels
             /health diagnose <service> - Deep diagnostics for a service
             /health fix [service]      - Fix unhealthy services (via engine gRPC)
             /health fix <issue#>       - Re-run ACP investigation for GitHub issue
@@ -6313,6 +6314,9 @@ Respond with:
         if subcmd == "stats":
             hours = int(subargs[0]) if subargs else 24
             return await self._health_stats(hours)
+
+        if subcmd in ("clt-labels", "clt_labels"):
+            return await self._health_clt_labels()
 
         # Run appropriate checks
         if subcmd == "quick":
@@ -8818,6 +8822,34 @@ fingerprint: "{incident.get('fingerprint', 'unknown')}"
 
         except Exception as e:
             return {"error": f"Failed to get stats: {e}"}
+
+    async def _health_clt_labels(self) -> dict:
+        """Tape-hot CLT features with display prefLabels (Discover chips)."""
+        import asyncpg
+
+        from gaius.core.config import get_database_url
+        from gaius.engine.services.clt_skos_label import pref_label_health
+
+        pool = await asyncpg.create_pool(get_database_url(), min_size=1, max_size=2)
+        try:
+            got = await pref_label_health(pool)
+        finally:
+            await pool.close()
+        guru = ""
+        if got["status"] == "empty":
+            guru = (
+                "#CLT.00000014.NOLABELS Discover has no content prefLabels.\n"
+                "  thinking must be HEALTHY; clt_skos_label ticks mint names."
+            )
+        return {
+            "check": "clt-labels",
+            "status": got["status"],
+            "eligible": got["eligible"],
+            "named": got["named"],
+            "labels": got["labels"],
+            "unlabeled": got["unlabeled"],
+            "guru": guru,
+        }
 
     # ─────────────────────────────────────────────────────────────────────
     # Heal - Self-Healing System
