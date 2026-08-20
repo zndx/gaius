@@ -111,7 +111,7 @@ pub const GAIUS_SLASH: &[SlashCmd] = &[
         hint: "<symbol>",
         description: "OHLC chart in the Ask panel. Use for /chart <ticker>.",
         mcp: "gaius__ask_present",
-        extra: "Call gaius__ask_present immediately. symbol is the ticker from the user message after /chart or $. Never substitute a ticker that is not in the user message. Do not invent bars. Do not wrap it in use_tool. If posted=true, say the chart is in Ask. Only print fence if posted is false.",
+        extra: "Call gaius__ask_present exactly once. symbol is the ticker from the user message after /chart or $. Never substitute a ticker that is not in the user message. Do not invent bars. Do not wrap it in use_tool. If posted=true, stop: the chart is in Ask. Do not call the tool again. Do not print the fence.",
     },
     SlashCmd {
         name: "kb",

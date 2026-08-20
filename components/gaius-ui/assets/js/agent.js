@@ -616,8 +616,15 @@
     }
     var log = $("ask-log");
     if (!log) return;
+    if (item.type === "ohlc" && item.symbol) {
+      var dup = log.querySelector('[data-ohlc="' + item.symbol + '"]');
+      if (dup) dup.remove();
+    }
     var art = document.createElement("article");
     art.className = "ask-msg ask-artifact";
+    if (item.type === "ohlc" && item.symbol) {
+      art.setAttribute("data-ohlc", item.symbol);
+    }
     var head = document.createElement("div");
     head.className = "ask-art-head";
     head.textContent = item.title || item.symbol || item.type || "artifact";

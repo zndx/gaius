@@ -151,7 +151,7 @@ fn chrome_bits(state: &openai::AppState) -> ChromeBits {
     let b = state.brand.read().expect("brand lock");
     ChromeBits {
         mode: "dark".into(),
-        asset_v: std::env::var("GAIUS_UI_ASSET_V").unwrap_or_else(|_| "0.3.10-no-ex-tickers".into()),
+        asset_v: std::env::var("GAIUS_UI_ASSET_V").unwrap_or_else(|_| "0.3.11-chart-once".into()),
         brand_id: b.id.clone(),
         logo_href: b.logo_href.clone(),
         logo_alt: b.logo_alt.clone(),

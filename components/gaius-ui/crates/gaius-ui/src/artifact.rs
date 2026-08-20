@@ -45,6 +45,23 @@ impl ArtifactBus {
         if st.ids.contains(&id) {
             return Ok(item);
         }
+        if let Some(key) = ohlc_symbol(&item) {
+            if let Some(pos) = st.items.iter().position(|i| ohlc_symbol(i).as_deref() == Some(&key))
+            {
+                let old = &st.items[pos];
+                if old.get("bars") == item.get("bars") {
+                    return Ok(old.clone());
+                }
+                let keep_id = old.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                if !keep_id.is_empty() {
+                    item["id"] = json!(keep_id.clone());
+                }
+                st.gen += 1;
+                item["gen"] = json!(st.gen);
+                st.items[pos] = item.clone();
+                return Ok(item);
+            }
+        }
         st.ids.insert(id);
         st.gen += 1;
         item["gen"] = json!(st.gen);
@@ -76,6 +93,28 @@ impl ArtifactBus {
         st.ids.clear();
         st.gen += 1;
         st.gen
+    }
+}
+
+fn ohlc_symbol(item: &Value) -> Option<String> {
+    let kind = item
+        .get("type")
+        .and_then(|v| v.as_str())
+        .or_else(|| item.get("kind").and_then(|v| v.as_str()))
+        .unwrap_or("");
+    if !kind.eq_ignore_ascii_case("ohlc") {
+        return None;
+    }
+    let s = item
+        .get("symbol")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim()
+        .to_ascii_uppercase();
+    if s.is_empty() {
+        None
+    } else {
+        Some(s)
     }
 }
 
@@ -355,6 +394,20 @@ mod tests {
                 {"t":"2026-08-15","o":181.0,"h":184.0,"l":180.5,"c":183.4}
             ]
         })
+    }
+
+    #[test]
+    #[test]
+    fn ohlc_same_symbol_does_not_stack() {
+        let bus = ArtifactBus::default();
+        let a = ohlc();
+        let mut b = ohlc();
+        b["id"] = json!("other-id");
+        bus.push(a).unwrap();
+        bus.push(b).unwrap();
+        let (_gen, items) = bus.since(0);
+        assert_eq!(items.len(), 1, "{items:?}");
+        assert_eq!(items[0]["symbol"], "NVDA");
     }
 
     #[test]
