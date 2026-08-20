@@ -208,8 +208,9 @@ class GaiusZndxEngineServicer(zpb_grpc.EngineServicer):
             extra_body = {
                 "guided_json": schema,
                 "chat_template_kwargs": {
-                    "enable_thinking": True,
-                    "preserve_thinking": True,
+                    # guided_json + thinking dumps the inner monologue as
+                    # Complete.text and never emits the JSON object.
+                    "enable_thinking": False,
                 },
             }
 
@@ -221,8 +222,8 @@ class GaiusZndxEngineServicer(zpb_grpc.EngineServicer):
                 temperature=request.temperature or 0.7,
                 max_tokens=request.max_tokens or 2048,
                 task_type="zndx_complete",
-                enable_thinking=True,
-                preserve_thinking=True,
+                enable_thinking=not bool(request.json_schema),
+                preserve_thinking=not bool(request.json_schema),
                 extra_body=extra_body,
             )
         except Exception as e:
