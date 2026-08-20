@@ -139,8 +139,11 @@ class ScheduledTaskProcessor(BaseDaemon):
         minted = wid == proposed
         from gaius.flows.config import metaflow_child_env
 
-        env = metaflow_child_env()
+        # Sentinel-spawned ticks run on this host (YK pause pod + host CUDA).
+        # Platform profile (@kubernetes / S3) hangs the step after start.
+        env = metaflow_child_env(mode="local")
         env["GAIUS_YK_APPLICATION_ID"] = wid
+        env["GAIUS_YK_KIND"] = kind
         cwd = os.environ.get("GAIUS_ROOT", "/home/rch/local/src/zndx/gaius")
         table = flow_processes()
         try:
