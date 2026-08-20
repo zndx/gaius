@@ -35,7 +35,7 @@ class CltSkosAdmitFlow(GaiusFlow):
         from gaius.engine.services.sdg_aperture import SdgAperture
 
         self.aperture = SdgAperture.load()
-        self.index = materialize_aperture(self.aperture)
+        self.aperture_index = materialize_aperture(self.aperture)
         self.run_id = str(getattr(current, "run_id", None) or self._lineage_run_id or "")
         print(
             f"clt_skos.admit.start strategy={self.aperture.strategy_id} "

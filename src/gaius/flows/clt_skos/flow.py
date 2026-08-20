@@ -38,14 +38,14 @@ class CltSkosEvalFlow(GaiusFlow):
         from gaius.engine.services.sdg_aperture import SdgAperture
 
         self.aperture = SdgAperture.load()
-        self.index = materialize_aperture(self.aperture)
+        self.aperture_index = materialize_aperture(self.aperture)
         self.since_iso = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
         print(
             f"clt_skos.start strategy={self.aperture.strategy_id} "
             f"C={self.aperture.n} tau={self.aperture.tau} "
             f"grain={self.aperture.colbert_token_limit} "
             f"collection={self.aperture.collection} "
-            f"index={self.index}"
+            f"index={self.aperture_index}"
         )
         self.emit_lineage_start(
             job_name="clt_skos_eval",
