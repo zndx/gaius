@@ -172,6 +172,9 @@ def parse_label_reply(text: str) -> dict[str, str]:
     )
 
     blob = text.strip()
+    for mark in ("</think>", "</think>", "<|im_end|>"):
+        if mark in blob:
+            blob = blob.rsplit(mark, 1)[-1].strip()
     m = re.search(r"\{.*\}", blob, re.S)
     data: dict[str, Any] = {}
     if m:
@@ -220,12 +223,14 @@ def _thinking_label(prompt: str) -> tuple[str, str]:
     got = complete(
         prompt,
         capability="thinking",
-        max_tokens=2048,
+        max_tokens=4096,
         temperature=0.3,
         json_schema=_LABEL_SCHEMA,
         timeout_s=600.0,
     )
-    text = (got.text or "") + ("\n" + got.reasoning_content if got.reasoning_content else "")
+    # Prefer the post-think answer. Concatenating reasoning made parse see
+    # the inner monologue and miss the JSON object.
+    text = (got.text or "").strip() or (got.reasoning_content or "")
     return text, str(got.model or "")
 
 
@@ -265,7 +270,14 @@ async def run_acp_label(
         prompt = build_label_prompt(case)
         try:
             reply, model = await asyncio.to_thread(_thinking_label, prompt)
-            parsed = parse_label_reply(reply)
+            try:
+                parsed = parse_label_reply(reply)
+            except ValueError:
+                print(
+                    f"clt_skos.label parse {case.notation} "
+                    f"model={model!r} reply={reply[:800]!r}"
+                )
+                raise
             set_pref_label(case.notation, parsed["prefLabel"])
             exemplars = await current_exemplars(pool, case.layer, case.feature_idx)
             await upsert_pref_label(
