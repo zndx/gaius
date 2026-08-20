@@ -8,6 +8,7 @@ import yaml
 from gaius.engine.sentinel_claim import (
     COMPUTE,
     EXTRACT,
+    HEAVY,
     GURU_NOAPP,
     RATE_METERED,
     application_yaml,
@@ -303,6 +304,8 @@ def test_prospects_disk_floor_is_raid_only() -> None:
     assert disk_paths_for("knowledge-summary") == ("/raid",)
     assert resource_class_for("clt-skos-label") == COMPUTE
     assert resource_class_for("docling") == EXTRACT
+    assert resource_class_for("thinking") == HEAVY
+    assert resource_class_for("thinking").gpu_tokens == 4
 
 
 def test_prospects_check_ignores_full_root(monkeypatch: pytest.MonkeyPatch) -> None:

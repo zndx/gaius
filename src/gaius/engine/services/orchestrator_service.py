@@ -389,6 +389,7 @@ class OrchestratorService:
         backend = agent_config.backend.lower()
 
         if backend == "clt":
+            self._admit_capability_sentinel("clt")
             return await self._ensure_clt_endpoint(agent_alias)
 
         # optillm agents use shared optillm, no dedicated endpoint
@@ -408,6 +409,9 @@ class OrchestratorService:
         # Note: sentence-transformers backend is deprecated.
         # Use backend = "vllm" with endpoint.task = "embed" instead.
 
+        # Sentinel **is** the Application: admit before host CUDA starts.
+        self._admit_capability_sentinel(agent_alias)
+
         # Start vLLM endpoint
         proc = await self._vllm.start_endpoint(agent_alias, agent_config)
 
@@ -420,6 +424,32 @@ class OrchestratorService:
             pid=proc.pid,
             started_at=proc.started_at,
         )
+
+    def _admit_capability_sentinel(self, agent_alias: str) -> None:
+        """YK Application for this capability so C2 can Yield the host process."""
+        from gaius.engine.sentinel_claim import (
+            YkAdmitError,
+            apply_and_admit,
+            capability_workload_id,
+            resource_class_for,
+        )
+
+        kind = {
+            "thinking": "thinking",
+            "reasoning": "thinking",
+            "ask-agent": "ask-agent",
+            "interpretable": "ask-agent",
+            "interpretable-b": "ask-agent",
+            "ask-sae": "ask-sae",
+            "clt": "clt-probe",
+        }.get(agent_alias)
+        if not kind:
+            return
+        try:
+            resource_class_for(kind)
+        except YkAdmitError:
+            return
+        apply_and_admit(capability_workload_id(agent_alias), kind)
 
     async def stop_endpoint(self, agent_alias: str) -> bool:
         """Stop an inference endpoint.

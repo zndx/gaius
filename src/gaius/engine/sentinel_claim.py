@@ -180,6 +180,8 @@ _KIND_CLASS: dict[str, ResourceClass] = {
     "research": EXTRACT,
     "search": EXTRACT,
     "metaflow": EXTRACT,
+    "thinking": HEAVY,
+    "gaius-thinking": HEAVY,
 }
 
 
@@ -297,6 +299,8 @@ _KIND_PHASE: dict[str, str] = {
     "research": "extract",
     "search": "extract",
     "metaflow": "work",
+    "thinking": "think",
+    "gaius-thinking": "think",
 }
 
 
@@ -704,6 +708,11 @@ def has_admitted_application() -> bool:
     """True if this engine holds any live admitted Application."""
     with _MU:
         return any(r.admitted for r in _ADMITTED.values())
+
+
+def capability_workload_id(alias: str) -> str:
+    """Stable Application id for a standing capability (C2/Yield key)."""
+    return "gaius-" + str(alias or "").strip().replace("_", "-")
 
 
 def gpu_start_allowed(workload_id: str) -> bool:

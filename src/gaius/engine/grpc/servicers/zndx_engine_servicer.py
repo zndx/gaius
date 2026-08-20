@@ -267,25 +267,9 @@ class GaiusZndxEngineServicer(zpb_grpc.EngineServicer):
         request: zpb.YieldRequest,
         context: aio.ServicerContext,
     ) -> zpb.YieldResponse:
-        from ...flow_processes import flow_processes
-        from ...sentinel_claim import AMBIENT_WORKLOAD_ID, release_kind
+        from ...sentinel_yield import yield_workload
 
-        ambient = getattr(self._services, "ambient_service", None)
-        if ambient is not None:
-            await ambient.pause_gpu(f"yield:{request.workload_id}")
-
-        ended, msg = await flow_processes().yield_one(request.workload_id)
-        if request.workload_id == AMBIENT_WORKLOAD_ID and ambient is not None:
-            release_kind("ambient")
-            await ambient.stop_daemon()
-            await ambient._set_operator_disabled(False)
-            await ambient._set_preempted(True)
-        return zpb.YieldResponse(
-            ok=True,
-            process_ended=ended,
-            restore_started=False,
-            message=msg,
-        )
+        return await yield_workload(self._services, request)
 
     async def ServerQuery(
         self,

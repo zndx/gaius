@@ -59,3 +59,41 @@ async def test_zndx_yield_rpc_unknown():
     )
     assert r.ok
     assert not r.process_ended
+
+
+def test_alias_for_workload():
+    from gaius.engine.sentinel_yield import alias_for_workload
+
+    assert alias_for_workload("gaius-thinking") == "thinking"
+    assert alias_for_workload("thinking") == "thinking"
+    assert alias_for_workload("clt-probe-4") == "clt"
+    assert alias_for_workload("nope") == ""
+
+
+class _Orch:
+    def __init__(self):
+        self.stopped: list[str] = []
+
+    async def stop_endpoint(self, alias: str) -> bool:
+        self.stopped.append(alias)
+        return True
+
+    async def complete_workload(self, wid: str) -> None:
+        return None
+
+
+@pytest.mark.asyncio
+async def test_yield_stops_thinking_endpoint():
+    from gaius.engine.sentinel_yield import yield_workload
+
+    orch = _Orch()
+    svc = type("S", (), {"orchestrator_service": orch, "ambient_service": None})()
+    r = await yield_workload(
+        svc,
+        zpb.YieldRequest(
+            workload_id="gaius-thinking", reason=zpb.YIELD_REASON_PREEMPTED
+        ),
+    )
+    assert r.ok
+    assert r.process_ended
+    assert orch.stopped == ["thinking"]

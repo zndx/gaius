@@ -425,7 +425,7 @@ def declared_queues() -> list[zpb.QueueHint]:
             max_applications=2,
             preemption_policy="fence",
             role="heavy",
-            examples="gaius.thinking;tp4-27b",
+            examples="gaius-thinking;tp4-27b",
         ),
         zpb.QueueHint(
             path=EXTRACT.queue,

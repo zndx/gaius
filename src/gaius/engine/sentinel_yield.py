@@ -1,0 +1,109 @@
+"""Engine/Yield body: C2 asks Gaius to end the host process for a YK Application.
+
+Sentinel **is** the Application. YK preempt → C2 HTTP last-gasp → this RPC.
+Unknown ``workload_id`` is idempotent (ok, not ended).
+"""
+
+from __future__ import annotations
+
+import logging
+from typing import Any
+
+from gaius.engine.flow_processes import flow_processes
+from gaius.engine.generated.zndx.engine.v1 import engine_pb2 as zpb
+from gaius.engine.sentinel_claim import (
+    AMBIENT_WORKLOAD_ID,
+    capability_workload_id,
+    delete_flow_sentinel,
+    release_kind,
+)
+
+log = logging.getLogger("gaius.engine.sentinel_yield")
+
+# Standing vLLM / CLT aliases whose Application id is gaius-<alias>.
+_CAPABILITY_ALIASES = frozenset(
+    {
+        "thinking",
+        "reasoning",
+        "ask-agent",
+        "interpretable",
+        "interpretable-b",
+        "ask-sae",
+        "clt",
+        "orchestrator",
+    }
+)
+
+
+def alias_for_workload(workload_id: str) -> str:
+    wid = (workload_id or "").strip()
+    if wid.startswith("gaius-"):
+        rest = wid[len("gaius-") :]
+        if rest in _CAPABILITY_ALIASES:
+            return rest
+        if rest == "thinking":
+            return "thinking"
+    if wid in _CAPABILITY_ALIASES:
+        return wid
+    if wid.startswith("clt-probe"):
+        return "clt"
+    return ""
+
+
+async def yield_workload(services: Any, request: zpb.YieldRequest) -> zpb.YieldResponse:
+    wid = (request.workload_id or "").strip()
+    if not wid:
+        return zpb.YieldResponse(
+            ok=True, process_ended=False, restore_started=False, message="empty workload_id"
+        )
+
+    table = flow_processes()
+    if table.get(wid) is not None:
+        ended, msg = await table.yield_one(wid)
+        return zpb.YieldResponse(
+            ok=True, process_ended=ended, restore_started=False, message=msg
+        )
+
+    if wid == AMBIENT_WORKLOAD_ID:
+        ambient = getattr(services, "ambient_service", None)
+        if ambient is not None:
+            await ambient.pause_gpu(f"yield:{wid}")
+            release_kind("ambient")
+            await ambient.stop_daemon()
+            await ambient._set_operator_disabled(False)
+            await ambient._set_preempted(True)
+            return zpb.YieldResponse(
+                ok=True,
+                process_ended=True,
+                restore_started=False,
+                message=f"ended ambient {wid}",
+            )
+
+    alias = alias_for_workload(wid)
+    orch = getattr(services, "orchestrator_service", None)
+    if alias and orch is not None:
+        stopped = await orch.stop_endpoint(alias)
+        delete_flow_sentinel(wid)
+        delete_flow_sentinel(capability_workload_id(alias))
+        restore_started = False
+        if request.reason == zpb.YIELD_REASON_COMPLETED:
+            try:
+                await orch.complete_workload(wid)
+                restore_started = True
+            except Exception as e:
+                log.warning("complete_workload after Yield: %s", e)
+        msg = f"stopped endpoint {alias} workload_id={wid} stopped={stopped}"
+        log.info("yield %s", msg)
+        return zpb.YieldResponse(
+            ok=True,
+            process_ended=bool(stopped),
+            restore_started=restore_started,
+            message=msg,
+        )
+
+    return zpb.YieldResponse(
+        ok=True,
+        process_ended=False,
+        restore_started=False,
+        message=f"no host process for workload_id={wid}",
+    )
