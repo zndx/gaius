@@ -55,8 +55,8 @@ gaius-ui  GET /ws/terminal/{id}          (crates/gaius-ui/src/pty.rs)
    │  portable-pty  master/slave
    ▼
 grok --fullscreen --trust --sandbox workspace -m gaius-thinking
-   │  GROK_HOME = build/dev/.gaius-ui-grok/{id}   (config, sessions)
-   │  CWD       = build/dev/.gaius-ui-ws/{id}    (workspace — not the checkout)
+   │  GROK_HOME = ~/.local/state/gaius-ui/grok/{id}  (not under build/dev symlink)
+   │  CWD       = ~/.local/state/gaius-ui/ws/{id}    (workspace — not the checkout)
    │  HTTP  POST /v1/chat/completions
    ▼
 gaius-ui  openai.rs  →  Engine/Complete  (capability=thinking → Qwen3.8-27B)

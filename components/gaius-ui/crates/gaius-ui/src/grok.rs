@@ -39,11 +39,52 @@ pub fn repo_root() -> PathBuf {
         .unwrap_or(here.join("../../../.."))
 }
 
+/// Real directory for PTY GROK_HOME / workspace. Never under `build/dev`
+/// (that path is a symlink onto RAID; grok sandbox write-deny refuses it).
+pub fn session_state_root() -> Result<PathBuf, String> {
+    if let Ok(p) = std::env::var("GAIUS_UI_STATE") {
+        return ensure_real_dir(PathBuf::from(p));
+    }
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
+    let base = std::env::var("XDG_STATE_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from(home).join(".local/state"));
+    ensure_real_dir(base.join("gaius-ui"))
+}
+
+fn ensure_real_dir(p: PathBuf) -> Result<PathBuf, String> {
+    std::fs::create_dir_all(&p).map_err(|e| {
+        format!(
+            "cannot create gaius-ui state {}: {e}\n  Guru: #UI.00000010.GROKHOME",
+            p.display()
+        )
+    })?;
+    let canon = p.canonicalize().map_err(|e| {
+        format!(
+            "cannot resolve gaius-ui state {}: {e}\n  Guru: #UI.00000010.GROKHOME",
+            p.display()
+        )
+    })?;
+    let mut walk = canon.clone();
+    loop {
+        let meta = std::fs::symlink_metadata(&walk).map_err(|e| e.to_string())?;
+        if meta.file_type().is_symlink() {
+            return Err(format!(
+                "GROK_HOME cannot sit under a symlink ({})\n  Guru: #UI.00000010.GROKHOME\n  Try: export GAIUS_UI_STATE=$HOME/.local/state/gaius-ui",
+                walk.display()
+            ));
+        }
+        if !walk.pop() {
+            break;
+        }
+    }
+    Ok(canon)
+}
+
 pub fn write_session_home(session_id: &str, listen_host: &str) -> Result<PathBuf, String> {
-    let home = repo_root()
-        .join("build/dev/.gaius-ui-grok")
-        .join(session_id);
+    let home = session_state_root()?.join("grok").join(session_id);
     std::fs::create_dir_all(&home).map_err(|e| e.to_string())?;
+    let home = home.canonicalize().map_err(|e| e.to_string())?;
     let base = format!("http://{listen_host}/v1");
     let repo = repo_root();
     let workspace = write_session_workspace(session_id)?;
@@ -115,10 +156,9 @@ enabled = false
 /// Per-session working tree. Not the Gaius checkout. Host stand-in for
 /// the in-browser OPFS a grok-wasm module will own.
 pub fn write_session_workspace(session_id: &str) -> Result<PathBuf, String> {
-    let ws = repo_root()
-        .join("build/dev/.gaius-ui-ws")
-        .join(session_id);
+    let ws = session_state_root()?.join("ws").join(session_id);
     std::fs::create_dir_all(&ws).map_err(|e| e.to_string())?;
+    let ws = ws.canonicalize().map_err(|e| e.to_string())?;
     let readme = ws.join("README.md");
     if !readme.is_file() {
         std::fs::write(
@@ -218,5 +258,29 @@ pub fn listen_loopback(bind: &str) -> String {
         format!("127.0.0.1:{port}")
     } else {
         "127.0.0.1:9890".into()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn session_state_is_not_under_build_dev_symlink() {
+        let tmp = std::env::temp_dir().join(format!(
+            "gaius-ui-state-{}",
+            std::process::id()
+        ));
+        std::env::set_var("GAIUS_UI_STATE", &tmp);
+        let root = session_state_root().expect("state root");
+        let s = root.to_string_lossy();
+        assert!(
+            !s.contains("/build/dev/"),
+            "GROK_HOME must not sit under the KB symlink: {s}"
+        );
+        let home = write_session_home("test-session", "127.0.0.1:9890").expect("home");
+        assert!(home.join("config.toml").is_file());
+        assert!(!home.to_string_lossy().contains("/build/dev/"));
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 }
