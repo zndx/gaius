@@ -634,13 +634,18 @@ async def load_discover(
                 salience=float(r["n"]) / float(total) if total else 0.0,
             )
         )
-    try:
-        from .feature_tape import ensure_tape
+    from .feature_tape import ensure_tape
 
-        await ensure_tape(db_pool)
-        facets.extend(await _feature_facets(db_pool, start, pins=parsed.features))
-    except Exception:
-        pass
+    await ensure_tape(db_pool)
+    facets.extend(
+        await _feature_facets(
+            db_pool,
+            start,
+            pins=parsed.features,
+            clause=clause,
+            clause_args=args,
+        )
+    )
     return DiscoverSurface(
         buckets=buckets,
         docs=docs,
@@ -683,31 +688,55 @@ async def _feature_facets(
     pool: Any,
     start,
     pins: list[tuple[int, int]] | None = None,
+    clause: str = "",
+    clause_args: list[Any] | None = None,
 ) -> list[DiscoverFacet]:
-    async with pool.acquire() as conn:
-        rows = await conn.fetch(
-            """
+    """Feature chips counted on the current result set.
+
+    Pins are AND. Each unselected chip's count is |R ∩ F| — documents
+    that remain if that chip is added next. Selected chips show |R|.
+    """
+    args = list(clause_args or [start])
+    if clause:
+        sql = f"""
+            SELECT t.layer, t.feature_idx,
+                   count(DISTINCT c.id)::int AS n,
+                   avg(t.activation) AS a
+              FROM content_items c
+              LEFT JOIN feed_sources s ON s.id = c.source_id
+              JOIN feature_tape t
+                ON t.event_id = 'inflow:' || c.id::text
+             WHERE {clause}
+             GROUP BY 1, 2
+             ORDER BY count(DISTINCT c.id) DESC
+             LIMIT 80
+        """
+    else:
+        sql = """
             SELECT layer, feature_idx, count(*)::int AS n, avg(activation) AS a
               FROM feature_tape
              WHERE ts >= $1
              GROUP BY 1, 2
              ORDER BY count(*) * avg(activation) DESC
              LIMIT 80
-            """,
-            start,
-        )
+        """
+        args = [start]
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(sql, *args)
     from .clt_skos_propose import load_pref_labels
 
     minted = load_pref_labels()
     out: list[DiscoverFacet] = []
     seen: set[str] = set()
+    pin_keys = {f"{p[0]}:{p[1]}" for p in (pins or [])}
     for r in rows:
         n = int(r["n"])
         a = float(r["a"] or 0.0)
+        notation = f"{int(r['layer'])}:{int(r['feature_idx'])}"
         facet = minted_feature_facet(
             int(r["layer"]), int(r["feature_idx"]), n, n * a, minted
         )
-        if facet is None:
+        if facet is None or (n == 0 and notation not in pin_keys):
             continue
         out.append(facet)
         seen.add(facet.key)
