@@ -667,6 +667,10 @@ def live_workload_id(kind: str) -> str | None:
     names.extend(_cluster_gaius_app_ids(rc.queue))
     uniq = list(dict.fromkeys(names))
     if len(uniq) > ENVELOPE_MAX_APPS:
+        if rc.gpu_tokens == 0:
+            # Reuse the standing compute app; extras are orphans from unique
+            # gaius-mf-label-* mints. Bind does not refuse the tick.
+            return uniq[0]
         cap = (
             f"{ENVELOPE_MAX_APPS} app / {ENVELOPE_GPU} GPU"
             if rc.gpu_tokens
