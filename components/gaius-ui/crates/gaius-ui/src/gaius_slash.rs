@@ -34,7 +34,7 @@ pub const GAIUS_SLASH: &[SlashCmd] = &[
         hint: "[n]",
         description: "Active Gaius cognition thoughts. Use for /thoughts or what are you thinking.",
         mcp: "gaius__get_recent_thoughts",
-        extra: "Call gaius__get_recent_thoughts. If the user passed a number (`/thoughts 20`), set limit to that number (default 10). Only call gaius__trigger_cognition if they ask to think / run a cycle.",
+        extra: "Call gaius__get_recent_thoughts. If the user passed a number after /thoughts, set limit to that number (default 10). Only call gaius__trigger_cognition if they ask to think / run a cycle.",
     },
     SlashCmd {
         name: "research",
@@ -109,9 +109,9 @@ pub const GAIUS_SLASH: &[SlashCmd] = &[
     SlashCmd {
         name: "chart",
         hint: "<symbol>",
-        description: "OHLC chart in the Ask panel. Use for /chart <ticker> (e.g. /chart $SLB).",
+        description: "OHLC chart in the Ask panel. Use for /chart <ticker>.",
         mcp: "gaius__ask_present",
-        extra: "Call gaius__ask_present immediately. symbol is the ticker from the user message after /chart or $. /chart $SLB → symbol SLB. Never substitute an example ticker. Do not invent bars. Do not wrap it in use_tool. If posted=true, say the chart is in Ask. Only print fence if posted is false.",
+        extra: "Call gaius__ask_present immediately. symbol is the ticker from the user message after /chart or $. Never substitute a ticker that is not in the user message. Do not invent bars. Do not wrap it in use_tool. If posted=true, say the chart is in Ask. Only print fence if posted is false.",
     },
     SlashCmd {
         name: "kb",
@@ -181,6 +181,26 @@ mod tests {
         assert!(names.contains(&"gpu"));
         assert!(names.contains(&"agenda"));
         assert!(names.contains(&"chart"));
+    }
+
+    #[test]
+    fn catalog_has_no_example_tickers() {
+        let banned = ["NVDA", "AAPL", "SLB", "SPCX", "MSFT", "TSLA"];
+        for cmd in GAIUS_SLASH {
+            let blob = format!("{} {} {}", cmd.description, cmd.extra, cmd.hint);
+            for t in banned {
+                assert!(
+                    !blob.contains(t),
+                    "/{} skill copy contains example ticker {}",
+                    cmd.name,
+                    t
+                );
+            }
+        }
+        let md = agents_md();
+        for t in banned {
+            assert!(!md.contains(t), "AGENTS.md contains example ticker {t}");
+        }
     }
 
     #[test]

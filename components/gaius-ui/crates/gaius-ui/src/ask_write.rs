@@ -21,9 +21,9 @@ Reply with ONLY this fence (no essay):\n\
 pub const TOOL_LOOP_ADDENDUM: &str = "\
 You are in a tool loop. To use a Gaius MCP tool, emit exactly:\n\
 <tool_call>\n\
-{\"name\":\"gaius__ask_present\",\"arguments\":{\"symbol\":\"SLB\",\"kind\":\"ohlc\"}}\n\
+{\"name\":\"gaius__ask_present\",\"arguments\":{\"symbol\":\"TICKER\",\"kind\":\"ohlc\"}}\n\
 </tool_call>\n\
-Do not only say you will read a skill file. Call the tool.\n\
+Replace TICKER with the symbol from the user message. Call the tool.\n\
 Rich Ask surfaces: kind=ohlc (symbol), kind=table (rows JSON array of objects), \
 kind=links (rows JSON [{href,title}]), kind=markdown (body).\n\
 After a tool result, write a short user-visible answer.";
@@ -39,7 +39,7 @@ Emit exactly one fence (symbol only):\n\
 :::gaius-artifact\n\
 {\"type\":\"ohlc\",\"symbol\":\"TICKER\"}\n\
 :::\n\
-Replace TICKER with the symbol from the user message (/chart $SLB → SLB). Never use an example ticker. Optional from/to as from_date/to_date (YYYY-MM-DD).";
+Replace TICKER with the symbol from the user message. Never use a ticker that is not in that message. Optional from/to as from_date/to_date (YYYY-MM-DD).";
 
 pub const WRITE_ADDENDUM: &str = "\
 You are filling one Agenda write. Clock is the browser timezone (not the server).\n\
@@ -646,6 +646,16 @@ mod tests {
         )
         .expect("tool");
         assert_eq!(from_tool["symbol"], "NVDA");
+    }
+
+    #[test]
+    fn prompt_addenda_have_no_example_tickers() {
+        let blob = format!(
+            "{TOOL_LOOP_ADDENDUM}\n{CHART_HINT}\n{CHART_ADDENDUM}\n{HANDOFF_ADDENDUM}"
+        );
+        for t in ["NVDA", "AAPL", "SLB", "SPCX", "MSFT", "TSLA"] {
+            assert!(!blob.contains(t), "prompt addendum contains example ticker {t}");
+        }
     }
 
     #[test]
