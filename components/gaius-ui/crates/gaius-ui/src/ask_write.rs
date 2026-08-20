@@ -83,21 +83,28 @@ const TICKER_SKIP: &[&str] = &[
     "FOR", "AND", "ASK", "LAST", "DAYS", "WEEK", "PLEASE",
 ];
 
+/// Only skipped on the greedy whole-prompt scan. `/chart ROOT` and `$ROOT` still work.
+const TICKER_SKIP_GREEDY: &[&str] = &[
+    "ROOT", "HTML", "HTTP", "JSON", "GPU", "GPUS", "CLI", "TUI", "UTC",
+    "ISO", "SQL", "API", "MCP", "SAE", "CLT", "SKOS", "YK", "GAIUS",
+    "QUEUE", "PAGE", "FOCUS", "CLOCK", "BOARD", "GRID",
+];
+
 pub fn ticker_in(prompt: &str) -> Option<String> {
     if let Some(rest) = prompt.split_once("/chart").map(|(_, r)| r) {
-        if let Some(t) = token_ticker(rest) {
+        if let Some(t) = token_ticker(rest, false) {
             return Some(t);
         }
     }
     if let Some(pos) = prompt.find('$') {
-        if let Some(t) = token_ticker(&prompt[pos + 1..]) {
+        if let Some(t) = token_ticker(&prompt[pos + 1..], false) {
             return Some(t);
         }
     }
-    token_ticker(prompt)
+    token_ticker(prompt, true)
 }
 
-fn token_ticker(s: &str) -> Option<String> {
+fn token_ticker(s: &str, greedy: bool) -> Option<String> {
     for tok in s.split(|c: char| !c.is_ascii_alphanumeric()) {
         let t = tok.trim();
         if !(2..=5).contains(&t.len()) || !t.chars().all(|c| c.is_ascii_alphabetic()) {
@@ -105,6 +112,9 @@ fn token_ticker(s: &str) -> Option<String> {
         }
         let up = t.to_ascii_uppercase();
         if TICKER_SKIP.contains(&up.as_str()) {
+            continue;
+        }
+        if greedy && TICKER_SKIP_GREEDY.contains(&up.as_str()) {
             continue;
         }
         return Some(up);
@@ -584,6 +594,10 @@ mod tests {
         assert_eq!(ticker_in("/chart NVDA last 90 days").as_deref(), Some("NVDA"));
         assert_eq!(ticker_in("chart $SPCX").as_deref(), Some("SPCX"));
         assert_eq!(ticker_in("show NVDA candlestick").as_deref(), Some("NVDA"));
+        assert!(ticker_in("root.gaius queue chart").is_none());
+        assert!(parse_ohlc_spec("", &[], "root.gaius queue chart").is_none());
+        assert_eq!(ticker_in("/chart ROOT").as_deref(), Some("ROOT"));
+        assert_eq!(ticker_in("$ROOT").as_deref(), Some("ROOT"));
         let spec = parse_ohlc_spec(
             r#":::gaius-artifact
 {"type":"ohlc","symbol":"MSFT"}

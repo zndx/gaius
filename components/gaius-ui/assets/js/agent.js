@@ -39,7 +39,8 @@
       btn.setAttribute("aria-pressed", on ? "true" : "false");
     }
     try {
-      localStorage.setItem("gaius-ask-open", on ? "1" : "0");
+      if (on) localStorage.setItem("gaius-ask-open", "1");
+      else localStorage.removeItem("gaius-ask-open");
     } catch (e) {}
     paintContext();
     if (on && $("ask-input")) $("ask-input").focus();
@@ -452,6 +453,7 @@
 
   var artGen = 0;
   var artSeen = {};
+  var artPrimed = false;
 
   function renderTable(rows) {
     var wrap = document.createElement("div");
@@ -598,7 +600,7 @@
     var id = item.id || "";
     if (id && artSeen[id]) return;
     if (id) artSeen[id] = true;
-    setOpen(true);
+    if (!isOpen() && !busy) return;
     if (window.GaiusSurface) {
       window.GaiusSurface.setFocus({
         kind: item.type || "artifact",
@@ -648,7 +650,13 @@
       })
       .then(function (d) {
         if (!d) return;
-        artGen = d.gen || artGen;
+        var next = typeof d.gen === "number" ? d.gen : artGen;
+        if (!artPrimed) {
+          artGen = next;
+          artPrimed = true;
+          return;
+        }
+        artGen = next;
         (d.items || []).forEach(presentArtifact);
       })
       .catch(function () {});
@@ -684,8 +692,9 @@
     });
     document.addEventListener("gaius-surface", paintContext);
     try {
-      if (localStorage.getItem("gaius-ask-open") === "1") setOpen(true);
+      localStorage.removeItem("gaius-ask-open");
     } catch (e) {}
+    setOpen(false);
     paintContext();
     pollArtifacts();
     setInterval(pollArtifacts, 1000);
