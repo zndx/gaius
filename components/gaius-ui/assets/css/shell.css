@@ -1439,6 +1439,34 @@ body:has(.queues-lineup-page) .shell-footer {
   font-size: 1.35rem;
   font-weight: 600;
   color: var(--text-color-kumo-strong);
+  font-variant-numeric: tabular-nums;
+}
+a.landing-stat {
+  text-decoration: none;
+  color: inherit;
+  transition: border-color 0.15s, transform 0.12s;
+}
+a.landing-stat:hover {
+  text-decoration: none;
+  border-color: var(--text-color-kumo-link, #96a2fc);
+  transform: translateY(-1px);
+}
+.landing-stat-sub {
+  margin-top: 0.35rem;
+  font-size: 0.72rem;
+}
+.landing-stat-value .kumo-spin {
+  display: inline-block;
+  vertical-align: middle;
+  margin-right: 0.35rem;
+}
+.kumo-spin {
+  width: 0.7rem;
+  height: 0.7rem;
+  border-radius: 50%;
+  border: 1.5px solid var(--color-kumo-line);
+  border-top-color: var(--color-kumo-brand);
+  animation: ask-spin 0.8s linear infinite;
 }
 .landing-cards {
   display: grid;

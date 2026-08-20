@@ -3199,6 +3199,18 @@ message DiscoverSurfaceResponse {
   string last_salience_at = 10;
   DiscoverEpisode next_episode = 11;
   string clock = 12;                 // salience | wall
+  DiscoverStatus status = 13;        // Signals-style strip (Engine + lens counts)
+}
+
+// Live strip on Discover `/`. Cheap / cached — not the tape join.
+message DiscoverStatus {
+  bool updating = 1;                 // MV CONCURRENTLY in flight
+  int32 workflows = 2;               // currently running
+  string waiting_at = 3;             // next salience ISO
+  double watts = 4;
+  int32 articles = 5;
+  int32 projects = 6;
+  int32 thoughts = 7;
 }
 
 // Concurrent refresh of discover_landing_36h. Returns as soon as the

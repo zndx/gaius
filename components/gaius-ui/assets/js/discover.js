@@ -9,12 +9,12 @@
   var metaEl = document.getElementById("discover-meta");
   var popularEl = document.getElementById("discover-popular");
   var selectedEl = document.getElementById("discover-selected");
-  var cdEl = document.getElementById("discover-countdown");
   var timer = null;
   var tick = null;
-  var lastEpisode = null;
+  var lastStatus = null;
   var lastLabels = {};
   var inflight = false;
+  var engineLive = false;
 
   function cacheKey() {
     return (
@@ -63,6 +63,17 @@
     return h + "h " + m + "m";
   }
 
+  function fmtHms(s) {
+    s = Math.max(0, Math.floor(s));
+    var h = Math.floor(s / 3600);
+    var m = Math.floor((s % 3600) / 60);
+    var sec = s % 60;
+    function pad(n) {
+      return (n < 10 ? "0" : "") + n;
+    }
+    return pad(h) + ":" + pad(m) + ":" + pad(sec);
+  }
+
   function currentQuery() {
     return (qEl && qEl.value ? qEl.value : "").trim();
   }
@@ -91,30 +102,50 @@
       .join("");
   }
 
-  function paintCountdown(ep, lastAt, clock) {
-    if (!cdEl) return;
-    lastEpisode = ep;
-    if (!ep || !ep.at) {
-      cdEl.hidden = true;
+  function paintStrip(st, connected) {
+    lastStatus = st || lastStatus;
+    var eng = document.getElementById("stat-engine");
+    var wattsEl = document.getElementById("stat-watts");
+    var art = document.getElementById("stat-articles");
+    var proj = document.getElementById("stat-projects");
+    var th = document.getElementById("stat-thoughts");
+    if (art && st) art.textContent = String(st.articles || 0);
+    if (proj && st) proj.textContent = String(st.projects || 0);
+    if (th && st) th.textContent = String(st.thoughts || 0);
+    if (wattsEl) {
+      var w = st && typeof st.watts === "number" ? st.watts : null;
+      wattsEl.textContent =
+        w != null && w > 0 ? "Watts: " + Math.round(w) : "Watts: —";
+    }
+    if (!eng) return;
+    if (!connected) {
+      eng.innerHTML = '<span class="pill warn">connecting…</span>';
       return;
     }
-    var eta = ep.eta_s;
-    if (ep.at) {
-      eta = Math.max(0, Math.round((new Date(ep.at).getTime() - Date.now()) / 1000));
+    if (st && st.updating) {
+      eng.innerHTML =
+        '<span class="kumo-spin" aria-hidden="true"></span>' +
+        '<span class="pill warn">Updating</span>';
+      return;
     }
-    var last = lastAt ? "Last accrual " + fmtTs(lastAt) : "No tape yet";
-    cdEl.hidden = false;
-    cdEl.innerHTML =
-      '<strong>Next salience:</strong> ' +
-      esc(ep.label || ep.kind) +
-      " in <span class=\"cd-eta\">" +
-      fmtEta(eta) +
-      "</span> <span class=\"muted\">(" +
-      fmtTs(ep.at) +
-      ")</span>" +
-      '<span class="cd-last muted"> · ' +
-      last +
-      "</span>";
+    var n = st ? Number(st.workflows || 0) : 0;
+    if (n > 0) {
+      eng.innerHTML =
+        '<span class="kumo-spin" aria-hidden="true"></span>' +
+        "Workflows: " +
+        n;
+      return;
+    }
+    var waitAt = st && st.waiting_at;
+    if (waitAt) {
+      var eta = Math.max(
+        0,
+        Math.round((new Date(waitAt).getTime() - Date.now()) / 1000)
+      );
+      eng.textContent = "Waiting: " + fmtHms(eta);
+      return;
+    }
+    eng.innerHTML = '<span class="pill ok">connected</span>';
   }
 
   function paintTrends(buckets) {
@@ -254,7 +285,8 @@
       popularEl.innerHTML = '<span class="muted">No facets yet</span>';
     }
     paintSelected();
-    paintCountdown(data.next_episode, data.last_salience_at, data.clock);
+    engineLive = true;
+    paintStrip(data.status, true);
   }
 
   async function load() {
@@ -280,10 +312,12 @@
       var data = await r.json();
       if (!r.ok) {
         metaEl.textContent = data.error || r.statusText || "Discover unreachable";
+        if (!engineLive) paintStrip(null, false);
         return;
       }
       if (data.error) {
         metaEl.textContent = data.error;
+        if (!engineLive) paintStrip(null, false);
         return;
       }
       writeCache(data);
@@ -295,6 +329,7 @@
         if (metaEl) metaEl.textContent = (metaEl.textContent || "") + " · cached";
       } else if (metaEl) {
         metaEl.textContent = "Discover unreachable";
+        paintStrip(null, false);
       }
     } finally {
       clearTimeout(to);
@@ -311,7 +346,9 @@
     timer = setInterval(load, 5000);
     if (tick) clearInterval(tick);
     tick = setInterval(function () {
-      if (lastEpisode) paintCountdown(lastEpisode, null, null);
+      if (engineLive && lastStatus && !lastStatus.updating) {
+        paintStrip(lastStatus, true);
+      }
     }, 1000);
   }
 

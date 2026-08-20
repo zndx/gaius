@@ -1,6 +1,26 @@
 {% include "chrome.html" %}
 <div class="discover-page" id="discover-page">
-  <div id="discover-countdown" class="discover-countdown" hidden></div>
+  <div class="landing-stats" id="discover-stats" aria-label="Engine and Summary">
+    <div class="landing-stat" id="discover-stat-engine">
+      <div class="landing-stat-label">Engine</div>
+      <div class="landing-stat-value" id="stat-engine">
+        <span class="pill warn">connecting…</span>
+      </div>
+      <div class="landing-stat-sub muted" id="stat-watts">Watts: —</div>
+    </div>
+    <a class="landing-stat" href="/summary?lens=articles">
+      <div class="landing-stat-label">Articles</div>
+      <div class="landing-stat-value mono" id="stat-articles">—</div>
+    </a>
+    <a class="landing-stat" href="/summary?lens=projects">
+      <div class="landing-stat-label">Projects</div>
+      <div class="landing-stat-value mono" id="stat-projects">—</div>
+    </a>
+    <a class="landing-stat" href="/summary?lens=thoughts">
+      <div class="landing-stat-label">Thoughts</div>
+      <div class="landing-stat-value mono" id="stat-thoughts">—</div>
+    </a>
+  </div>
   <div class="discover-toolbar">
     <label class="discover-query-wrap">
       <span class="muted">Query</span>

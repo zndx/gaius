@@ -52,6 +52,11 @@ _refresh_task: asyncio.Task[None] | None = None
 _refresh_again = False
 _last_refreshed_at = ""
 _landing_snap: DiscoverSurface | None = None
+_strip_workflows = 0
+_strip_watts = 0.0
+_strip_articles = 0
+_strip_projects = 0
+_strip_thoughts = 0
 
 ACQUIRE_S = 1.0
 
@@ -66,6 +71,101 @@ def remember_landing(snap: DiscoverSurface) -> None:
     _landing_snap = snap
     if snap.scraped_at:
         _last_refreshed_at = snap.scraped_at
+
+
+def landing_updating() -> bool:
+    task = _refresh_task
+    return task is not None and not task.done()
+
+
+def next_waiting_at(now: datetime | None = None) -> datetime:
+    """Soonest salience cron — no DB."""
+    from gaius.engine.services.discover_surface import next_cron
+
+    ts = now or datetime.now(timezone.utc)
+    return min(
+        next_cron(ts, "*/5", "*"),
+        next_cron(ts, "17", "*/4"),
+        next_cron(ts, "35", "0,4,8,12,16,20"),
+        next_cron(ts, "45", "*/2"),
+    )
+
+
+@dataclass(frozen=True)
+class LandingStrip:
+    updating: bool
+    workflows: int
+    waiting_at: str
+    watts: float
+    articles: int
+    projects: int
+    thoughts: int
+
+
+def landing_strip(*, extra_workflows: int = 0) -> LandingStrip:
+    wait = next_waiting_at()
+    return LandingStrip(
+        updating=landing_updating(),
+        workflows=max(0, int(_strip_workflows) + max(0, extra_workflows)),
+        waiting_at=wait.isoformat().replace("+00:00", "Z"),
+        watts=float(_strip_watts or 0.0),
+        articles=int(_strip_articles),
+        projects=int(_strip_projects),
+        thoughts=int(_strip_thoughts),
+    )
+
+
+def _refresh_lens_counts() -> None:
+    global _strip_articles, _strip_projects
+    from gaius.engine.services.agenda_notes import kb_root_from_env
+    from gaius.engine.services.summary_lineup import _article_cards, _project_cards
+
+    kb = kb_root_from_env()
+    _strip_articles = len(_article_cards(kb))
+    _strip_projects = len(_project_cards(kb))
+
+
+async def refresh_landing_strip(db_pool: Any) -> None:
+    """Fill strip cache. Must not nest an acquire on a held connection."""
+    global _strip_workflows, _strip_watts, _strip_thoughts
+    try:
+        _refresh_lens_counts()
+    except Exception:
+        logger.exception("discover strip lens counts failed")
+    if db_pool is None:
+        return
+    try:
+        conn = await db_pool.acquire(timeout=0.4)
+    except Exception:
+        return
+    try:
+        try:
+            thoughts = await conn.fetchval("SELECT count(*) FROM cognition_thoughts")
+            if thoughts is not None:
+                _strip_thoughts = int(thoughts)
+        except Exception:
+            pass
+        try:
+            running = await conn.fetchval(
+                "SELECT count(*) FROM scheduled_tasks WHERE status = 'running'"
+            )
+            if running is not None:
+                _strip_workflows = int(running)
+        except Exception:
+            pass
+        try:
+            watts = await conn.fetchval(
+                """
+                SELECT power_avg_w FROM meta.gpu_minute_stats
+                 ORDER BY minute DESC LIMIT 1
+                """
+            )
+            if watts is not None:
+                _strip_watts = float(watts)
+        except Exception:
+            pass
+    finally:
+        await db_pool.release(conn)
 
 
 @dataclass(frozen=True)
@@ -248,6 +348,10 @@ async def load_landing_mv(db_pool: Any, *, limit: int) -> DiscoverSurface:
         rows, limit=limit, gpu_rows=[], episode=None
     )
     remember_landing(snap)
+    if _strip_articles == 0 and _strip_projects == 0 and _strip_thoughts == 0:
+        asyncio.create_task(
+            refresh_landing_strip(db_pool), name="discover-strip-seed"
+        )
     return snap
 
 
@@ -292,6 +396,7 @@ async def _refresh_loop(db_pool: Any) -> None:
         try:
             await refresh_discover_landing_now(db_pool)
             await load_landing_mv(db_pool, limit=50)
+            await refresh_landing_strip(db_pool)
         except Exception:
             logger.exception("discover_landing_36h concurrent refresh failed")
             raise

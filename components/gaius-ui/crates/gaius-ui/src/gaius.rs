@@ -159,6 +159,7 @@ impl Gaius {
             })
             .collect();
         let ep = r.next_episode;
+        let st = r.status;
         Ok(serde_json::json!({
             "window": r.window,
             "query": r.query,
@@ -172,6 +173,15 @@ impl Gaius {
                 "at": e.at,
                 "eta_s": e.eta_s,
                 "label": e.label,
+            })),
+            "status": st.map(|s| serde_json::json!({
+                "updating": s.updating,
+                "workflows": s.workflows,
+                "waiting_at": s.waiting_at,
+                "watts": s.watts,
+                "articles": s.articles,
+                "projects": s.projects,
+                "thoughts": s.thoughts,
             })),
             "buckets": buckets,
             "docs": docs,

@@ -4847,7 +4847,7 @@ class DiscoverFacet(_message.Message):
     def __init__(self, key: _Optional[str] = ..., kind: _Optional[str] = ..., count: _Optional[int] = ..., salience: _Optional[float] = ..., label: _Optional[str] = ...) -> None: ...
 
 class DiscoverSurfaceResponse(_message.Message):
-    __slots__ = ("buckets", "docs", "facets", "total", "window", "query", "scraped_at", "interval", "error", "last_salience_at", "next_episode", "clock")
+    __slots__ = ("buckets", "docs", "facets", "total", "window", "query", "scraped_at", "interval", "error", "last_salience_at", "next_episode", "clock", "status")
     BUCKETS_FIELD_NUMBER: _ClassVar[int]
     DOCS_FIELD_NUMBER: _ClassVar[int]
     FACETS_FIELD_NUMBER: _ClassVar[int]
@@ -4860,6 +4860,7 @@ class DiscoverSurfaceResponse(_message.Message):
     LAST_SALIENCE_AT_FIELD_NUMBER: _ClassVar[int]
     NEXT_EPISODE_FIELD_NUMBER: _ClassVar[int]
     CLOCK_FIELD_NUMBER: _ClassVar[int]
+    STATUS_FIELD_NUMBER: _ClassVar[int]
     buckets: _containers.RepeatedCompositeFieldContainer[DiscoverBucket]
     docs: _containers.RepeatedCompositeFieldContainer[DiscoverDoc]
     facets: _containers.RepeatedCompositeFieldContainer[DiscoverFacet]
@@ -4872,7 +4873,26 @@ class DiscoverSurfaceResponse(_message.Message):
     last_salience_at: str
     next_episode: DiscoverEpisode
     clock: str
-    def __init__(self, buckets: _Optional[_Iterable[_Union[DiscoverBucket, _Mapping]]] = ..., docs: _Optional[_Iterable[_Union[DiscoverDoc, _Mapping]]] = ..., facets: _Optional[_Iterable[_Union[DiscoverFacet, _Mapping]]] = ..., total: _Optional[int] = ..., window: _Optional[str] = ..., query: _Optional[str] = ..., scraped_at: _Optional[str] = ..., interval: _Optional[str] = ..., error: _Optional[str] = ..., last_salience_at: _Optional[str] = ..., next_episode: _Optional[_Union[DiscoverEpisode, _Mapping]] = ..., clock: _Optional[str] = ...) -> None: ...
+    status: DiscoverStatus
+    def __init__(self, buckets: _Optional[_Iterable[_Union[DiscoverBucket, _Mapping]]] = ..., docs: _Optional[_Iterable[_Union[DiscoverDoc, _Mapping]]] = ..., facets: _Optional[_Iterable[_Union[DiscoverFacet, _Mapping]]] = ..., total: _Optional[int] = ..., window: _Optional[str] = ..., query: _Optional[str] = ..., scraped_at: _Optional[str] = ..., interval: _Optional[str] = ..., error: _Optional[str] = ..., last_salience_at: _Optional[str] = ..., next_episode: _Optional[_Union[DiscoverEpisode, _Mapping]] = ..., clock: _Optional[str] = ..., status: _Optional[_Union[DiscoverStatus, _Mapping]] = ...) -> None: ...
+
+class DiscoverStatus(_message.Message):
+    __slots__ = ("updating", "workflows", "waiting_at", "watts", "articles", "projects", "thoughts")
+    UPDATING_FIELD_NUMBER: _ClassVar[int]
+    WORKFLOWS_FIELD_NUMBER: _ClassVar[int]
+    WAITING_AT_FIELD_NUMBER: _ClassVar[int]
+    WATTS_FIELD_NUMBER: _ClassVar[int]
+    ARTICLES_FIELD_NUMBER: _ClassVar[int]
+    PROJECTS_FIELD_NUMBER: _ClassVar[int]
+    THOUGHTS_FIELD_NUMBER: _ClassVar[int]
+    updating: bool
+    workflows: int
+    waiting_at: str
+    watts: float
+    articles: int
+    projects: int
+    thoughts: int
+    def __init__(self, updating: bool = ..., workflows: _Optional[int] = ..., waiting_at: _Optional[str] = ..., watts: _Optional[float] = ..., articles: _Optional[int] = ..., projects: _Optional[int] = ..., thoughts: _Optional[int] = ...) -> None: ...
 
 class RefreshDiscoverLandingRequest(_message.Message):
     __slots__ = ("reason",)

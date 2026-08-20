@@ -59,6 +59,20 @@ def test_window_tokens() -> None:
     assert parse_window("24h") == timedelta(hours=24)
 
 
+def test_landing_strip_waiting_hhmmss() -> None:
+    from datetime import datetime, timezone, timedelta
+    from gaius.engine.services.discover_landing import landing_strip, next_waiting_at
+
+    now = datetime(2026, 8, 20, 12, 0, 1, tzinfo=timezone.utc)
+    nxt = next_waiting_at(now)
+    assert nxt > now
+    assert nxt - now < timedelta(minutes=6)
+    strip = landing_strip()
+    assert strip.waiting_at
+    assert strip.updating is False
+    assert strip.workflows >= 0
+
+
 def test_remember_and_peek_landing() -> None:
     from gaius.engine.services.discover_landing import (
         peek_landing,

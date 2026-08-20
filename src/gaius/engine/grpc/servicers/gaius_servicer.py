@@ -238,6 +238,7 @@ from ...generated import (
     DiscoverDoc as ProtoDiscoverDoc,
     DiscoverFacet as ProtoDiscoverFacet,
     DiscoverEpisode as ProtoDiscoverEpisode,
+    DiscoverStatus as ProtoDiscoverStatus,
     RefreshDiscoverLandingRequest,
     RefreshDiscoverLandingResponse,
     # CLT (Cross-Layer Transcoders)
@@ -2133,6 +2134,27 @@ class GaiusServicer(GaiusServiceServicer):
                 if snap.next_episode
                 else None
             ),
+            status=self._discover_status(),
+        )
+
+    def _discover_status(self) -> ProtoDiscoverStatus:
+        from ...services.discover_landing import landing_strip
+
+        extra = 0
+        sched = getattr(self._services, "flow_scheduler_service", None)
+        if sched is None:
+            sched = getattr(self._services, "_flow_scheduler_service", None)
+        if sched is not None:
+            extra = len(getattr(sched, "_active_runs", {}) or {})
+        s = landing_strip(extra_workflows=extra)
+        return ProtoDiscoverStatus(
+            updating=s.updating,
+            workflows=s.workflows,
+            waiting_at=s.waiting_at,
+            watts=s.watts,
+            articles=s.articles,
+            projects=s.projects,
+            thoughts=s.thoughts,
         )
 
     async def RefreshDiscoverLanding(
