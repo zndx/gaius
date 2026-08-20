@@ -955,17 +955,19 @@ async fn stream_complete(
         };
         send(ctx.status("Consulting Engine…", "consulting", 0, 0)).await;
 
-        let want_chart = ask_write::looks_like_chart(&prompt);
-        let small = ask_write::is_small_ask(&cap);
-        // Charts: AskPresent gRPC (engine FMP). Does not wait on light/medium vLLM.
-        if small && want_chart && !ask_write::looks_like_agenda_write(&prompt) {
-            if let Some(ohlc) = ask_write::parse_ohlc_spec("", &[], &prompt) {
+        let intent = ask_write::user_intent_text(&prompt);
+        let want_chart = ask_write::looks_like_chart(intent);
+        // Charts: AskPresent (FMP). Terminal prose is high-priority — do not
+        // wait on thinking Complete for a candlestick.
+        if want_chart && !ask_write::looks_like_agenda_write(intent) {
+            if let Some(ohlc) = ask_write::parse_ohlc_spec("", &[], intent) {
                 apply_chart(&tx, &ctx, &state.artifacts, &ohlc).await;
                 send(ctx.done()).await;
                 send("[DONE]".into()).await;
                 return;
             }
         }
+        let small = ask_write::is_small_ask(&cap);
 
         send(ctx.status(
             &heartbeat_text("thinking", 0, Some(pin_est), Some(0), None, true),

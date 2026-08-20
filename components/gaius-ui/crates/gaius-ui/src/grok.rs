@@ -134,8 +134,7 @@ env = {{ PYTHONDONTWRITEBYTECODE = "1", PYTHONUNBUFFERED = "1" }}
 enabled = true
 startup_timeout_sec = 45
 
-[mcp_servers.cybersec]
-enabled = false
+disabled_mcp_servers = ["cybersec"]
 "#,
         base = base,
         mcp_py = mcp_py.display(),

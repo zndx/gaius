@@ -60,23 +60,80 @@ pub fn is_small_ask(cap: &str) -> bool {
 }
 
 pub fn looks_like_chart(prompt: &str) -> bool {
-    let t = prompt.to_ascii_lowercase();
-    // Bare "chart" matches YK/queue prose and the system hint. Require a
-    // candlestick intent or an explicit ticker marker.
+    let q = user_intent_text(prompt);
+    let t = q.to_ascii_lowercase();
+    // Bare "chart" matches YK/queue prose. "stock chart" is user intent.
     if t.contains("/chart")
         || t.contains("candlestick")
         || t.contains("ohlc")
         || t.contains("shart")
+        || t.contains("stock chart")
+        || t.contains("price chart")
+        || t.contains("performance chart")
+        || t.contains("chart for")
     {
         return true;
     }
-    ticker_in(prompt).is_some()
+    ticker_in(q).is_some()
         && (t.contains("stock")
             || t.contains("price")
             || t.contains("quote")
             || t.contains("candle")
             || t.contains("performance")
-            || prompt.contains('$'))
+            || q.contains('$'))
+}
+
+/// Grok wraps the turn in user_info / user_query. Chart intent lives there.
+pub fn user_intent_text(prompt: &str) -> &str {
+    if let Some(start) = prompt.find("<user_query>") {
+        let rest = &prompt[start + "<user_query>".len()..];
+        if let Some(end) = rest.find("</user_query>") {
+            let inner = rest[..end].trim();
+            if !inner.is_empty() {
+                return inner;
+            }
+        }
+    }
+    if let Some(idx) = prompt.rfind("User: ") {
+        let chunk = prompt[idx + 6..].trim();
+        if chunk.len() < 400 {
+            return chunk;
+        }
+        for line in chunk.lines().map(str::trim).rev() {
+            if line.is_empty() || line.starts_with('<') {
+                continue;
+            }
+            if (8..400).contains(&line.len()) {
+                return line;
+            }
+        }
+    }
+    prompt
+}
+
+/// Ticker or company name to send to AskPresent (engine resolves names).
+pub fn chart_symbol_query(prompt: &str) -> Option<String> {
+    let q = user_intent_text(prompt);
+    if q.contains("/chart") || q.contains('$') {
+        if let Some(t) = ticker_in(q) {
+            return Some(t);
+        }
+    }
+    let lower = q.to_ascii_lowercase();
+    for sep in [" for ", " of "] {
+        if let Some(i) = lower.rfind(sep) {
+            let rest = q[i + sep.len()..].trim();
+            let name: String = rest
+                .chars()
+                .take_while(|c| c.is_alphanumeric() || *c == ' ' || *c == '.')
+                .collect();
+            let name = name.trim().trim_end_matches('.');
+            if name.len() >= 2 && !is_infra_ticker(name) {
+                return Some(name.to_string());
+            }
+        }
+    }
+    ticker_in(q)
 }
 
 pub fn is_infra_ticker(symbol: &str) -> bool {
@@ -246,10 +303,14 @@ pub fn parse_ohlc_spec(text: &str, calls: &[(String, Value)], prompt: &str) -> O
             return Some(out);
         }
     }
-    if looks_like_chart(prompt) {
-        if let Some(t) = ticker_in(prompt) {
+    let intent = user_intent_text(prompt);
+    if looks_like_chart(intent) || looks_like_chart(prompt) {
+        if let Some(t) = chart_symbol_query(prompt) {
+            if is_infra_ticker(&t) && !intent.contains("/chart") && !intent.contains('$') {
+                return None;
+            }
             let mut out = json!({"type": "ohlc", "symbol": t});
-            if let Some((from, to)) = window_from_prompt(prompt) {
+            if let Some((from, to)) = window_from_prompt(intent) {
                 out["from_date"] = json!(from);
                 out["to_date"] = json!(to);
             }
@@ -596,6 +657,18 @@ mod tests {
     fn chart_intent_and_ticker() {
         assert!(looks_like_chart("show NVDA candlestick"));
         assert!(looks_like_chart("/chart AAPL"));
+        assert!(looks_like_chart("let's see a 30 day stock chart for Disney"));
+        let disney = parse_ohlc_spec("", &[], "let's see a 30 day stock chart for Disney")
+            .expect("disney");
+        assert_eq!(disney["symbol"], "Disney");
+        assert!(disney.get("from_date").is_some());
+        let wrapped = "User: <user_info> OS Version: linux\n<user_query>\nlet's see a 30 day stock chart for Disney\n</user_query>";
+        assert_eq!(
+            user_intent_text(wrapped),
+            "let's see a 30 day stock chart for Disney"
+        );
+        let w = parse_ohlc_spec("", &[], wrapped).expect("wrapped disney");
+        assert_eq!(w["symbol"], "Disney");
         assert!(looks_like_chart("Generate a 30 day performance shart for $SLB"));
         let slb = parse_ohlc_spec("", &[], "Generate a 30 day performance shart for $SLB")
             .expect("slb");

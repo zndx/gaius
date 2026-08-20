@@ -53,6 +53,7 @@ class FMPEndpoint:
     CONGRESS = "congress-trading"
     EIGHT_K = "sec-8k"
     HISTORICAL_EOD = "historical-price-eod"
+    SEARCH_NAME = "search-name"
     UNKNOWN = "unknown"
 
     @classmethod

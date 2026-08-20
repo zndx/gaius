@@ -607,6 +607,43 @@ class FMPClient:
 
         return None
 
+    async def search_ticker(
+        self,
+        query: str,
+        *,
+        limit: int = 5,
+        source_context: dict | None = None,
+    ) -> list[dict[str, str]]:
+        """Resolve a company name or fragment to ticker symbols."""
+        q = (query or "").strip()
+        if not q:
+            return []
+        data = await self._request(
+            endpoint=FMPEndpoint.SEARCH_NAME,
+            path="/stable/search-name",
+            params={"query": q, "limit": str(limit)},
+            source_context=source_context or {"source": "ask_present_resolve"},
+        )
+        rows = data if isinstance(data, list) else []
+        if isinstance(data, dict):
+            inner = data.get("results") or data.get("data") or []
+            if isinstance(inner, list):
+                rows = inner
+        out: list[dict[str, str]] = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            sym = str(row.get("symbol") or "").strip().upper()
+            if not sym:
+                continue
+            out.append(
+                {
+                    "symbol": sym,
+                    "name": str(row.get("name") or row.get("companyName") or ""),
+                }
+            )
+        return out
+
     async def get_historical_eod(
         self,
         symbol: str,

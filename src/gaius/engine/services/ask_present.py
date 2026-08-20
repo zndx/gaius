@@ -58,7 +58,12 @@ class AskPresentError(RuntimeError):
     """Fail-fast present error with guru in the message."""
 
 
-def _parse_list(raw: str, what: str) -> list[Any]:
+def _looks_like_ticker(symbol: str) -> bool:
+    s = (symbol or "").strip()
+    return 1 <= len(s) <= 5 and s.isalpha()
+
+
+def _parse_list(raw: str, what: str) -> list[Any]::
     text = (raw or "").strip()
     if not text:
         return []
@@ -92,6 +97,20 @@ async def build_artifact(
         if not parsed and artifact["symbol"]:
             client = await get_fmp_client()
             try:
+                raw_sym = artifact["symbol"]
+                if not _looks_like_ticker(raw_sym):
+                    hits = await client.search_ticker(raw_sym)
+                    if not hits:
+                        raise AskPresentError(
+                            f"No ticker for {raw_sym!r}.\n"
+                            "  Guru: #UI.00000011.NOSYMBOL\n"
+                            "  Use /chart $TICKER if you know the symbol."
+                        )
+                    artifact["symbol"] = hits[0]["symbol"]
+                    if not artifact["title"]:
+                        artifact["title"] = hits[0].get("name") or artifact["symbol"]
+                if artifact["symbol"] in _INFRA_TICKERS:
+                    raise AskPresentError(GURU_INFRA)
                 parsed = await client.get_historical_eod(
                     artifact["symbol"],
                     from_date=from_date or None,

@@ -2457,11 +2457,12 @@ class OrchestratorService:
 
             # Check if process is still running (HEALTHY, UNHEALTHY, FAILED)
             if proc.process and proc.process.returncode is not None:
+                proc.status = ProcessStatus.FAILED
+                if self._restart_attempts.get(alias, 0) >= self._max_restart_attempts:
+                    continue
                 logger.warning(
                     f"Process for {alias} exited with code {proc.process.returncode}"
                 )
-                proc.status = ProcessStatus.FAILED
-                # Attempt auto-restart if enabled
                 await self._maybe_restart_endpoint(alias)
                 continue
 
