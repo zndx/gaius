@@ -61,11 +61,11 @@ pub fn is_small_ask(cap: &str) -> bool {
 
 pub fn looks_like_chart(prompt: &str) -> bool {
     let t = prompt.to_ascii_lowercase();
+    // Bare "chart" matches YK/queue prose and the system hint. Require a
+    // candlestick intent or an explicit ticker marker.
     if t.contains("/chart")
         || t.contains("candlestick")
-        || t.contains("candle")
         || t.contains("ohlc")
-        || t.contains("chart")
         || t.contains("shart")
     {
         return true;
@@ -74,8 +74,13 @@ pub fn looks_like_chart(prompt: &str) -> bool {
         && (t.contains("stock")
             || t.contains("price")
             || t.contains("quote")
+            || t.contains("candle")
             || t.contains("performance")
             || prompt.contains('$'))
+}
+
+pub fn is_infra_ticker(symbol: &str) -> bool {
+    TICKER_SKIP_GREEDY.contains(&symbol.trim().to_ascii_uppercase().as_str())
 }
 
 const TICKER_SKIP: &[&str] = &[
@@ -204,8 +209,20 @@ pub fn parse_ohlc_spec(text: &str, calls: &[(String, Value)], prompt: &str) -> O
                 .and_then(|x| x.as_str())
                 .unwrap_or("");
             if typ == "ohlc" {
-                if v.get("symbol").and_then(|s| s.as_str()).unwrap_or("").trim().is_empty()
-                    && v.get("bars").and_then(|b| b.as_array()).map(|a| !a.is_empty()) != Some(true)
+                let sym = v
+                    .get("symbol")
+                    .and_then(|s| s.as_str())
+                    .unwrap_or("")
+                    .trim();
+                if is_infra_ticker(sym)
+                    && !prompt.contains("/chart")
+                    && !prompt.contains('$')
+                {
+                    return None;
+                }
+                if sym.is_empty()
+                    && v.get("bars").and_then(|b| b.as_array()).map(|a| !a.is_empty())
+                        != Some(true)
                 {
                     // fall through to ticker
                 } else {
@@ -595,7 +612,19 @@ mod tests {
         assert_eq!(ticker_in("chart $SPCX").as_deref(), Some("SPCX"));
         assert_eq!(ticker_in("show NVDA candlestick").as_deref(), Some("NVDA"));
         assert!(ticker_in("root.gaius queue chart").is_none());
+        assert!(!looks_like_chart("root.gaius queue chart"));
+        assert!(is_infra_ticker("ROOT"));
         assert!(parse_ohlc_spec("", &[], "root.gaius queue chart").is_none());
+        assert!(
+            parse_ohlc_spec(
+                r#":::gaius-artifact
+{"type":"ohlc","symbol":"ROOT"}
+:::"#,
+                &[],
+                "looking at root.internal.inference.extract",
+            )
+            .is_none()
+        );
         assert_eq!(ticker_in("/chart ROOT").as_deref(), Some("ROOT"));
         assert_eq!(ticker_in("$ROOT").as_deref(), Some("ROOT"));
         let spec = parse_ohlc_spec(

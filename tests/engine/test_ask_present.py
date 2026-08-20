@@ -28,3 +28,9 @@ async def test_table_and_links() -> None:
 async def test_ohlc_needs_symbol_or_bars() -> None:
     with pytest.raises(AskPresentError, match="UI.00000008"):
         await build_artifact(kind="ohlc")
+
+
+@pytest.mark.asyncio
+async def test_ohlc_rejects_yk_root_token() -> None:
+    with pytest.raises(AskPresentError, match="UI.00000009"):
+        await build_artifact(kind="ohlc", symbol="ROOT")

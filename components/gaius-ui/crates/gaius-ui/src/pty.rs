@@ -57,6 +57,19 @@ impl LivePty {
             subs.retain(|tx| tx.send(peeled.vt.clone()).is_ok());
         }
         for raw in peeled.artifacts {
+            let kind = raw
+                .get("type")
+                .and_then(|v| v.as_str())
+                .or_else(|| raw.get("kind").and_then(|v| v.as_str()))
+                .unwrap_or("");
+            let sym = raw
+                .get("symbol")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            if kind.eq_ignore_ascii_case("ohlc") && crate::ask_write::is_infra_ticker(sym) {
+                tracing::info!(symbol = sym, "drop PTY ohlc for infra ticker");
+                continue;
+            }
             match self.artifacts.push(raw) {
                 Ok(item) => {
                     tracing::info!(

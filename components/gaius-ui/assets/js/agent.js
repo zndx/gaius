@@ -324,6 +324,7 @@
   function send(text) {
     text = (text || "").trim();
     if (!text || busy) return;
+    askedThisSession = true;
     addBubble("user", text);
     history.push({ role: "user", content: text });
     $("ask-input").value = "";
@@ -454,6 +455,7 @@
   var artGen = 0;
   var artSeen = {};
   var artPrimed = false;
+  var askedThisSession = false;
 
   function renderTable(rows) {
     var wrap = document.createElement("div");
@@ -600,7 +602,7 @@
     var id = item.id || "";
     if (id && artSeen[id]) return;
     if (id) artSeen[id] = true;
-    if (!isOpen() && !busy) return;
+    if (!askedThisSession || (!isOpen() && !busy)) return;
     if (window.GaiusSurface) {
       window.GaiusSurface.setFocus({
         kind: item.type || "artifact",

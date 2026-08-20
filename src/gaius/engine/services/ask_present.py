@@ -19,6 +19,39 @@ GURU_NOBARS = (
     "ohlc needs bars or a symbol with FMP history.\n"
     "  Guru: #UI.00000008.NOBARS"
 )
+GURU_INFRA = (
+    "ohlc symbol is an infra token, not a ticker.\n"
+    "  Guru: #UI.00000009.INFRAOHLC\n"
+    "  Use /chart $TICKER or $NVDA. ROOT/HTML/YK are not charts."
+)
+_INFRA_TICKERS = frozenset(
+    {
+        "ROOT",
+        "HTML",
+        "HTTP",
+        "JSON",
+        "GPU",
+        "GPUS",
+        "CLI",
+        "TUI",
+        "UTC",
+        "ISO",
+        "SQL",
+        "API",
+        "MCP",
+        "SAE",
+        "CLT",
+        "SKOS",
+        "YK",
+        "GAIUS",
+        "QUEUE",
+        "PAGE",
+        "FOCUS",
+        "CLOCK",
+        "BOARD",
+        "GRID",
+    }
+)
 
 
 class AskPresentError(RuntimeError):
@@ -54,6 +87,8 @@ async def build_artifact(
     }
     if kind == "ohlc":
         parsed = _parse_list(payload_json, "bars")
+        if artifact["symbol"] in _INFRA_TICKERS and not parsed:
+            raise AskPresentError(GURU_INFRA)
         if not parsed and artifact["symbol"]:
             client = await get_fmp_client()
             try:
