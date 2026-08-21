@@ -129,7 +129,7 @@ default_skills_installs_purged = true
 
 [mcp_servers.gaius]
 command = "{mcp_py}"
-args = ["-m", "gaius.mcp_server"]
+args = ["-m", "gaius.mcp_terminal"]
 env = {{ PYTHONDONTWRITEBYTECODE = "1", PYTHONUNBUFFERED = "1" }}
 enabled = true
 startup_timeout_sec = 45

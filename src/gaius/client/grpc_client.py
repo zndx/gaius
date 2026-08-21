@@ -1734,6 +1734,8 @@ class GrpcEngineClient:
             KnowledgeSummaryRequest,
             FederationSurfacesRequest,
             AskPresentRequest,
+            FmpNewsRequest,
+            FmpSearchRequest,
             SummaryIndexRequest,
             SummaryGetRequest,
             SummaryHopRequest,
@@ -1921,6 +1923,43 @@ class GrpcEngineClient:
                     for i in response.items
                 ]
             }
+
+        if action == "FmpNews":
+            response = await self._stub.FmpNews(
+                FmpNewsRequest(
+                    kind=str(params.get("kind") or "stock"),
+                    symbol=str(params.get("symbol") or ""),
+                    limit=int(params.get("limit") or 15),
+                ),
+                timeout=timeout,
+            )
+            if response.error:
+                return {"error": response.error}
+            import json as _json
+
+            try:
+                items = _json.loads(response.items_json or "[]")
+            except _json.JSONDecodeError:
+                items = []
+            return {"items": items}
+
+        if action == "FmpSearch":
+            response = await self._stub.FmpSearch(
+                FmpSearchRequest(
+                    query=str(params.get("query") or ""),
+                    limit=int(params.get("limit") or 8),
+                ),
+                timeout=timeout,
+            )
+            if response.error:
+                return {"error": response.error}
+            import json as _json
+
+            try:
+                items = _json.loads(response.items_json or "[]")
+            except _json.JSONDecodeError:
+                items = []
+            return {"items": items}
 
         if action == "AskPresent":
             response = await self._stub.AskPresent(

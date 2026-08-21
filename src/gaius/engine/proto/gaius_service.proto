@@ -1739,6 +1739,28 @@ message AskPresentResponse {
   int32 n_items = 3;
 }
 
+// FMP as tools for thinking Complete (Qwen chooses when to call).
+message FmpNewsRequest {
+  string kind = 1;                 // stock | general
+  string symbol = 2;               // optional filter
+  int32 limit = 3;
+}
+
+message FmpNewsResponse {
+  string items_json = 1;
+  string error = 2;
+}
+
+message FmpSearchRequest {
+  string query = 1;
+  int32 limit = 2;
+}
+
+message FmpSearchResponse {
+  string items_json = 1;
+  string error = 2;
+}
+
 // Summary lineup — FedWiki trail over a temporal slice of the KB.
 // SECTION = ontology | heuristic. LENS = articles | projects | thoughts.
 // Default visit: this ISO week's Signals Summary, then hop [[wiki]] / fork.
@@ -3388,6 +3410,8 @@ service GaiusService {
   rpc KnowledgeSummary(KnowledgeSummaryRequest) returns (KnowledgeSummaryResponse);
   rpc FederationSurfaces(FederationSurfacesRequest) returns (FederationSurfacesResponse);
   rpc AskPresent(AskPresentRequest) returns (AskPresentResponse);
+  rpc FmpNews(FmpNewsRequest) returns (FmpNewsResponse);
+  rpc FmpSearch(FmpSearchRequest) returns (FmpSearchResponse);
   rpc SummaryIndex(SummaryIndexRequest) returns (SummaryIndexResponse);
   rpc SummaryGet(SummaryGetRequest) returns (SummaryGetResponse);
   rpc SummaryHop(SummaryHopRequest) returns (SummaryHopResponse);

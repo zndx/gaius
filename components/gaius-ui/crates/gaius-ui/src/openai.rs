@@ -361,6 +361,7 @@ fn tool_calls_json(calls: &[ParsedToolCall]) -> serde_json::Value {
         .collect::<Vec<_>>())
 }
 
+#[allow(dead_code)]
 fn tool_roster(tools: Option<&serde_json::Value>) -> Option<String> {
     let arr = tools?.as_array()?;
     let mut names = Vec::new();
@@ -945,7 +946,8 @@ async fn stream_complete(
         } else {
             "terminal"
         };
-        let _inflight = state.complete_watch.guard(&cap, client, &prompt);
+        let intent = ask_write::user_intent_text(&prompt).to_string();
+        let _inflight = state.complete_watch.guard(&cap, client, &intent);
         let ctx = SseCtx::new(cap.clone());
         let send = |s: String| {
             let tx = tx.clone();
@@ -955,18 +957,6 @@ async fn stream_complete(
         };
         send(ctx.status("Consulting Engine…", "consulting", 0, 0)).await;
 
-        let intent = ask_write::user_intent_text(&prompt);
-        let want_chart = ask_write::looks_like_chart(intent);
-        // Charts: AskPresent (FMP). Terminal prose is high-priority — do not
-        // wait on thinking Complete for a candlestick.
-        if want_chart && !ask_write::looks_like_agenda_write(intent) {
-            if let Some(ohlc) = ask_write::parse_ohlc_spec("", &[], intent) {
-                apply_chart(&tx, &ctx, &state.artifacts, &ohlc).await;
-                send(ctx.done()).await;
-                send("[DONE]".into()).await;
-                return;
-            }
-        }
         let small = ask_write::is_small_ask(&cap);
 
         send(ctx.status(
@@ -995,14 +985,15 @@ async fn stream_complete(
             .await;
         }
 
-        let mut first_system = if want_chart {
-            format!("{system}\n\n{}\n\n{}", ask_write::TOOL_LOOP_ADDENDUM, ask_write::CHART_ADDENDUM)
-        } else if want_write && small {
+        let mut first_system = if want_write && small {
             format!("{system}\n\n{}", ask_write::HANDOFF_ADDENDUM)
         } else if want_write {
             format!("{system}\n\n{}{clock_note}", ask_write::WRITE_ADDENDUM)
         } else {
-            format!("{system}\n\n{}\n\n{}", ask_write::TOOL_LOOP_ADDENDUM, ask_write::CHART_HINT)
+            format!(
+                "{system}\n\n{}",
+                crate::gaius_slash::thinking_capability_card()
+            )
         };
         if small {
             let backend = state.ask_backend.read().expect("ask lock").clone();
@@ -1035,7 +1026,7 @@ async fn stream_complete(
             state.lattice.clone(),
             tx.clone(),
             cap.clone(),
-            prompt.clone(),
+            intent.clone(),
             first_system.clone(),
             first_max,
             temperature,
@@ -1057,7 +1048,7 @@ async fn stream_complete(
                     state.lattice.clone(),
                     tx.clone(),
                     thinking_cap.clone(),
-                    prompt.clone(),
+                    intent.clone(),
                     first_system,
                     first_max,
                     temperature,
@@ -1093,8 +1084,8 @@ async fn stream_complete(
             let reasoning = merge_reasoning(&out.reasoning, &peeled);
             let pairs = call_pairs(&calls);
             let spec = ask_write::parse_agenda_spec(&stripped, &pairs);
-            let ohlc = ask_write::parse_ohlc_spec(&stripped, &pairs, &prompt)
-                .or_else(|| ask_write::parse_ohlc_spec(&parsed, &pairs, &prompt));
+            let ohlc = ask_write::parse_ohlc_spec(&stripped, &pairs, &intent)
+                .or_else(|| ask_write::parse_ohlc_spec(&parsed, &pairs, &intent));
             let handoff = ask_write::parse_handoff(&stripped)
                 .or_else(|| ask_write::parse_handoff(&parsed));
             should_escalate = small
@@ -1152,13 +1143,13 @@ async fn stream_complete(
                 None,
             ))
             .await;
-            let chart_prompt = prompt.clone();
+            let chart_prompt = intent.clone();
             let write_sys = format!("{system}\n\n{}{clock_note}", ask_write::WRITE_ADDENDUM);
             match complete_ticked(
                 state.lattice.clone(),
                 tx.clone(),
                 thinking_cap,
-                prompt,
+                intent,
                 write_sys,
                 max_tokens,
                 temperature,
@@ -1224,17 +1215,16 @@ pub async fn chat_completions(
     Json(req): Json<ChatRequest>,
 ) -> Response {
     let (mut system, prompt) = flatten_messages(&req.messages);
-    if let Some(roster) = tool_roster(req.tools.as_ref()) {
-        system.push_str("\n\n");
-        system.push_str(&roster);
-    }
+    // ACP/Grok may attach 180 MCP schemas. Thinking Complete gets the
+    // slash+FMP card instead — Qwen chooses FMP, we do not detect tickers.
+    let intent = ask_write::user_intent_text(&prompt).to_string();
     let max_tokens = req.max_tokens.unwrap_or(8192);
     let temperature = req.temperature.unwrap_or(0.2);
     let stream = req.stream.unwrap_or(false);
     tracing::info!(
         model = req.model.as_deref().unwrap_or("-"),
         system_chars = system.len(),
-        prompt_chars = prompt.len(),
+        prompt_chars = intent.len(),
         stream,
         "Engine/Complete façade"
     );
@@ -1244,6 +1234,10 @@ pub async fn chat_completions(
     } else {
         "terminal"
     };
+    if !ask_write::is_small_ask(&cap) {
+        system.push_str("\n\n");
+        system.push_str(&crate::gaius_slash::thinking_capability_card());
+    }
     if stream {
         return stream_complete(
             state,
@@ -1257,12 +1251,12 @@ pub async fn chat_completions(
         )
         .await;
     }
-    let _inflight = state.complete_watch.guard(&cap, client, &prompt);
+    let _inflight = state.complete_watch.guard(&cap, client, &intent);
     match state
         .lattice
         .complete_as(
             cap,
-            prompt,
+            intent,
             system,
             max_tokens,
             temperature,

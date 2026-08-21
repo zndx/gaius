@@ -107,6 +107,20 @@ pub const GAIUS_SLASH: &[SlashCmd] = &[
         extra: "Call gaius__ask_reasoning with the user's question. This is Engine/Complete, not workspace files.",
     },
     SlashCmd {
+        name: "news",
+        hint: "[stock|general]",
+        description: "Latest FMP headlines. Use when headlines would inform the answer.",
+        mcp: "gaius__fmp_news",
+        extra: "kind=stock or general. optional symbol if the user already named a ticker. Do not invent symbols.",
+    },
+    SlashCmd {
+        name: "ticker",
+        hint: "<company>",
+        description: "FMP name to ticker search. You choose among listings.",
+        mcp: "gaius__fmp_search",
+        extra: "query is the company or fragment from the user. You pick among results. Do not invent a ticker.",
+    },
+    SlashCmd {
         name: "chart",
         hint: "<symbol>",
         description: "OHLC chart in the Ask panel. Use for /chart <ticker>.",
@@ -156,6 +170,21 @@ pub fn command_markdown(cmd: &SlashCmd) -> String {
     )
 }
 
+/// Compact option space for thinking Complete. Schema only — no example tickers.
+pub fn thinking_capability_card() -> String {
+    let mut s = String::from(
+        "You are Qwen3.8-27B on Gaius Engine/Complete. Terminal prose is high-priority.\n\
+         FMP is available as tools (news, name-search, EOD via ask_present). \
+         A candlestick in Ask is a normal follow-up when headlines or the user \
+         mention a company — you decide. Do not invent OHLC bars.\n\
+         Emit <tool_call>{\"name\":\"gaius__…\",\"arguments\":{}}</tool_call>\n",
+    );
+    for cmd in GAIUS_SLASH {
+        s.push_str(&format!("- {}: {}\n", cmd.mcp, cmd.description));
+    }
+    s
+}
+
 pub fn agents_md() -> &'static str {
     "# Web session workspace\n\n\
      This is not the Gaius checkout.\n\n\
@@ -200,6 +229,14 @@ mod tests {
         let md = agents_md();
         for t in banned {
             assert!(!md.contains(t), "AGENTS.md contains example ticker {t}");
+        }
+        let card = thinking_capability_card();
+        assert!(card.contains("gaius__ask_present"));
+        assert!(card.contains("gaius__fmp_news"));
+        assert!(card.contains("gaius__fmp_search"));
+        assert!(card.len() < 4000, "capability card too large: {}", card.len());
+        for t in banned {
+            assert!(!card.contains(t), "capability card contains example ticker {t}");
         }
     }
 

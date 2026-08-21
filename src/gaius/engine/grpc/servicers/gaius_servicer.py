@@ -5286,6 +5286,66 @@ class GaiusServicer(GaiusServiceServicer):
             logger.exception("AskPresent failed")
             return AskPresentResponse(error=str(e))
 
+    async def FmpNews(
+        self,
+        request: object,
+        context: aio.ServicerContext,
+    ) -> object:
+        from ...generated import FmpNewsResponse
+        from ...services.fmp_client import FMPClientError, get_fmp_client
+
+        kind = (getattr(request, "kind", None) or "stock").strip().lower()
+        limit = int(getattr(request, "limit", 0) or 15)
+        limit = max(1, min(limit, 40))
+        symbol = (getattr(request, "symbol", None) or "").strip().upper()
+        client = await get_fmp_client()
+        try:
+            if kind == "general":
+                items = await client.get_latest_general_news(limit=limit)
+            else:
+                items = await client.get_latest_stock_news(limit=limit)
+            if symbol:
+                items = [
+                    i
+                    for i in items
+                    if str(i.get("symbol") or "").upper() == symbol
+                ]
+            return FmpNewsResponse(items_json=json.dumps(items[:limit]))
+        except FMPClientError as e:
+            return FmpNewsResponse(error=str(e))
+        except Exception as e:
+            logger.exception("FmpNews failed")
+            return FmpNewsResponse(error=str(e))
+        finally:
+            await client.__aexit__(None, None, None)
+
+    async def FmpSearch(
+        self,
+        request: object,
+        context: aio.ServicerContext,
+    ) -> object:
+        from ...generated import FmpSearchResponse
+        from ...services.fmp_client import FMPClientError, get_fmp_client
+
+        query = (getattr(request, "query", None) or "").strip()
+        if not query:
+            return FmpSearchResponse(
+                error="query is required.\n  Guru: #FMP.00000006.NOQUERY"
+            )
+        limit = int(getattr(request, "limit", 0) or 8)
+        limit = max(1, min(limit, 20))
+        client = await get_fmp_client()
+        try:
+            hits = await client.search_ticker(query, limit=limit)
+            return FmpSearchResponse(items_json=json.dumps(hits))
+        except FMPClientError as e:
+            return FmpSearchResponse(error=str(e))
+        except Exception as e:
+            logger.exception("FmpSearch failed")
+            return FmpSearchResponse(error=str(e))
+        finally:
+            await client.__aexit__(None, None, None)
+
     def _summary_note(self, note: object) -> ProtoSummaryNote:
         return ProtoSummaryNote(
             id=getattr(note, "id", ""),

@@ -186,6 +186,8 @@ class GaiusServiceStub:
     KnowledgeSummary: grpc.UnaryUnaryMultiCallable[gaius_service_pb2.KnowledgeSummaryRequest, gaius_service_pb2.KnowledgeSummaryResponse]
     FederationSurfaces: grpc.UnaryUnaryMultiCallable[gaius_service_pb2.FederationSurfacesRequest, gaius_service_pb2.FederationSurfacesResponse]
     AskPresent: grpc.UnaryUnaryMultiCallable[gaius_service_pb2.AskPresentRequest, gaius_service_pb2.AskPresentResponse]
+    FmpNews: grpc.UnaryUnaryMultiCallable[gaius_service_pb2.FmpNewsRequest, gaius_service_pb2.FmpNewsResponse]
+    FmpSearch: grpc.UnaryUnaryMultiCallable[gaius_service_pb2.FmpSearchRequest, gaius_service_pb2.FmpSearchResponse]
     SummaryIndex: grpc.UnaryUnaryMultiCallable[gaius_service_pb2.SummaryIndexRequest, gaius_service_pb2.SummaryIndexResponse]
     SummaryGet: grpc.UnaryUnaryMultiCallable[gaius_service_pb2.SummaryGetRequest, gaius_service_pb2.SummaryGetResponse]
     SummaryHop: grpc.UnaryUnaryMultiCallable[gaius_service_pb2.SummaryHopRequest, gaius_service_pb2.SummaryHopResponse]
@@ -508,6 +510,8 @@ class GaiusServiceAsyncStub(GaiusServiceStub):
     KnowledgeSummary: grpc.aio.UnaryUnaryMultiCallable[gaius_service_pb2.KnowledgeSummaryRequest, gaius_service_pb2.KnowledgeSummaryResponse]  # type: ignore[assignment]
     FederationSurfaces: grpc.aio.UnaryUnaryMultiCallable[gaius_service_pb2.FederationSurfacesRequest, gaius_service_pb2.FederationSurfacesResponse]  # type: ignore[assignment]
     AskPresent: grpc.aio.UnaryUnaryMultiCallable[gaius_service_pb2.AskPresentRequest, gaius_service_pb2.AskPresentResponse]  # type: ignore[assignment]
+    FmpNews: grpc.aio.UnaryUnaryMultiCallable[gaius_service_pb2.FmpNewsRequest, gaius_service_pb2.FmpNewsResponse]  # type: ignore[assignment]
+    FmpSearch: grpc.aio.UnaryUnaryMultiCallable[gaius_service_pb2.FmpSearchRequest, gaius_service_pb2.FmpSearchResponse]  # type: ignore[assignment]
     SummaryIndex: grpc.aio.UnaryUnaryMultiCallable[gaius_service_pb2.SummaryIndexRequest, gaius_service_pb2.SummaryIndexResponse]  # type: ignore[assignment]
     SummaryGet: grpc.aio.UnaryUnaryMultiCallable[gaius_service_pb2.SummaryGetRequest, gaius_service_pb2.SummaryGetResponse]  # type: ignore[assignment]
     SummaryHop: grpc.aio.UnaryUnaryMultiCallable[gaius_service_pb2.SummaryHopRequest, gaius_service_pb2.SummaryHopResponse]  # type: ignore[assignment]
@@ -1259,6 +1263,20 @@ class GaiusServiceServicer(metaclass=abc.ABCMeta):
         request: gaius_service_pb2.AskPresentRequest,
         context: _ServicerContext,
     ) -> typing.Union[gaius_service_pb2.AskPresentResponse, collections.abc.Awaitable[gaius_service_pb2.AskPresentResponse]]: ...
+
+    @abc.abstractmethod
+    def FmpNews(
+        self,
+        request: gaius_service_pb2.FmpNewsRequest,
+        context: _ServicerContext,
+    ) -> typing.Union[gaius_service_pb2.FmpNewsResponse, collections.abc.Awaitable[gaius_service_pb2.FmpNewsResponse]]: ...
+
+    @abc.abstractmethod
+    def FmpSearch(
+        self,
+        request: gaius_service_pb2.FmpSearchRequest,
+        context: _ServicerContext,
+    ) -> typing.Union[gaius_service_pb2.FmpSearchResponse, collections.abc.Awaitable[gaius_service_pb2.FmpSearchResponse]]: ...
 
     @abc.abstractmethod
     def SummaryIndex(

@@ -395,6 +395,16 @@ class GaiusServiceStub(object):
                 request_serializer=gaius__service__pb2.AskPresentRequest.SerializeToString,
                 response_deserializer=gaius__service__pb2.AskPresentResponse.FromString,
                 _registered_method=True)
+        self.FmpNews = channel.unary_unary(
+                '/gaius.engine.GaiusService/FmpNews',
+                request_serializer=gaius__service__pb2.FmpNewsRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.FmpNewsResponse.FromString,
+                _registered_method=True)
+        self.FmpSearch = channel.unary_unary(
+                '/gaius.engine.GaiusService/FmpSearch',
+                request_serializer=gaius__service__pb2.FmpSearchRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.FmpSearchResponse.FromString,
+                _registered_method=True)
         self.SummaryIndex = channel.unary_unary(
                 '/gaius.engine.GaiusService/SummaryIndex',
                 request_serializer=gaius__service__pb2.SummaryIndexRequest.SerializeToString,
@@ -1256,6 +1266,18 @@ class GaiusServiceServicer(object):
         raise NotImplementedError('Method not implemented!')
 
     def AskPresent(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def FmpNews(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def FmpSearch(self, request, context):
         """Missing associated documentation comment in .proto file."""
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -2136,6 +2158,16 @@ def add_GaiusServiceServicer_to_server(servicer, server):
                     servicer.AskPresent,
                     request_deserializer=gaius__service__pb2.AskPresentRequest.FromString,
                     response_serializer=gaius__service__pb2.AskPresentResponse.SerializeToString,
+            ),
+            'FmpNews': grpc.unary_unary_rpc_method_handler(
+                    servicer.FmpNews,
+                    request_deserializer=gaius__service__pb2.FmpNewsRequest.FromString,
+                    response_serializer=gaius__service__pb2.FmpNewsResponse.SerializeToString,
+            ),
+            'FmpSearch': grpc.unary_unary_rpc_method_handler(
+                    servicer.FmpSearch,
+                    request_deserializer=gaius__service__pb2.FmpSearchRequest.FromString,
+                    response_serializer=gaius__service__pb2.FmpSearchResponse.SerializeToString,
             ),
             'SummaryIndex': grpc.unary_unary_rpc_method_handler(
                     servicer.SummaryIndex,
@@ -4447,6 +4479,60 @@ class GaiusService(object):
             '/gaius.engine.GaiusService/AskPresent',
             gaius__service__pb2.AskPresentRequest.SerializeToString,
             gaius__service__pb2.AskPresentResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def FmpNews(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/gaius.engine.GaiusService/FmpNews',
+            gaius__service__pb2.FmpNewsRequest.SerializeToString,
+            gaius__service__pb2.FmpNewsResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def FmpSearch(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/gaius.engine.GaiusService/FmpSearch',
+            gaius__service__pb2.FmpSearchRequest.SerializeToString,
+            gaius__service__pb2.FmpSearchResponse.FromString,
             options,
             channel_credentials,
             insecure,

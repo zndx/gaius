@@ -2685,6 +2685,40 @@ class AskPresentResponse(_message.Message):
     n_items: int
     def __init__(self, artifact_json: _Optional[str] = ..., error: _Optional[str] = ..., n_items: _Optional[int] = ...) -> None: ...
 
+class FmpNewsRequest(_message.Message):
+    __slots__ = ("kind", "symbol", "limit")
+    KIND_FIELD_NUMBER: _ClassVar[int]
+    SYMBOL_FIELD_NUMBER: _ClassVar[int]
+    LIMIT_FIELD_NUMBER: _ClassVar[int]
+    kind: str
+    symbol: str
+    limit: int
+    def __init__(self, kind: _Optional[str] = ..., symbol: _Optional[str] = ..., limit: _Optional[int] = ...) -> None: ...
+
+class FmpNewsResponse(_message.Message):
+    __slots__ = ("items_json", "error")
+    ITEMS_JSON_FIELD_NUMBER: _ClassVar[int]
+    ERROR_FIELD_NUMBER: _ClassVar[int]
+    items_json: str
+    error: str
+    def __init__(self, items_json: _Optional[str] = ..., error: _Optional[str] = ...) -> None: ...
+
+class FmpSearchRequest(_message.Message):
+    __slots__ = ("query", "limit")
+    QUERY_FIELD_NUMBER: _ClassVar[int]
+    LIMIT_FIELD_NUMBER: _ClassVar[int]
+    query: str
+    limit: int
+    def __init__(self, query: _Optional[str] = ..., limit: _Optional[int] = ...) -> None: ...
+
+class FmpSearchResponse(_message.Message):
+    __slots__ = ("items_json", "error")
+    ITEMS_JSON_FIELD_NUMBER: _ClassVar[int]
+    ERROR_FIELD_NUMBER: _ClassVar[int]
+    items_json: str
+    error: str
+    def __init__(self, items_json: _Optional[str] = ..., error: _Optional[str] = ...) -> None: ...
+
 class SummaryNote(_message.Message):
     __slots__ = ("id", "title", "body", "section", "lens", "week", "mtime_ms", "links", "origin_project", "origin_id", "excerpt", "virtual")
     ID_FIELD_NUMBER: _ClassVar[int]

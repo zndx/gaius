@@ -3846,6 +3846,44 @@ Domain: {domain or 'general'}
         }, indent=2)
 
     @server.tool()
+    async def fmp_news(
+        kind: str = "stock",
+        symbol: str = "",
+        limit: int = 15,
+    ) -> str:
+        """Latest FMP headlines. kind=stock or general. optional symbol."""
+        try:
+            client = await _get_engine_client()
+            if not client:
+                return json.dumps({"error": "Engine not available"}, indent=2)
+            result = await client.call(
+                "Gaius",
+                "FmpNews",
+                {"kind": kind, "symbol": symbol, "limit": limit},
+                timeout=30.0,
+            )
+            return json.dumps(result, indent=2, default=str)
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    @server.tool()
+    async def fmp_search(query: str, limit: int = 8) -> str:
+        """FMP company name or fragment to tickers. You choose the listing."""
+        try:
+            client = await _get_engine_client()
+            if not client:
+                return json.dumps({"error": "Engine not available"}, indent=2)
+            result = await client.call(
+                "Gaius",
+                "FmpSearch",
+                {"query": query, "limit": limit},
+                timeout=30.0,
+            )
+            return json.dumps(result, indent=2, default=str)
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    @server.tool()
     async def agenda_create(
         kind: str = "note",
         title: str = "",
