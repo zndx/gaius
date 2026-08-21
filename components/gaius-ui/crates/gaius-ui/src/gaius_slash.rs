@@ -185,7 +185,7 @@ pub fn thinking_capability_card() -> String {
          FMP is at hand. You search and pick listings. Do not invent OHLC bars or employee counts.\n\
          A candlestick in Ask is a normal follow-up when headlines or a company come up — you decide.\n\
          Emit <tool_call>{\"name\":\"gaius__…\",\"arguments\":{}}</tool_call>\n\
-         - gaius__fmp_search: company or fragment → tickers (you pick the listing)\n\
+         - gaius__fmp_search: company or fragment → tickers (once; then pick a symbol)\n\
          - gaius__fmp_news: latest headlines; kind=stock|general; optional symbol\n\
          - gaius__fmp_employees: historical employee counts by SEC period; symbol required\n\
          - gaius__ask_present: OHLC in Ask; symbol + optional from_date/to_date\n\

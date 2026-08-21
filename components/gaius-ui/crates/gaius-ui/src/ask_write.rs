@@ -111,6 +111,25 @@ pub fn user_intent_text(prompt: &str) -> &str {
     prompt
 }
 
+/// User intent plus Assistant/Tool turns. Dropping tool results caused
+/// Complete to re-issue fmp_search forever.
+pub fn thinking_complete_prompt(flattened: &str) -> String {
+    let intent = user_intent_text(flattened);
+    let mut tail = String::new();
+    for line in flattened.lines() {
+        if line.starts_with("Assistant:") || line.starts_with("Tool result") {
+            tail.push_str(line);
+            tail.push('\n');
+        }
+    }
+    let tail = tail.trim();
+    if tail.is_empty() {
+        intent.to_string()
+    } else {
+        format!("{intent}\n\n{tail}")
+    }
+}
+
 /// Ticker or company name to send to AskPresent (engine resolves names).
 pub fn chart_symbol_query(prompt: &str) -> Option<String> {
     let q = user_intent_text(prompt);
@@ -662,6 +681,10 @@ mod tests {
             .expect("disney");
         assert_eq!(disney["symbol"], "Disney");
         assert!(disney.get("from_date").is_some());
+        let loop_src = "User: employee trend\nAssistant: calling search\nTool result (1): {\"items\":[{\"symbol\":\"CHTR\"}]}\n";
+        let looped = thinking_complete_prompt(loop_src);
+        assert!(looped.contains("employee trend"));
+        assert!(looped.contains("CHTR"), "{looped}");
         let wrapped = "User: <user_info> OS Version: linux\n<user_query>\nlet's see a 30 day stock chart for Disney\n</user_query>";
         assert_eq!(
             user_intent_text(wrapped),

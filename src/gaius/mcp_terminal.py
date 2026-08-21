@@ -116,6 +116,11 @@ async def fmp_search(query: str, limit: int = 8) -> str:
             {"query": query, "limit": limit},
             timeout=30.0,
         )
+        if isinstance(result, dict) and not result.get("error"):
+            result["hint"] = (
+                "Pick one symbol from items. Next: fmp_employees / fmp_news / "
+                "ask_present. Do not call fmp_search again for the same query."
+            )
         return json.dumps(result, indent=2, default=str)
     except Exception as e:
         return _err(str(e))

@@ -946,7 +946,7 @@ async fn stream_complete(
         } else {
             "terminal"
         };
-        let intent = ask_write::user_intent_text(&prompt).to_string();
+        let intent = ask_write::thinking_complete_prompt(&prompt);
         let _inflight = state.complete_watch.guard(&cap, client, &intent);
         let ctx = SseCtx::new(cap.clone());
         let send = |s: String| {
@@ -1217,7 +1217,7 @@ pub async fn chat_completions(
     let (mut system, prompt) = flatten_messages(&req.messages);
     // ACP/Grok may attach 180 MCP schemas. Thinking Complete gets the
     // slash+FMP card instead — Qwen chooses FMP, we do not detect tickers.
-    let intent = ask_write::user_intent_text(&prompt).to_string();
+    let intent = ask_write::thinking_complete_prompt(&prompt);
     let max_tokens = req.max_tokens.unwrap_or(8192);
     let temperature = req.temperature.unwrap_or(0.2);
     let stream = req.stream.unwrap_or(false);
