@@ -54,6 +54,7 @@ class FMPEndpoint:
     EIGHT_K = "sec-8k"
     HISTORICAL_EOD = "historical-price-eod"
     SEARCH_NAME = "search-name"
+    EMPLOYEE_COUNT = "employee-count"
     UNKNOWN = "unknown"
 
     @classmethod

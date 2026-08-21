@@ -41,7 +41,7 @@ pub const GAIUS_SLASH: &[SlashCmd] = &[
         hint: "<topic>",
         description: "Deep research a topic via the engine. Use for /research <topic>.",
         mcp: "gaius__research_topic",
-        extra: "Call gaius__research_topic with topic set to the user's argument. Do not invent sources.",
+        extra: "Call gaius__research_topic only for open web/KB synthesis. Not for FMP fundamentals (employees, filings, quotes). Those are gaius__fmp_search / gaius__fmp_employees / gaius__fmp_news / gaius__ask_present.",
     },
     SlashCmd {
         name: "search",
@@ -114,6 +114,13 @@ pub const GAIUS_SLASH: &[SlashCmd] = &[
         extra: "kind=stock or general. optional symbol if the user already named a ticker. Do not invent symbols.",
     },
     SlashCmd {
+        name: "employees",
+        hint: "<symbol>",
+        description: "FMP historical employee counts by SEC period.",
+        mcp: "gaius__fmp_employees",
+        extra: "symbol from fmp_search or the user. Do not invent a ticker.",
+    },
+    SlashCmd {
         name: "ticker",
         hint: "<company>",
         description: "FMP name to ticker search. You choose among listings.",
@@ -170,19 +177,25 @@ pub fn command_markdown(cmd: &SlashCmd) -> String {
     )
 }
 
-/// Compact option space for thinking Complete. Schema only — no example tickers.
+/// Compact option space for thinking Complete. Not the full slash catalog.
+/// Schema only — no example tickers. Qwen chooses FMP; we do not detect names.
 pub fn thinking_capability_card() -> String {
-    let mut s = String::from(
+    String::from(
         "You are Qwen3.8-27B on Gaius Engine/Complete. Terminal prose is high-priority.\n\
-         FMP is available as tools (news, name-search, EOD via ask_present). \
-         A candlestick in Ask is a normal follow-up when headlines or the user \
-         mention a company — you decide. Do not invent OHLC bars.\n\
-         Emit <tool_call>{\"name\":\"gaius__…\",\"arguments\":{}}</tool_call>\n",
-    );
-    for cmd in GAIUS_SLASH {
-        s.push_str(&format!("- {}: {}\n", cmd.mcp, cmd.description));
-    }
-    s
+         FMP is at hand. You search and pick listings. Do not invent OHLC bars or employee counts.\n\
+         A candlestick in Ask is a normal follow-up when headlines or a company come up — you decide.\n\
+         Emit <tool_call>{\"name\":\"gaius__…\",\"arguments\":{}}</tool_call>\n\
+         - gaius__fmp_search: company or fragment → tickers (you pick the listing)\n\
+         - gaius__fmp_news: latest headlines; kind=stock|general; optional symbol\n\
+         - gaius__fmp_employees: historical employee counts by SEC period; symbol required\n\
+         - gaius__ask_present: OHLC in Ask; symbol + optional from_date/to_date\n\
+         - gaius__theta_sitrep: situational report; horizon=day|week|quarter|open\n\
+         - gaius__orchestrator_status: GPU / thinking health\n\
+         - gaius__prospects_status: FMP product / buffer\n\
+         - gaius__agenda_list: calendar cards\n\
+         - gaius__get_recent_thoughts: cognition thoughts\n\
+         Do not call gaius__research_topic for fundamentals, employees, quotes, or filings.\n",
+    )
 }
 
 pub fn agents_md() -> &'static str {
@@ -234,6 +247,8 @@ mod tests {
         assert!(card.contains("gaius__ask_present"));
         assert!(card.contains("gaius__fmp_news"));
         assert!(card.contains("gaius__fmp_search"));
+        assert!(card.contains("gaius__fmp_employees"));
+        assert!(card.contains("Do not call gaius__research_topic"));
         assert!(card.len() < 4000, "capability card too large: {}", card.len());
         for t in banned {
             assert!(!card.contains(t), "capability card contains example ticker {t}");

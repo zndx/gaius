@@ -405,6 +405,11 @@ class GaiusServiceStub(object):
                 request_serializer=gaius__service__pb2.FmpSearchRequest.SerializeToString,
                 response_deserializer=gaius__service__pb2.FmpSearchResponse.FromString,
                 _registered_method=True)
+        self.FmpEmployees = channel.unary_unary(
+                '/gaius.engine.GaiusService/FmpEmployees',
+                request_serializer=gaius__service__pb2.FmpEmployeesRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.FmpEmployeesResponse.FromString,
+                _registered_method=True)
         self.SummaryIndex = channel.unary_unary(
                 '/gaius.engine.GaiusService/SummaryIndex',
                 request_serializer=gaius__service__pb2.SummaryIndexRequest.SerializeToString,
@@ -1278,6 +1283,12 @@ class GaiusServiceServicer(object):
         raise NotImplementedError('Method not implemented!')
 
     def FmpSearch(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def FmpEmployees(self, request, context):
         """Missing associated documentation comment in .proto file."""
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -2168,6 +2179,11 @@ def add_GaiusServiceServicer_to_server(servicer, server):
                     servicer.FmpSearch,
                     request_deserializer=gaius__service__pb2.FmpSearchRequest.FromString,
                     response_serializer=gaius__service__pb2.FmpSearchResponse.SerializeToString,
+            ),
+            'FmpEmployees': grpc.unary_unary_rpc_method_handler(
+                    servicer.FmpEmployees,
+                    request_deserializer=gaius__service__pb2.FmpEmployeesRequest.FromString,
+                    response_serializer=gaius__service__pb2.FmpEmployeesResponse.SerializeToString,
             ),
             'SummaryIndex': grpc.unary_unary_rpc_method_handler(
                     servicer.SummaryIndex,
@@ -4533,6 +4549,33 @@ class GaiusService(object):
             '/gaius.engine.GaiusService/FmpSearch',
             gaius__service__pb2.FmpSearchRequest.SerializeToString,
             gaius__service__pb2.FmpSearchResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def FmpEmployees(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/gaius.engine.GaiusService/FmpEmployees',
+            gaius__service__pb2.FmpEmployeesRequest.SerializeToString,
+            gaius__service__pb2.FmpEmployeesResponse.FromString,
             options,
             channel_credentials,
             insecure,

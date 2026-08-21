@@ -2719,6 +2719,22 @@ class FmpSearchResponse(_message.Message):
     error: str
     def __init__(self, items_json: _Optional[str] = ..., error: _Optional[str] = ...) -> None: ...
 
+class FmpEmployeesRequest(_message.Message):
+    __slots__ = ("symbol", "limit")
+    SYMBOL_FIELD_NUMBER: _ClassVar[int]
+    LIMIT_FIELD_NUMBER: _ClassVar[int]
+    symbol: str
+    limit: int
+    def __init__(self, symbol: _Optional[str] = ..., limit: _Optional[int] = ...) -> None: ...
+
+class FmpEmployeesResponse(_message.Message):
+    __slots__ = ("items_json", "error")
+    ITEMS_JSON_FIELD_NUMBER: _ClassVar[int]
+    ERROR_FIELD_NUMBER: _ClassVar[int]
+    items_json: str
+    error: str
+    def __init__(self, items_json: _Optional[str] = ..., error: _Optional[str] = ...) -> None: ...
+
 class SummaryNote(_message.Message):
     __slots__ = ("id", "title", "body", "section", "lens", "week", "mtime_ms", "links", "origin_project", "origin_id", "excerpt", "virtual")
     ID_FIELD_NUMBER: _ClassVar[int]

@@ -122,6 +122,24 @@ async def fmp_search(query: str, limit: int = 8) -> str:
 
 
 @server.tool()
+async def fmp_employees(symbol: str, limit: int = 16) -> str:
+    """Historical employee counts by SEC period. symbol required (from fmp_search)."""
+    try:
+        client = await _get_engine_client()
+        if not client:
+            return _err("Engine not available")
+        result = await client.call(
+            "Gaius",
+            "FmpEmployees",
+            {"symbol": symbol, "limit": limit},
+            timeout=30.0,
+        )
+        return json.dumps(result, indent=2, default=str)
+    except Exception as e:
+        return _err(str(e))
+
+
+@server.tool()
 async def theta_sitrep(horizon: str = "day") -> str:
     """Gaius situational report."""
     try:

@@ -3867,6 +3867,23 @@ Domain: {domain or 'general'}
             return json.dumps({"error": str(e)}, indent=2)
 
     @server.tool()
+    async def fmp_employees(symbol: str, limit: int = 16) -> str:
+        """Historical employee counts by SEC period. symbol required."""
+        try:
+            client = await _get_engine_client()
+            if not client:
+                return json.dumps({"error": "Engine not available"}, indent=2)
+            result = await client.call(
+                "Gaius",
+                "FmpEmployees",
+                {"symbol": symbol, "limit": limit},
+                timeout=30.0,
+            )
+            return json.dumps(result, indent=2, default=str)
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    @server.tool()
     async def fmp_search(query: str, limit: int = 8) -> str:
         """FMP company name or fragment to tickers. You choose the listing."""
         try:

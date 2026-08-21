@@ -1736,6 +1736,7 @@ class GrpcEngineClient:
             AskPresentRequest,
             FmpNewsRequest,
             FmpSearchRequest,
+            FmpEmployeesRequest,
             SummaryIndexRequest,
             SummaryGetRequest,
             SummaryHopRequest,
@@ -1948,6 +1949,24 @@ class GrpcEngineClient:
                 FmpSearchRequest(
                     query=str(params.get("query") or ""),
                     limit=int(params.get("limit") or 8),
+                ),
+                timeout=timeout,
+            )
+            if response.error:
+                return {"error": response.error}
+            import json as _json
+
+            try:
+                items = _json.loads(response.items_json or "[]")
+            except _json.JSONDecodeError:
+                items = []
+            return {"items": items}
+
+        if action == "FmpEmployees":
+            response = await self._stub.FmpEmployees(
+                FmpEmployeesRequest(
+                    symbol=str(params.get("symbol") or ""),
+                    limit=int(params.get("limit") or 16),
                 ),
                 timeout=timeout,
             )

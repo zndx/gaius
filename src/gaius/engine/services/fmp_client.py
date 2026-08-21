@@ -657,6 +657,42 @@ class FMPClient:
         out.sort(key=_rank)
         return out
 
+    async def get_employee_counts(
+        self,
+        symbol: str,
+        *,
+        limit: int = 16,
+        source_context: dict | None = None,
+    ) -> list[dict[str, Any]]:
+        """SEC-derived employee counts over filing periods."""
+        sym = (symbol or "").strip().upper()
+        if not sym:
+            return []
+        data = await self._request(
+            endpoint=FMPEndpoint.EMPLOYEE_COUNT,
+            path="/stable/historical-employee-count",
+            symbol=sym,
+            params={"symbol": sym},
+            source_context=source_context or {"source": "fmp_employees"},
+        )
+        rows = data if isinstance(data, list) else []
+        out: list[dict[str, Any]] = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            out.append(
+                {
+                    "symbol": str(row.get("symbol") or sym),
+                    "period": str(row.get("periodOfReport") or ""),
+                    "filed": str(row.get("filingDate") or ""),
+                    "employees": row.get("employeeCount"),
+                    "form": str(row.get("formType") or ""),
+                    "source": str(row.get("source") or ""),
+                }
+            )
+        out.sort(key=lambda r: str(r.get("period") or ""), reverse=True)
+        return out[: max(1, min(int(limit), 40))]
+
     async def get_historical_eod(
         self,
         symbol: str,

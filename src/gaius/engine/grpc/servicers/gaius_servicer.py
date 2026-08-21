@@ -5346,6 +5346,32 @@ class GaiusServicer(GaiusServiceServicer):
         finally:
             await client.__aexit__(None, None, None)
 
+    async def FmpEmployees(
+        self,
+        request: object,
+        context: aio.ServicerContext,
+    ) -> object:
+        from ...generated import FmpEmployeesResponse
+        from ...services.fmp_client import FMPClientError, get_fmp_client
+
+        symbol = (getattr(request, "symbol", None) or "").strip().upper()
+        if not symbol:
+            return FmpEmployeesResponse(
+                error="symbol is required.\n  Guru: #FMP.00000007.NOSYMBOL"
+            )
+        limit = int(getattr(request, "limit", 0) or 16)
+        client = await get_fmp_client()
+        try:
+            rows = await client.get_employee_counts(symbol, limit=limit)
+            return FmpEmployeesResponse(items_json=json.dumps(rows))
+        except FMPClientError as e:
+            return FmpEmployeesResponse(error=str(e))
+        except Exception as e:
+            logger.exception("FmpEmployees failed")
+            return FmpEmployeesResponse(error=str(e))
+        finally:
+            await client.__aexit__(None, None, None)
+
     def _summary_note(self, note: object) -> ProtoSummaryNote:
         return ProtoSummaryNote(
             id=getattr(note, "id", ""),

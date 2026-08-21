@@ -188,6 +188,7 @@ class GaiusServiceStub:
     AskPresent: grpc.UnaryUnaryMultiCallable[gaius_service_pb2.AskPresentRequest, gaius_service_pb2.AskPresentResponse]
     FmpNews: grpc.UnaryUnaryMultiCallable[gaius_service_pb2.FmpNewsRequest, gaius_service_pb2.FmpNewsResponse]
     FmpSearch: grpc.UnaryUnaryMultiCallable[gaius_service_pb2.FmpSearchRequest, gaius_service_pb2.FmpSearchResponse]
+    FmpEmployees: grpc.UnaryUnaryMultiCallable[gaius_service_pb2.FmpEmployeesRequest, gaius_service_pb2.FmpEmployeesResponse]
     SummaryIndex: grpc.UnaryUnaryMultiCallable[gaius_service_pb2.SummaryIndexRequest, gaius_service_pb2.SummaryIndexResponse]
     SummaryGet: grpc.UnaryUnaryMultiCallable[gaius_service_pb2.SummaryGetRequest, gaius_service_pb2.SummaryGetResponse]
     SummaryHop: grpc.UnaryUnaryMultiCallable[gaius_service_pb2.SummaryHopRequest, gaius_service_pb2.SummaryHopResponse]
@@ -512,6 +513,7 @@ class GaiusServiceAsyncStub(GaiusServiceStub):
     AskPresent: grpc.aio.UnaryUnaryMultiCallable[gaius_service_pb2.AskPresentRequest, gaius_service_pb2.AskPresentResponse]  # type: ignore[assignment]
     FmpNews: grpc.aio.UnaryUnaryMultiCallable[gaius_service_pb2.FmpNewsRequest, gaius_service_pb2.FmpNewsResponse]  # type: ignore[assignment]
     FmpSearch: grpc.aio.UnaryUnaryMultiCallable[gaius_service_pb2.FmpSearchRequest, gaius_service_pb2.FmpSearchResponse]  # type: ignore[assignment]
+    FmpEmployees: grpc.aio.UnaryUnaryMultiCallable[gaius_service_pb2.FmpEmployeesRequest, gaius_service_pb2.FmpEmployeesResponse]  # type: ignore[assignment]
     SummaryIndex: grpc.aio.UnaryUnaryMultiCallable[gaius_service_pb2.SummaryIndexRequest, gaius_service_pb2.SummaryIndexResponse]  # type: ignore[assignment]
     SummaryGet: grpc.aio.UnaryUnaryMultiCallable[gaius_service_pb2.SummaryGetRequest, gaius_service_pb2.SummaryGetResponse]  # type: ignore[assignment]
     SummaryHop: grpc.aio.UnaryUnaryMultiCallable[gaius_service_pb2.SummaryHopRequest, gaius_service_pb2.SummaryHopResponse]  # type: ignore[assignment]
@@ -1277,6 +1279,13 @@ class GaiusServiceServicer(metaclass=abc.ABCMeta):
         request: gaius_service_pb2.FmpSearchRequest,
         context: _ServicerContext,
     ) -> typing.Union[gaius_service_pb2.FmpSearchResponse, collections.abc.Awaitable[gaius_service_pb2.FmpSearchResponse]]: ...
+
+    @abc.abstractmethod
+    def FmpEmployees(
+        self,
+        request: gaius_service_pb2.FmpEmployeesRequest,
+        context: _ServicerContext,
+    ) -> typing.Union[gaius_service_pb2.FmpEmployeesResponse, collections.abc.Awaitable[gaius_service_pb2.FmpEmployeesResponse]]: ...
 
     @abc.abstractmethod
     def SummaryIndex(

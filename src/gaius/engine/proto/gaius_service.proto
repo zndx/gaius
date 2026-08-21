@@ -1761,6 +1761,16 @@ message FmpSearchResponse {
   string error = 2;
 }
 
+message FmpEmployeesRequest {
+  string symbol = 1;
+  int32 limit = 2;
+}
+
+message FmpEmployeesResponse {
+  string items_json = 1;
+  string error = 2;
+}
+
 // Summary lineup — FedWiki trail over a temporal slice of the KB.
 // SECTION = ontology | heuristic. LENS = articles | projects | thoughts.
 // Default visit: this ISO week's Signals Summary, then hop [[wiki]] / fork.
@@ -3412,6 +3422,7 @@ service GaiusService {
   rpc AskPresent(AskPresentRequest) returns (AskPresentResponse);
   rpc FmpNews(FmpNewsRequest) returns (FmpNewsResponse);
   rpc FmpSearch(FmpSearchRequest) returns (FmpSearchResponse);
+  rpc FmpEmployees(FmpEmployeesRequest) returns (FmpEmployeesResponse);
   rpc SummaryIndex(SummaryIndexRequest) returns (SummaryIndexResponse);
   rpc SummaryGet(SummaryGetRequest) returns (SummaryGetResponse);
   rpc SummaryHop(SummaryHopRequest) returns (SummaryHopResponse);
