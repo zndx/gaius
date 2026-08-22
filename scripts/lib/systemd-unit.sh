@@ -13,9 +13,11 @@ info() { echo "gaius.service: $*"; }
 
 # Optional: only if the unit still exports GAIUS_DEVENV_RUNTIME (legacy).
 # Default is devenv's own runtime so systemd and a login-shell `devenv up`
-# share one process-compose graph.
+# share one process-compose graph. A dedicated runtime splits
+# `systemctl restart gaius` from `devenv processes restart gaius-engine`.
 export_unit_runtime() {
   if [[ -n "${GAIUS_DEVENV_RUNTIME:-}" ]]; then
+    info "WARN GAIUS_DEVENV_RUNTIME=$GAIUS_DEVENV_RUNTIME splits systemd from devenv; unset it"
     mkdir -p "$GAIUS_DEVENV_RUNTIME"
     export DEVENV_RUNTIME="$GAIUS_DEVENV_RUNTIME"
   fi
@@ -24,22 +26,51 @@ export_unit_runtime() {
   fi
 }
 
-# Same graph as a laptop `devenv up -d`. Do not pin PGPORT — devenv assigns
-# it so projects and worktrees do not collide. secretspec is devenv's.
-lattice_up() {
+_devenv_lc() {
   export_unit_runtime
   /bin/bash -lc "cd \"$ROOT\" && export PATH=\"/usr/local/bin:\$PATH\" && \
     export XDG_RUNTIME_DIR=\"${XDG_RUNTIME_DIR:-}\" && \
     ${DEVENV_RUNTIME:+export DEVENV_RUNTIME=\"$DEVENV_RUNTIME\" &&} \
-    devenv up -d"
+    $*"
+}
+
+# Same graph as a laptop `devenv up -d`. Do not pin PGPORT or a dedicated
+# DEVENV_RUNTIME. secretspec is devenv's.
+lattice_up() {
+  _devenv_lc "devenv up -d"
 }
 
 lattice_down() {
-  export_unit_runtime
-  /bin/bash -lc "cd \"$ROOT\" && export PATH=\"/usr/local/bin:\$PATH\" && \
-    export XDG_RUNTIME_DIR=\"${XDG_RUNTIME_DIR:-}\" && \
-    ${DEVENV_RUNTIME:+export DEVENV_RUNTIME=\"$DEVENV_RUNTIME\" &&} \
-    (just down 2>/dev/null || devenv processes down || true)" || true
+  _devenv_lc "just down 2>/dev/null || devenv processes down || true" || true
+}
+
+# devenv 2.1 can start daemon-processes + native.sock then time out the
+# 120s waiter before writing native-manager.pid. Login `devenv processes`
+# then says "No process manager" — a second graph. Repair the pid file
+# so systemd and devenv are the same surface.
+repair_native_manager_pid() {
+  local pid cmd dir have
+  pid=$(gaius_compose_pids | head -1 || true)
+  [[ -n "$pid" ]] || return 1
+  cmd=$(ps -p "$pid" -o args= 2>/dev/null || true)
+  dir="${cmd##* }"
+  dir="${dir%/daemon-config.json}"
+  [[ -d "$dir" && -S "$dir/native.sock" ]] || return 1
+  have=$(cat "$dir/native-manager.pid" 2>/dev/null || true)
+  if [[ "$have" == "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
+    return 0
+  fi
+  info "repair native-manager.pid=$pid in $dir"
+  printf '%s\n' "$pid" > "$dir/native-manager.pid"
+}
+
+# Login-shell `devenv processes` can see this checkout's compose.
+compose_visible() {
+  repair_native_manager_pid || true
+  if _devenv_lc "devenv processes list" >/dev/null 2>&1; then
+    return 0
+  fi
+  [[ -n "$(gaius_compose_pids | head -1)" ]]
 }
 
 # PIDs of devenv process-compose daemons whose cwd is this checkout.
@@ -88,20 +119,36 @@ ui_ok() {
   ss -ltnH 2>/dev/null | grep -qE ":${UI_PORT}[[:space:]]"
 }
 
-# True if pid is a descendant of this checkout's process-compose.
-owned_by_compose() {
-  local pid="$1" p cmd cwd i
+# Walk to the devenv/process-compose ancestor. Prints "pid<TAB>args" or fails.
+compose_ancestor() {
+  local pid="$1" p cmd i
   p="$pid"
   for i in 1 2 3 4 5 6 7 8 9 10; do
     [[ -n "$p" && "$p" != 0 ]] || return 1
     cmd=$(ps -p "$p" -o args= 2>/dev/null || true)
     if [[ "$cmd" == *process-compose* || "$cmd" == *devenv-wrapped*daemon-processes* ]]; then
-      cwd=$(readlink "/proc/${p}/cwd" 2>/dev/null || true)
-      [[ -z "$cwd" || "$cwd" == "$ROOT" ]] && return 0
+      printf '%s\t%s\n' "$p" "$cmd"
+      return 0
     fi
     p=$(ps -p "$p" -o ppid= 2>/dev/null | tr -d ' ')
   done
   return 1
+}
+
+# True if pid is a descendant of this checkout's process-compose.
+owned_by_compose() {
+  local pid="$1" anc compose_pid cmd cwd
+  anc=$(compose_ancestor "$pid") || return 1
+  compose_pid="${anc%%	*}"
+  cmd="${anc#*	}"
+  cwd=$(readlink "/proc/${compose_pid}/cwd" 2>/dev/null || true)
+  [[ -z "$cwd" || "$cwd" == "$ROOT" ]] || return 1
+  [[ -n "$cmd" ]]
+}
+
+# Alias: systemd and devenv are one surface (checkout process-compose).
+owned_by_unit_compose() {
+  owned_by_compose "$1"
 }
 
 # Leftover session postmaster holding PGDATA (often on a shifted port).
@@ -134,7 +181,9 @@ stop_orphan_gaius_postgres() {
   fi
 }
 
-# Skip-up only when the *unit* already owns the single ready listener.
+# Skip-up when checkout process-compose already answers Engine/Status.
+# systemd and `devenv up` are the same graph. Detached engine is not
+# membership (ok only while devenv is down, for tests).
 unit_already_ready() {
   local n pid
   status_ok || return 1
@@ -142,7 +191,37 @@ unit_already_ready() {
   [[ "${n:-0}" -eq 1 ]] || return 1
   pid=$(listener_pids | head -1)
   [[ -n "$pid" ]] || return 1
-  owned_by_compose "$pid"
+  is_gaius_engine "$pid" || return 1
+  owned_by_unit_compose "$pid"
+}
+
+# Same surface as `devenv processes restart gaius-engine` from a login shell.
+lattice_restart_engine() {
+  info "devenv processes restart gaius-engine"
+  _devenv_lc "devenv processes restart gaius-engine"
+}
+
+# TERM gaius.engine listeners that process-compose does not own (setsid test
+# leftovers). Do not kill a checkout compose child — that is the surface.
+reap_foreign_engines() {
+  local pid
+  for pid in $(listener_pids); do
+    is_gaius_engine "$pid" || continue
+    if owned_by_compose "$pid"; then
+      continue
+    fi
+    info "TERM foreign gaius.engine pid=$pid (not process-compose) #EN.00000016.NOTUNIT"
+    kill -TERM "$pid" 2>/dev/null || true
+  done
+  sleep 2
+  for pid in $(listener_pids); do
+    is_gaius_engine "$pid" || continue
+    if owned_by_compose "$pid"; then
+      continue
+    fi
+    info "KILL foreign gaius.engine pid=$pid after grace"
+    kill -KILL "$pid" 2>/dev/null || true
+  done
 }
 
 term_pid() {

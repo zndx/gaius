@@ -2191,7 +2191,7 @@ Be concise - each summary should be 1-2 sentences max."""
         """Enrich cards with summaries and images BEFORE publishing.
 
         For each card created in this run:
-        1. Generate 3 summary types (frontier, open_weights, cerebras)
+        1. Local open-weights summary (required) plus Brave/Cerebras if up
         2. Render LuxCore visualization via gRPC RenderCards
 
         Cards that pass all enrichment are tracked in self.enriched_card_ids.
@@ -2247,8 +2247,8 @@ Be concise - each summary should be 1-2 sentences max."""
         """Enrich cards with summaries and images.
 
         For each card:
-        1. Generate all 3 summary types — if ANY fails, card is marked failed
-        2. Render image via gRPC RenderCards for this specific card
+        1. Local open-weights required; Brave/Cerebras optional (API/budget)
+        2. LuxCore image via gRPC RenderCards — required
 
         Args:
             card_ids: Card IDs to enrich
@@ -2258,7 +2258,11 @@ Be concise - each summary should be 1-2 sentences max."""
         """
         import asyncpg
         from gaius.core.config import get_database_url
-        from gaius.engine.services.collection_service import CollectionService
+        from gaius.engine.services.collection_service import (
+            OPTIONAL_CARD_SUMMARIES,
+            REQUIRED_CARD_SUMMARY,
+            CollectionService,
+        )
 
         db_url = get_database_url()
         enriched: list[str] = []
@@ -2272,15 +2276,17 @@ Be concise - each summary should be 1-2 sentences max."""
                 card_failed = False
 
                 # --- Summaries ---
-                for summary_type in ("frontier", "open_weights", "cerebras"):
+                for summary_type in (REQUIRED_CARD_SUMMARY, *OPTIONAL_CARD_SUMMARIES):
                     try:
                         await service.generate_card_summary(card_id, summary_type)
                         print(f"  {card_label}: {summary_type} OK")
                     except Exception as e:
                         print(f"  {card_label}: {summary_type} FAILED - {e}")
+                        if summary_type in OPTIONAL_CARD_SUMMARIES:
+                            continue
                         failures[card_id] = f"{summary_type}: {e}"
                         card_failed = True
-                        break  # Skip remaining summary types for this card
+                        break
 
                 if card_failed:
                     continue

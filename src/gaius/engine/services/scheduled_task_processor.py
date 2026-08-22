@@ -6,14 +6,20 @@ Uses PostgreSQL LISTEN/NOTIFY for real-time processing while engine is running.
 Design:
 - LISTEN on 'scheduled_task_ready' channel for immediate pickup
 - Task handlers registered by task_type
-- Marks tasks complete with result/error
+- Cognition pipeline types (feed_check, triage, cognition_cycle, …)
+  are bound from CognitionService so LISTEN executes them. Types with
+  no STP handler stay pending for their owner — never completed as
+  #STP.00000003.NOHANDLER (that poison starved fetch → tape).
+- Marks owned tasks complete with result/error
 - Prospects check/update catch up on engine start so a recycle
   cannot skip the daily Data Product clock.
+- Due pickup is non-blocking (create_task). A LuxCore enrich must
+  not stall LISTEN / board_reindex. publish_cards is a singleton.
 
 Guru Meditation Codes:
 - #STP.00000001.CONNFAIL: LISTEN connection failed
 - #STP.00000002.TASKFAIL: Task execution failed
-- #STP.00000003.NOHANDLER: No handler for task type
+- #STP.00000003.NOHANDLER: Claimed a type with no handler (released, not completed)
 - #STP.00000004.PICKUPFAIL: Failed to pick up task
 """
 
@@ -23,7 +29,7 @@ import logging
 import os
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Awaitable, Callable
+from typing import Any, Awaitable, Callable, Protocol
 
 import asyncpg
 
@@ -60,6 +66,21 @@ class ScheduledTask:
 # Type alias for task handlers
 TaskHandler = Callable[[ScheduledTask], Awaitable[dict[str, Any]]]
 
+# Long GPU/Metaflow clocks: one in-process run at a time. Watchdog
+# 15m reset of publish_cards while LuxCore was still rendering left
+# the listen loop blocked and duplicate restore rows unclaimed.
+SINGLETON_TASK_TYPES = frozenset({"publish_cards", "article_curate"})
+
+
+class CognitionTaskRunner(Protocol):
+    """CognitionService surface STP needs to execute pipeline clocks."""
+
+    SUPPORTED_TASK_TYPES: list[str]
+
+    async def run_claimed_task(
+        self, task_type: str, payload: dict[str, Any]
+    ) -> dict[str, Any]: ...
+
 
 class ScheduledTaskProcessor(BaseDaemon):
     """PostgreSQL LISTEN/NOTIFY processor for scheduled tasks.
@@ -90,6 +111,11 @@ class ScheduledTaskProcessor(BaseDaemon):
 
         # Task handlers by type
         self._handlers: dict[str, TaskHandler] = {}
+        self._cognition: CognitionTaskRunner | None = None
+        self._inflight_ids: set[int] = set()
+        self._inflight_types: set[str] = set()
+        self._inflight_tasks: dict[int, asyncio.Task[None]] = {}
+        self._exec_lock = asyncio.Lock()
 
         # Metrics
         self._tasks_processed = 0
@@ -248,6 +274,42 @@ class ScheduledTaskProcessor(BaseDaemon):
         self._handlers[task_type] = handler
         logger.info(f"Registered handler for task type: {task_type}")
 
+    def bind_cognition(self, cognition: CognitionTaskRunner) -> None:
+        """Delegate CognitionService types that STP does not already own.
+
+        article_curate / other STP Metaflow clocks keep their existing
+        handler. feed_check, triage, cognition_cycle, engine_audit, …
+        run through CognitionService.run_claimed_task after STP claims.
+        """
+        types = list(cognition.SUPPORTED_TASK_TYPES)
+        if not types:
+            raise RuntimeError(
+                "CognitionService.SUPPORTED_TASK_TYPES is empty.\n"
+                "  Guru: #STP.00000003.NOHANDLER\n"
+                "  Try: /health fix engine"
+            )
+        self._cognition = cognition
+
+        async def _delegate(task: ScheduledTask) -> dict[str, Any]:
+            runner = self._cognition
+            if runner is None:
+                raise RuntimeError(
+                    f"CognitionService unbound while handling {task.task_type}.\n"
+                    "  Guru: #STP.00000003.NOHANDLER\n"
+                    "  Try: restart engine (bind_cognition before start_all)"
+                )
+            return await runner.run_claimed_task(task.task_type, task.payload)
+
+        bound = 0
+        for task_type in types:
+            if task_type not in self._handlers:
+                self.register_handler(task_type, _delegate)
+                bound += 1
+        logger.info(
+            "Bound CognitionService: %s pipeline type(s) delegated",
+            bound,
+        )
+
     async def start(self) -> None:
         """Start the task processor."""
         if self._running:
@@ -361,6 +423,26 @@ class ScheduledTaskProcessor(BaseDaemon):
 
             service = CollectionService(self._pool)
 
+            # Admit when nothing is *publishable*. A single unenriched
+            # pending card (open_weights timeout) must not starve inflow
+            # the way article_curate emptying featured starved the site
+            # from March through August.
+            ready = await service.count_featured_ready()
+            admitted = 0
+            if ready == 0:
+                admitted = await service.admit_public_inflow(limit=max(count * 2, 6))
+                logger.info(
+                    "Featured ready was 0; admitted %s public inflow cards",
+                    admitted,
+                )
+                if admitted == 0 and await service.count_featured_pending() == 0:
+                    raise RuntimeError(
+                        "Featured collection has no pending cards and no public "
+                        "inflow URLs to admit.\n"
+                        "  Guru: #COL.00000015.NOINFLOW\n"
+                        "  Try: /gpu status; confirm feed_check writes https URLs"
+                    )
+
             # Enrich unenriched pending cards first (summaries + images)
             # This ensures the enrichment gate in publish_cards() has
             # candidates to select from, even if the curation flow's
@@ -383,11 +465,22 @@ class ScheduledTaskProcessor(BaseDaemon):
                 f"KV sync: {result.get('kv_sync', {}).get('success', False)}"
             )
 
+            published_count = int(result.get("published_count", 0) or 0)
+            if published_count == 0:
+                raise RuntimeError(
+                    "No cards passed the enrichment gate "
+                    "(LuxCore image + local open-weights).\n"
+                    "  Guru: #COL.00000016.NOENRICH\n"
+                    f"  admitted={admitted} enriched={enrich_count} "
+                    f"failed={enrich_failed}\n"
+                    "  Try: RenderCards + Brave summaries, then /publish cards"
+                )
             published = {
                 "slot": slot,
+                "admitted_count": admitted,
                 "enriched_count": enrich_count,
                 "enriched_failed": enrich_failed,
-                "published_count": result.get("published_count", 0),
+                "published_count": published_count,
                 "kv_sync_success": result.get("kv_sync", {}).get("success", False),
             }
             from gaius.engine.services.agenda_emit import emit_publish_cards
@@ -936,14 +1029,12 @@ class ScheduledTaskProcessor(BaseDaemon):
                 logger.warning(f"Notification missing task id: {payload}")
                 return
 
-            # Check if we have a handler
+            # Leave types we do not own pending. Completing them as
+            # #STP.00000003.NOHANDLER starved feed_check → fetch_jobs → tape.
             if task_type not in self._handlers:
-                logger.warning(
-                    f"No handler for task type '{task_type}' (#STP.00000003.NOHANDLER)"
-                )
-                await self._mark_task_error(
-                    task_id,
-                    f"No handler registered for task type: {task_type}",
+                logger.info(
+                    "Ignoring notify for '%s' (no STP handler); leaving pending",
+                    task_type,
                 )
                 return
 
@@ -956,30 +1047,67 @@ class ScheduledTaskProcessor(BaseDaemon):
             logger.error(f"Error processing notification: {e}")
 
     async def _pickup_due(self) -> None:
-        """Run tasks whose scheduled_for is due (NOTIFY fires at INSERT)."""
-        if self._pool is None:
+        """Run owned tasks whose scheduled_for is due (NOTIFY fires at INSERT)."""
+        if self._pool is None or not self._handlers:
             return
+        owned = list(self._handlers)
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(
                 """
-                SELECT id FROM scheduled_tasks
+                SELECT id, task_type FROM scheduled_tasks
                  WHERE picked_up_at IS NULL
+                   AND completed_at IS NULL
                    AND scheduled_for <= NOW()
+                   AND task_type = ANY($1::text[])
                  ORDER BY scheduled_for
                  LIMIT 4
-                """
+                """,
+                owned,
             )
         for r in rows:
-            await self._execute_task(int(r["id"]))
+            tid = int(r["id"])
+            ttype = str(r["task_type"])
+            if tid in self._inflight_ids:
+                continue
+            if ttype in SINGLETON_TASK_TYPES and ttype in self._inflight_types:
+                continue
+            task = asyncio.create_task(
+                self._execute_task(tid),
+                name=f"stp-{ttype}-{tid}",
+            )
+            self._inflight_tasks[tid] = task
+            task.add_done_callback(
+                lambda _t, i=tid: self._inflight_tasks.pop(i, None)
+            )
 
     async def _execute_task(self, task_id: int) -> None:
         """Pick up and execute a task.
 
         Connection management: acquire/release around DB operations only,
         never hold a connection during handler execution. Handlers may need
-        their own connections from the same pool.
+        their own connections from the same pool. The listen loop must not
+        await this — LuxCore enrich is minutes.
         """
-        # 1. Atomically pick up task (short-lived connection)
+        async with self._exec_lock:
+            if task_id in self._inflight_ids:
+                return
+            self._inflight_ids.add(task_id)
+
+        owned_type: list[str] = []
+        try:
+            await self._execute_task_body(task_id, owned_type)
+        finally:
+            async with self._exec_lock:
+                self._inflight_ids.discard(task_id)
+                for t in owned_type:
+                    self._inflight_types.discard(t)
+
+    async def _execute_task_body(self, task_id: int, owned_type: list[str]) -> None:
+        """Claim the row and run the handler.
+
+        Appends the singleton task_type to owned_type when this run owns it
+        so the caller can drop the type even if the body raises.
+        """
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(
                 """
@@ -987,6 +1115,7 @@ class ScheduledTaskProcessor(BaseDaemon):
                 SET picked_up_at = NOW()
                 WHERE id = $1
                   AND picked_up_at IS NULL
+                  AND completed_at IS NULL
                   AND scheduled_for <= NOW()
                 RETURNING *
                 """,
@@ -998,29 +1127,43 @@ class ScheduledTaskProcessor(BaseDaemon):
             return
 
         task = ScheduledTask.from_row(row)
+        if task.task_type in SINGLETON_TASK_TYPES:
+            defer = False
+            async with self._exec_lock:
+                if task.task_type in self._inflight_types:
+                    defer = True
+                else:
+                    self._inflight_types.add(task.task_type)
+                    owned_type.append(task.task_type)
+            if defer:
+                logger.info(
+                    "Deferring %s task %s; singleton already in flight",
+                    task.task_type,
+                    task_id,
+                )
+                await self._release_claim(task_id)
+                return
+
         logger.info(f"Executing task {task_id}: {task.task_type}")
 
         handler = self._handlers.get(task.task_type)
         if not handler:
-            await self._mark_task_error(
-                task_id,
-                f"No handler for task type: {task.task_type}",
+            logger.error(
+                "Claimed '%s' with no handler; releasing "
+                "(#STP.00000003.NOHANDLER)",
+                task.task_type,
             )
+            await self._release_claim(task_id)
             return
 
-        # 2. Execute handler (no connection held — handler manages its own)
         try:
             result = await handler(task)
             self._tasks_processed += 1
             self._last_task_at = datetime.now()
 
-            # 3. Mark complete (short-lived connection)
-            # If the handler reports failure in result, propagate to error column
-            # so health checks correctly identify failed tasks.
             result_status = result.get("status", "completed") if isinstance(result, dict) else "completed"
             error_msg = None
             if result_status in ("failed", "error", "stalled"):
-                # Extract error from result for the error column
                 if isinstance(result, dict):
                     last_lines = result.get("last_lines", [])
                     error_msg = result.get("error") or (last_lines[-1] if last_lines else f"Handler returned status: {result_status}")
@@ -1076,6 +1219,21 @@ class ScheduledTaskProcessor(BaseDaemon):
                 """,
                 task_id,
                 error[:1000],
+            )
+
+    async def _release_claim(self, task_id: int) -> None:
+        """Drop a mistaken claim so the owning daemon can pick the row up."""
+        if self._pool is None:
+            return
+        async with self._pool.acquire() as conn:
+            await conn.execute(
+                """
+                UPDATE scheduled_tasks
+                   SET picked_up_at = NULL
+                 WHERE id = $1
+                   AND completed_at IS NULL
+                """,
+                task_id,
             )
 
     async def _health_check_loop(self) -> None:

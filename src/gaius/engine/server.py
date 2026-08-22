@@ -360,6 +360,9 @@ class GaiusEngine:
             backend_router=self._backend_router,
         )
         await self._orchestrator_service.start()
+        self._backend_router.optillm.set_vllm_ensure(
+            self._orchestrator_service.demand_vllm_for_optillm
+        )
         logger.info("Orchestrator service initialized")
 
     async def _autonomous_clean_start(self) -> None:
@@ -390,6 +393,18 @@ class GaiusEngine:
                         logger.warning(f"  {endpoint_alias}: failed to start - {e}")
                 else:
                     logger.warning(f"  {endpoint_alias}: not found in agent config")
+        await self._bind_optillm_to_provided_vllm()
+
+    async def _bind_optillm_to_provided_vllm(self) -> None:
+        """Point optillm at a healthy vLLM instead of a stale config port."""
+        orch = self._orchestrator_service
+        router = self._backend_router
+        if orch is None or router is None:
+            return
+        url = orch.provided_vllm_openai_url()
+        if not url:
+            return
+        await router.optillm.bind_provided_vllm(url)
 
     async def _autonomous_clean_start_with_progress(self) -> None:
         """Perform autonomous clean start with progress broadcasting.
@@ -458,6 +473,7 @@ class GaiusEngine:
         succeeded = sum(1 for v in results.values() if v)
         failed = sum(1 for v in results.values() if not v)
         logger.info(f"Preload complete: {succeeded} succeeded, {failed} failed")
+        await self._bind_optillm_to_provided_vllm()
 
     async def _start_grpc_server_early(self) -> None:
         """Start gRPC server EARLY with minimal services.
@@ -1074,6 +1090,18 @@ class GaiusEngine:
 
         # Start all daemons in topological order
         results = await self._daemon_registry.start_all()
+
+        # LISTEN must execute cognition pipeline types (feed_check, triage,
+        # …). Binding after start() so STP default handlers already own
+        # article_curate; bind fills the rest. Unknown types stay pending.
+        if self._scheduled_task_processor and self._cognition_service:
+            self._scheduled_task_processor.bind_cognition(self._cognition_service)
+        elif self._scheduled_task_processor and not self._cognition_service:
+            logger.error(
+                "ScheduledTaskProcessor has no CognitionService to bind.\n"
+                "  Guru: #STP.00000003.NOHANDLER\n"
+                "  feed_check / triage stay pending until cognition starts."
+            )
 
         # Log startup results
         for result in results:

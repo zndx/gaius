@@ -1654,6 +1654,7 @@ BEGIN
     WHERE id = (
         SELECT id FROM scheduled_tasks
         WHERE picked_up_at IS NULL
+          AND completed_at IS NULL
           AND scheduled_for <= NOW()
           AND (p_task_types IS NULL OR task_type = ANY(p_task_types))
         ORDER BY

@@ -2923,6 +2923,35 @@ class OrchestratorService:
 
         return result
 
+    def provided_vllm_openai_url(self) -> str | None:
+        """First healthy local generate vLLM, if any is already provided."""
+        if self._vllm is None:
+            return None
+        urls = self._vllm.healthy_generate_base_urls()
+        return urls[0][1] if urls else None
+
+    async def demand_vllm_for_optillm(self) -> str:
+        """Bind a provided vLLM, or demand thinking via zndx.engine.v1.
+
+        GPU occupancy is the vLLM Application (heavy). optillm does not
+        take a second GPU token when one replica is already healthy.
+        """
+        have = self.provided_vllm_openai_url()
+        if have:
+            return have
+        logger.info(
+            "No vLLM provided for optillm; demanding thinking via Engine/ensure"
+        )
+        status = await self.ensure_endpoint("thinking")
+        if status.status != "healthy" or not status.port:
+            raise RuntimeError(
+                "optillm needs a vLLM and none was provided.\n"
+                f"  thinking status={status.status} port={status.port}\n"
+                "  Guru: #OPT.00000004.NOVLLM\n"
+                "  Try: /health fix endpoints"
+            )
+        return f"http://localhost:{status.port}/v1"
+
     def get_optillm_status(self) -> Optional[dict[str, Any]]:
         """Get optillm controller status.
 

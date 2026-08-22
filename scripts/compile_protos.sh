@@ -59,6 +59,24 @@ else
     echo "  - zndx/engine/v1/engine.proto (skipped — submodule missing)"
 fi
 
+if [[ -f "$ZNDX_PROTO/zndx/scheduler/v1/scheduler.proto" ]]; then
+    echo "  - zndx/scheduler/v1/scheduler.proto"
+    python -m grpc_tools.protoc \
+        -I "$ZNDX_PROTO" \
+        --python_out="$OUTPUT_DIR" \
+        --grpc_python_out="$OUTPUT_DIR" \
+        "$ZNDX_PROTO/zndx/scheduler/v1/scheduler.proto"
+    sed -i 's/^from zndx\.scheduler\.v1 import scheduler_pb2 as /from gaius.engine.generated.zndx.scheduler.v1 import scheduler_pb2 as /' \
+        "$OUTPUT_DIR/zndx/scheduler/v1/scheduler_pb2_grpc.py"
+    mkdir -p "$OUTPUT_DIR/zndx/scheduler/v1"
+    printf '%s\n' '"""Generated bindings for zndx.scheduler.v1 (signals-protocol)."""' \
+      'from . import scheduler_pb2, scheduler_pb2_grpc' \
+      '__all__ = ["scheduler_pb2", "scheduler_pb2_grpc"]' \
+      > "$OUTPUT_DIR/zndx/scheduler/v1/__init__.py"
+else
+    echo "  - zndx/scheduler/v1/scheduler.proto (skipped — submodule missing)"
+fi
+
 # Fix imports in generated files (grpc_tools generates absolute imports)
 echo "Fixing imports in generated files..."
 for file in "$OUTPUT_DIR"/*_pb2_grpc.py; do

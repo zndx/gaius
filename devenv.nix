@@ -92,6 +92,11 @@
   # MinIO/S3 credentials for Metaflow (must override ~/.aws/credentials)
   env.AWS_ACCESS_KEY_ID = "minioadmin";
   env.AWS_SECRET_ACCESS_KEY = "minioadmin";
+  env.GAIUS_MINIO_ENDPOINT = "127.0.0.1:9010";
+  env.GAIUS_MINIO_BUCKET = "signals-dataproducts";
+  env.GAIUS_HX_PREFIX = "gaius/hx/";
+  env.GAIUS_MINIO_ACCESS_KEY = "rustfsadmin";
+  env.GAIUS_MINIO_SECRET_KEY = "rustfsadmin";
 
   # Project-specific Metaflow config (instead of ~/.metaflowconfig)
   env.METAFLOW_HOME = "${config.devenv.root}/.metaflow";
@@ -211,8 +216,8 @@
   services.minio = {
     enable = true;
     buckets = ["zndx-gaius" "metaflow-artifacts"];
-    listenAddress = "0.0.0.0:9010";   # All interfaces for K8s access
-    consoleAddress = "0.0.0.0:9011";
+    listenAddress = "0.0.0.0:9014";   # :9010 is Signals RustFS on the lattice host
+    consoleAddress = "0.0.0.0:9015";
   };
 
   services.postgres = {

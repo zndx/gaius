@@ -27,6 +27,7 @@ Complete catalog of error codes used across the Gaius platform.
 | `#EN.00001.GRPC_BIND` | gRPC port bind failure | Check port 50051 |
 | `#EN.00000014.DUALBIND` | Second gaius-engine dual-bound `:50051` (SO_REUSEPORT / extra devenv daemon) | `/health fix engine`; `ss -ltnp \| grep 50051` and stop the extra stack |
 | `#EN.00000015.NOREFLECT` | grpcio-reflection import failed (protobuf gencode/runtime mismatch) | `uv sync --extra grpc` (lock pins `grpcio-reflection<1.82`) |
+| `#EN.00000016.NOTUNIT` | `:50051` is `gaius.engine` but not this checkout's process-compose (setsid leftover) | `sudo systemctl restart gaius.service` or `devenv processes restart gaius-engine` — setsid only while devenv is down (tests) |
 | `#EN.00002.VLLM_START` | vLLM startup failure | `/health fix endpoints` |
 | `#EN.00003.GPU_OOM` | GPU out of memory | `just gpu-cleanup` |
 | `#EN.00004.ORPHAN_PROC` | Orphan vLLM process | `just gpu-cleanup` |
@@ -44,6 +45,15 @@ Complete catalog of error codes used across the Gaius platform.
 | `#EP.00000007.SHMFULL` | `/dev/shm` full — leftover `vllm_offload_*.mmap` / `psm_*` after unclean vLLM stop | `/health fix endpoints` (reclaims unheld segments); `just gpu-cleanup` |
 | `#EP.00000016.NOTREADY` | Complete hit a vLLM that is absent/STARTING | Wait for `/gpu status` HEALTHY; Settings starts light or medium Ask. Charts do not wait. |
 | `#EP.00000017.NOTELEMETRY` | Signals `kind=telemetry` surface missing or :9410 returned 503 | Confirm `SIGNALS_ENGINE_TARGET` Status.surfaces; dcgm-exporter on :9400; no DCGM dep in Gaius |
+
+### OPT — optillm proxy
+
+| Code | Description | Fix |
+|------|-------------|-----|
+| `#OPT.00000001.WATCHDOG` | gunicorn auto-restart failed (often `:8000` held by a foreign master) | `/health fix optillm` |
+| `#OPT.00000002.NOTSTARTED` | OptillmController never started | `/health fix optillm` |
+| `#OPT.00000003.UNHEALTHY` | optillm HTTP not 200 | `/health fix optillm` (reaps foreign `:8000`) |
+| `#OPT.00000004.NOVLLM` | No healthy generate vLLM provided and thinking demand failed | `/health fix endpoints`; optillm binds any provided vLLM |
 
 ### DI — Discover landing
 
@@ -164,6 +174,7 @@ Complete catalog of error codes used across the Gaius platform.
 | `#YK.00000004.ENVELOPE` | More than one Gaius Application on extract (1 GPU cap) | Yield the extra claim; `bind_workload_id` must reuse |
 | `#YK.00000005.DISK` | This kind's write mount past floor (`/` 32Gi for KB/PG lanes; `/raid` 64Gi for RustFS product lanes; or >98% used) | `dust -d 1` on the mount in the guru text; product/FMP check `/raid` only |
 | `#YK.00000006.MEM` | Host `MemAvailable` below 8Gi | Stop extra host children; do not mint another vLLM |
+| `#YK.00000007.SHAREFAIL` | Signals rejected `RequestQueueShare` (cannot persist occupancy intent) | Signals `:50551` Scheduler; do not write queues.yaml from Gaius |
 
 ### DP — Signals Data Product (peer publish)
 
@@ -206,11 +217,19 @@ Complete catalog of error codes used across the Gaius platform.
 | `#SDG.00000004.NOAPERTURE` | Strategy checkout present but snapshot / registered τ incomplete | Re-sync sdg-strategy from Aegir's published pin |
 | `#SDG.00000005.NOENTRY` | `record_attention` on a source_id that was never merged | Merge into the cognition scratchpad first |
 
+### COL — Public collections / gaius.zndx.org
+
+| Code | Description | Fix |
+|------|-------------|-----|
+| `#COL.00000015.NOINFLOW` | Featured collection empty and no public feed URLs to admit | Confirm `feed_check` writes `content_items.url`; `devenv processes restart gaius-engine` |
+| `#COL.00000016.NOENRICH` | Pending cards did not get LuxCore image + local open-weights | RenderCards + thinking; Brave/Cerebras optional |
+
 ### HX — object capture
 
 | Code | Description | Fix |
 |------|-------------|-----|
-| `#HX.00000001.NORUSTFS` | Platform HX cannot reach Signals RustFS; filesystem fallback refused | `just signals-ready`; confirm `:9010`; do not use devenv MinIO `zndx-gaius` |
+| `#HX.00000001.NORUSTFS` | HX cannot reach Signals RustFS; filesystem/MinIO fallback refused | `just signals-ready`; confirm `:9010` `signals-dataproducts`; devenv MinIO is not a warehouse |
+| `#HX.00000002.NOPOLARIS` | Polarisfork Iceberg REST `:8181` not reachable | `sudo systemctl start signals-polaris.service` (`signals.target`); not a Gaius process |
 
 ### ACF — Article Curation Flow
 

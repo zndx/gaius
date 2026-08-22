@@ -367,7 +367,7 @@ class VLLMController:
     async def start(self) -> None:
         """Start the controller."""
         self._client = httpx.AsyncClient(timeout=VLLM_HTTP_TIMEOUT)
-        logger.info("VLLMController started (http read timeout=180s)")
+        logger.info("VLLMController started (http read timeout=420s)")
 
     async def stop(self) -> None:
         """Stop the controller and all managed processes."""
@@ -1062,6 +1062,26 @@ class VLLMController:
     def get_process(self, agent_alias: str) -> Optional[VLLMProcess]:
         """Get process state for an agent."""
         return self._processes.get(agent_alias)
+
+    def healthy_generate_base_urls(self) -> list[tuple[str, str]]:
+        """OpenAI ``/v1`` URLs of healthy generate vLLMs (not embed).
+
+        Prefer thinking, then any other generate replica. optillm binds
+        one of these instead of minting a second GPU claim.
+        """
+        prefer = ("thinking", "reasoning", "instruct")
+        found: list[tuple[str, str]] = []
+        for alias, proc in self._processes.items():
+            if proc.status != ProcessStatus.HEALTHY:
+                continue
+            if proc.task == "embed":
+                continue
+            found.append((alias, proc.base_url))
+        ordered: list[tuple[str, str]] = []
+        for name in prefer:
+            ordered.extend((a, u) for a, u in found if a == name)
+        ordered.extend((a, u) for a, u in found if a not in prefer)
+        return ordered
 
     def get_status(self) -> dict[str, Any]:
         """Get controller status.

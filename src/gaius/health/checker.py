@@ -497,7 +497,7 @@ class HealthChecker:
                 id="site_collection_completeness",
                 name="Collection Completeness",
                 category="site",
-                description="Check active collections have published cards and all 3 summary types",
+                description="Check featured cards have LuxCore images and local open-weights summaries",
                 check_fn="_check_site_collection_completeness",
                 heuristic_id="site/collection_incomplete",
             ),
@@ -3001,7 +3001,10 @@ class HealthChecker:
             )
 
     async def _check_site_card_summaries(self) -> CheckResult:
-        """Check all published cards have frontier, open_weights, and cerebras summaries."""
+        """Check published cards have the required local open-weights panel.
+
+        Brave and Cerebras panels vary with API/budget and are not a FAIL.
+        """
         try:
             import asyncpg
 
@@ -3045,7 +3048,7 @@ class HealthChecker:
                         has_open_weights,
                         has_cerebras
                     FROM card_summary_counts
-                    WHERE has_frontier = 0 OR has_open_weights = 0 OR has_cerebras = 0
+                    WHERE has_open_weights = 0
                     LIMIT 20
                 """)
 
@@ -3057,29 +3060,17 @@ class HealthChecker:
                 await conn.close()
 
                 if rows:
-                    missing_frontier = sum(1 for r in rows if r["has_frontier"] == 0)
                     missing_ow = sum(1 for r in rows if r["has_open_weights"] == 0)
-                    missing_cerebras = sum(1 for r in rows if r["has_cerebras"] == 0)
                     affected_cards = [r["card_id"] for r in rows]
-
-                    parts = []
-                    if missing_frontier:
-                        parts.append(f"{missing_frontier} missing frontier")
-                    if missing_ow:
-                        parts.append(f"{missing_ow} missing open_weights")
-                    if missing_cerebras:
-                        parts.append(f"{missing_cerebras} missing cerebras")
 
                     return CheckResult(
                         name="Card Summaries",
                         status=CheckStatus.FAIL,
-                        message=f"#SITE.00000002.NOSUMMARIES: {len(rows)} cards with incomplete summaries: {', '.join(parts)}",
+                        message=f"#SITE.00000002.NOSUMMARIES: {len(rows)} cards missing local open-weights",
                         details={
                             "total_published": total,
                             "incomplete_cards": len(rows),
-                            "missing_frontier": missing_frontier,
                             "missing_open_weights": missing_ow,
-                            "missing_cerebras": missing_cerebras,
                             "affected_cards": affected_cards,
                         },
                         suggestion="Run: uv run python scripts/remediate_card_summaries.py",
@@ -3088,7 +3079,7 @@ class HealthChecker:
                 return CheckResult(
                     name="Card Summaries",
                     status=CheckStatus.PASS,
-                    message=f"All {total} published cards have all 3 summary types",
+                    message=f"All {total} published cards have local open-weights summaries",
                     details={"total_published": total},
                 )
 
@@ -3240,7 +3231,7 @@ class HealthChecker:
             )
 
     async def _check_site_collection_completeness(self) -> CheckResult:
-        """Check active collections have published cards and all 3 summary types."""
+        """Check featured collection has published cards and frontier+open_weights."""
         try:
             import asyncpg
 
@@ -3289,12 +3280,8 @@ class HealthChecker:
                     if row["published_cards"] == 0:
                         issues.append("no published cards")
                     else:
-                        if row["has_frontier"] < row["published_cards"]:
-                            issues.append(f"frontier: {row['has_frontier']}/{row['published_cards']}")
                         if row["has_open_weights"] < row["published_cards"]:
                             issues.append(f"open_weights: {row['has_open_weights']}/{row['published_cards']}")
-                        if row["has_cerebras"] < row["published_cards"]:
-                            issues.append(f"cerebras: {row['has_cerebras']}/{row['published_cards']}")
                     if issues:
                         incomplete.append({
                             "slug": row["slug"],

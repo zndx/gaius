@@ -196,13 +196,10 @@ class CognitionService(BaseDaemon):
         """
         while self._running:
             try:
-                # Check if GPU is idle (optional)
-                if not self._get_gpu_idle():
-                    logger.debug("GPU busy, skipping cognition check")
-                    await asyncio.sleep(self.config.poll_interval_seconds)
-                    continue
-
-                # Try to pick up a pending task
+                # Try to pick up a pending task. GPU-bound types are
+                # omitted while the cards are busy; CPU pipeline clocks
+                # (feed_check, heuristic_triage, content_processing)
+                # still run so inflow does not stall behind thinking.
                 task = await self._pick_up_task()
 
                 if task:
@@ -240,6 +237,30 @@ class CognitionService(BaseDaemon):
         "feed_check",
     ]
 
+    # Need an inference card. CPU/SQL clocks stay in SUPPORTED_TASK_TYPES
+    # so a busy GPU cannot starve feed → triage → KB.
+    GPU_BOUND_TASK_TYPES = frozenset(
+        {
+            "cognition_cycle",
+            "llm_triage",
+            "evolution_cycle",
+            "task_ideation",
+            "model_merge",
+            "merge_evaluation",
+            "weekly_summary",
+            "content_summarization",
+            "research_processing",
+            "tda_computation",
+        }
+    )
+
+    def _pickup_types(self) -> list[str]:
+        """Task types this poll may claim."""
+        types = list(self.SUPPORTED_TASK_TYPES)
+        if self._get_gpu_idle():
+            return types
+        return [t for t in types if t not in self.GPU_BOUND_TASK_TYPES]
+
     async def _pick_up_task(self) -> Optional[dict]:
         """Pick up the next pending task from the database.
 
@@ -252,13 +273,16 @@ class CognitionService(BaseDaemon):
             return None
 
         try:
+            types = self._pickup_types()
+            if not types:
+                return None
             async with self._db_pool.acquire() as conn:
                 # Call the atomic pick_up_task function with all supported types
                 row = await conn.fetchrow(
                     """
                     SELECT * FROM pick_up_task($1)
                     """,
-                    self.SUPPORTED_TASK_TYPES,
+                    types,
                 )
 
                 if row and row["id"]:
@@ -326,17 +350,27 @@ class CognitionService(BaseDaemon):
         logger.info(f"Processing task {task_id}: {task_type}")
         self._notify_progress(f"Processing {task_type}")
 
-        # Task handler routing
-        handlers = {
-            # Core cognition tasks
+        try:
+            result = await self.run_claimed_task(task_type, payload)
+            await self._complete_task(task_id, result=result)
+            logger.info(f"Task {task_id} completed successfully")
+
+        except Exception as e:
+            logger.error(f"Task {task_id} failed: {e}")
+            await self._complete_task(task_id, error=str(e))
+
+        finally:
+            self._current_task = None
+
+    def _handler_for(self, task_type: str) -> Optional[Callable]:
+        """Route task_type to the implementation. STP calls run_claimed_task."""
+        return {
             "cognition_cycle": self._run_cognition_cycle,
             "engine_audit": self._run_engine_audit,
             "delta_check": self._run_delta_check,
-            # Content pipeline tasks (autonomous triage)
             "heuristic_triage": self._run_heuristic_triage,
             "llm_triage": self._run_llm_triage,
             "content_processing": self._run_content_processing,
-            # Long-term evolution tasks
             "content_diversity_check": self._run_content_diversity_check,
             "evolution_cycle": self._run_evolution_cycle,
             "task_ideation": self._run_task_ideation,
@@ -348,25 +382,28 @@ class CognitionService(BaseDaemon):
             "tda_computation": self._run_tda_computation,
             "held_out_refresh": self._run_held_out_refresh,
             "feed_check": self._run_feed_check,
-            # Landing page pipeline tasks
             "article_curate": self._run_article_curate,
-        }
+        }.get(task_type)
 
-        try:
-            handler = handlers.get(task_type)
-            if not handler:
-                raise ValueError(f"Unknown task type: {task_type}")
+    async def run_claimed_task(
+        self,
+        task_type: str,
+        payload: Optional[dict] = None,
+    ) -> dict:
+        """Execute a handler without claiming or completing the row.
 
-            result = await handler(payload)
-            await self._complete_task(task_id, result=result)
-            logger.info(f"Task {task_id} completed successfully")
-
-        except Exception as e:
-            logger.error(f"Task {task_id} failed: {e}")
-            await self._complete_task(task_id, error=str(e))
-
-        finally:
-            self._current_task = None
+        ScheduledTaskProcessor claims/completes; Cognition poll uses
+        _process_task which wraps this and then complete_task().
+        """
+        payload = payload or {}
+        handler = self._handler_for(task_type)
+        if handler is None:
+            raise ValueError(
+                f"Unknown cognition task type '{task_type}'.\n"
+                "  Guru: #COG.00000002.NOTYPE\n"
+                "  Try: /health fix engine"
+            )
+        return await handler(payload)
 
     # ─────────────────────────────────────────────────────────────────────────
     # Task Handlers
@@ -2328,12 +2365,7 @@ Your summary note content"""
             payload.setdefault("trigger", "manual")
             # Manual triggers bypass rate limiting
             return await self._run_cognition_cycle(payload, bypass_rate_limit=True)
-        elif task_type == "engine_audit":
-            return await self._run_engine_audit(payload)
-        elif task_type == "delta_check":
-            return await self._run_delta_check(payload)
-        else:
-            raise ValueError(f"Unknown task type: {task_type}")
+        return await self.run_claimed_task(task_type, payload)
 
     # ─────────────────────────────────────────────────────────────────────────
     # Progress Notification

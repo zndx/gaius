@@ -584,6 +584,11 @@ def _parse_config(conf: "ConfigTree") -> EngineConfig:
         if hasattr(startup_conf, "get")
         else True,
     )
+    # Engine-only recycle: skip stale-vLLM kill + preload so existing
+    # cards keep serving. Empty/unset leaves HOCON default.
+    _env_clean = os.environ.get("GAIUS_CLEAN_START")
+    if _env_clean is not None and _env_clean.strip() != "":
+        startup.clean_start = _env_clean.strip().lower() in ("1", "true", "yes")
 
     return EngineConfig(
         grpc=grpc,

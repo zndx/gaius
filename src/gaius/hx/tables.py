@@ -361,6 +361,7 @@ def get_llm_generation_table(
 
     try:
         table = catalog.load_table(table_id)
+        _ = table.metadata
         return table
     except NoSuchTableError:
         return create_llm_generation_table(
@@ -368,6 +369,21 @@ def get_llm_generation_table(
             namespace=namespace,
             table_name=table_name,
             if_not_exists=True,
+        )
+    except Exception as e:
+        msg = str(e)
+        if "Path does not exist" not in msg and "ACCESS_DENIED" not in msg:
+            raise
+        logger.warning("HX table %s unreadable (%s); dropping catalog row to recreate", table_id, e)
+        try:
+            catalog.drop_table(table_id)
+        except Exception:
+            logger.exception("drop_table %s failed", table_id)
+        return create_llm_generation_table(
+            catalog,
+            namespace=namespace,
+            table_name=table_name,
+            if_not_exists=False,
         )
 
 

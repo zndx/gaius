@@ -14,9 +14,12 @@ providing production-ready features:
 import asyncio
 import logging
 import os
+import re
 import signal
+import subprocess
 import sys
 from collections import deque
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
@@ -29,6 +32,28 @@ from ..config import EngineConfig, OptillmConfig
 from .gunicorn_config import GunicornConfigGenerator, GunicornSettings
 
 logger = logging.getLogger(__name__)
+
+GURU_NOVLLM = "#OPT.00000004.NOVLLM"
+OPTILLM_KIND = "optillm"
+
+
+def pids_listening_on_port(port: int) -> set[int]:
+    """PIDs with a listening TCP socket on ``port`` (IPv4/IPv6)."""
+    r = subprocess.run(
+        ["ss", "-ltnp"],
+        capture_output=True,
+        text=True,
+        timeout=5,
+        check=False,
+    )
+    pids: set[int] = set()
+    needle = f":{port} "
+    for line in (r.stdout or "").splitlines():
+        if needle not in line and not line.rstrip().endswith(f":{port}"):
+            continue
+        for m in re.finditer(r"pid=(\d+)", line):
+            pids.add(int(m.group(1)))
+    return pids
 
 
 class OptillmStatus(Enum):
@@ -175,6 +200,8 @@ class OptillmController:
         self._idle_timeout = getattr(self.optillm_config, "idle_timeout", 120)
         self._heartbeat_poll_interval = 10  # seconds between vLLM metrics polls
         self._vllm_metrics_client: Optional[httpx.AsyncClient] = None
+        self._ensure_vllm: Callable[[], Awaitable[str]] | None = None
+        self._bound_vllm_url = self.optillm_config.backend_url
 
         logger.info(
             f"OptillmController initialized: {self._base_url}, "
@@ -182,8 +209,74 @@ class OptillmController:
             f"gunicorn: {self._use_gunicorn}"
         )
 
+    def set_vllm_ensure(self, fn: Callable[[], Awaitable[str]]) -> None:
+        """Resolver: provided vLLM URL, or demand thinking via Engine."""
+        self._ensure_vllm = fn
+
+    def _admit_sentinel(self) -> None:
+        from gaius.engine.sentinel_claim import (
+            OPTILLM_WORKLOAD_ID,
+            YkAdmitError,
+            apply_and_admit,
+        )
+
+        try:
+            apply_and_admit(OPTILLM_WORKLOAD_ID, OPTILLM_KIND)
+        except YkAdmitError as e:
+            logger.error("optillm YK admit failed: %s", e)
+            raise
+
+    def _stz_sentinel(self) -> None:
+        from gaius.engine.sentinel_claim import OPTILLM_WORKLOAD_ID, delete_flow_sentinel
+
+        delete_flow_sentinel(OPTILLM_WORKLOAD_ID)
+
+    def _reap_foreign_listeners(self) -> None:
+        """Kill gunicorn/optillm holding :8000 that this controller did not start."""
+        ours = {p for p in (self._pid,) if p}
+        if self._process and self._process.pid:
+            ours.add(self._process.pid)
+        foreign = pids_listening_on_port(self._port) - ours
+        for pid in foreign:
+            logger.warning(
+                "reaping foreign optillm listener pid=%s on :%s", pid, self._port
+            )
+            try:
+                os.kill(pid, signal.SIGTERM)
+            except ProcessLookupError:
+                continue
+        if foreign:
+            time_mod = __import__("time")
+            time_mod.sleep(1.0)
+            still = pids_listening_on_port(self._port) - ours
+            for pid in still:
+                try:
+                    os.kill(pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+
+    def _apply_vllm_url(self, url: str) -> None:
+        self._bound_vllm_url = url
+        self._vllm_metrics_url = url.rsplit("/v1", 1)[0]
+        self.optillm_config.backend_url = url
+
+    async def bind_provided_vllm(self, url: str) -> None:
+        """Point gunicorn at a vLLM that is already provided (no extra GPU)."""
+        if url.rstrip("/") == self._bound_vllm_url.rstrip("/"):
+            return
+        logger.info("optillm binding provided vLLM %s (was %s)", url, self._bound_vllm_url)
+        self._apply_vllm_url(url)
+        if self._vllm_metrics_client:
+            await self._vllm_metrics_client.aclose()
+        self._vllm_metrics_client = httpx.AsyncClient(
+            base_url=self._vllm_metrics_url, timeout=5.0
+        )
+        if self._process is not None:
+            self._recovery_attempts = 0
+            await self.restart(retire_sentinel=False)
+
     async def start(self) -> None:
-        """Start the controller and optillm subprocess."""
+        """Admit the YK sentinel, reap orphans, start gunicorn."""
         self._client = httpx.AsyncClient(
             base_url=self._base_url,
             timeout=self._timeout,
@@ -193,28 +286,38 @@ class OptillmController:
             },
         )
 
-        # Lightweight client for polling vLLM /metrics (short timeout, no auth)
+        self._reap_foreign_listeners()
+        self._admit_sentinel()
+
+        if self._ensure_vllm is not None:
+            try:
+                url = await self._ensure_vllm()
+                self._apply_vllm_url(url)
+            except Exception as e:
+                logger.warning(
+                    "optillm: no vLLM provided yet (%s); gunicorn starts, "
+                    "demand on first Complete",
+                    e,
+                )
+
         self._vllm_metrics_client = httpx.AsyncClient(
             base_url=self._vllm_metrics_url,
             timeout=5.0,
         )
 
-        # Check if optillm is already running externally
-        if await self.health_check():
-            logger.info("optillm already running externally")
+        if await self.health_check() and self._pid in pids_listening_on_port(self._port):
+            logger.info("optillm already running as this controller's process")
             return
 
-        # Start optillm subprocess (gunicorn or Flask dev server)
         if self._use_gunicorn:
             await self._start_gunicorn_process()
         else:
             await self._start_optillm_process()
-        # Start watchdog for crash detection and auto-restart
         if self._watchdog_task is None or self._watchdog_task.done():
             self._watchdog_task = asyncio.create_task(self._watchdog_loop())
             logger.info("optillm watchdog started")
 
-        logger.info("OptillmController started")
+        logger.info("OptillmController started backend=%s", self._bound_vllm_url)
 
     async def _start_optillm_process(self) -> bool:
         """Start the optillm subprocess.
@@ -236,7 +339,7 @@ class OptillmController:
         # Set backend URL for optillm to forward requests to vLLM
         # Remove conflicting OPENAI_API_BASE if set in parent environment
         env.pop("OPENAI_API_BASE", None)
-        backend_url = getattr(self.optillm_config, "backend_url", "http://localhost:8082/v1")
+        backend_url = self._bound_vllm_url
         env["OPTILLM_BASE_URL"] = backend_url
         # Clear PYTHONPATH to avoid Nix store conflicts
         env["PYTHONPATH"] = ""
@@ -315,7 +418,7 @@ class OptillmController:
         # Set backend URL for optillm to forward requests to vLLM
         # Remove conflicting OPENAI_API_BASE if set in parent environment
         env.pop("OPENAI_API_BASE", None)
-        backend_url = getattr(self.optillm_config, "backend_url", "http://localhost:8082/v1")
+        backend_url = self._bound_vllm_url
         env["OPTILLM_BASE_URL"] = backend_url
         # Clear PYTHONPATH to avoid Nix store conflicts
         env["PYTHONPATH"] = ""
@@ -329,7 +432,7 @@ class OptillmController:
 
         # Create gunicorn config generator
         # Get backend URL from config (vLLM instruct endpoint)
-        backend_url = getattr(self.optillm_config, "backend_url", "http://localhost:8082/v1")
+        backend_url = self._bound_vllm_url
         settings = GunicornSettings(
             bind=f"127.0.0.1:{self._port}",
             workers=workers,
@@ -496,8 +599,8 @@ class OptillmController:
 
         logger.info("optillm watchdog stopped")
 
-    async def stop(self) -> None:
-        """Stop the controller and optillm subprocess."""
+    async def stop(self, *, retire_sentinel: bool = True) -> None:
+        """Stop gunicorn. Yield / engine shutdown retires the YK Application."""
         # Cancel watchdog task
         if self._watchdog_task and not self._watchdog_task.done():
             self._watchdog_task.cancel()
@@ -553,9 +656,11 @@ class OptillmController:
             self._vllm_metrics_client = None
 
         self._healthy = False
+        if retire_sentinel:
+            self._stz_sentinel()
         logger.info("OptillmController stopped")
 
-    async def restart(self) -> bool:
+    async def restart(self, *, retire_sentinel: bool = False) -> bool:
         """Restart optillm subprocess.
 
         Returns:
@@ -568,7 +673,21 @@ class OptillmController:
         self._recovery_attempts += 1
         logger.info(f"Restarting optillm (attempt {self._recovery_attempts})")
 
-        await self.stop()
+        await self.stop(retire_sentinel=retire_sentinel)
+        self._reap_foreign_listeners()
+        self._admit_sentinel()
+        self._client = httpx.AsyncClient(
+            base_url=self._base_url,
+            timeout=self._timeout,
+            headers={
+                "Authorization": f"Bearer {self._api_key}",
+                "Content-Type": "application/json",
+            },
+        )
+        self._vllm_metrics_client = httpx.AsyncClient(
+            base_url=self._vllm_metrics_url,
+            timeout=5.0,
+        )
 
         if self._use_gunicorn:
             return await self._start_gunicorn_process()
@@ -953,14 +1072,32 @@ class OptillmController:
             )
 
         if not self._healthy:
-            # Try health check before failing
             await self.health_check()
             if not self._healthy:
+                self._recovery_attempts = 0
+                self._reap_foreign_listeners()
+                if not await self.restart():
+                    return OptillmResponse(
+                        content="",
+                        model=request.model,
+                        technique=request.technique.value,
+                        error="Guru Meditation: #OPT.00000003.UNHEALTHY — optillm not healthy. Try: /health fix optillm",
+                    )
+
+        if self._ensure_vllm is not None:
+            try:
+                url = await self._ensure_vllm()
+                await self.bind_provided_vllm(url)
+            except Exception as e:
                 return OptillmResponse(
                     content="",
                     model=request.model,
                     technique=request.technique.value,
-                    error="Guru Meditation: #OPT.00000003.UNHEALTHY — optillm not healthy. Try: /health fix optillm",
+                    error=(
+                        f"Guru Meditation: {GURU_NOVLLM} — no vLLM provided "
+                        f"and demand failed: {e}\n"
+                        "  Try: /health fix endpoints"
+                    ),
                 )
 
         # Build model name with technique prefix

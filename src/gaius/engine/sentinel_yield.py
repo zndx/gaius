@@ -13,6 +13,7 @@ from gaius.engine.flow_processes import flow_processes
 from gaius.engine.generated.zndx.engine.v1 import engine_pb2 as zpb
 from gaius.engine.sentinel_claim import (
     AMBIENT_WORKLOAD_ID,
+    OPTILLM_WORKLOAD_ID,
     capability_workload_id,
     delete_flow_sentinel,
     release_kind,
@@ -31,6 +32,7 @@ _CAPABILITY_ALIASES = frozenset(
         "ask-sae",
         "clt",
         "orchestrator",
+        "optillm",
     }
 )
 
@@ -78,6 +80,19 @@ async def yield_workload(services: Any, request: zpb.YieldRequest) -> zpb.YieldR
                 restore_started=False,
                 message=f"ended ambient {wid}",
             )
+
+    if wid in (OPTILLM_WORKLOAD_ID, "optillm") or alias_for_workload(wid) == "optillm":
+        orch = getattr(services, "orchestrator_service", None)
+        opt = getattr(orch, "_optillm", None) if orch is not None else None
+        if opt is not None:
+            await opt.stop()
+        delete_flow_sentinel(OPTILLM_WORKLOAD_ID)
+        return zpb.YieldResponse(
+            ok=True,
+            process_ended=True,
+            restore_started=False,
+            message=f"stopped optillm {wid}",
+        )
 
     alias = alias_for_workload(wid)
     orch = getattr(services, "orchestrator_service", None)

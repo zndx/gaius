@@ -113,6 +113,22 @@ proto-generate:
         "$OUT_DIR/zndx/engine/v1/engine_pb2_grpc.py"
       mkdir -p "$OUT_DIR/zndx/engine/v1"
       echo "✓ Generated zndx.engine.v1 bindings"
+      if [[ -f "$ZNDX_PROTO/zndx/scheduler/v1/scheduler.proto" ]]; then
+        echo "Source:  $ZNDX_PROTO/zndx/scheduler/v1/scheduler.proto"
+        python -m grpc_tools.protoc \
+          -I="$ZNDX_PROTO" \
+          --python_out="$OUT_DIR" \
+          --grpc_python_out="$OUT_DIR" \
+          "$ZNDX_PROTO/zndx/scheduler/v1/scheduler.proto"
+        sed -i 's/^from zndx\.scheduler\.v1 import scheduler_pb2 as /from gaius.engine.generated.zndx.scheduler.v1 import scheduler_pb2 as /' \
+          "$OUT_DIR/zndx/scheduler/v1/scheduler_pb2_grpc.py"
+        mkdir -p "$OUT_DIR/zndx/scheduler/v1"
+        printf '%s\n' '"""Generated bindings for zndx.scheduler.v1 (signals-protocol)."""' \
+          'from . import scheduler_pb2, scheduler_pb2_grpc' \
+          '__all__ = ["scheduler_pb2", "scheduler_pb2_grpc"]' \
+          > "$OUT_DIR/zndx/scheduler/v1/__init__.py"
+        echo "✓ Generated zndx.scheduler.v1 bindings"
+      fi
     else
       echo "⚠ signals-protocol proto not found at $ZNDX_PROTO — skip zndx bindings"
     fi

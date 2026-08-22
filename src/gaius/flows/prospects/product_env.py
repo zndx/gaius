@@ -13,7 +13,7 @@ from urllib.parse import urlparse
 
 PRODUCT_ID = "gaius.prospects.corpus"
 PRODUCT_BUCKET = "signals-dataproducts"
-HX_PREFIX = "gaius/hx/"
+HX_PREFIX = "iceberg/"
 PRODUCT_PREFIX = "gaius/prospects/"
 DEFAULT_SIGNALS_ROOT = Path.home() / "local" / "src" / "wxs" / "signals"
 
@@ -33,12 +33,25 @@ def rustfs_endpoint(environ: Mapping[str, str] | None = None) -> str:
     return raw.rstrip("/")
 
 
+def rustfs_credentials(environ: Mapping[str, str] | None = None) -> tuple[str, str]:
+    """RustFS keys. Never inherit devenv ``minioadmin`` (nixpkgs MinIO is retired)."""
+    env = environ if environ is not None else os.environ
+    ak = (env.get("RUSTFS_ACCESS_KEY") or "").strip()
+    sk = (env.get("RUSTFS_SECRET_KEY") or "").strip()
+    if not ak or ak == "minioadmin":
+        ak = "rustfsadmin"
+    if not sk or sk == "minioadmin":
+        sk = "rustfsadmin"
+    return ak, sk
+
+
 def apply_product_env(env: dict[str, str]) -> dict[str, str]:
     """Mutate *env* so HX + History land on Signals RustFS."""
     root = signals_root(env)
     endpoint = rustfs_endpoint(env)
     parsed = urlparse(endpoint)
     host = parsed.netloc or parsed.path or "127.0.0.1:9010"
+    ak, sk = rustfs_credentials(env)
     env["SIGNALS_ROOT"] = str(root)
     env.setdefault(
         "SIGNALS_DATA_PRODUCT_HISTORY",
@@ -47,8 +60,9 @@ def apply_product_env(env: dict[str, str]) -> dict[str, str]:
     env["GAIUS_HX_USE_MINIO"] = "true"
     env["GAIUS_MINIO_BUCKET"] = PRODUCT_BUCKET
     env["GAIUS_MINIO_ENDPOINT"] = host
-    env.setdefault("GAIUS_MINIO_ACCESS_KEY", env.get("AWS_ACCESS_KEY_ID", ""))
-    env.setdefault("GAIUS_MINIO_SECRET_KEY", env.get("AWS_SECRET_ACCESS_KEY", ""))
+    env["GAIUS_MINIO_ACCESS_KEY"] = ak
+    env["GAIUS_MINIO_SECRET_KEY"] = sk
+    env["GAIUS_HX_PREFIX"] = HX_PREFIX
     return env
 
 

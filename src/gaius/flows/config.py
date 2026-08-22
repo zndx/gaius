@@ -82,8 +82,8 @@ def load_metaflow_config(mode: str = "local") -> dict:
 def apply_metaflow_config(mode: str | None = None) -> str:
     """Apply Metaflow configuration to this process environment.
 
-    ``mode=None`` resolves via Signals Engine/Status. Platform mode
-    overwrites Gaius-local MinIO/Tilt keys so they cannot win.
+    HX always lands on Signals RustFS (``s3://signals-dataproducts/gaius/hx``).
+    devenv MinIO is not a warehouse.
 
     Returns:
         The resolved mode string.
@@ -132,10 +132,10 @@ def metaflow_child_env(
             "METAFLOW_AIRFLOW_KUBERNETES_CONN_ID",
         ):
             env.pop(k, None)
-    if resolved == "platform":
-        from gaius.flows.prospects.product_env import apply_product_env
+    from gaius.flows.prospects.product_env import apply_product_env
 
-        apply_product_env(env)
+    # HX + History on Signals RustFS for local and platform children.
+    apply_product_env(env)
     return env
 
 

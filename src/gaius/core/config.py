@@ -256,7 +256,7 @@ class SessionConfig:
 class IcebergConfig:
     """Apache Iceberg table format configuration."""
 
-    catalog: str = "gaius_hx"
+    catalog: str = "signals"
     namespace: str = "raw"
     use_minio: bool = True
 
@@ -265,9 +265,9 @@ class IcebergConfig:
 class MinioConfig:
     """MinIO S3-compatible storage configuration."""
 
-    endpoint: str = "localhost:9010"
-    bucket: str = "zndx-gaius"
-    prefix: str = "hx/"              # Subfolder within bucket
+    endpoint: str = "127.0.0.1:9010"
+    bucket: str = "signals-dataproducts"
+    prefix: str = "gaius/hx/"        # Signals RustFS product prefix
     access_key: str = ""             # Set via env var
     secret_key: str = ""             # Set via env var
 
@@ -635,15 +635,15 @@ def _parse_config_tree(tree: ConfigTree) -> GaiusConfig:
 
     # Gaius HX - Raw content data lake
     hx_iceberg = IcebergConfig(
-        catalog=g.get("hx.iceberg.catalog", "gaius_hx"),
+        catalog=g.get("hx.iceberg.catalog", "signals"),
         namespace=g.get("hx.iceberg.namespace", "raw"),
         use_minio=g.get("hx.iceberg.use_minio", True),
     )
 
     hx_minio = MinioConfig(
-        endpoint=g.get("hx.minio.endpoint", "localhost:9010"),
-        bucket=g.get("hx.minio.bucket", "zndx-gaius"),
-        prefix=g.get("hx.minio.prefix", "hx/"),
+        endpoint=g.get("hx.minio.endpoint", "127.0.0.1:9010"),
+        bucket=g.get("hx.minio.bucket", "signals-dataproducts"),
+        prefix=g.get("hx.minio.prefix", "iceberg/"),
         access_key=g.get("hx.minio.access_key", ""),
         secret_key=g.get("hx.minio.secret_key", ""),
     )

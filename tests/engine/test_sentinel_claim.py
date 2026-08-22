@@ -8,6 +8,7 @@ import yaml
 from gaius.engine.sentinel_claim import (
     COMPUTE,
     EXTRACT,
+    GPU_ADMIT_TIMEOUT_S,
     HEAVY,
     LIGHT,
     GURU_NOAPP,
@@ -17,6 +18,27 @@ from gaius.engine.sentinel_claim import (
     gpu_start_allowed,
     resource_class_for,
 )
+
+
+def test_gpu_extract_waits_for_yk_preemption() -> None:
+    """60s STZ of a Blocked extract claim is how article_curate starved."""
+    assert GPU_ADMIT_TIMEOUT_S >= 180.0
+    assert EXTRACT.gpu_tokens == 1
+
+
+def test_optillm_is_compute_not_a_gpu_claim() -> None:
+    from gaius.engine.sentinel_claim import OPTILLM_WORKLOAD_ID, disk_paths_for
+
+    assert resource_class_for("optillm") == COMPUTE
+    assert resource_class_for("gaius-optillm") == COMPUTE
+    assert OPTILLM_WORKLOAD_ID == "gaius-optillm"
+    doc = yaml.safe_load(application_yaml("gaius-optillm", "optillm"))
+    req = doc["spec"]["containers"][0]["resources"]["requests"]
+    assert "federation.zndx.org/gpu" not in req
+    assert doc["metadata"]["annotations"]["yunikorn.apache.org/queue"] == (
+        "root.internal.compute"
+    )
+    assert disk_paths_for("optillm") == ()
 
 
 def test_article_and_prospects_map_to_extract() -> None:
@@ -339,6 +361,44 @@ def test_apply_and_admit_stz_unplaced_sentinel(
     with pytest.raises(YkAdmitError, match=GURU_NOTADMITTED):
         apply_and_admit("gaius-mf-docling-leak", "docling", timeout_s=0.1)
     assert deleted == ["gaius-mf-docling-leak"]
+
+
+def test_extract_requests_leftover_yield_before_wait(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from gaius.engine.sentinel_claim import YkAdmitError, apply_and_admit
+
+    yielded: list[int] = []
+    monkeypatch.setattr(
+        "gaius.engine.sentinel_claim.assert_host_envelope", lambda **_k: None
+    )
+    monkeypatch.setattr("gaius.engine.sentinel_claim.sentinels_enabled", lambda: True)
+    monkeypatch.setattr("gaius.engine.sentinel_claim.federation_required", lambda: True)
+    monkeypatch.setattr(
+        "gaius.engine.sentinel_claim._pod_phase", lambda _wid: "Pending"
+    )
+    monkeypatch.setattr(
+        "gaius.engine.sentinel_claim._wait_running", lambda *_a, **_k: False
+    )
+    monkeypatch.setattr(
+        "gaius.engine.sentinel_claim._delete_pod", lambda _wid: None
+    )
+    monkeypatch.setattr(
+        "gaius.engine.sentinel_claim._request_leftover_yield",
+        lambda: yielded.append(1),
+    )
+
+    class Ok:
+        returncode = 0
+        stdout = "created"
+        stderr = ""
+
+    monkeypatch.setattr(
+        "gaius.engine.sentinel_claim.subprocess.run", lambda *_a, **_k: Ok()
+    )
+    with pytest.raises(YkAdmitError):
+        apply_and_admit("article-curate-yield", "article-curate", timeout_s=0.1)
+    assert yielded == [1]
 
 
 def test_docling_flow_is_compute_not_extract() -> None:

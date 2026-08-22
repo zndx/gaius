@@ -26,19 +26,30 @@ Lattice accept is Engine/Status, not KServe peer discovery.
 
 ## Wrappers
 
-`systemd_start.sh` skip-up if a **process-compose-owned** listener already
-answers `Engine/Status`. Foreign/old `gaius.engine` listeners are reaped,
-then `devenv up -d`. Postgres is whatever devenv assigned (`PGPORT`);
-product processes discover a live postmaster rather than assuming `:5444`.
+`systemd_start.sh` is idempotent: if a **process-compose-owned** listener
+already answers `Engine/Status` **and** a login-shell `devenv processes`
+sees that compose, it exits 0. The wrappers pin `XDG_RUNTIME_DIR` to
+`/run/user/<uid>` so `systemctl restart gaius` and `devenv processes
+restart gaius-engine` share one graph. Foreign `setsid` engines
+(`#EN.00000016.NOTUNIT`) are reaped, then `devenv up -d` (never
+foreground `just up` from the unit). Do not pin a dedicated
+`DEVENV_RUNTIME` or `PGPORT` in the unit — that splits systemd from the
+login-shell devenv.
 
-`systemd_stop.sh` downs that runtime, SIGTERM/KILLs remaining Gaius compose
-daemons (cwd match only), then frees `:50051` of `gaius.engine`. It does
-**not** call `just teardown` / GPU cleanup (sibling leases).
+`setsid` / PPID-1 `python -m gaius.engine` is test-only while
+`devenv processes` is down. Normal operations use systemd and/or devenv
+on this same graph.
+
+`systemd_stop.sh` runs `just down` / `devenv processes down` for this
+checkout and reaps leftover `gaius.engine` PIDs. It does **not** call
+`just teardown` / GPU cleanup (sibling leases).
 
 ```bash
-# Local product stack (same as the unit)
-just up
+# Same graph as the unit
+devenv up -d
+devenv processes status          # includes gaius-engine
 grpcurl -plaintext 127.0.0.1:50051 zndx.engine.v1.Engine/Status
+devenv processes restart gaius-engine
 just down
 ```
 
@@ -59,11 +70,10 @@ just lattice-ci --require gaius
 Engine/Status **and** board UI `:9890` (Postgres lattice `:5444`).
 
 The unit is `Type=oneshot` `RemainAfterExit=yes` with `KillMode=control-group`.
-It sets `XDG_RUNTIME_DIR=/run/user/<uid>` and
-`GAIUS_DEVENV_RUNTIME=/run/user/<uid>/gaius-systemd` so it never attaches to
-a leftover `$XDG_RUNTIME_DIR/devenv-<hash>` from a login-shell `devenv up`.
-After `systemctl restart gaius` the listener must be in
-`system.slice/gaius.service` (one PID on `:50051`).
+It sets `XDG_RUNTIME_DIR=/run/user/<uid>` only (same as Atelier / Signals
+sample). After `systemctl restart gaius`, one `gaius.engine` on `:50051`
+must be a child of this checkout's process-compose — the graph
+`devenv processes` sees.
 
 ## Platform Metaflow / events (when federated)
 

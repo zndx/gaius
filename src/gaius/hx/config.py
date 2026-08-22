@@ -21,14 +21,18 @@ class HxConfig:
     """
 
     enabled: bool = True
-    catalog_name: str = "gaius_hx"
+    catalog_name: str = "signals"
     namespace: str = "raw"
+    catalog_type: str = "rest"
+    polaris_uri: str = "http://127.0.0.1:8181/api/catalog"
+    polaris_credential: str = "admin:admin"
+    polaris_scope: str = "PRINCIPAL_ROLE:ALL"
 
-    # MinIO storage
+    # S3-compatible storage (Signals RustFS; env names keep MINIO_*)
     use_minio: bool = True
-    minio_endpoint: str = "localhost:9010"
-    minio_bucket: str = "zndx-gaius"
-    minio_prefix: str = "hx/"
+    minio_endpoint: str = "127.0.0.1:9010"
+    minio_bucket: str = "signals-dataproducts"
+    minio_prefix: str = "iceberg/"
     minio_access_key: str = ""
     minio_secret_key: str = ""
 
@@ -48,7 +52,7 @@ class HxConfig:
     def warehouse_path(self) -> str:
         """Get the warehouse path for Iceberg.
 
-        Returns S3 path if MinIO enabled, otherwise filesystem path.
+        Returns S3 path if object storage enabled, otherwise filesystem path.
         """
         if self.use_minio:
             # s3://bucket/prefix
@@ -61,7 +65,7 @@ class HxConfig:
 
     @property
     def s3_endpoint(self) -> str:
-        """Get the S3 endpoint URL for MinIO."""
+        """Get the S3 endpoint URL (Signals RustFS)."""
         if "://" in self.minio_endpoint:
             return self.minio_endpoint
         return f"http://{self.minio_endpoint}"
@@ -81,16 +85,46 @@ def get_hx_config(config: GaiusConfig | None = None) -> HxConfig:
         config = get_config()
 
     hx = config.hx
+    import os
+
+    endpoint = os.environ.get("GAIUS_MINIO_ENDPOINT") or hx.minio.endpoint
+    bucket = os.environ.get("GAIUS_MINIO_BUCKET") or hx.minio.bucket
+    prefix = (
+        os.environ.get("GAIUS_HX_PREFIX")
+        or os.environ.get("GAIUS_MINIO_PREFIX")
+        or hx.minio.prefix
+    )
+    access = (
+        os.environ.get("GAIUS_MINIO_ACCESS_KEY")
+        or os.environ.get("RUSTFS_ACCESS_KEY")
+        or hx.minio.access_key
+    )
+    secret = (
+        os.environ.get("GAIUS_MINIO_SECRET_KEY")
+        or os.environ.get("RUSTFS_SECRET_KEY")
+        or hx.minio.secret_key
+    )
+    catalog_name = os.environ.get("GAIUS_HX_CATALOG_NAME") or hx.iceberg.catalog
+    catalog_type = (
+        os.environ.get("GAIUS_HX_CATALOG_TYPE") or "rest"
+    ).strip().lower()
+    polaris_uri = os.environ.get("GAIUS_HX_POLARIS_URI") or (
+        "http://127.0.0.1:8181/api/catalog"
+    )
+    polaris_credential = os.environ.get("GAIUS_HX_POLARIS_CREDENTIAL") or "admin:admin"
     return HxConfig(
         enabled=hx.enabled,
-        catalog_name=hx.iceberg.catalog,
+        catalog_name=catalog_name,
         namespace=hx.iceberg.namespace,
+        catalog_type=catalog_type,
+        polaris_uri=polaris_uri,
+        polaris_credential=polaris_credential,
         use_minio=hx.iceberg.use_minio,
-        minio_endpoint=hx.minio.endpoint,
-        minio_bucket=hx.minio.bucket,
-        minio_prefix=hx.minio.prefix,
-        minio_access_key=hx.minio.access_key,
-        minio_secret_key=hx.minio.secret_key,
+        minio_endpoint=endpoint,
+        minio_bucket=bucket,
+        minio_prefix=prefix,
+        minio_access_key=access,
+        minio_secret_key=secret,
         filesystem_warehouse=hx.filesystem.warehouse,
         kb_root=config.kb.root,
         lineage_enabled=hx.lineage.enabled,

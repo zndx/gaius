@@ -23,6 +23,8 @@ Guru Meditation Codes:
 - #COL.00000003.KVFAIL: Cloudflare KV publish failed
 - #COL.00000004.GROKFAIL: Grok Collections API failed
 - #COL.00000005.CARDFAIL: Card publish failed
+- #COL.00000015.NOINFLOW: Featured collection empty and no public inflow URLs to admit
+- #COL.00000016.NOENRICH: Pending cards exist but none passed LuxCore image + local open-weights gate
 - #HX.00000001.CATALOGFAIL: Iceberg HX catalog not reachable
 - #HX.00000002.TABLEFAIL: Could not access/create Iceberg table
 - #HX.00000003.WRITEFAIL: Failed to append record to Iceberg
@@ -41,6 +43,20 @@ from typing import Any, AsyncIterator
 import asyncpg
 
 logger = logging.getLogger(__name__)
+
+
+# Card page contract (landing click-through):
+#   required — LuxCore image + local open-weights panel
+#   optional — Brave / Cerebras panels (API availability and budget)
+REQUIRED_CARD_SUMMARY = "open_weights"
+OPTIONAL_CARD_SUMMARIES = ("frontier", "cerebras")
+
+
+def public_card_source_type(feed_source_type: str) -> str:
+    """Map feed_sources.source_type onto collections.cards.source_type."""
+    if feed_source_type in ("arxiv", "biorxiv"):
+        return "arxiv"
+    return "web"
 
 
 class CollectionError(Exception):
@@ -917,6 +933,121 @@ class CollectionService:
             created_at=now,
         )
 
+    async def count_featured_pending(self) -> int:
+        """Pending cards in the featured collection (publish clock inventory)."""
+        async with self._pool.acquire() as conn:
+            n = await conn.fetchval(
+                """
+                SELECT count(*) FROM collections.cards c
+                JOIN collections.collections col
+                  ON col.collection_id = c.collection_id
+                WHERE col.featured = TRUE AND c.status = 'pending'
+                """
+            )
+        return int(n or 0)
+
+    async def count_featured_ready(self) -> int:
+        """Pending featured cards with LuxCore image + local open-weights."""
+        async with self._pool.acquire() as conn:
+            n = await conn.fetchval(
+                """
+                SELECT count(*) FROM collections.cards c
+                JOIN collections.collections col
+                  ON col.collection_id = c.collection_id
+                WHERE col.featured = TRUE AND c.status = 'pending'
+                  AND c.image_url IS NOT NULL AND c.image_url != ''
+                  AND EXISTS (
+                      SELECT 1 FROM collections.card_summaries cs
+                       WHERE cs.card_id = c.card_id
+                         AND cs.summary_type = 'open_weights'
+                  )
+                """
+            )
+        return int(n or 0)
+
+    async def admit_public_inflow(self, limit: int = 6) -> int:
+        """Create pending featured cards from public feed URLs (no KB paths).
+
+        article_curate has been blocked (YK admit/disk) since March, so
+        publish_cards was KV-healthy with published_count=0. This admits
+        arXiv/web items already fetched by feed_check.
+        """
+        limit = max(1, min(int(limit), 24))
+        async with self._pool.acquire() as conn:
+            featured = await conn.fetchrow(
+                """
+                SELECT c.collection_id, a.article_id
+                  FROM collections.collections c
+                  JOIN collections.articles a ON a.collection_id = c.collection_id
+                 WHERE c.featured = TRUE
+                 LIMIT 1
+                """
+            )
+            if not featured:
+                raise CollectionError(
+                    "No featured collection/article.\n  Guru: #COL.00000001.NOTFOUND",
+                    guru_code="#COL.00000001.NOTFOUND",
+                )
+            featured_id = str(featured["collection_id"])
+            article_id = str(featured["article_id"])
+            rows = await conn.fetch(
+                """
+                SELECT c.title,
+                       COALESCE(NULLIF(c.summary, ''), LEFT(c.title, 180)) AS summary,
+                       c.url,
+                       s.source_type,
+                       s.name AS feed_name,
+                       COALESCE(c.published_at, c.fetched_at) AS source_ts
+                  FROM content_items c
+                  JOIN feed_sources s ON s.id = c.source_id
+                 WHERE c.url ~ '^https?://'
+                   AND NOT COALESCE(c.summary_excluded, false)
+                   AND COALESCE(c.llm_quality_score, 0) >= 50
+                   AND c.fetched_at > NOW() - INTERVAL '21 days'
+                   AND s.name = ANY($1::text[])
+                   AND NOT EXISTS (
+                       SELECT 1 FROM collections.cards k
+                        WHERE k.source_url = c.url
+                   )
+                 ORDER BY
+                   CASE s.name WHEN 'arxiv_cs_dc' THEN 0 ELSE 1 END,
+                   c.fetched_at DESC
+                 LIMIT $2
+                """,
+                ["arxiv_cs_dc", "temporal_blog", "databricks_blog"],
+                limit,
+            )
+
+        admitted = 0
+        for row in rows:
+            url = str(row["url"])
+            title = str(row["title"] or "").strip() or url
+            summary = str(row["summary"] or title)[:400]
+            src_type = public_card_source_type(str(row["source_type"] or "web"))
+            ts = row["source_ts"]
+            src_date = ts.date() if hasattr(ts, "date") else None
+            card = await self.add_card(
+                collection_id=featured_id,
+                title=title[:300],
+                summary=summary,
+                source_url=url,
+                source_type=src_type,
+                article_id=article_id,
+                source_date=src_date,
+                kb_path=None,
+            )
+            await self.add_source(
+                source_id=f"src_inflow_{uuid.uuid4().hex[:12]}",
+                card_id=card.card_id,
+                provenance_url=url,
+                source_type=src_type,
+                ingested_via="public_inflow",
+                kb_path=None,
+            )
+            admitted += 1
+            logger.info("Admitted public card %s %s", card.card_id, title[:60])
+        return admitted
+
     async def add_source(
         self,
         source_id: str,
@@ -1110,17 +1241,20 @@ class CollectionService:
             if collection_id:
                 # Publish from specific collection with diversity
                 # Round-robin across articles and source types for varied content
-                # Only select cards that are fully enriched (3 summaries + image)
+                # LuxCore image + local open-weights (Brave/Cerebras optional)
                 rows = await conn.fetch(
                     """
                     WITH enriched_filter AS (
-                        -- Only cards with complete enrichment: image + 3 summaries
+                        -- LuxCore image + local open-weights (Brave/Cerebras optional)
                         SELECT c.card_id
                         FROM collections.cards c
                         WHERE c.collection_id = $1 AND c.status = 'pending'
                           AND c.image_url IS NOT NULL AND c.image_url != ''
-                          AND (SELECT count(*) FROM collections.card_summaries cs
-                               WHERE cs.card_id = c.card_id) = 3
+                          AND EXISTS (
+                              SELECT 1 FROM collections.card_summaries cs
+                               WHERE cs.card_id = c.card_id
+                                 AND cs.summary_type = 'open_weights'
+                          )
                     ),
                     pending_ranked AS (
                         -- Rank cards within each article/source_type combo
@@ -1154,7 +1288,7 @@ class CollectionService:
             else:
                 # Publish from featured collection with diversity
                 # Round-robin across articles and source types for varied landing page
-                # Only select cards that are fully enriched (3 summaries + image)
+                # LuxCore image + local open-weights (Brave/Cerebras optional)
                 rows = await conn.fetch(
                     """
                     WITH featured_col AS (
@@ -1162,14 +1296,17 @@ class CollectionService:
                         WHERE featured = TRUE
                     ),
                     enriched_filter AS (
-                        -- Only cards with complete enrichment: image + 3 summaries
+                        -- LuxCore image + local open-weights (Brave/Cerebras optional)
                         SELECT c.card_id
                         FROM collections.cards c
                         JOIN featured_col fc ON c.collection_id = fc.collection_id
                         WHERE c.status = 'pending'
                           AND c.image_url IS NOT NULL AND c.image_url != ''
-                          AND (SELECT count(*) FROM collections.card_summaries cs
-                               WHERE cs.card_id = c.card_id) = 3
+                          AND EXISTS (
+                              SELECT 1 FROM collections.card_summaries cs
+                               WHERE cs.card_id = c.card_id
+                                 AND cs.summary_type = 'open_weights'
+                          )
                     ),
                     pending_ranked AS (
                         -- Rank cards within each article/source_type combo
@@ -1214,8 +1351,11 @@ class CollectionService:
                     SELECT count(*) FROM collections.cards c
                     WHERE c.collection_id = $1 AND c.status = 'pending'
                       AND (c.image_url IS NULL OR c.image_url = ''
-                           OR (SELECT count(*) FROM collections.card_summaries cs
-                               WHERE cs.card_id = c.card_id) < 3)
+                           OR NOT EXISTS (
+                               SELECT 1 FROM collections.card_summaries cs
+                                WHERE cs.card_id = c.card_id
+                                  AND cs.summary_type = 'open_weights'
+                           ))
                     """,
                     target_col,
                 )
@@ -1327,8 +1467,11 @@ class CollectionService:
                 FROM collections.cards c
                 WHERE c.collection_id = $1 AND c.status = 'pending'
                   AND (c.image_url IS NULL OR c.image_url = ''
-                       OR (SELECT count(*) FROM collections.card_summaries cs
-                           WHERE cs.card_id = c.card_id) < 3)
+                       OR NOT EXISTS (
+                           SELECT 1 FROM collections.card_summaries cs
+                            WHERE cs.card_id = c.card_id
+                              AND cs.summary_type = 'open_weights'
+                       ))
                 ORDER BY c.created_at ASC
                 LIMIT $2
                 """,
@@ -1360,15 +1503,21 @@ class CollectionService:
                     )
                     existing_types = {r["summary_type"] for r in existing}
 
-            for summary_type in ("frontier", "open_weights", "cerebras"):
+            # Local open-weights is mandatory. Brave/Cerebras vary with
+            # API availability and budget — try them, never fail the card
+            # if they are down, never skip trying.
+            for summary_type in (REQUIRED_CARD_SUMMARY, *OPTIONAL_CARD_SUMMARIES):
                 if summary_type in existing_types:
                     continue
                 try:
                     await self.generate_card_summary(card_id, summary_type)
+                    existing_types.add(summary_type)
                     logger.info(f"Enrich {card_id[:12]}: {summary_type} OK")
                 except Exception as e:
                     logger.warning(f"Enrich {card_id[:12]}: {summary_type} FAILED - {e}")
                     details.append({"card_id": card_id, "step": summary_type, "error": str(e)})
+                    if summary_type in OPTIONAL_CARD_SUMMARIES:
+                        continue
                     card_failed = True
                     break
 
@@ -2623,20 +2772,29 @@ created_at: {now.isoformat()}
 
         latency_ms = int(_time.time() * 1000) - start_ms
 
-        # Store to Iceberg HX
         hx_generation_id = str(uuid.uuid4())
-        await self._store_generation_to_hx(
-            generation_id=hx_generation_id,
-            collection_id=card.collection_id,
-            summary_type=f"card_{summary_type}",
-            prompt=f"Card: {card.title} ({card.source_type})",
-            output=summary_text,
-            thinking_trace=thinking_trace,
-            model_name=provider or model_label,
-            input_tokens=input_tokens,
-            output_tokens=output_tokens,
-            latency_ms=latency_ms,
-        )
+        # Public landing needs card_summaries even if Iceberg HX is
+        # unreachable (stale catalog / wrong S3 endpoint). HX is lineage.
+        try:
+            await self._store_generation_to_hx(
+                generation_id=hx_generation_id,
+                collection_id=card.collection_id,
+                summary_type=f"card_{summary_type}",
+                prompt=f"Card: {card.title} ({card.source_type})",
+                output=summary_text,
+                thinking_trace=thinking_trace,
+                model_name=provider or model_label,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                latency_ms=latency_ms,
+            )
+        except Exception as e:
+            logger.error(
+                "HX store failed for %s %s (summary still saved): %s",
+                card_id,
+                summary_type,
+                e,
+            )
 
         # Flag frontier summaries with zero citations for future retry
         needs_retry = summary_type == "frontier" and len(brave_followups) == 0

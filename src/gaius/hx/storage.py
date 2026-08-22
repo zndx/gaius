@@ -48,11 +48,11 @@ def get_storage_config(
     config: HxConfig | None = None,
     check_minio: bool = True,
 ) -> StorageConfig:
-    """Get storage configuration, with automatic MinIO fallback.
+    """Get storage configuration. Signals RustFS is required; no filesystem fallback.
 
     Args:
         config: Optional HxConfig. If None, loads from global config.
-        check_minio: If True, check MinIO availability and fallback to filesystem.
+        check_minio: If True, probe RustFS and fail-fast when it is down.
 
     Returns:
         StorageConfig with appropriate backend settings.
@@ -61,21 +61,13 @@ def get_storage_config(
         config = get_hx_config()
 
     if config.use_minio:
-        from gaius.flows.prospects.product_env import is_platform_env
-
         if check_minio and not _check_minio_available(config):
-            if is_platform_env():
-                raise RuntimeError(
-                    "#HX.00000001.NORUSTFS Signals RustFS is required for "
-                    f"HX at {config.minio_endpoint} (no filesystem fallback).\n"
-                    "  Try: /health fix endpoints\n"
-                    "  Or:  just signals-ready"
-                )
-            logger.warning(
-                f"MinIO not available at {config.minio_endpoint}, "
-                f"falling back to filesystem at {config.filesystem_warehouse}"
+            raise RuntimeError(
+                "#HX.00000001.NORUSTFS Signals RustFS is required for "
+                f"HX at {config.minio_endpoint} (no filesystem fallback).\n"
+                "  Try: just signals-ready; confirm :9010 rustfsadmin\n"
+                "  devenv MinIO is not a warehouse"
             )
-            return _get_filesystem_config(config)
         return _get_minio_config(config)
     else:
         return _get_filesystem_config(config)
@@ -89,8 +81,8 @@ def _get_minio_config(config: HxConfig) -> StorageConfig:
         backend=StorageBackend.MINIO,
         warehouse_path=config.warehouse_path,
         endpoint=config.s3_endpoint,
-        access_key=config.minio_access_key or os.environ.get("MINIO_ROOT_USER", "minioadmin"),
-        secret_key=config.minio_secret_key or os.environ.get("MINIO_ROOT_PASSWORD", "minioadmin"),
+        access_key=config.minio_access_key or os.environ.get("RUSTFS_ACCESS_KEY", "rustfsadmin"),
+        secret_key=config.minio_secret_key or os.environ.get("RUSTFS_SECRET_KEY", "rustfsadmin"),
         bucket=config.minio_bucket,
         prefix=config.minio_prefix,
     )

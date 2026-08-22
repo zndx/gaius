@@ -16,6 +16,9 @@ Signals / YK shows Gaius lanes on existing leaves (no ``root.gaius``):
 - ``internal.inference.extract`` — Docling / article GPU children only.
 - ``internal.inference.heavy`` — standing Qwen3.8 thinking. Ambient
   summarize rides this Application (thinking channel → later CLT/SAE).
+- ``internal.compute`` — ``gaius-optillm`` gunicorn (CPU proxy). GPU
+  occupancy stays on the vLLM Application it binds; optillm does not
+  mint a second GPU claim when a vLLM is already provided.
 
 Host disk and RAM are not YK resources — Gaius refuses new disk-writing
 children when those floors are crossed so the box cannot fill past the
@@ -54,6 +57,11 @@ GURU_NOAPP = "#YK.00000003.NOAPP"
 GURU_ENVELOPE = "#YK.00000004.ENVELOPE"
 GURU_DISK = "#YK.00000005.DISK"
 GURU_MEM = "#YK.00000006.MEM"
+
+# CPU sentinels place immediately. GPU extract waits for YK to preempt
+# medium (ask-sae) after extract's guaranteed floor is promoted.
+CPU_ADMIT_TIMEOUT_S = 60.0
+GPU_ADMIT_TIMEOUT_S = 180.0
 
 # Tinybox: 6× RTX 4090 24Gi, ~128Gi RAM. Standing thinking (heavy) takes
 # 4 GPUs; 2 remain for extract/light. Compute has no GPU — many CPU
@@ -141,6 +149,7 @@ COMPUTE = ResourceClass(
 )
 
 AMBIENT_WORKLOAD_ID = "gaius-ambient"
+OPTILLM_WORKLOAD_ID = "gaius-optillm"
 
 # EXTRACT is Docling / article GPU only. Thinking Complete (Qwen3.8)
 # rides HEAVY so summarize does not steal extract slots from Docling.
@@ -193,6 +202,10 @@ _KIND_CLASS: dict[str, ResourceClass] = {
     "prospects_compact": HEAVY,
     "prospects-summary": HEAVY,
     "prospects_summary": HEAVY,
+    # gunicorn proxy. 0 extra GPU — bind a provided vLLM; demand one
+    # via zndx.engine.v1 only when none is healthy.
+    "optillm": COMPUTE,
+    "gaius-optillm": COMPUTE,
 }
 
 
@@ -206,7 +219,7 @@ def resource_class_for(kind: str) -> ResourceClass:
             "heavy: thinking / ambient-summarize; "
             "extract (Docling): article-curate / prospects-update / docling; "
             "light: ask-agent; medium: ask-sae; "
-            "rate-metered: prospects-check / fmp; compute: ambient / clt-*",
+            "rate-metered: prospects-check / fmp; compute: ambient / clt-* / optillm",
         ) from e
 
 
@@ -311,6 +324,8 @@ _KIND_PHASE: dict[str, str] = {
     "metaflow": "work",
     "thinking": "think",
     "gaius-thinking": "think",
+    "optillm": "proxy",
+    "gaius-optillm": "proxy",
 }
 
 
@@ -356,6 +371,8 @@ def disk_paths_for(kind: str) -> tuple[str, ...]:
         "ambient",
         "ambient-compact",
         "clt-skos-label",
+        "optillm",
+        "gaius-optillm",
     }:
         return ()
     if rc.queue == RATE_METERED.queue:
@@ -508,10 +525,17 @@ def apply_and_admit(
     workload_id: str,
     kind: str,
     *,
-    timeout_s: float = 60.0,
+    timeout_s: float | None = None,
 ) -> AdmittedApplication:
-    """Apply the Application and wait until the pod is Running (YK admitted)."""
+    """Apply the Application and wait until the pod is Running (YK admitted).
+
+    Do not treat a short Pending as failure: YK Blocked is the queue.
+    GPU extract waits for preemption of medium (ask-sae) rather than
+    STZ-ing the claim at 60s and leaving the work unscheduled.
+    """
     rc = resource_class_for(kind)
+    if timeout_s is None:
+        timeout_s = GPU_ADMIT_TIMEOUT_S if rc.gpu_tokens else CPU_ADMIT_TIMEOUT_S
     assert_host_envelope(disk_paths=disk_paths_for(kind))
     required = federation_required()
     if not sentinels_enabled():
@@ -530,6 +554,17 @@ def apply_and_admit(
                 f"{row.error}; Signals scheduler is up so admit is mandatory",
             )
         return row
+
+    try:
+        from gaius.engine.queue_share import request_queue_share
+
+        request_queue_share(kind, rc)
+    except RuntimeError as e:
+        if "SHAREFAIL" in str(e):
+            raise
+        log.warning("RequestQueueShare skipped: %s", e)
+    except Exception as e:
+        log.warning("RequestQueueShare skipped: %s", e)
 
     if _pod_phase(workload_id) == "Running":
         row = AdmittedApplication(
@@ -550,6 +585,12 @@ def apply_and_admit(
         return row
 
     yaml_body = application_yaml(workload_id, kind)
+    if rc == EXTRACT:
+        # Standing ask-sae (medium, no GPU floor) borrows leftover tokens.
+        # YK custom-resource preemption may not victim it; C2 last-gasp
+        # Yields the host vLLM so extract can place. Same process must not
+        # gRPC-Yield itself (deadlock).
+        _request_leftover_yield()
     r = subprocess.run(
         ["kubectl", "apply", "-f", "-"],
         input=yaml_body,
@@ -629,6 +670,30 @@ def delete_flow_sentinel(workload_id: str) -> None:
     with _MU:
         _ADMITTED.pop(workload_id, None)
     _delete_pod(workload_id)
+
+
+def _request_leftover_yield() -> None:
+    """Ask C2 to Yield standing medium (ask-sae) so extract can admit."""
+    import urllib.request
+
+    for wid in ("gaius-ask-sae",):
+        if _pod_phase(wid) != "Running":
+            continue
+        body = (
+            '{"workload_id":"%s","project":"gaius","phase":"preempted",'
+            '"sentinel_id":"%s"}' % (wid, wid)
+        ).encode()
+        req = urllib.request.Request(
+            f"{_C2}/c2-protocol/last-gasp",
+            data=body,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            urllib.request.urlopen(req, timeout=5)
+            log.info("requested leftover Yield of %s for extract", wid)
+        except Exception as e:
+            log.warning("leftover Yield of %s failed: %s", wid, e)
 
 
 def _delete_pod(workload_id: str) -> None:
@@ -745,6 +810,9 @@ def release_kind(kind: str) -> None:
         return
     if k in ("thinking", "gaius-thinking"):
         delete_flow_sentinel(capability_workload_id("thinking"))
+        return
+    if k in ("optillm", "gaius-optillm"):
+        delete_flow_sentinel(OPTILLM_WORKLOAD_ID)
         return
     log.warning(
         "release_kind(%s) is not a standing claim; "

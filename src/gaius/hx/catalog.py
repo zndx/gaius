@@ -1,7 +1,7 @@
-"""PyIceberg Catalog Configuration.
+"""PyIceberg catalog: Signals Polarisfork (Iceberg REST) + RustFS warehouse.
 
-Sets up the Iceberg catalog using PostgreSQL as the metadata store.
-Supports MinIO (S3-compatible) as primary storage with filesystem fallback.
+PostgreSQL SqlCatalog is tests-only. Polarisfork is started by
+``signals-polaris.service`` (``signals.target``), not Gaius.
 """
 
 from __future__ import annotations
@@ -18,10 +18,14 @@ from gaius.hx.config import HxConfig, get_hx_config
 logger = logging.getLogger(__name__)
 
 
+GURU_NOPOLARIS = "#HX.00000002.NOPOLARIS"
+
+
 class CatalogType(Enum):
     """Supported catalog types."""
-    SQL = "sql"  # PostgreSQL-backed catalog
-    REST = "rest"  # Future: REST catalog
+
+    REST = "rest"  # Signals Polarisfork Iceberg REST
+    SQL = "sql"  # Tests only; not a lattice warehouse catalog
 
 
 # Module-level singleton
@@ -30,7 +34,7 @@ _catalog: Catalog | None = None
 
 def get_catalog(
     config: HxConfig | None = None,
-    catalog_type: CatalogType = CatalogType.SQL,
+    catalog_type: CatalogType | None = None,
     force_reload: bool = False,
 ) -> Catalog:
     """Get or create the Iceberg catalog.
@@ -55,12 +59,58 @@ def get_catalog(
     if config is None:
         config = get_hx_config()
 
-    if catalog_type == CatalogType.SQL:
+    if catalog_type is None:
+        raw = (config.catalog_type or "rest").strip().lower()
+        catalog_type = CatalogType.SQL if raw == "sql" else CatalogType.REST
+
+    if catalog_type == CatalogType.REST:
+        _catalog = _create_rest_catalog(config)
+    elif catalog_type == CatalogType.SQL:
         _catalog = _create_sql_catalog(config)
     else:
         raise ValueError(f"Unsupported catalog type: {catalog_type}")
 
     return _catalog
+
+
+def _create_rest_catalog(config: HxConfig) -> Catalog:
+    """Connect to Signals Polarisfork (Iceberg REST) with RustFS file I/O."""
+    try:
+        from pyiceberg.catalog import load_catalog
+    except ImportError as e:
+        raise ImportError(
+            "PyIceberg is required for Polarisfork REST catalog. "
+            "Install with: uv add 'pyiceberg[s3]'"
+        ) from e
+
+    uri = config.polaris_uri.rstrip("/")
+    properties = {
+        "type": "rest",
+        "uri": uri,
+        "warehouse": config.catalog_name,
+        "credential": config.polaris_credential,
+        "scope": config.polaris_scope,
+        **_get_s3_properties(config),
+    }
+    logger.info(
+        "Polarisfork REST catalog uri=%s warehouse=%s rustfs=%s",
+        uri,
+        config.catalog_name,
+        config.s3_endpoint,
+    )
+    try:
+        catalog = load_catalog(config.catalog_name, **properties)
+    except Exception as e:
+        raise RuntimeError(
+            f"{GURU_NOPOLARIS} Polarisfork REST catalog is not reachable at {uri}.\n"
+            "  Start: sudo systemctl start signals-polaris.service\n"
+            "  (PartOf=signals.target; not a Gaius process)\n"
+            f"  Cause: {e}"
+        ) from e
+
+    for ns in (config.namespace, "llm"):
+        _ensure_namespace(catalog, ns)
+    return catalog
 
 
 def _create_sql_catalog(config: HxConfig) -> Catalog:
@@ -166,24 +216,29 @@ def _get_s3_properties(config: HxConfig) -> dict:
     if not config.minio_access_key:
         # Use environment variables or default MinIO credentials
         import os
-        properties["s3.access-key-id"] = os.environ.get("MINIO_ROOT_USER", "minioadmin")
-        properties["s3.secret-access-key"] = os.environ.get("MINIO_ROOT_PASSWORD", "minioadmin")
+        properties["s3.access-key-id"] = os.environ.get(
+            "GAIUS_MINIO_ACCESS_KEY",
+            os.environ.get("RUSTFS_ACCESS_KEY", "rustfsadmin"),
+        )
+        properties["s3.secret-access-key"] = os.environ.get(
+            "GAIUS_MINIO_SECRET_KEY",
+            os.environ.get("RUSTFS_SECRET_KEY", "rustfsadmin"),
+        )
 
     return properties
 
 
 def _ensure_namespace(catalog: Catalog, namespace: str) -> None:
-    """Ensure the namespace exists in the catalog.
-
-    Creates the namespace if it doesn't exist.
-
-    Raises:
-        Exception: If namespace cannot be listed or created (fail-fast).
-    """
-    namespaces = catalog.list_namespaces()
-    if (namespace,) not in namespaces:
-        logger.info(f"Creating namespace '{namespace}'")
-        catalog.create_namespace(namespace)
+    """Ensure the namespace exists (nested Polarisfork namespaces included)."""
+    parts = tuple(p for p in namespace.split(".") if p)
+    listed = set(catalog.list_namespaces())
+    for i in range(1, len(parts) + 1):
+        ns = parts[:i]
+        if ns in listed or (ns,) in listed:
+            continue
+        logger.info("Creating Polarisfork namespace %s", ".".join(ns))
+        catalog.create_namespace(ns)
+        listed.add(ns)
 
 
 def reset_catalog() -> None:

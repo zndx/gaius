@@ -26,29 +26,20 @@ class EngineFixStrategy(ServiceFixStrategy):
         """Create actions to fix engine issues."""
         actions = []
 
-        # Check if port is listening
-        if not self._is_port_listening():
-            # Engine not running - start all devenv services (engine + dependencies)
-            actions.append(
-                RemediationAction(
-                    name="Start devenv services",
-                    description="Start all devenv background services including engine",
-                    command="devenv up -d",
-                    safety=SafetyLevel.SAFE,
-                    timeout=120,
-                )
+        # Primary: unit recycle. Secondary: devenv processes restart.
+        # Do not devenv up beside a foreign :50051 (#EN.00000016.NOTUNIT).
+        actions.append(
+            RemediationAction(
+                name="Restart gaius.service",
+                description=(
+                    "Primary control surface: full stop then start. "
+                    "Guru: #EN.00000016.NOTUNIT"
+                ),
+                command="sudo systemctl restart gaius.service",
+                safety=SafetyLevel.CAUTION,
+                timeout=1200,
             )
-
-            # Wait for engine startup (it preloads vLLM endpoints which takes time)
-            actions.append(
-                RemediationAction(
-                    name="Wait for engine startup",
-                    description="Wait for engine to preload endpoints (may take 2-3 minutes)",
-                    command="sleep 10",
-                    safety=SafetyLevel.SAFE,
-                    timeout=15,
-                )
-            )
+        )
 
         # Always reset gRPC singleton to force reconnection
         actions.append(
