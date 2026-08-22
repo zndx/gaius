@@ -556,9 +556,9 @@ def apply_and_admit(
         return row
 
     try:
-        from gaius.engine.queue_share import request_queue_share
+        from gaius.engine.queue_share import notify_admit
 
-        request_queue_share(kind, rc)
+        notify_admit(kind, rc)
     except RuntimeError as e:
         if "SHAREFAIL" in str(e):
             raise
@@ -668,7 +668,14 @@ def apply_flow_sentinel(workload_id: str, kind: str) -> bool:
 
 def delete_flow_sentinel(workload_id: str) -> None:
     with _MU:
-        _ADMITTED.pop(workload_id, None)
+        row = _ADMITTED.pop(workload_id, None)
+    if row is not None and (row.kind or "").strip():
+        try:
+            from gaius.engine.queue_share import notify_release
+
+            notify_release(row.kind, row.resource_class)
+        except Exception as e:
+            log.warning("RequestQueueShare end skipped: %s", e)
     _delete_pod(workload_id)
 
 

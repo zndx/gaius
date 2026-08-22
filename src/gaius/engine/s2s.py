@@ -388,6 +388,8 @@ def local_response(
             resp.surfaces.append(surf)
     if kind == zpb.SERVER_QUERY_KIND_QUEUES:
         resp.queues.extend(declared_queues())
+    if kind == zpb.SERVER_QUERY_KIND_WORKLOADS:
+        resp.workloads.extend(declared_workloads())
     # SCHEDULES: empty until the catalog lands (P3). Honest, not invented.
     return resp
 
@@ -405,7 +407,7 @@ def declared_queues() -> list[zpb.QueueHint]:
             max_applications=LIGHT.max_applications,
             preemption_delay="5s",
             role="light",
-            examples="gaius.ask-agent;1.7b",
+            examples="gaius.ask-agent",
         ),
         zpb.QueueHint(
             path=MEDIUM.queue,
@@ -415,7 +417,7 @@ def declared_queues() -> list[zpb.QueueHint]:
             max_applications=MEDIUM.max_applications,
             preemption_delay="5s",
             role="medium",
-            examples="gaius.ask-sae;9b-tp2",
+            examples="gaius.ask-sae",
         ),
         zpb.QueueHint(
             path=HEAVY.queue,
@@ -425,7 +427,7 @@ def declared_queues() -> list[zpb.QueueHint]:
             max_applications=HEAVY.max_applications,
             preemption_policy="fence",
             role="heavy",
-            examples="gaius-thinking;tp4-27b",
+            examples="gaius.thinking",
         ),
         zpb.QueueHint(
             path=EXTRACT.queue,
@@ -434,7 +436,7 @@ def declared_queues() -> list[zpb.QueueHint]:
             gpu_max=2,
             max_applications=EXTRACT.max_applications,
             role="offline",
-            examples="gaius.extract;docling;clt-skos-admit",
+            examples="gaius.article-curate",
         ),
         zpb.QueueHint(
             path=COMPUTE.queue,
@@ -443,7 +445,53 @@ def declared_queues() -> list[zpb.QueueHint]:
             gpu_max=0,
             max_applications=COMPUTE.max_applications,
             role="offline",
-            examples="gaius.ambient;clt-skos-label",
+            examples="gaius.optillm",
+        ),
+    ]
+
+
+def declared_workloads() -> list:
+    """WRK model + capabilities + tp/pp. Queue names stay resource-class FQNs."""
+    return [
+        zpb.WorkloadHint(
+            wrk="thinking",
+            model="Qwen/Qwen3.8-27B",
+            capabilities=["thinking", "complete"],
+            tensor_parallel=4,
+            pipeline_parallel=1,
+            gpu_tokens=4,
+        ),
+        zpb.WorkloadHint(
+            wrk="ask-sae",
+            model="Qwen/Qwen3-8B",
+            capabilities=["complete"],
+            tensor_parallel=2,
+            pipeline_parallel=1,
+            gpu_tokens=2,
+        ),
+        zpb.WorkloadHint(
+            wrk="ask-agent",
+            model="Qwen/Qwen3-1.7B",
+            capabilities=["complete"],
+            tensor_parallel=1,
+            pipeline_parallel=1,
+            gpu_tokens=1,
+        ),
+        zpb.WorkloadHint(
+            wrk="optillm",
+            model="proxy",
+            capabilities=["complete"],
+            tensor_parallel=0,
+            pipeline_parallel=0,
+            gpu_tokens=0,
+        ),
+        zpb.WorkloadHint(
+            wrk="article-curate",
+            model="",
+            capabilities=["extract"],
+            tensor_parallel=0,
+            pipeline_parallel=0,
+            gpu_tokens=1,
         ),
     ]
 
