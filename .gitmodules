@@ -16,3 +16,7 @@
 	path = external/oss-grok-build
 	url = git@github.com:weathership/oss-grok-build.git
 	branch = main
+[submodule "external/semantics"]
+	path = external/semantics
+	url = git@github.com:weathership/semantics.git
+	branch = main
