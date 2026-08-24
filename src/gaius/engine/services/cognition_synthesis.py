@@ -66,12 +66,17 @@ Optional: if an admitted window needs rejected/unadmitted context, output one
 or more lines and nothing else:
 SEARCH_BUFFER <ambient|prospects|publish> <query>
 
+Agenda densities (do not over-produce):
+- sessions: a few times a week, world events through Aperture
+- reminders: short lists (content, ops follow-up, discretionary)
+- briefs: expert-technical executive; keep guru codes, DROP RANGE, FDW, vLLM
+
 Or skip search and write:
 SYNTHESIS:
 <paragraphs>
 
 AGENDA:
-{{"briefs":[{{"title":"...","body":"..."}}],"reminders":[{{"title":"...","body":"...","due_at":null}}],"sessions":[{{"title":"...","body":"..."}}]}}
+{{"briefs":[{{"title":"...","body":"..."}}],"reminders":[{{"title":"...","body":"- item\\n- item"}}],"sessions":[{{"title":"...","body":"..."}}]}}
 
 Admitted windows:
 {slices}
@@ -398,36 +403,89 @@ async def insert_agenda(
     hx_id: str,
     agenda: dict[str, list[dict[str, Any]]],
 ) -> int:
-    n = 0
-    kind_map = (
-        ("briefs", "brief"),
-        ("reminders", "reminder"),
-        ("sessions", "session"),
+    from gaius.engine.services.agenda_policy import (
+        DEFAULT_DENSITY,
+        next_session_slots,
+        session_invite_description,
+        slots_remaining,
+        take_kind,
     )
+
+    n = 0
+    now = datetime.now(timezone.utc)
     async with pool.acquire() as conn:
-        for key, kind in kind_map:
-            for item in agenda.get(key) or []:
+        rows = await conn.fetch(
+            """
+            SELECT kind, count(*)::int AS n
+              FROM agenda_entries
+             WHERE status = 'open'
+               AND created_at > NOW() - INTERVAL '7 days'
+             GROUP BY 1
+            """
+        )
+        open_counts = {str(r["kind"]): int(r["n"]) for r in rows}
+        slots = slots_remaining(open_counts, DEFAULT_DENSITY)
+        due_rows = await conn.fetch(
+            """
+            SELECT due_at FROM agenda_entries
+             WHERE kind = 'session' AND status = 'open' AND due_at IS NOT NULL
+            """
+        )
+        existing_dues = [r["due_at"] for r in due_rows if r["due_at"] is not None]
+        session_times = next_session_slots(
+            now, existing_dues, per_week=DEFAULT_DENSITY.sessions_per_week
+        )
+        planned = {
+            "brief": take_kind(agenda.get("briefs") or [], kind="brief", slots=slots["brief"]),
+            "reminder": take_kind(
+                agenda.get("reminders") or [],
+                kind="reminder",
+                slots=slots["reminder"],
+                reminder_items_max=DEFAULT_DENSITY.reminder_items_max,
+            ),
+            "session": take_kind(
+                agenda.get("sessions") or [], kind="session", slots=slots["session"]
+            ),
+        }
+        for i, item in enumerate(planned["session"]):
+            due_at = session_times[i] if i < len(session_times) else None
+            title = str(item.get("title") or "").strip()
+            if not title:
+                continue
+            body = session_invite_description(
+                title=title,
+                body=str(item.get("body") or ""),
+                episode_id=episode_id,
+                hx_generation_id=hx_id,
+                due_at=due_at,
+            )
+            await conn.execute(
+                """
+                INSERT INTO agenda_entries
+                    (kind, title, body, due_at, episode_id, hx_generation_id)
+                VALUES ('session', $1, $2, $3, $4, $5)
+                """,
+                title[:240],
+                body[:8000],
+                due_at,
+                episode_id,
+                hx_id,
+            )
+            n += 1
+        for kind in ("brief", "reminder"):
+            for item in planned[kind]:
                 title = str(item.get("title") or "").strip()
                 if not title:
                     continue
-                body = str(item.get("body") or "")
-                due = item.get("due_at") or item.get("due_at_iso")
-                due_at = None
-                if due:
-                    try:
-                        due_at = datetime.fromisoformat(str(due).replace("Z", "+00:00"))
-                    except ValueError:
-                        due_at = None
                 await conn.execute(
                     """
                     INSERT INTO agenda_entries
                         (kind, title, body, due_at, episode_id, hx_generation_id)
-                    VALUES ($1, $2, $3, $4, $5, $6)
+                    VALUES ($1, $2, $3, NULL, $4, $5)
                     """,
                     kind,
                     title[:240],
-                    body[:4000],
-                    due_at,
+                    str(item.get("body") or "")[:4000],
                     episode_id,
                     hx_id,
                 )
