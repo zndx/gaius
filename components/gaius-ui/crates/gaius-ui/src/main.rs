@@ -151,7 +151,7 @@ fn chrome_bits(state: &openai::AppState) -> ChromeBits {
     let b = state.brand.read().expect("brand lock");
     ChromeBits {
         mode: "dark".into(),
-        asset_v: std::env::var("GAIUS_UI_ASSET_V").unwrap_or_else(|_| "0.3.11-chart-once".into()),
+        asset_v: std::env::var("GAIUS_UI_ASSET_V").unwrap_or_else(|_| "0.3.25-wh".into()),
         brand_id: b.id.clone(),
         logo_href: b.logo_href.clone(),
         logo_alt: b.logo_alt.clone(),
@@ -550,6 +550,26 @@ async fn cognition(State(state): State<openai::AppState>) -> impl IntoResponse {
 struct CognitionQuery {
     window_days: Option<i32>,
     stream: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct WaterfallQuery {
+    window_s: Option<i32>,
+}
+
+async fn cognition_waterfall_api(Query(q): Query<WaterfallQuery>) -> impl IntoResponse {
+    let window_s = q.window_s.unwrap_or(60);
+    match gaius::Gaius::from_env()
+        .cognition_waterfall(window_s)
+        .await
+    {
+        Ok(snap) => Json(snap).into_response(),
+        Err(e) => (
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            format!("{e}\n"),
+        )
+            .into_response(),
+    }
 }
 
 async fn cognition_api(Query(q): Query<CognitionQuery>) -> impl IntoResponse {
@@ -963,6 +983,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/v1/models", get(list_models))
         .route("/api/gaius/v1/board", get(board_api))
         .route("/api/gaius/v1/cognition", get(cognition_api))
+        .route("/api/gaius/v1/cognition/waterfall", get(cognition_waterfall_api))
         .route("/api/gaius/v1/ops", get(ops_api))
         .route("/api/gaius/v1/watts", get(watts_api))
         .route("/api/gaius/v1/federation/surfaces", get(federation_surfaces_api))

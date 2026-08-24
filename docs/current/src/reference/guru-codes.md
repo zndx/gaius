@@ -60,7 +60,7 @@ Complete catalog of error codes used across the Gaius platform.
 | Code | Description | Fix |
 |------|-------------|-----|
 | `#DI.00000001.NODB` | Discover has no engine db_pool | `/health fix postgres` |
-| `#DI.00000002.BADWINDOW` | Window not `36h` / `7d` / `1h` | Pass a 1..3660 day window |
+| `#DI.00000002.BADWINDOW` | Window not `1h` / `24h` / `36h` / `7d` | Pass a 1..3660 day window |
 | `#DI.00000003.BADLIMIT` | limit not in 1..200 | Pass 50 |
 | `#DI.00000004.BADBREAK` | breakdown not stream/source/layer | Pass `source` |
 | `#DI.00000005.BADFEATURE` | feature pin not `layer:index` | `feature:12:4412` |
@@ -119,6 +119,8 @@ Complete catalog of error codes used across the Gaius platform.
 | `#COG.00000027.BADLIMIT` | `thought_limit` not in 1..200 | Pass 80 |
 | `#COG.00000028.SURFACE` | Surface query failed | `/health fix postgres` |
 | `#COG.00000029.NOENGINE` | Thin client cannot reach engine gRPC for surface | `/health fix engine` |
+| `#COG.00000030.BADWFWIN` | Cognition waterfall window_s not in 1..3600 | `/thoughts waterfall 60` |
+| `#COG.00000031.NOWHFDW` | Waterfall window_s > 60 but devenv Postgres `impala_fdw` `gpu_metrics` is unreachable | `kinit`; `psql :5455` `SELECT` from `gpu_metrics` |
 
 ### THETA — ThetaService / sitrep
 

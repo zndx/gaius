@@ -95,6 +95,8 @@ from ...generated import (
     CognitionActivityResponse,
     CognitionSurfaceRequest,
     CognitionSurfaceResponse,
+    CognitionWaterfallRequest,
+    CognitionWaterfallResponse,
     CognitionDayBucket,
     CognitionHourCell,
     CognitionStreamCount,
@@ -2268,6 +2270,71 @@ class GaiusServicer(GaiusServiceServicer):
                 CognitionStreamCount(id=s.id, thoughts=s.thoughts)
                 for s in snap.stream_counts
             ],
+        )
+
+    async def CognitionWaterfall(
+        self,
+        request: CognitionWaterfallRequest,
+        context: aio.ServicerContext,
+    ) -> CognitionWaterfallResponse:
+        from gaius.engine.services.cognition_waterfall import (
+            LIVE_WINDOW_S,
+            fetch_gpu_metrics,
+            recent_tape_energy,
+            tick,
+        )
+
+        window = request.window_s or 60
+        tape_n, tape_peak = 0, 0.0
+        pool = _summary_db(self._services)
+        if pool is not None:
+            try:
+                tape_n, tape_peak = await recent_tape_energy(pool)
+            except Exception as e:
+                logger.debug("waterfall tape energy skipped: %s", e)
+        ctx: dict = {
+            "tape_n": tape_n,
+            "tape_peak": tape_peak,
+            "clt_loaded": False,
+            "sae_loaded": False,
+        }
+        try:
+            from gaius.engine.services import clt_service as clt_mod
+
+            svc = clt_mod._clt_service
+            if svc is not None:
+                ctx["clt_loaded"] = bool(svc.is_loaded)
+                vecs = [
+                    st.embedding
+                    for st in getattr(svc, "_agent_states", {}).values()
+                    if getattr(st, "embedding", None) is not None
+                ]
+                if vecs:
+                    ctx["embeddings"] = vecs
+        except Exception:
+            pass
+        warehouse_rows = None
+        if window > LIVE_WINDOW_S:
+            try:
+                warehouse_rows = await fetch_gpu_metrics(window)
+            except Exception as e:
+                return CognitionWaterfallResponse(error=str(e))
+        try:
+            state = tick(
+                window, self._services, ctx=ctx, warehouse_rows=warehouse_rows
+            )
+        except ValueError as e:
+            return CognitionWaterfallResponse(error=str(e))
+        flat: list[float] = [v for row in state.matrix for v in row]
+        return CognitionWaterfallResponse(
+            epoch_unix_ms=state.epoch_unix_ms,
+            n_channels=len(state.channel_names),
+            n_times=len(state.matrix[0]) if state.matrix else 0,
+            channel_names=list(state.channel_names),
+            matrix=flat,
+            driver=state.driver,
+            hn_tokens=state.hn_tokens,
+            fmp_tokens=state.fmp_tokens,
         )
 
     async def SelfObservation(
