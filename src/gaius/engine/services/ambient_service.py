@@ -1027,7 +1027,7 @@ class AmbientWorkloadService:
 
     async def _run_cognition_synthesis(self) -> dict[str, Any]:
         """Publishing + Prospects + Ambient → thinking → buffer + agenda."""
-        from gaius.engine.services.cognition_buffer import run_synthesis_cycle
+        from gaius.engine.services.cognition_synthesis import run_synthesis_cycle
 
         return await run_synthesis_cycle(
             backend_router=self._backend_router,
