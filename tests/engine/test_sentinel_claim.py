@@ -381,7 +381,7 @@ def test_apply_and_admit_stz_unplaced_sentinel(
     assert deleted == ["gaius-mf-docling-leak"]
 
 
-def test_extract_requests_leftover_yield_before_wait(
+def test_extract_requests_preempt_yield_before_wait(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from gaius.engine.sentinel_claim import YkAdmitError, apply_and_admit
@@ -402,7 +402,7 @@ def test_extract_requests_leftover_yield_before_wait(
         "gaius.engine.sentinel_claim._delete_pod", lambda _wid: None
     )
     monkeypatch.setattr(
-        "gaius.engine.sentinel_claim._request_leftover_yield",
+        "gaius.engine.sentinel_claim._request_preempt_yield",
         lambda: yielded.append(1),
     )
 

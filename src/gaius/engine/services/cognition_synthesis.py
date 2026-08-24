@@ -245,8 +245,7 @@ async def gather_slices(
         if "CUDA" in msg or "out of memory" in msg.lower():
             raise YkAdmitError(
                 GURU_GPUCOLLIDE,
-                "Aperture CUDA collided with another GPU claim "
-                "(thinking HEAVY holds 4). "
+                "Aperture CUDA collided with another admitted WRK's GPU. "
                 f"{msg}",
             ) from e
         raise

@@ -162,11 +162,11 @@ the host floors:
 Dashboard evidence is Gaius rows on existing Signals leaves
 (never `root.gaius`):
 
-1. **heavy** — standing thinking (`gaius-thinking`, 4 GPU, Qwen3.8-27B TP=4).
+1. **heavy** — standing thinking (`gaius-thinking`, 4 GPU tokens, Qwen3.8-27B TP=4).
 2. **embedding** — ColBERT-Zero / Aperture MaxSim (`gaius-embedding`, 1 GPU
-   of the leftover 2). Never `cuda:0` while heavy holds 0–3.
-   `#YK.00000008.GPUCOLLIDE` if the engine would steal thinking's cards.
-3. **extract** — Docling / article GPU children (1 leftover GPU).
+   token on `root.internal.inference.embedding`). YK places this claim.
+   `#YK.00000008.GPUCOLLIDE` if host CUDA would steal another WRK's cards.
+3. **extract** — Docling / article GPU children (1 GPU token on extract).
 4. **rate-metered** — FMP ingest. Appears for the check, then Completing.
 5. **compute** — Ambient RAM FIFO (`gaius-ambient`). No GPU. Yield of
    `gaius-ambient` drops the compute row.
@@ -181,11 +181,11 @@ so Ægir fine-tune preempts a single claim, not two.
 | `summarize` | `ambient-summarize` | `internal.inference.extract` | 1 | think-summarize on thinking vLLM |
 | `compact` | `ambient-compact` | `internal.inference.extract` | 1 (same bind) | planned sitrep compaction |
 
-Thinking vLLM still occupies **4 physical 4090s**. The extract token is
-the federation-visible lid (1 of 6). Ægir fine-tune that needs those
-cards must preempt extract → Yield → Ambient `pause_gpu`; freeing the
-cards is a later eviction of thinking (not automatic this step — `/ask`
-shares that process).
+Thinking's HEAVY Application claims **4 GPU tokens**. Extract, embedding,
+and light claim their own tokens on their leaves. YK admits or preempts;
+no WRK owns remainder cards. Ægir fine-tune that needs thinking's cards
+must preempt → Yield → Ambient `pause_gpu` (not automatic this step —
+`/ask` shares that process).
 
 YK enforces apps / GPU / claim cpu / claim memory. Host disk and RAM
 are Gaius floors — the pause pod cannot cap Metaflow artifacts, KB, or

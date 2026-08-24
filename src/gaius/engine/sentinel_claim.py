@@ -14,10 +14,11 @@ Signals / YK shows Gaius lanes on existing leaves (no ``root.gaius``):
 - ``internal.compute`` — Ambient RAM FIFO and CPU Metaflow ticks.
   Standing while the daemon runs. Never a disk write.
 - ``internal.inference.extract`` — Docling / article GPU children only.
-- ``internal.inference.heavy`` — standing Qwen3.8 thinking (4 GPU).
+- ``internal.inference.heavy`` — standing Qwen3.8 thinking (4 GPU tokens).
   Ambient summarize rides this Application (thinking channel → later CLT/SAE).
-- ``internal.inference.embedding`` — ColBERT-Zero / Aperture MaxSim (1 GPU
-  of the leftover 2). Never ``cuda:0`` while thinking holds 0–3.
+- ``internal.inference.embedding`` — ColBERT-Zero / Aperture MaxSim
+  (1 GPU token). First-class claim; YK places it. Host CUDA maps onto a
+  device no other admitted WRK occupies — never steal thinking's cards.
 - ``internal.compute`` — ``gaius-optillm`` gunicorn (CPU proxy). GPU
   occupancy stays on the vLLM Application it binds; optillm does not
   mint a second GPU claim when a vLLM is already provided.
@@ -67,11 +68,13 @@ GURU_GPUCOLLIDE = "#YK.00000008.GPUCOLLIDE"
 CPU_ADMIT_TIMEOUT_S = 60.0
 GPU_ADMIT_TIMEOUT_S = 180.0
 
-# Tinybox: 6× RTX 4090 24Gi, ~128Gi RAM. Standing thinking (heavy) takes
-# 4 GPUs; 2 remain for extract/light/embedding. Compute has no GPU — many
+# Tinybox: 6× RTX 4090 24Gi, ~128Gi RAM. GPU tokens are YK claims, not a
+# private pool thinking leaves behind. Heavy, embedding, extract, light,
+# and medium compete; YK admits or preempts. Compute has no GPU — many
 # CPU Metaflow ticks must not serialize on a 1-app envelope.
-# ColBERT/Aperture is embedding (1 leftover GPU), not a silent cuda:0 load
-# inside the engine process. YK admits the token; nvidia-smi places it.
+# ColBERT/Aperture is the embedding WRK (1 token). Do not load CUDA in the
+# engine process until that Application is admitted, then map onto a
+# device no other admitted WRK occupies.
 # Pause-pod CPU/mem are sentinel-sized; host CUDA is not in the pod.
 ENVELOPE_GPU = 1
 ENVELOPE_CPU = "10m"
@@ -110,7 +113,7 @@ EXTRACT = ResourceClass(
     name="internal.inference.extract",
     queue="root.internal.inference.extract",
     gpu_tokens=ENVELOPE_GPU,
-    # 2 leftover GPUs beside standing thinking (4).
+    # Envelope on this leaf (YK maxapplications), not a private GPU stash.
     max_applications=2,
 )
 
@@ -138,7 +141,7 @@ HEAVY = ResourceClass(
     max_applications=1,
 )
 
-# ColBERT-Zero / Aperture MaxSim. One leftover GPU (not thinking's 4).
+# ColBERT-Zero / Aperture MaxSim. One GPU token on its own leaf.
 EMBEDDING = ResourceClass(
     name="internal.inference.embedding",
     queue="root.internal.inference.embedding",
@@ -619,11 +622,11 @@ def apply_and_admit(
 
     yaml_body = application_yaml(workload_id, kind)
     if rc == EXTRACT:
-        # Standing ask-sae (medium, no GPU floor) borrows leftover tokens.
+        # Standing ask-sae (medium) may still occupy tokens extract needs.
         # YK custom-resource preemption may not victim it; C2 last-gasp
         # Yields the host vLLM so extract can place. Same process must not
         # gRPC-Yield itself (deadlock).
-        _request_leftover_yield()
+        _request_preempt_yield()
     r = subprocess.run(
         ["kubectl", "apply", "-f", "-"],
         input=yaml_body,
@@ -712,7 +715,7 @@ def delete_flow_sentinel(workload_id: str) -> None:
     _delete_pod(workload_id)
 
 
-def _request_leftover_yield() -> None:
+def _request_preempt_yield() -> None:
     """Ask C2 to Yield standing medium (ask-sae) so extract can admit."""
     import urllib.request
 
@@ -731,9 +734,9 @@ def _request_leftover_yield() -> None:
         )
         try:
             urllib.request.urlopen(req, timeout=5)
-            log.info("requested leftover Yield of %s for extract", wid)
+            log.info("requested preempt Yield of %s for extract", wid)
         except Exception as e:
-            log.warning("leftover Yield of %s failed: %s", wid, e)
+            log.warning("preempt Yield of %s failed: %s", wid, e)
 
 
 def _delete_pod(workload_id: str) -> None:
@@ -960,12 +963,13 @@ def ensure_embedding_claim() -> None:
             GURU_NOAPP,
             f"ColBERT/Aperture CUDA requires admitted Application "
             f"{EMBEDDING_WORKLOAD_ID} on {EMBEDDING.queue}. "
-            "YK adjudicates the leftover GPU; do not load cuda:0 in-process.",
+            "YK places the embedding token; do not load CUDA in-process "
+            "onto another WRK's cards.",
         )
 
 
 def embedding_cuda_device() -> str:
-    """Leftover GPU for ColBERT. Fail-fast if thinking already occupies the card."""
+    """Map embedding's 1-GPU claim onto a device no other admitted WRK holds."""
     ensure_embedding_claim()
     held = vllm_held_gpu_ids()
     free = gpu_free_mib()
@@ -978,10 +982,10 @@ def embedding_cuda_device() -> str:
             return f"cuda:{idx}"
         raise YkAdmitError(
             GURU_GPUCOLLIDE,
-            "Aperture/ColBERT has no leftover GPU. "
+            "Aperture/ColBERT would land on a GPU another admitted WRK occupies. "
             f"vLLM holds {sorted(held) or 'none'}; free MiB={free}. "
-            "thinking is HEAVY (4). embedding needs 1 of the leftover 2. "
-            "Do not load cuda:0 beside Qwen3.8-27B.",
+            "YK admitted embedding (1 token) or must Yield/preempt the occupant. "
+            "Do not steal thinking's allocation.",
         )
     try:
         import torch
@@ -1002,7 +1006,7 @@ def embedding_cuda_device() -> str:
     raise YkAdmitError(
         GURU_GPUCOLLIDE,
         f"Aperture/ColBERT collided with vLLM GPUs {sorted(held)}. "
-        "YK leftover token was not placed; refuse cuda:0.",
+        "Embedding's claim is not mapped to a free card; refuse stealing.",
     )
 
 
