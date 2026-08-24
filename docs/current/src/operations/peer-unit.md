@@ -162,11 +162,13 @@ the host floors:
 Dashboard evidence is Gaius rows on existing Signals leaves
 (never `root.gaius`):
 
-1. **heavy** — standing thinking (`gaius-thinking`, 4 GPU tokens, Qwen3.8-27B TP=4).
-2. **embedding** — ColBERT-Zero / Aperture MaxSim (`gaius-embedding`, 1 GPU
-   token on `root.internal.inference.embedding`). YK places this claim.
-   `#YK.00000008.GPUCOLLIDE` if host CUDA would steal another WRK's cards.
-3. **extract** — Docling / article GPU children (1 GPU token on extract).
+1. **heavy** — models needing 4 consecutive GPUs (`gaius-thinking`, Qwen3.8-27B TP=4).
+2. **medium** — models needing 2 consecutive GPUs (Ask SAE).
+3. **light** — models that fit on 1 GPU (Ask 1.7B, ColBERT-Zero /
+   `gaius-embedding`). `#YK.00000008.GPUCOLLIDE` if host CUDA would steal
+   another WRK's cards. Aperture MaxSim in the engine is undeclared
+   Metaflow debt; `CltSkosAdmitFlow` is the Metaflow with `gpu_tokens=1`.
+4. **extract** — Docling / article GPU children (offline 1 GPU token).
 4. **rate-metered** — FMP ingest. Appears for the check, then Completing.
 5. **compute** — Ambient RAM FIFO (`gaius-ambient`). No GPU. Yield of
    `gaius-ambient` drops the compute row.

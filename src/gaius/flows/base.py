@@ -150,6 +150,13 @@ class GaiusFlow(FlowSpec):
                 self.emit_lineage_complete(outputs=[...])
     """
 
+    # Model deployment profile for YK. 0 = compute (no GPU), 1 = light
+    # (fits on one GPU), 2 = medium (two consecutive), 4 = heavy (four
+    # consecutive). Declare this so YK can schedule; in-process CUDA
+    # without a profile is how collisions happen.
+    gpu_tokens: int = 0
+    model: str = ""
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._lineage_run_id: UUID | None = None
@@ -194,6 +201,24 @@ class GaiusFlow(FlowSpec):
         from gaius.engine.sentinel_claim import apply_and_admit
 
         kind = self._yk_kind()
+        from gaius.engine.sentinel_claim import (
+            GURU_NOADMIT,
+            YkAdmitError,
+            class_for_gpu_tokens,
+            resource_class_for,
+        )
+
+        tokens = int(getattr(type(self), "gpu_tokens", 0) or 0)
+        if tokens:
+            rc = resource_class_for(kind)
+            expected = class_for_gpu_tokens(tokens)
+            if rc != expected:
+                raise YkAdmitError(
+                    GURU_NOADMIT,
+                    f"flow {kind} gpu_tokens={tokens} is {expected.queue}; "
+                    f"yk_kind maps to {rc.queue}. Declare the model profile "
+                    "so YK can schedule; do not invent a leaf.",
+                )
         env_wid = (os.environ.get("GAIUS_YK_APPLICATION_ID") or "").strip()
         if env_wid:
             self._yk_workload_id = env_wid

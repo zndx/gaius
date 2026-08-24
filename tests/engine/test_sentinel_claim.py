@@ -7,7 +7,6 @@ import yaml
 
 from gaius.engine.sentinel_claim import (
     COMPUTE,
-    EMBEDDING,
     EXTRACT,
     GPU_ADMIT_TIMEOUT_S,
     HEAVY,
@@ -127,7 +126,6 @@ def test_unknown_kind_fail_fast() -> None:
 def test_every_registered_flow_has_yk_class() -> None:
     from gaius.engine.sentinel_claim import (
         COMPUTE,
-        EMBEDDING,
         EXTRACT,
         HEAVY,
         LIGHT,
@@ -147,7 +145,6 @@ def test_every_registered_flow_has_yk_class() -> None:
             HEAVY,
             LIGHT,
             MEDIUM,
-            EMBEDDING,
         ), (
             name,
             kind,
@@ -575,26 +572,38 @@ def test_ambient_skips_disk_floor(monkeypatch: pytest.MonkeyPatch) -> None:
         assert_host_envelope(check_disk=True)
 
 
-def test_aperture_is_embedding_not_cuda0() -> None:
+def test_colbert_is_light_one_gpu() -> None:
     from gaius.engine.sentinel_claim import (
+        DEPLOYMENT_PROFILES,
         EMBEDDING_WORKLOAD_ID,
+        MEDIUM,
+        YkAdmitError,
+        class_for_gpu_tokens,
         yk_phase_for,
     )
 
-    assert resource_class_for("aperture") == EMBEDDING
-    assert resource_class_for("colbert") == EMBEDDING
-    assert resource_class_for("clt-skos-admit") == EMBEDDING
-    assert EMBEDDING.queue == "root.internal.inference.embedding"
-    assert EMBEDDING.gpu_tokens == 1
-    assert EMBEDDING.max_applications == 1
+    assert class_for_gpu_tokens(1) is LIGHT
+    assert class_for_gpu_tokens(2) is MEDIUM
+    assert class_for_gpu_tokens(4) is HEAVY
+    with pytest.raises(YkAdmitError, match="not a profile"):
+        class_for_gpu_tokens(3)
+    assert resource_class_for("aperture") is LIGHT
+    assert resource_class_for("colbert") is LIGHT
+    assert resource_class_for("clt-skos-admit") is LIGHT
+    assert DEPLOYMENT_PROFILES["embedding"].gpu_tokens == 1
+    assert DEPLOYMENT_PROFILES["embedding"].resource_class() is LIGHT
     assert yk_phase_for("embedding") == "embed"
     doc = yaml.safe_load(application_yaml(EMBEDDING_WORKLOAD_ID, "embedding"))
     req = doc["spec"]["containers"][0]["resources"]["requests"]
     assert req["federation.zndx.org/gpu"] == "1"
     assert doc["metadata"]["annotations"]["yunikorn.apache.org/queue"] == (
-        "root.internal.inference.embedding"
+        "root.internal.inference.light"
     )
     assert "nvidia.com/gpu" not in yaml.dump(doc)
+    from gaius.flows.clt_skos.admit import CltSkosAdmitFlow
+
+    assert CltSkosAdmitFlow.gpu_tokens == 1
+    assert CltSkosAdmitFlow.model == "lightonai/ColBERT-Zero"
 
 
 def test_embedding_cuda_skips_thinking_gpus(monkeypatch: pytest.MonkeyPatch) -> None:

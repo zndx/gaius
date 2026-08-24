@@ -398,7 +398,6 @@ def declared_queues() -> list[zpb.QueueHint]:
     """Leaves this engine needs. Signals merges + PromoteScratch. No YK REST."""
     from gaius.engine.sentinel_claim import (
         COMPUTE,
-        EMBEDDING,
         EXTRACT,
         HEAVY,
         LIGHT,
@@ -414,7 +413,7 @@ def declared_queues() -> list[zpb.QueueHint]:
             max_applications=LIGHT.max_applications,
             preemption_delay="5s",
             role="light",
-            examples="gaius.ask-agent",
+            examples="gaius.ask-agent, gaius.embedding",
         ),
         zpb.QueueHint(
             path=MEDIUM.queue,
@@ -435,15 +434,6 @@ def declared_queues() -> list[zpb.QueueHint]:
             preemption_policy="fence",
             role="heavy",
             examples="gaius.thinking",
-        ),
-        zpb.QueueHint(
-            path=EMBEDDING.queue,
-            resource_class=EMBEDDING.name,
-            gpu_guarantee=1,
-            gpu_max=1,
-            max_applications=EMBEDDING.max_applications,
-            role="embedding",
-            examples="gaius.embedding",
         ),
         zpb.QueueHint(
             path=EXTRACT.queue,
@@ -467,57 +457,22 @@ def declared_queues() -> list[zpb.QueueHint]:
 
 
 def declared_workloads() -> list:
-    """WRK model + capabilities + tp/pp. Queue names stay resource-class FQNs."""
-    return [
-        zpb.WorkloadHint(
-            wrk="thinking",
-            model="Qwen/Qwen3.8-27B",
-            capabilities=["thinking", "complete"],
-            tensor_parallel=4,
-            pipeline_parallel=1,
-            gpu_tokens=4,
-        ),
-        zpb.WorkloadHint(
-            wrk="ask-sae",
-            model="Qwen/Qwen3-8B",
-            capabilities=["complete"],
-            tensor_parallel=2,
-            pipeline_parallel=1,
-            gpu_tokens=2,
-        ),
-        zpb.WorkloadHint(
-            wrk="ask-agent",
-            model="Qwen/Qwen3-1.7B",
-            capabilities=["complete"],
-            tensor_parallel=1,
-            pipeline_parallel=1,
-            gpu_tokens=1,
-        ),
-        zpb.WorkloadHint(
-            wrk="optillm",
-            model="proxy",
-            capabilities=["complete"],
-            tensor_parallel=0,
-            pipeline_parallel=0,
-            gpu_tokens=0,
-        ),
-        zpb.WorkloadHint(
-            wrk="article-curate",
-            model="",
-            capabilities=["extract"],
-            tensor_parallel=0,
-            pipeline_parallel=0,
-            gpu_tokens=1,
-        ),
-        zpb.WorkloadHint(
-            wrk="embedding",
-            model="lightonai/ColBERT-Zero",
-            capabilities=["open-embedding"],
-            tensor_parallel=1,
-            pipeline_parallel=1,
-            gpu_tokens=1,
-        ),
-    ]
+    """WRK model + capabilities + tp/pp. Queue names stay light/medium/heavy."""
+    from gaius.engine.sentinel_claim import DEPLOYMENT_PROFILES
+
+    out = []
+    for p in DEPLOYMENT_PROFILES.values():
+        out.append(
+            zpb.WorkloadHint(
+                wrk=p.wrk,
+                model=p.model,
+                capabilities=list(p.capabilities),
+                tensor_parallel=p.tensor_parallel,
+                pipeline_parallel=p.pipeline_parallel,
+                gpu_tokens=p.gpu_tokens,
+            )
+        )
+    return out
 
 
 def attach_local_note(resp: zpb.ServerQueryResponse, note_id: str) -> None:

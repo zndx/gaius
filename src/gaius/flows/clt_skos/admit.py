@@ -23,6 +23,8 @@ from gaius.hx.lineage.events import Dataset
 class CltSkosAdmitFlow(GaiusFlow):
     """Living corpus: admit new inbound docs, extract CLT on new windows."""
 
+    gpu_tokens = 1
+    model = "lightonai/ColBERT-Zero"
     batch = Parameter("batch", help="Docs per tick", default=16, type=int)
     gpu_index = Parameter("gpu-index", help="CLT GPU", default=4, type=int)
     extract_top_k = Parameter("extract-top-k", help="Top-k per position", default=16, type=int)

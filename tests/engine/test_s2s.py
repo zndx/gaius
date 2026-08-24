@@ -193,7 +193,7 @@ def test_declared_queues_light_medium_heavy() -> None:
     assert "root.internal.inference.light" in paths
     assert "root.internal.inference.medium" in paths
     assert "root.internal.inference.heavy" in paths
-    assert "root.internal.inference.embedding" in paths
+    assert "root.internal.inference.embedding" not in paths
     light = next(q for q in declared_queues() if q.role == "light")
     assert light.gpu_guarantee == 1
     med = next(q for q in declared_queues() if q.role == "medium")
@@ -201,8 +201,10 @@ def test_declared_queues_light_medium_heavy() -> None:
     wrks = {h.wrk: h for h in declared_workloads()}
     assert wrks["embedding"].gpu_tokens == 1
     assert wrks["embedding"].model == "lightonai/ColBERT-Zero"
-    emb = next(q for q in declared_queues() if q.role == "embedding")
-    assert emb.path == "root.internal.inference.embedding"
+    assert wrks["thinking"].gpu_tokens == 4
+    from gaius.engine.sentinel_claim import class_for_gpu_tokens
+
+    assert class_for_gpu_tokens(wrks["embedding"].gpu_tokens).name.endswith("light")
 
 
 def test_local_response_peers_empty_is_honest() -> None:

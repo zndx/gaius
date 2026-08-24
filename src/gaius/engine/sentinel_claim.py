@@ -14,14 +14,20 @@ Signals / YK shows Gaius lanes on existing leaves (no ``root.gaius``):
 - ``internal.compute`` — Ambient RAM FIFO and CPU Metaflow ticks.
   Standing while the daemon runs. Never a disk write.
 - ``internal.inference.extract`` — Docling / article GPU children only.
-- ``internal.inference.heavy`` — standing Qwen3.8 thinking (4 GPU tokens).
-  Ambient summarize rides this Application (thinking channel → later CLT/SAE).
-- ``internal.inference.embedding`` — ColBERT-Zero / Aperture MaxSim
-  (1 GPU token). First-class claim; YK places it. Host CUDA maps onto a
-  device no other admitted WRK occupies — never steal thinking's cards.
+- ``internal.inference.light`` — models that fit on 1 GPU (Ask 1.7B,
+  ColBERT-Zero / Aperture MaxSim).
+- ``internal.inference.medium`` — models that need 2 consecutive GPUs
+  (Ask SAE 9B).
+- ``internal.inference.heavy`` — models that need 4 consecutive GPUs
+  (Qwen3.8 thinking). Ambient summarize rides this Application.
 - ``internal.compute`` — ``gaius-optillm`` gunicorn (CPU proxy). GPU
   occupancy stays on the vLLM Application it binds; optillm does not
   mint a second GPU claim when a vLLM is already provided.
+
+A workload declares a model deployment profile (``gpu_tokens`` 1 / 2 / 4).
+YK picks light / medium / heavy from that. Homemade leaves (e.g. a
+private embedding queue) are not a profile. Non-trivial GPU work belongs
+in Metaflow; in-process CUDA in the engine is debt and collides.
 
 Host disk and RAM are not YK resources — Gaius refuses new disk-writing
 children when those floors are crossed so the box cannot fill past the
@@ -68,13 +74,9 @@ GURU_GPUCOLLIDE = "#YK.00000008.GPUCOLLIDE"
 CPU_ADMIT_TIMEOUT_S = 60.0
 GPU_ADMIT_TIMEOUT_S = 180.0
 
-# Tinybox: 6× RTX 4090 24Gi, ~128Gi RAM. GPU tokens are YK claims, not a
-# private pool thinking leaves behind. Heavy, embedding, extract, light,
-# and medium compete; YK admits or preempts. Compute has no GPU — many
-# CPU Metaflow ticks must not serialize on a 1-app envelope.
-# ColBERT/Aperture is the embedding WRK (1 token). Do not load CUDA in the
-# engine process until that Application is admitted, then map onto a
-# device no other admitted WRK occupies.
+# Tinybox: 6× RTX 4090 24Gi, ~128Gi RAM. Queues are light (1 GPU), medium
+# (2 consecutive), heavy (4 consecutive). Compute has no GPU — many CPU
+# Metaflow ticks must not serialize on a 1-app envelope.
 # Pause-pod CPU/mem are sentinel-sized; host CUDA is not in the pod.
 ENVELOPE_GPU = 1
 ENVELOPE_CPU = "10m"
@@ -117,7 +119,7 @@ EXTRACT = ResourceClass(
     max_applications=2,
 )
 
-# One-GPU interactive Ask (each 1.7B replica). Not extract. Not SAE.
+# Models that fit on 1 GPU (Ask 1.7B, ColBERT-Zero). Not extract. Not SAE.
 LIGHT = ResourceClass(
     name="internal.inference.light",
     queue="root.internal.inference.light",
@@ -125,7 +127,7 @@ LIGHT = ResourceClass(
     max_applications=2,
 )
 
-# Two-GPU interactive Ask (9B SAE TP=2). Light must not land here.
+# Models that need 2 consecutive GPUs (Ask SAE 9B). Light must not land here.
 MEDIUM = ResourceClass(
     name="internal.inference.medium",
     queue="root.internal.inference.medium",
@@ -133,19 +135,11 @@ MEDIUM = ResourceClass(
     max_applications=1,
 )
 
-# Standing thinking / large TP. One 27B TP=4 — a second heavy is 8 GPU.
+# Models that need 4 consecutive GPUs (Qwen3.8-27B TP=4).
 HEAVY = ResourceClass(
     name="internal.inference.heavy",
     queue="root.internal.inference.heavy",
     gpu_tokens=4,
-    max_applications=1,
-)
-
-# ColBERT-Zero / Aperture MaxSim. One GPU token on its own leaf.
-EMBEDDING = ResourceClass(
-    name="internal.inference.embedding",
-    queue="root.internal.inference.embedding",
-    gpu_tokens=1,
     max_applications=1,
 )
 
@@ -168,7 +162,98 @@ COMPUTE = ResourceClass(
 AMBIENT_WORKLOAD_ID = "gaius-ambient"
 OPTILLM_WORKLOAD_ID = "gaius-optillm"
 EMBEDDING_WORKLOAD_ID = "gaius-embedding"
-EMBEDDING_MIN_FREE_MIB = 4096
+LIGHT_MIN_FREE_MIB = 4096
+
+
+def class_for_gpu_tokens(n: int, *, offline: bool = False) -> ResourceClass:
+    """YK leaf from the model deployment profile.
+
+    1 GPU → light, 2 consecutive → medium, 4 consecutive → heavy.
+    0 → compute. Offline extract is Docling, not a size class.
+    """
+    tokens = int(n)
+    if tokens < 0:
+        raise YkAdmitError(
+            GURU_NOADMIT, f"gpu_tokens={tokens} is not a deployment profile"
+        )
+    if tokens == 0:
+        return COMPUTE
+    if offline:
+        return EXTRACT
+    if tokens == 1:
+        return LIGHT
+    if tokens == 2:
+        return MEDIUM
+    if tokens == 4:
+        return HEAVY
+    raise YkAdmitError(
+        GURU_NOADMIT,
+        f"gpu_tokens={tokens} is not a profile; use 1 (light), "
+        "2 consecutive (medium), or 4 consecutive (heavy)",
+    )
+
+
+@dataclass(frozen=True)
+class ModelDeploymentProfile:
+    """What YK needs to schedule a WRK. Queue names stay light/medium/heavy."""
+
+    wrk: str
+    model: str
+    gpu_tokens: int
+    tensor_parallel: int
+    pipeline_parallel: int = 1
+    capabilities: tuple[str, ...] = ()
+    offline: bool = False
+
+    def resource_class(self) -> ResourceClass:
+        return class_for_gpu_tokens(self.gpu_tokens, offline=self.offline)
+
+
+DEPLOYMENT_PROFILES: dict[str, ModelDeploymentProfile] = {
+    "thinking": ModelDeploymentProfile(
+        wrk="thinking",
+        model="Qwen/Qwen3.8-27B",
+        gpu_tokens=4,
+        tensor_parallel=4,
+        capabilities=("thinking", "complete"),
+    ),
+    "ask-sae": ModelDeploymentProfile(
+        wrk="ask-sae",
+        model="Qwen/Qwen3-8B",
+        gpu_tokens=2,
+        tensor_parallel=2,
+        capabilities=("complete",),
+    ),
+    "ask-agent": ModelDeploymentProfile(
+        wrk="ask-agent",
+        model="Qwen/Qwen3-1.7B",
+        gpu_tokens=1,
+        tensor_parallel=1,
+        capabilities=("complete",),
+    ),
+    "embedding": ModelDeploymentProfile(
+        wrk="embedding",
+        model="lightonai/ColBERT-Zero",
+        gpu_tokens=1,
+        tensor_parallel=1,
+        capabilities=("open-embedding",),
+    ),
+    "optillm": ModelDeploymentProfile(
+        wrk="optillm",
+        model="proxy",
+        gpu_tokens=0,
+        tensor_parallel=0,
+        capabilities=("complete",),
+    ),
+    "article-curate": ModelDeploymentProfile(
+        wrk="article-curate",
+        model="",
+        gpu_tokens=1,
+        tensor_parallel=0,
+        capabilities=("extract",),
+        offline=True,
+    ),
+}
 
 # EXTRACT is Docling / article GPU only. Thinking Complete (Qwen3.8)
 # rides HEAVY so summarize does not steal extract slots from Docling.
@@ -223,14 +308,15 @@ _KIND_CLASS: dict[str, ResourceClass] = {
     # via zndx.engine.v1 only when none is healthy.
     "optillm": COMPUTE,
     "gaius-optillm": COMPUTE,
-    # ColBERT-Zero MaxSim / Aperture. Not compute. Not thinking's GPUs.
-    "embedding": EMBEDDING,
-    "gaius-embedding": EMBEDDING,
-    "colbert": EMBEDDING,
-    "aperture": EMBEDDING,
-    "maxsim": EMBEDDING,
-    "clt-skos-admit": EMBEDDING,
-    "clt_skos_admit": EMBEDDING,
+    # ColBERT-Zero MaxSim: 1 GPU model → light (same leaf as Ask 1.7B).
+    # In-engine Aperture CUDA is undeclared Metaflow debt; admit light first.
+    "embedding": LIGHT,
+    "gaius-embedding": LIGHT,
+    "colbert": LIGHT,
+    "aperture": LIGHT,
+    "maxsim": LIGHT,
+    "clt-skos-admit": LIGHT,
+    "clt_skos_admit": LIGHT,
 }
 
 
@@ -241,11 +327,9 @@ def resource_class_for(kind: str) -> ResourceClass:
         raise YkAdmitError(
             GURU_NOADMIT,
             f"no resource class for kind={kind!r}; "
-            "heavy: thinking / ambient-summarize; "
-            "embedding: aperture / colbert / clt-skos-admit; "
-            "extract (Docling): article-curate / prospects-update / docling; "
-            "light: ask-agent; medium: ask-sae; "
-            "rate-metered: prospects-check / fmp; compute: ambient / clt-* / optillm",
+            "gpu_tokens 1=light, 2 consecutive=medium, 4 consecutive=heavy; "
+            "extract if offline Docling; compute if 0. "
+            "Declare a model deployment profile — do not invent a queue.",
         ) from e
 
 
@@ -394,11 +478,22 @@ def disk_paths_for(kind: str) -> tuple[str, ...]:
     ``/raid/signals/var/kb/dev`` (``./build/dev`` is a symlink).
     """
     rc = resource_class_for(kind)
+    k = kind.replace("_", "-")
+    if k in {
+        "knowledge-summary",
+        "clt-skos-admit",
+        "clt-skos-eval",
+        "article-curation",
+        "card-upkeep",
+        "docling",
+        "article-curate",
+        "clt-probe",
+    } or k.startswith("prospects-"):
+        return ("/raid",)
     if rc.queue in (HEAVY.queue, LIGHT.queue, MEDIUM.queue):
-        # vLLM / thinking occupancy — not KB writers. A full root must not
-        # refuse Complete(capability=thinking).
+        # vLLM occupancy — not KB writers. A full root must not refuse Complete.
         return ()
-    if kind.replace("_", "-") in {
+    if k in {
         "ambient",
         "ambient-compact",
         "clt-skos-label",
@@ -412,22 +507,6 @@ def disk_paths_for(kind: str) -> tuple[str, ...]:
     }:
         return ()
     if rc.queue == RATE_METERED.queue:
-        return ("/raid",)
-    if kind.replace("_", "-").startswith("prospects-"):
-        return ("/raid",)
-    if kind.replace("_", "-") == "clt-probe":
-        # Tape is Postgres. Root 99% must not block understanding.
-        return ("/raid",)
-    if kind.replace("_", "-") == "article-curate":
-        return ("/raid",)
-    if kind.replace("_", "-") in {
-        "knowledge-summary",
-        "clt-skos-admit",
-        "clt-skos-eval",
-        "article-curation",
-        "card-upkeep",
-        "docling",
-    }:
         return ("/raid",)
     return ("/", "/raid")
 
@@ -962,9 +1041,9 @@ def ensure_embedding_claim() -> None:
         raise YkAdmitError(
             GURU_NOAPP,
             f"ColBERT/Aperture CUDA requires admitted Application "
-            f"{EMBEDDING_WORKLOAD_ID} on {EMBEDDING.queue}. "
-            "YK places the embedding token; do not load CUDA in-process "
-            "onto another WRK's cards.",
+            f"{EMBEDDING_WORKLOAD_ID} on {LIGHT.queue} "
+            "(ColBERT-Zero is a 1-GPU / light model). "
+            "In-process CUDA without that profile is Metaflow debt.",
         )
 
 
@@ -977,15 +1056,15 @@ def embedding_cuda_device() -> str:
         for idx, mib in sorted(free.items()):
             if idx in held:
                 continue
-            if mib < EMBEDDING_MIN_FREE_MIB:
+            if mib < LIGHT_MIN_FREE_MIB:
                 continue
             return f"cuda:{idx}"
         raise YkAdmitError(
             GURU_GPUCOLLIDE,
             "Aperture/ColBERT would land on a GPU another admitted WRK occupies. "
             f"vLLM holds {sorted(held) or 'none'}; free MiB={free}. "
-            "YK admitted embedding (1 token) or must Yield/preempt the occupant. "
-            "Do not steal thinking's allocation.",
+            "ColBERT-Zero is light (1 GPU). Admit that profile or Yield "
+            "the occupant. Do not steal another WRK's cards.",
         )
     try:
         import torch
