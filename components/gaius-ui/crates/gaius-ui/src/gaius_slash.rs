@@ -18,9 +18,9 @@ pub const GAIUS_SLASH: &[SlashCmd] = &[
     SlashCmd {
         name: "agenda",
         hint: "cards|create|list",
-        description: "Agenda calendar: briefs, reminders, sessions with the agents.",
+        description: "Agenda: executive letters, shared lists, catch-ups with a colleague.",
         mcp: "gaius__agenda_list",
-        extra: "Call gaius__agenda_list or gaius__agenda_create. intent=brief|reminder|session. Sessions need starts — the Agenda is the calendar. Do not invent filings or write engine state into this workspace.",
+        extra: "Call gaius__agenda_list or gaius__agenda_create. intent=brief (letter/memo, natural-register prose) | reminder (shared suggestions, list) | session (catch-up; discussion headlines in the description; needs starts). Do not invent filings or write engine state into this workspace.",
     },
     SlashCmd {
         name: "sitrep",
@@ -205,9 +205,11 @@ pub fn agents_md() -> &'static str {
      `/gpu`, …) live in `.grok/commands/` so they appear in Grok's `/` menu. \
      Each one calls a Gaius MCP tool. Knowledge of Gaius lives on the engine.\n\n\
      `/agenda` lists and creates cards via `gaius__agenda_list` / \
-     `gaius__agenda_create`. Intent is brief, reminder, or session. \
-     A session is a booked slot *with the agents* on this Agenda \
-     (the calendar). Sessions need `starts`. That is not Synth's \
+     `gaius__agenda_create`. A brief is a letter or memo for an \
+     executive (natural-register prose). A list (intent reminder) \
+     is shared suggestions between agents and operators. A session \
+     is a catch-up with a colleague; discussion headlines go in the \
+     calendar description. Sessions need `starts`. That is not Synth's \
      Deluge gesture FSM.\n"
 }
 

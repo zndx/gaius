@@ -1,7 +1,8 @@
 """Write Agenda zettels from scheduled surfaces.
 
-Intents: brief (surface a fact), reminder (you do something),
-session (book time with the agents on this Agenda).
+Intents: brief (letter/memo for an executive), reminder (shared
+suggestion list), session (catch-up with a colleague; headlines in
+the calendar description).
 
 Emit is observability: a failed write is logged with a guru and must
 not raise into the task that produced the surface. Do not invent

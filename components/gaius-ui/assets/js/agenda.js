@@ -869,8 +869,19 @@
       kind === "session" ? "session" : kind === "list" ? "reminder" : "brief";
     var shape = kind === "session" ? "event" : kind;
     var title =
-      kind === "list" ? "List" : kind === "session" ? "Session" : kind === "event" ? "Event" : "Note";
-    var body = kind === "list" ? "- [ ] \n" : "";
+      kind === "list"
+        ? "List"
+        : kind === "session"
+          ? "Catch-up"
+          : kind === "event"
+            ? "Event"
+            : "Memo";
+    var body =
+      kind === "list"
+        ? "- [ ] \n"
+        : kind === "session"
+          ? "Discussion headlines:\n• \n"
+          : "";
     fetch("/api/gaius/v1/agenda", {
       method: "POST",
       headers: { "Content-Type": "application/json" },

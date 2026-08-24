@@ -3916,10 +3916,11 @@ Domain: {domain or 'general'}
         """Create an Agenda zettel on the Agenda calendar (not Google).
 
         kind = shape: note | list | event.
-        intent = why: brief (surface a fact), reminder (you do something),
-        session (book time WITH the agents). Sessions require starts.
-        The Agenda is the calendar. Optional Google Calendar TEMPLATE
-        link is returned for iPad / Calendar.app.
+        intent = why: brief (letter/memo for an executive, natural-register
+        prose), reminder (shared suggestions for operators and other agents),
+        session (catch-up with a colleague; body is discussion headlines).
+        Sessions require starts. The Agenda is the calendar. Optional Google
+        Calendar TEMPLATE link is returned for iPad / Calendar.app.
         """
         try:
             client = await _get_engine_client()

@@ -143,7 +143,7 @@
   function looksLikeWrite(text) {
     var t = String(text || "").toLowerCase();
     var verbs = /create|schedule|book|add |put |update|reschedule|rename|make an|make a /;
-    var nouns = /event|session|reminder|agenda|meeting|calendar|brief/;
+    var nouns = /event|session|reminder|agenda|meeting|calendar|brief|list|memo|letter|catch-up|catch up/;
     return verbs.test(t) && nouns.test(t);
   }
 

@@ -36,8 +36,10 @@ def test_session_invite_has_terminal_paste_block() -> None:
     assert "BEGIN SESSION" in text
     assert "END SESSION" in text
     assert "episode=ep-1" in text
-    assert "Aperture" in text
+    assert "Catch-up with a colleague" in text
+    assert "Discussion headlines" in text
     assert "unique MaxSim" in text
+    assert "- [ ]" not in text
 
 
 def test_reminder_is_short_list() -> None:
@@ -46,9 +48,10 @@ def test_reminder_is_short_list() -> None:
         "- discretionary: inspect starve\n- extra1\n- extra2\n- extra3",
         5,
     )
-    lines = [ln for ln in body.splitlines() if ln.startswith("- ")]
+    lines = [ln for ln in body.splitlines() if ln.startswith("- [ ] ")]
     assert 1 <= len(lines) <= 5
     assert "DROP RANGE" in body
+    assert all(ln.startswith("- [ ] ") for ln in lines)
 
 
 def test_search_guru_finds_unique_code_in_repo() -> None:

@@ -1,11 +1,17 @@
-"""Incremental synthesis into cognition_buffer + agenda_entries.
+"""Incremental synthesis into cognition_buffer and the /agenda surface.
 
 Scratchpad constants live in cognition_buffer.py (one-next-question reserve).
 
 Publishing (landed cards) + Prospects (FMP FIFO) + Ambient (HN buffer)
-are refined by the thinking endpoint into cognition_buffer rows. An agenda
-agent then emits Brief / Reminder / Session entries. Full prompts and
-thinking traces go to HX ``llm.generations`` (Iceberg).
+are refined by the thinking endpoint into cognition_buffer rows. Cognition
+then writes Brief / List / Session zettels onto ``agenda_notes`` (the
+``/agenda`` store). Postgres ``agenda_entries`` is a warehouse index
+(episode_id, hx_generation_id), not the operator surface.
+
+Genres:
+- brief (note): letter/memo for an executive, natural-register prose
+- reminder (list): shared suggestions for operators and other agents
+- session (event): catch-up with a colleague; headlines in the invite
 
 Guru: #COG.00000032.SYNTHFAIL
 """
@@ -18,7 +24,7 @@ import logging
 import re
 import subprocess
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -71,20 +77,21 @@ SEARCH_GURU <CODE>
   (unique meditation code, e.g. EN.00000031.FDWINGEST — for your RCA only;
    do not copy the code into SYNTHESIS/AGENDA bodies)
 
-Agenda densities (do not over-produce):
-- sessions: a few times a week, world events through Aperture
-- reminders: short lists (content, ops follow-up, discretionary)
-- briefs: expert-technical executive. Report root cause and operational
-  facts (what failed, what to do). Do NOT pack guru meditation codes
-  (#XX.00000000.MNEMONIC) into brief/reminder/session bodies — those codes
-  are for your own RCA, not the executive text.
+Agenda genres (natural register; densities apply). These land on /agenda:
+- brief: a letter or memo written for an executive, in natural-register
+  prose. Continuous paragraphs. Not a changelog, wiki dump, or bullet list.
+- reminder: a short list of helpful suggestions shared with operators and
+  (later) other agents. One item per line; they become checkboxes.
+- session: a time to catch up with a colleague. Body = discussion headlines
+  (semicolon or line-separated) for the calendar description. Not a memo.
+Do NOT pack guru meditation codes into any of these. SEARCH_GURU is for RCA.
 
 Or skip search and write:
 SYNTHESIS:
 <paragraphs>
 
 AGENDA:
-{{"briefs":[{{"title":"...","body":"..."}}],"reminders":[{{"title":"...","body":"- item\\n- item"}}],"sessions":[{{"title":"...","body":"..."}}]}}
+{{"briefs":[{{"title":"...","body":"memo paragraphs"}}],"reminders":[{{"title":"...","body":"- suggestion\\n- suggestion"}}],"sessions":[{{"title":"...","body":"headline; headline"}}]}}
 
 Admitted windows:
 {slices}
@@ -478,6 +485,25 @@ async def insert_agenda(
 
     n = 0
     now = datetime.now(timezone.utc)
+    from gaius.engine.services.agenda_notes import (
+        create_item,
+        kb_root_from_env,
+        list_items,
+        parse_when,
+    )
+
+    root = kb_root_from_env()
+    surface = list_items(root, window_days=7, now=now)
+    surface_counts = {"session": 0, "brief": 0, "reminder": 0}
+    surface_dues: list[datetime] = []
+    for it in surface:
+        if it.intent in surface_counts:
+            surface_counts[it.intent] += 1
+        if it.intent == "session" and it.starts:
+            dt = parse_when(it.starts)
+            if dt is not None:
+                surface_dues.append(dt)
+
     async with pool.acquire() as conn:
         rows = await conn.fetch(
             """
@@ -488,7 +514,11 @@ async def insert_agenda(
              GROUP BY 1
             """
         )
-        open_counts = {str(r["kind"]): int(r["n"]) for r in rows}
+        pg_counts = {str(r["kind"]): int(r["n"]) for r in rows}
+        open_counts = {
+            k: max(int(surface_counts.get(k, 0)), int(pg_counts.get(k, 0)))
+            for k in ("session", "brief", "reminder")
+        }
         slots = slots_remaining(open_counts, DEFAULT_DENSITY)
         due_rows = await conn.fetch(
             """
@@ -497,6 +527,7 @@ async def insert_agenda(
             """
         )
         existing_dues = [r["due_at"] for r in due_rows if r["due_at"] is not None]
+        existing_dues.extend(surface_dues)
         session_times = next_session_slots(
             now, existing_dues, per_week=DEFAULT_DENSITY.sessions_per_week
         )
@@ -512,8 +543,7 @@ async def insert_agenda(
                 agenda.get("sessions") or [], kind="session", slots=slots["session"]
             ),
         }
-        for i, item in enumerate(planned["session"]):
-            due_at = session_times[i] if i < len(session_times) else None
+        for item, due_at in zip(planned["session"], session_times):
             title = str(item.get("title") or "").strip()
             if not title:
                 continue
@@ -523,6 +553,20 @@ async def insert_agenda(
                 episode_id=episode_id,
                 hx_generation_id=hx_id,
                 due_at=due_at,
+            )
+            starts = due_at.isoformat()
+            ends = (due_at + timedelta(minutes=30)).isoformat()
+            create_item(
+                root,
+                kind="event",
+                title=title[:240],
+                body=body,
+                starts=starts,
+                ends=ends,
+                intent="session",
+                with_whom="agents",
+                tags=["cognition", "catch-up"],
+                now=now,
             )
             await conn.execute(
                 """
@@ -542,6 +586,27 @@ async def insert_agenda(
                 title = str(item.get("title") or "").strip()
                 if not title:
                     continue
+                body = strip_packed_guru(str(item.get("body") or ""))[:4000]
+                if kind == "brief":
+                    create_item(
+                        root,
+                        kind="note",
+                        title=title[:240],
+                        body=body,
+                        intent="brief",
+                        tags=["cognition", "memo"],
+                        now=now,
+                    )
+                else:
+                    create_item(
+                        root,
+                        kind="list",
+                        title=title[:240],
+                        body=body if body.strip() else "- [ ] \n",
+                        intent="reminder",
+                        tags=["cognition", "suggestions"],
+                        now=now,
+                    )
                 await conn.execute(
                     """
                     INSERT INTO agenda_entries
@@ -550,7 +615,7 @@ async def insert_agenda(
                     """,
                     kind,
                     title[:240],
-                    strip_packed_guru(str(item.get("body") or ""))[:4000],
+                    body,
                     episode_id,
                     hx_id,
                 )

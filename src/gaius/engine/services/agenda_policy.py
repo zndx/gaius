@@ -1,9 +1,9 @@
 """Cognition agenda densities and copy-paste session invites.
 
-Kinds:
-- session: a few times a week, Aperture-world-events, calendar description
-- reminder: short follow-up lists (content, ops, discretionary)
-- brief: expert-technical executive notes; accurate ops, no packed guru codes
+Kinds (as on /agenda):
+- brief (note): letter/memo in natural-register prose for an executive
+- reminder (list): shared suggestions, - [ ] items, agents and operators
+- session (event): catch-up with a colleague; discussion headlines in the invite
 
 Guru: #COG.00000033.AGENDADENSE
 """
@@ -71,9 +71,11 @@ def take_kind(
 
 
 def clip_reminder_list(body: str, max_items: int) -> str:
+    """Shared suggestion list: checkbox items operators and agents can tick."""
     lines = [ln.strip() for ln in body.splitlines() if ln.strip()]
     bullets: list[str] = []
     for ln in lines:
+        ln = re.sub(r"^- \[[ xX]\]\s*", "", ln)
         if ln.startswith(("-", "*", "•")):
             bullets.append(ln.lstrip("-*• ").strip())
         else:
@@ -81,7 +83,7 @@ def clip_reminder_list(body: str, max_items: int) -> str:
     if not bullets and body.strip():
         bullets = [body.strip()]
     bullets = bullets[:max_items]
-    return "\n".join(f"- {b}" for b in bullets)
+    return "\n".join(f"- [ ] {b}" for b in bullets)
 
 
 def next_session_slots(
@@ -116,12 +118,16 @@ def session_invite_description(
     hx_generation_id: str,
     due_at: datetime | None = None,
 ) -> str:
-    """Calendar invite description; paste into Gaius Terminal to begin."""
+    """Catch-up with a colleague: discussion headlines in the invite."""
     when = due_at.isoformat() if due_at else "unscheduled"
+    headlines = clip_reminder_list(body, 5)
+    if headlines.startswith("- [ ]"):
+        headlines = "\n".join(
+            "• " + ln[6:].strip() for ln in headlines.splitlines() if ln.strip()
+        )
     return (
-        f"Gaius Aperture session — world events through unique MaxSim topics\n"
-        f"{title.strip()}\n\n"
-        f"{body.strip()}\n\n"
+        f"Catch-up with a colleague — {title.strip()}\n\n"
+        f"Discussion headlines:\n{headlines}\n\n"
         f"When: {when}\n"
         f"Episode: {episode_id}\n"
         f"HX: {hx_generation_id}\n\n"

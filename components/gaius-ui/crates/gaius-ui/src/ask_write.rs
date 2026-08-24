@@ -47,8 +47,9 @@ Copy Clock tokens or Clock ISO verbatim. tomorrow morning = Clock.tomorrow_morni
 (or the token tomorrow_morning). Session default is 30 minutes.\n\
 Do not emit 09:00Z unless Clock.timezone is UTC.\n\
 kind = note|list|event. A timed slot is kind=event.\n\
-intent = brief|reminder|session. Working through a topic WITH the agents is session\n\
-(requires starts). session defaults with=agents.\n\
+intent = brief|reminder|session. brief = letter/memo for an executive in natural-register prose.\n\
+reminder = shared suggestion list (operators and other agents). session = catch-up with a colleague;\n\
+body is discussion headlines for the calendar description (requires starts). session defaults with=agents.\n\
 Emit exactly one fence and a one-line confirmation. No calendar fiction, no <think> dump.\n\
 :::gaius-artifact\n\
 {\"type\":\"agenda\",\"action\":\"create\",\"kind\":\"event\",\"intent\":\"session\",\"title\":\"…\",\
