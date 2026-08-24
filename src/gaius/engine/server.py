@@ -954,6 +954,8 @@ class GaiusEngine:
                 backend_router=self._backend_router,
                 db_pool=self._db_pool,  # Enable state persistence for auto-resume
             )
+            if getattr(self, "_prospects_service", None) is not None:
+                self._ambient_service.attach_prospects(self._prospects_service)
 
             # Update gRPC service registry
             if self._grpc_server:

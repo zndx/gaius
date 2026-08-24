@@ -3,8 +3,8 @@
 Manages ambient computing workload cycles that deliver continuous,
 invisible, self-sustaining model activity. The system:
 
-1. Maintains a baseline endpoint mix (orchestrator + thinking)
-2. Executes standard tasks on each endpoint to verify health
+1. Maintains thinking as infrastructure for Cognition+Theta
+2. Health is cognition synthesis (Publishing + Prospects + Ambient), not toy Completes
 3. Evicts baseline endpoints when reasoning tasks arrive
 4. Restores baseline after reasoning completes
 
@@ -110,100 +110,12 @@ class CycleResult:
     duration_ms: int = 0
 
 
-# Standard tasks for each baseline endpoint
-BASELINE_TASKS: dict[str, AmbientTask] = {
-    "orchestrator": AmbientTask(
-        endpoint="orchestrator",
-        prompt="Route this request: 'Write a Python function'",
-        expected_capability="routing",
-        timeout_secs=10,
-    ),
-    "thinking": AmbientTask(
-        endpoint="thinking",
-        prompt="Complete this function:\ndef fibonacci(n):\n    ",
-        expected_capability="generation",
-        timeout_secs=20,
-    ),
-}
-
 DEFAULT_REASONING_TASK = AmbientTask(
     endpoint="reasoning",
     prompt="Analyze the trade-offs between microservices and monoliths for a startup.",
     expected_capability="reasoning",
     timeout_secs=120,
 )
-
-# Varied task pools for daemon mode
-VARIED_BASELINE_TASKS: list[tuple[str, AmbientTask]] = [
-    # Thinking endpoint tasks (varied prompts for health checks)
-    ("thinking", AmbientTask(
-        endpoint="thinking",
-        prompt="Explain what a hash table is in one sentence.",
-        expected_capability="generation",
-        timeout_secs=15,
-    )),
-    ("thinking", AmbientTask(
-        endpoint="thinking",
-        prompt="What is the time complexity of binary search?",
-        expected_capability="generation",
-        timeout_secs=15,
-    )),
-    ("thinking", AmbientTask(
-        endpoint="thinking",
-        prompt="Define polymorphism in OOP.",
-        expected_capability="generation",
-        timeout_secs=15,
-    )),
-    ("thinking", AmbientTask(
-        endpoint="thinking",
-        prompt="Name three common design patterns.",
-        expected_capability="generation",
-        timeout_secs=15,
-    )),
-    ("thinking", AmbientTask(
-        endpoint="thinking",
-        prompt="Complete this function:\ndef fibonacci(n):\n    ",
-        expected_capability="coding",
-        timeout_secs=20,
-    )),
-    ("thinking", AmbientTask(
-        endpoint="thinking",
-        prompt="Write a Python one-liner to reverse a string.",
-        expected_capability="coding",
-        timeout_secs=20,
-    )),
-    ("thinking", AmbientTask(
-        endpoint="thinking",
-        prompt="Implement a simple stack class in Python.",
-        expected_capability="coding",
-        timeout_secs=20,
-    )),
-    ("thinking", AmbientTask(
-        endpoint="thinking",
-        prompt="Write a function to check if a number is prime.",
-        expected_capability="coding",
-        timeout_secs=20,
-    )),
-    # Orchestrator tasks
-    ("orchestrator", AmbientTask(
-        endpoint="orchestrator",
-        prompt="Route this request: 'Write a Python function'",
-        expected_capability="routing",
-        timeout_secs=10,
-    )),
-    ("orchestrator", AmbientTask(
-        endpoint="orchestrator",
-        prompt="Route this request: 'Explain recursion'",
-        expected_capability="routing",
-        timeout_secs=10,
-    )),
-    ("orchestrator", AmbientTask(
-        endpoint="orchestrator",
-        prompt="Route this request: 'Analyze the following code for bugs'",
-        expected_capability="routing",
-        timeout_secs=10,
-    )),
-]
 
 VARIED_REASONING_PROMPTS: list[str] = [
     "Analyze the trade-offs between microservices and monoliths for a startup.",
@@ -271,16 +183,20 @@ class AmbientWorkloadService:
         self._current_workload_id: Optional[str] = None
         self._evicted_endpoints: list[str] = []
         self._gpu_paused = False
+        self._prospects_service: Any | None = None
 
         # Ambient buffer for content fetching (byte-sized FIFO)
         # Fetch and summarize are ALWAYS enabled - this is core ambient work
         buffer_cfg = config.ambient_buffer
         self._buffer = AmbientBuffer(max_bytes=buffer_cfg.buffer_max_bytes)
-
         logger.info(
             f"AmbientWorkloadService initialized with baseline: {self._baseline_endpoints}, "
             f"buffer: {buffer_cfg.buffer_max_bytes} bytes"
         )
+
+    def attach_prospects(self, prospects: Any) -> None:
+        """FMP/prospects FIFO for cognition synthesis (not X bookmarks)."""
+        self._prospects_service = prospects
 
     def set_agenda_tracker(self, tracker: "AgendaTracker") -> None:
         """Set the agenda tracker for incident tracking.
@@ -633,37 +549,38 @@ class AmbientWorkloadService:
             {ep: "healthy" if h else "unhealthy" for ep, h in health_results.items()},
         )
 
-        if healthy_count > 0:
+        if health_results.get("thinking"):
             yield self._make_event(
                 pb.AMBIENT_PHASE_BASELINE_WORKLOAD,
-                "Running baseline tasks",
+                "Cognition synthesis (Publishing+Prospects+Ambient)",
                 0.0,
             )
-            available_tasks = [
-                (ep, task) for ep, task in VARIED_BASELINE_TASKS
-                if health_results.get(ep, False)
-            ]
-            num_tasks = min(random.randint(2, 4), len(available_tasks))
-            selected_tasks = (
-                random.sample(available_tasks, num_tasks) if available_tasks else []
-            )
-            task_results = []
-            for ep, task in selected_tasks:
-                result = await self._execute_task(task)
-                task_results.append(result)
+            try:
+                synth = await self._run_cognition_synthesis()
                 self._total_daemon_tasks += 1
-                if result.success:
-                    self._successful_daemon_tasks += 1
-            successful = sum(1 for r in task_results if r.success)
-            yield self._make_event(
-                pb.AMBIENT_PHASE_BASELINE_WORKLOAD,
-                f"{successful}/{len(task_results)} tasks",
-                1.0,
-                {r.endpoint: f"{r.latency_ms}ms" for r in task_results if r.success},
-            )
+                self._successful_daemon_tasks += 1
+                yield self._make_event(
+                    pb.AMBIENT_PHASE_BASELINE_WORKLOAD,
+                    f"synthesis episode={synth.get('episode_id', '')[:8]} "
+                    f"agenda={synth.get('agenda', 0)}",
+                    1.0,
+                    {
+                        "episode_id": str(synth.get("episode_id") or ""),
+                        "hx_generation_id": str(synth.get("hx_generation_id") or ""),
+                        "latency_ms": str(synth.get("latency_ms") or 0),
+                    },
+                )
+            except Exception as e:
+                logger.error("Cognition synthesis failed.\n  %s", e, exc_info=True)
+                self._total_daemon_tasks += 1
+                yield self._make_event(
+                    pb.AMBIENT_PHASE_BASELINE_WORKLOAD,
+                    f"synthesis failed: {e}",
+                    1.0,
+                )
         else:
             logger.error(
-                "No healthy endpoints for ambient baseline tasks.\n"
+                "Thinking unhealthy; skip cognition synthesis.\n"
                 "  Guru: #AMB.00000014.NOHEALTHY\n"
                 "  HN fetch already ran; continuing buffer analysis."
             )
@@ -930,33 +847,28 @@ class AmbientWorkloadService:
                 {ep: "healthy" if h else "unhealthy" for ep, h in health_results.items()},
             )
 
-            # Phase 2: Baseline workload
+            # Phase 2: Cognition synthesis is the health workload (not toy Completes)
             self._current_phase = AmbientPhase.BASELINE_WORKLOAD
             yield self._make_event(
                 pb.AMBIENT_PHASE_BASELINE_WORKLOAD,
-                "Running baseline workload tasks",
+                "Cognition synthesis (Publishing+Prospects+Ambient)",
                 0.0,
             )
-
-            baseline_results = await self._run_baseline_workload(
-                baseline_task_count,
-                health_results,
+            synth = await self._run_cognition_synthesis()
+            total_tasks += 1
+            successful_tasks += 1
+            endpoint_latencies.setdefault("thinking", []).append(
+                int(synth.get("latency_ms") or 0)
             )
-
-            for result in baseline_results:
-                total_tasks += 1
-                if result.success:
-                    successful_tasks += 1
-                    if result.endpoint not in endpoint_latencies:
-                        endpoint_latencies[result.endpoint] = []
-                    endpoint_latencies[result.endpoint].append(result.latency_ms)
-
             phases_completed = 2
             yield self._make_event(
                 pb.AMBIENT_PHASE_BASELINE_WORKLOAD,
-                f"Baseline workload complete ({successful_tasks}/{total_tasks} tasks)",
+                f"synthesis episode={str(synth.get('episode_id') or '')[:8]}",
                 1.0,
-                {r.endpoint: f"{r.latency_ms}ms" for r in baseline_results if r.success},
+                {
+                    "episode_id": str(synth.get("episode_id") or ""),
+                    "hx_generation_id": str(synth.get("hx_generation_id") or ""),
+                },
             )
 
             # Skip reasoning phases if requested
@@ -1113,40 +1025,16 @@ class AmbientWorkloadService:
 
         return results
 
-    async def _run_baseline_workload(
-        self,
-        task_count: int,
-        health_results: dict[str, bool],
-    ) -> list[TaskResult]:
-        """Run standard tasks on healthy baseline endpoints.
+    async def _run_cognition_synthesis(self) -> dict[str, Any]:
+        """Publishing + Prospects + Ambient → thinking → buffer + agenda."""
+        from gaius.engine.services.cognition_buffer import run_synthesis_cycle
 
-        Args:
-            task_count: Number of tasks per endpoint
-            health_results: Health status from phase 1
-
-        Returns:
-            List of task results
-        """
-        results = []
-
-        for endpoint, is_healthy in health_results.items():
-            if not is_healthy:
-                logger.info(f"Skipping unhealthy endpoint: {endpoint}")
-                continue
-
-            task = BASELINE_TASKS.get(endpoint)
-            if not task:
-                logger.warning(f"No baseline task defined for endpoint: {endpoint}")
-                continue
-
-            for i in range(task_count):
-                result = await self._execute_task(task)
-                results.append(result)
-
-                if not result.success:
-                    logger.warning(f"Task {i+1}/{task_count} failed for {endpoint}: {result.error}")
-
-        return results
+        return await run_synthesis_cycle(
+            backend_router=self._backend_router,
+            db_pool=self._db_pool,
+            ambient_buffer=self._buffer,
+            prospects_service=self._prospects_service,
+        )
 
     async def _fetch_content(self) -> dict[str, Any]:
         """Fetch external content and add to buffer.
