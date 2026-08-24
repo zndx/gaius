@@ -177,6 +177,7 @@ Complete catalog of error codes used across the Gaius platform.
 | `#YK.00000005.DISK` | This kind's write mount past floor (`/` 32Gi for KB/PG lanes; `/raid` 64Gi for RustFS product lanes; or >98% used) | `dust -d 1` on the mount in the guru text; product/FMP check `/raid` only |
 | `#YK.00000006.MEM` | Host `MemAvailable` below 8Gi | Stop extra host children; do not mint another vLLM |
 | `#YK.00000007.SHAREFAIL` | Signals rejected `RequestQueueShare` (cannot persist occupancy intent) | Signals `:50551` Scheduler; do not write queues.yaml from Gaius |
+| `#YK.00000008.GPUCOLLIDE` | ColBERT/Aperture CUDA landed on a GPU thinking (HEAVY) already holds | Admit `gaius-embedding` on `root.internal.inference.embedding`; leftover GPU only — never `cuda:0` beside Qwen3.8-27B |
 
 ### DP — Signals Data Product (peer publish)
 

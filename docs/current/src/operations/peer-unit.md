@@ -159,19 +159,17 @@ the host floors:
 | host `/raid` free | **≥ 64Gi** — RustFS product / FMP / prospects | not a YK resource | 3.6T |
 | host `MemAvailable` | **≥ 8Gi** (`#YK.00000006.MEM`) | not a YK resource | ~128Gi |
 
-Dashboard evidence is three Gaius rows on existing Signals leaves
+Dashboard evidence is Gaius rows on existing Signals leaves
 (never `root.gaius`):
 
-1. **extract** — one Running GPU token (allocated GPU=1, headroom GPU=5).
-   Article, `prospects_update`, and Ambient/FMP agentic summarization
-   bind this `app-id`.
-2. **rate-metered** — FMP ingest. Appears for the check, then Completing.
-   That flicker is the intended signal: the API comes and goes.
-3. **compute** — Ambient RAM FIFO (`gaius-ambient`). **On by default** at
-   engine start unless `/ambient stop` (operator-disabled). No GPU, no
-   disk write. Think-summarize binds extract (`thinking` = Qwen3.8-27B,
-   capabilities `[thinking, vision]`). Yield of extract pauses GPU
-   phases; Yield of `gaius-ambient` drops the compute row.
+1. **heavy** — standing thinking (`gaius-thinking`, 4 GPU, Qwen3.8-27B TP=4).
+2. **embedding** — ColBERT-Zero / Aperture MaxSim (`gaius-embedding`, 1 GPU
+   of the leftover 2). Never `cuda:0` while heavy holds 0–3.
+   `#YK.00000008.GPUCOLLIDE` if the engine would steal thinking's cards.
+3. **extract** — Docling / article GPU children (1 leftover GPU).
+4. **rate-metered** — FMP ingest. Appears for the check, then Completing.
+5. **compute** — Ambient RAM FIFO (`gaius-ambient`). No GPU. Yield of
+   `gaius-ambient` drops the compute row.
 
 **Ambient phases (YK stamps `federation.phase`).** Buffer never takes a
 GPU token. Summarize and planned compact **share** the one extract token

@@ -58,12 +58,16 @@ class ColBERTZeroEmbedder:
     def __init__(
         self,
         model_name: str = DEFAULT_MODEL,
-        device: str = "cuda:0",
+        device: str | None = None,
         aggregation: str = "mean",
         batch_size: int = 16,
     ) -> None:
         _ensure_pylate()
         self.model_name = model_name
+        if not (device or "").strip():
+            from gaius.engine.sentinel_claim import embedding_cuda_device
+
+            device = embedding_cuda_device()
         self.device = device
         self.aggregation = AggregationMethod(aggregation)
         self.batch_size = batch_size
@@ -160,9 +164,16 @@ _embedder: ColBERTZeroEmbedder | None = None
 
 def get_colbert_embedder(
     model_name: str = DEFAULT_MODEL,
-    device: str = "cuda:0",
+    device: str | None = None,
 ) -> ColBERTZeroEmbedder:
     global _embedder
-    if _embedder is None or _embedder.model_name != model_name:
-        _embedder = ColBERTZeroEmbedder(model_name=model_name, device=device)
+    from gaius.engine.sentinel_claim import embedding_cuda_device
+
+    resolved = (device or "").strip() or embedding_cuda_device()
+    if (
+        _embedder is None
+        or _embedder.model_name != model_name
+        or _embedder.device != resolved
+    ):
+        _embedder = ColBERTZeroEmbedder(model_name=model_name, device=resolved)
     return _embedder

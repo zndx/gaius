@@ -396,7 +396,14 @@ def local_response(
 
 def declared_queues() -> list[zpb.QueueHint]:
     """Leaves this engine needs. Signals merges + PromoteScratch. No YK REST."""
-    from gaius.engine.sentinel_claim import COMPUTE, EXTRACT, HEAVY, LIGHT, MEDIUM
+    from gaius.engine.sentinel_claim import (
+        COMPUTE,
+        EMBEDDING,
+        EXTRACT,
+        HEAVY,
+        LIGHT,
+        MEDIUM,
+    )
 
     return [
         zpb.QueueHint(
@@ -428,6 +435,15 @@ def declared_queues() -> list[zpb.QueueHint]:
             preemption_policy="fence",
             role="heavy",
             examples="gaius.thinking",
+        ),
+        zpb.QueueHint(
+            path=EMBEDDING.queue,
+            resource_class=EMBEDDING.name,
+            gpu_guarantee=1,
+            gpu_max=1,
+            max_applications=EMBEDDING.max_applications,
+            role="embedding",
+            examples="gaius.embedding",
         ),
         zpb.QueueHint(
             path=EXTRACT.queue,
@@ -491,6 +507,14 @@ def declared_workloads() -> list:
             capabilities=["extract"],
             tensor_parallel=0,
             pipeline_parallel=0,
+            gpu_tokens=1,
+        ),
+        zpb.WorkloadHint(
+            wrk="embedding",
+            model="lightonai/ColBERT-Zero",
+            capabilities=["open-embedding"],
+            tensor_parallel=1,
+            pipeline_parallel=1,
             gpu_tokens=1,
         ),
     ]

@@ -7,10 +7,12 @@ import yaml
 
 from gaius.engine.sentinel_claim import (
     COMPUTE,
+    EMBEDDING,
     EXTRACT,
     GPU_ADMIT_TIMEOUT_S,
     HEAVY,
     LIGHT,
+    GURU_GPUCOLLIDE,
     GURU_NOAPP,
     RATE_METERED,
     application_yaml,
@@ -123,14 +125,30 @@ def test_unknown_kind_fail_fast() -> None:
 
 
 def test_every_registered_flow_has_yk_class() -> None:
-    from gaius.engine.sentinel_claim import COMPUTE, EXTRACT, HEAVY, LIGHT, MEDIUM, RATE_METERED
+    from gaius.engine.sentinel_claim import (
+        COMPUTE,
+        EMBEDDING,
+        EXTRACT,
+        HEAVY,
+        LIGHT,
+        MEDIUM,
+        RATE_METERED,
+    )
     from gaius.flows import FLOW_REGISTRY, _register_builtin_flows
 
     _register_builtin_flows()
     for name, cls in FLOW_REGISTRY.items():
         kind = getattr(cls, "yk_kind", name.replace("_", "-"))
         rc = resource_class_for(kind)
-        assert rc in (EXTRACT, COMPUTE, RATE_METERED, HEAVY, LIGHT, MEDIUM), (
+        assert rc in (
+            EXTRACT,
+            COMPUTE,
+            RATE_METERED,
+            HEAVY,
+            LIGHT,
+            MEDIUM,
+            EMBEDDING,
+        ), (
             name,
             kind,
             rc,
@@ -555,3 +573,50 @@ def test_ambient_skips_disk_floor(monkeypatch: pytest.MonkeyPatch) -> None:
     assert_host_envelope(check_disk=False)
     with pytest.raises(YkAdmitError, match=GURU_DISK):
         assert_host_envelope(check_disk=True)
+
+
+def test_aperture_is_embedding_not_cuda0() -> None:
+    from gaius.engine.sentinel_claim import (
+        EMBEDDING_WORKLOAD_ID,
+        yk_phase_for,
+    )
+
+    assert resource_class_for("aperture") == EMBEDDING
+    assert resource_class_for("colbert") == EMBEDDING
+    assert resource_class_for("clt-skos-admit") == EMBEDDING
+    assert EMBEDDING.queue == "root.internal.inference.embedding"
+    assert EMBEDDING.gpu_tokens == 1
+    assert EMBEDDING.max_applications == 1
+    assert yk_phase_for("embedding") == "embed"
+    doc = yaml.safe_load(application_yaml(EMBEDDING_WORKLOAD_ID, "embedding"))
+    req = doc["spec"]["containers"][0]["resources"]["requests"]
+    assert req["federation.zndx.org/gpu"] == "1"
+    assert doc["metadata"]["annotations"]["yunikorn.apache.org/queue"] == (
+        "root.internal.inference.embedding"
+    )
+    assert "nvidia.com/gpu" not in yaml.dump(doc)
+
+
+def test_embedding_cuda_skips_thinking_gpus(monkeypatch: pytest.MonkeyPatch) -> None:
+    from gaius.engine.sentinel_claim import (
+        YkAdmitError,
+        embedding_cuda_device,
+    )
+
+    monkeypatch.setattr(
+        "gaius.engine.sentinel_claim.federation_required", lambda: False
+    )
+    monkeypatch.setattr(
+        "gaius.engine.sentinel_claim.vllm_held_gpu_ids", lambda: {0, 1, 2, 3}
+    )
+    monkeypatch.setattr(
+        "gaius.engine.sentinel_claim.gpu_free_mib",
+        lambda: {0: 137, 1: 200, 2: 180, 3: 150, 4: 22000, 5: 23000},
+    )
+    assert embedding_cuda_device() == "cuda:4"
+    monkeypatch.setattr(
+        "gaius.engine.sentinel_claim.gpu_free_mib",
+        lambda: {0: 137, 1: 200, 2: 180, 3: 150, 4: 200, 5: 180},
+    )
+    with pytest.raises(YkAdmitError, match=GURU_GPUCOLLIDE):
+        embedding_cuda_device()

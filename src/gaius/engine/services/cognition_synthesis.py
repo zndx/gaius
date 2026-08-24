@@ -215,6 +215,8 @@ async def gather_slices(
             axes.append(("prospects", buf))
     if publishing_buffer is not None:
         axes.append(("publish", publishing_buffer))
+    from gaius.engine.sentinel_claim import GURU_GPUCOLLIDE, YkAdmitError
+
     try:
         for axis, buf in axes:
             entries = await buf.snapshot()
@@ -236,13 +238,18 @@ async def gather_slices(
                             ),
                         }
                     )
+    except YkAdmitError:
+        raise
     except Exception as e:
-        logger.error(
-            "Aperture scan failed (buffers unchanged).\n"
-            "  Guru: #SDG.00000006.STARVE\n"
-            "  %s",
-            e,
-        )
+        msg = str(e)
+        if "CUDA" in msg or "out of memory" in msg.lower():
+            raise YkAdmitError(
+                GURU_GPUCOLLIDE,
+                "Aperture CUDA collided with another GPU claim "
+                "(thinking HEAVY holds 4). "
+                f"{msg}",
+            ) from e
+        raise
     if stats.starved():
         logger.warning(
             "Aperture admitted no windows scanned=%s none=%s ambiguous=%s\n"

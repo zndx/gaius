@@ -14,8 +14,10 @@ Signals / YK shows Gaius lanes on existing leaves (no ``root.gaius``):
 - ``internal.compute`` — Ambient RAM FIFO and CPU Metaflow ticks.
   Standing while the daemon runs. Never a disk write.
 - ``internal.inference.extract`` — Docling / article GPU children only.
-- ``internal.inference.heavy`` — standing Qwen3.8 thinking. Ambient
-  summarize rides this Application (thinking channel → later CLT/SAE).
+- ``internal.inference.heavy`` — standing Qwen3.8 thinking (4 GPU).
+  Ambient summarize rides this Application (thinking channel → later CLT/SAE).
+- ``internal.inference.embedding`` — ColBERT-Zero / Aperture MaxSim (1 GPU
+  of the leftover 2). Never ``cuda:0`` while thinking holds 0–3.
 - ``internal.compute`` — ``gaius-optillm`` gunicorn (CPU proxy). GPU
   occupancy stays on the vLLM Application it binds; optillm does not
   mint a second GPU claim when a vLLM is already provided.
@@ -43,6 +45,7 @@ import shutil
 import subprocess
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from threading import Lock
 
 log = logging.getLogger("gaius.engine.sentinel_claim")
@@ -57,6 +60,7 @@ GURU_NOAPP = "#YK.00000003.NOAPP"
 GURU_ENVELOPE = "#YK.00000004.ENVELOPE"
 GURU_DISK = "#YK.00000005.DISK"
 GURU_MEM = "#YK.00000006.MEM"
+GURU_GPUCOLLIDE = "#YK.00000008.GPUCOLLIDE"
 
 # CPU sentinels place immediately. GPU extract waits for YK to preempt
 # medium (ask-sae) after extract's guaranteed floor is promoted.
@@ -64,8 +68,10 @@ CPU_ADMIT_TIMEOUT_S = 60.0
 GPU_ADMIT_TIMEOUT_S = 180.0
 
 # Tinybox: 6× RTX 4090 24Gi, ~128Gi RAM. Standing thinking (heavy) takes
-# 4 GPUs; 2 remain for extract/light. Compute has no GPU — many CPU
-# Metaflow ticks must not serialize on a 1-app envelope.
+# 4 GPUs; 2 remain for extract/light/embedding. Compute has no GPU — many
+# CPU Metaflow ticks must not serialize on a 1-app envelope.
+# ColBERT/Aperture is embedding (1 leftover GPU), not a silent cuda:0 load
+# inside the engine process. YK admits the token; nvidia-smi places it.
 # Pause-pod CPU/mem are sentinel-sized; host CUDA is not in the pod.
 ENVELOPE_GPU = 1
 ENVELOPE_CPU = "10m"
@@ -132,6 +138,14 @@ HEAVY = ResourceClass(
     max_applications=1,
 )
 
+# ColBERT-Zero / Aperture MaxSim. One leftover GPU (not thinking's 4).
+EMBEDDING = ResourceClass(
+    name="internal.inference.embedding",
+    queue="root.internal.inference.embedding",
+    gpu_tokens=1,
+    max_applications=1,
+)
+
 # FMP / RPM APIs: no GPU. Application is deleted when the check ends.
 RATE_METERED = ResourceClass(
     name="external.rate-metered",
@@ -150,6 +164,8 @@ COMPUTE = ResourceClass(
 
 AMBIENT_WORKLOAD_ID = "gaius-ambient"
 OPTILLM_WORKLOAD_ID = "gaius-optillm"
+EMBEDDING_WORKLOAD_ID = "gaius-embedding"
+EMBEDDING_MIN_FREE_MIB = 4096
 
 # EXTRACT is Docling / article GPU only. Thinking Complete (Qwen3.8)
 # rides HEAVY so summarize does not steal extract slots from Docling.
@@ -173,8 +189,6 @@ _KIND_CLASS: dict[str, ResourceClass] = {
     "ambient_compact": COMPUTE,
     "clt-probe": COMPUTE,
     "clt_probe": COMPUTE,
-    "clt-skos-admit": COMPUTE,
-    "clt_skos_admit": COMPUTE,
     "clt-skos-eval": COMPUTE,
     "clt_skos_eval": COMPUTE,
     "clt-skos-label": COMPUTE,
@@ -206,6 +220,14 @@ _KIND_CLASS: dict[str, ResourceClass] = {
     # via zndx.engine.v1 only when none is healthy.
     "optillm": COMPUTE,
     "gaius-optillm": COMPUTE,
+    # ColBERT-Zero MaxSim / Aperture. Not compute. Not thinking's GPUs.
+    "embedding": EMBEDDING,
+    "gaius-embedding": EMBEDDING,
+    "colbert": EMBEDDING,
+    "aperture": EMBEDDING,
+    "maxsim": EMBEDDING,
+    "clt-skos-admit": EMBEDDING,
+    "clt_skos_admit": EMBEDDING,
 }
 
 
@@ -217,6 +239,7 @@ def resource_class_for(kind: str) -> ResourceClass:
             GURU_NOADMIT,
             f"no resource class for kind={kind!r}; "
             "heavy: thinking / ambient-summarize; "
+            "embedding: aperture / colbert / clt-skos-admit; "
             "extract (Docling): article-curate / prospects-update / docling; "
             "light: ask-agent; medium: ask-sae; "
             "rate-metered: prospects-check / fmp; compute: ambient / clt-* / optillm",
@@ -326,6 +349,11 @@ _KIND_PHASE: dict[str, str] = {
     "gaius-thinking": "think",
     "optillm": "proxy",
     "gaius-optillm": "proxy",
+    "embedding": "embed",
+    "gaius-embedding": "embed",
+    "colbert": "embed",
+    "aperture": "embed",
+    "maxsim": "embed",
 }
 
 
@@ -373,6 +401,11 @@ def disk_paths_for(kind: str) -> tuple[str, ...]:
         "clt-skos-label",
         "optillm",
         "gaius-optillm",
+        "embedding",
+        "gaius-embedding",
+        "colbert",
+        "aperture",
+        "maxsim",
     }:
         return ()
     if rc.queue == RATE_METERED.queue:
@@ -821,6 +854,9 @@ def release_kind(kind: str) -> None:
     if k in ("optillm", "gaius-optillm"):
         delete_flow_sentinel(OPTILLM_WORKLOAD_ID)
         return
+    if k in ("embedding", "gaius-embedding", "aperture", "colbert"):
+        delete_flow_sentinel(EMBEDDING_WORKLOAD_ID)
+        return
     log.warning(
         "release_kind(%s) is not a standing claim; "
         "delete_flow_sentinel(workload_id) for 1:1 STZ",
@@ -855,6 +891,119 @@ def gpu_start_allowed(workload_id: str) -> bool:
     if _pod_phase(workload_id) == "Running":
         return True
     return not federation_required()
+
+
+def vllm_held_gpu_ids() -> set[int]:
+    """Physical GPU indices in CUDA_VISIBLE_DEVICES of live ``vllm serve``."""
+    held: set[int] = set()
+    proc = Path("/proc")
+    if not proc.is_dir():
+        return held
+    for entry in proc.iterdir():
+        if not entry.name.isdigit():
+            continue
+        try:
+            cmdline = (entry / "cmdline").read_bytes().replace(b"\x00", b" ").decode()
+        except OSError:
+            continue
+        if "vllm" not in cmdline or "serve" not in cmdline:
+            continue
+        try:
+            env = (entry / "environ").read_bytes().split(b"\x00")
+        except OSError:
+            continue
+        for item in env:
+            if not item.startswith(b"CUDA_VISIBLE_DEVICES="):
+                continue
+            raw = item.split(b"=", 1)[1].decode(errors="replace")
+            for part in raw.split(","):
+                part = part.strip()
+                if part.isdigit():
+                    held.add(int(part))
+    return held
+
+
+def gpu_free_mib() -> dict[int, int]:
+    """index → free MiB from nvidia-smi. Empty if the binary is missing."""
+    if not shutil.which("nvidia-smi"):
+        return {}
+    r = subprocess.run(
+        [
+            "nvidia-smi",
+            "--query-gpu=index,memory.free",
+            "--format=csv,noheader,nounits",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=8,
+    )
+    if r.returncode != 0:
+        return {}
+    out: dict[int, int] = {}
+    for line in (r.stdout or "").splitlines():
+        if "," not in line:
+            continue
+        idx_s, mib_s = line.split(",", 1)
+        try:
+            out[int(idx_s.strip())] = int(float(mib_s.strip()))
+        except ValueError:
+            continue
+    return out
+
+
+def ensure_embedding_claim() -> None:
+    """Admit ``gaius-embedding`` before any ColBERT CUDA load."""
+    if federation_required():
+        apply_and_admit(EMBEDDING_WORKLOAD_ID, "embedding")
+    if not gpu_start_allowed(EMBEDDING_WORKLOAD_ID):
+        raise YkAdmitError(
+            GURU_NOAPP,
+            f"ColBERT/Aperture CUDA requires admitted Application "
+            f"{EMBEDDING_WORKLOAD_ID} on {EMBEDDING.queue}. "
+            "YK adjudicates the leftover GPU; do not load cuda:0 in-process.",
+        )
+
+
+def embedding_cuda_device() -> str:
+    """Leftover GPU for ColBERT. Fail-fast if thinking already occupies the card."""
+    ensure_embedding_claim()
+    held = vllm_held_gpu_ids()
+    free = gpu_free_mib()
+    if free:
+        for idx, mib in sorted(free.items()):
+            if idx in held:
+                continue
+            if mib < EMBEDDING_MIN_FREE_MIB:
+                continue
+            return f"cuda:{idx}"
+        raise YkAdmitError(
+            GURU_GPUCOLLIDE,
+            "Aperture/ColBERT has no leftover GPU. "
+            f"vLLM holds {sorted(held) or 'none'}; free MiB={free}. "
+            "thinking is HEAVY (4). embedding needs 1 of the leftover 2. "
+            "Do not load cuda:0 beside Qwen3.8-27B.",
+        )
+    try:
+        import torch
+
+        n = int(torch.cuda.device_count()) if torch.cuda.is_available() else 0
+    except Exception:
+        n = 0
+    if n == 0:
+        if federation_required():
+            raise YkAdmitError(
+                GURU_GPUCOLLIDE,
+                "embedding Application admitted but CUDA is unavailable",
+            )
+        return "cpu"
+    for i in range(n):
+        if i not in held:
+            return f"cuda:{i}"
+    raise YkAdmitError(
+        GURU_GPUCOLLIDE,
+        f"Aperture/ColBERT collided with vLLM GPUs {sorted(held)}. "
+        "YK leftover token was not placed; refuse cuda:0.",
+    )
 
 
 def _pod_phase(workload_id: str) -> str:

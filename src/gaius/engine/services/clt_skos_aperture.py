@@ -142,12 +142,10 @@ def v2_offsets(text: str) -> list[tuple[int, int]]:
 
 
 def _default_device() -> str:
-    try:
-        import torch
+    """YK leftover GPU for ColBERT. Never thinking's cuda:0."""
+    from gaius.engine.sentinel_claim import embedding_cuda_device
 
-        return "cuda:0" if torch.cuda.is_available() else "cpu"
-    except Exception:
-        return "cpu"
+    return embedding_cuda_device()
 
 
 def maxsim_window(

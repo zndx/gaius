@@ -18,6 +18,7 @@ from gaius.engine.s2s import (
     advertised_head,
     collect_peer_surfaces,
     declared_queues,
+    declared_workloads,
     list_named_remotes,
     local_primary_ui,
     local_response,
@@ -192,10 +193,16 @@ def test_declared_queues_light_medium_heavy() -> None:
     assert "root.internal.inference.light" in paths
     assert "root.internal.inference.medium" in paths
     assert "root.internal.inference.heavy" in paths
+    assert "root.internal.inference.embedding" in paths
     light = next(q for q in declared_queues() if q.role == "light")
     assert light.gpu_guarantee == 1
     med = next(q for q in declared_queues() if q.role == "medium")
     assert med.gpu_max == 2
+    wrks = {h.wrk: h for h in declared_workloads()}
+    assert wrks["embedding"].gpu_tokens == 1
+    assert wrks["embedding"].model == "lightonai/ColBERT-Zero"
+    emb = next(q for q in declared_queues() if q.role == "embedding")
+    assert emb.path == "root.internal.inference.embedding"
 
 
 def test_local_response_peers_empty_is_honest() -> None:
