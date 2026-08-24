@@ -53,11 +53,20 @@ export GAIUS_MINIO_SECRET_KEY="${GAIUS_MINIO_SECRET_KEY:-${RUSTFS_SECRET_KEY:-ru
 export GAIUS_HX_CATALOG_TYPE="${GAIUS_HX_CATALOG_TYPE:-rest}"
 export GAIUS_HX_CATALOG_NAME="${GAIUS_HX_CATALOG_NAME:-signals}"
 export GAIUS_HX_POLARIS_URI="${GAIUS_HX_POLARIS_URI:-http://127.0.0.1:8181/api/catalog}"
+# Discover 1h strip + 1 Hz warehouse INSERT: devenv Postgres impala_fdw → Kudu.
+export SIGNALS_WAREHOUSE_DSN="${SIGNALS_WAREHOUSE_DSN:-postgresql://signals@127.0.0.1:5455/signals}"
+# Engine is the Kudu writer (INSERT gpu_metrics_tier0). Do not start the
+# C++ sidecar ingest from this process.
 
 # ========================================================================
-# GPU CLEANUP - Ensure clean start by killing any stale vLLM processes
+# GPU CLEANUP — skip when vLLM is already healthy (ingest-only recycle)
 # ========================================================================
-gpu_cleanup
+if curl -sf -o /dev/null --max-time 2 "http://127.0.0.1:8081/health" \
+   || curl -sf -o /dev/null --max-time 2 "http://127.0.0.1:8081/v1/models"; then
+  echo "gaius-engine: vLLM healthy — skip gpu_cleanup"
+else
+  gpu_cleanup
+fi
 
 # ========================================================================
 # WAIT FOR AERON

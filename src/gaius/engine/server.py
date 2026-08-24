@@ -252,6 +252,19 @@ class GaiusEngine:
         #      wait on thinking HEALTHY (~240s).
         await self._ensure_db_pool()
 
+        # Warehouse writer is independent of GPU preload. Start it here so
+        # engine→Postgres→Kudu ticks while vLLM is still coming up.
+        try:
+            from .services.warehouse_ingest import start_warehouse_ingest
+
+            start_warehouse_ingest()
+        except Exception:
+            logger.error(
+                "warehouse ingest did not start.\n"
+                "  Guru: #EN.00000031.FDWINGEST",
+                exc_info=True,
+            )
+
         # 2.6 Prospects service moved to after db_pool is created (in _autonomous_start_cognition)
         # 2.7 Collections service moved to after db_pool is created (in _autonomous_start_cognition)
 
@@ -287,16 +300,6 @@ class GaiusEngine:
             start_strip()
         except Exception:
             logger.debug("waterfall strip poller not started", exc_info=True)
-        try:
-            from .services.warehouse_ingest import start_warehouse_ingest
-
-            start_warehouse_ingest()
-        except Exception:
-            logger.error(
-                "warehouse ingest did not start.\n"
-                "  Guru: #EN.00000031.FDWINGEST",
-                exc_info=True,
-            )
 
         # Autonomous startup: start evolution daemon if configured
         if self.config.startup.auto_start_evolution and self.config.evolution.enabled:
