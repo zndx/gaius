@@ -186,6 +186,7 @@ class AmbientWorkloadService:
         self._gpu_paused = False
         self._prospects_service: Any | None = None
         self._publishing_buffer: Any | None = None
+        self._publishing_axis: Any | None = None
         from gaius.engine.services.axis_admit import AdmitStats
 
         self._admit_stats = AdmitStats()
@@ -206,6 +207,11 @@ class AmbientWorkloadService:
     def attach_publishing(self, buffer: Any) -> None:
         """Independent Publishing axis buffer (cards + arxiv/biorxiv)."""
         self._publishing_buffer = buffer
+
+    def attach_publishing_axis(self, axis: Any) -> None:
+        """Publishing axis (ingest + buffer). Synthesis reads the buffer."""
+        self._publishing_axis = axis
+        self._publishing_buffer = axis.buffer
 
     def set_agenda_tracker(self, tracker: "AgendaTracker") -> None:
         """Set the agenda tracker for incident tracking.
@@ -560,6 +566,40 @@ class AmbientWorkloadService:
             )
             self._total_daemon_tasks += 1
 
+        # Independent axes: ingest now (no GPU). Compact after thinking is up.
+        yield self._make_event(
+            pb.AMBIENT_PHASE_FETCH_CONTENT,
+            "Ticking Prospects ingest",
+            0.0,
+        )
+        prospects_tick = await self._tick_prospects_ingest()
+        yield self._make_event(
+            pb.AMBIENT_PHASE_FETCH_CONTENT,
+            (
+                f"Prospects ingested={prospects_tick.get('ingested', 0)}"
+                if not prospects_tick.get("error")
+                else f"Prospects ingest failed: {prospects_tick['error']}"
+            ),
+            1.0,
+            {k: str(v) for k, v in prospects_tick.items() if v is not None},
+        )
+        yield self._make_event(
+            pb.AMBIENT_PHASE_FETCH_CONTENT,
+            "Ticking Publishing ingest",
+            0.0,
+        )
+        publishing_tick = await self._tick_publishing_ingest()
+        yield self._make_event(
+            pb.AMBIENT_PHASE_FETCH_CONTENT,
+            (
+                f"Publishing ingested={publishing_tick.get('ingested', 0)}"
+                if not publishing_tick.get("error")
+                else f"Publishing ingest failed: {publishing_tick['error']}"
+            ),
+            1.0,
+            {k: str(v) for k, v in publishing_tick.items() if v is not None},
+        )
+
         # Phase 1: Health check (after HN fetch so Complete cannot starve the FIFO)
         yield self._make_event(
             pb.AMBIENT_PHASE_BASELINE_HEALTH,
@@ -594,7 +634,23 @@ class AmbientWorkloadService:
         else:
             yield self._make_event(
                 pb.AMBIENT_PHASE_BASELINE_WORKLOAD,
-                "Cognition synthesis (Publishing+Prospects+Ambient)",
+                "Compacting Prospects and Publishing independently",
+                0.0,
+            )
+            compact_p = await self._tick_prospects_compact()
+            compact_u = await self._tick_publishing_compact()
+            yield self._make_event(
+                pb.AMBIENT_PHASE_BASELINE_WORKLOAD,
+                "Prospects/Publishing compact done",
+                1.0,
+                {
+                    "prospects": str(compact_p),
+                    "publishing": str(compact_u),
+                },
+            )
+            yield self._make_event(
+                pb.AMBIENT_PHASE_BASELINE_WORKLOAD,
+                "Cognition synthesis (Publishing+Prospects+Ambient via Aperture)",
                 0.0,
             )
             try:
@@ -1105,6 +1161,64 @@ class AmbientWorkloadService:
         if not text:
             raise RuntimeError("empty thinking compaction")
         return text
+
+    async def _tick_prospects_ingest(self) -> dict[str, Any]:
+        ps = self._prospects_service
+        if ps is None:
+            logger.error(
+                "Prospects axis not attached to Ambient.\n"
+                "  Guru: #PS.00000008.NOATTACH"
+            )
+            return {"error": "prospects not attached"}
+        try:
+            return await ps.ingest_market_buffer()
+        except Exception as e:
+            logger.error(
+                "Prospects ingest failed.\n  Guru: #PS.00000003.FMPFAIL\n  %s", e
+            )
+            return {"error": str(e)}
+
+    async def _tick_prospects_compact(self) -> dict[str, Any]:
+        ps = self._prospects_service
+        if ps is None:
+            return {"error": "prospects not attached"}
+        try:
+            return await ps.compact_buffer()
+        except Exception as e:
+            logger.error(
+                "Prospects compact failed.\n  Guru: #BUF.00000001.COMPACTFAIL\n  %s",
+                e,
+            )
+            return {"error": str(e)}
+
+    async def _tick_publishing_ingest(self) -> dict[str, Any]:
+        axis = self._publishing_axis
+        if axis is None:
+            logger.error(
+                "Publishing axis not attached to Ambient.\n"
+                "  Guru: #COG.00000032.SYNTHFAIL"
+            )
+            return {"error": "publishing not attached"}
+        try:
+            return await axis.ingest()
+        except Exception as e:
+            logger.error("Publishing ingest failed.\n  %s", e)
+            return {"error": str(e)}
+
+    async def _tick_publishing_compact(self) -> dict[str, Any]:
+        axis = self._publishing_axis
+        buf = self._publishing_buffer
+        if axis is None or buf is None:
+            return {"error": "publishing not attached"}
+        summarize = getattr(axis, "_summarize", None) or self._summarize_compaction
+        try:
+            return await buf.compact_if_needed(summarize)
+        except Exception as e:
+            logger.error(
+                "Publishing compact failed.\n  Guru: #BUF.00000001.COMPACTFAIL\n  %s",
+                e,
+            )
+            return {"error": str(e)}
 
     async def _run_cognition_synthesis(self) -> dict[str, Any]:
         """Publishing + Prospects + Ambient → thinking → buffer + agenda."""

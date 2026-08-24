@@ -915,8 +915,8 @@ class GaiusEngine:
             )
             self._collection_service.start_publishing_axis()
             if getattr(self, "_ambient_service", None) is not None:
-                self._ambient_service.attach_publishing(
-                    self._collection_service._axis.buffer
+                self._ambient_service.attach_publishing_axis(
+                    self._collection_service._axis
                 )
                 self._collection_service._axis.attach_summarize(
                     self._ambient_service._summarize_compaction
@@ -967,8 +967,8 @@ class GaiusEngine:
             if getattr(self, "_prospects_service", None) is not None:
                 self._ambient_service.attach_prospects(self._prospects_service)
             if getattr(self, "_collection_service", None) is not None:
-                self._ambient_service.attach_publishing(
-                    self._collection_service._axis.buffer
+                self._ambient_service.attach_publishing_axis(
+                    self._collection_service._axis
                 )
 
             # Update gRPC service registry

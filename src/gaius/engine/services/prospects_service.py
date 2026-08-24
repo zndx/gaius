@@ -17,6 +17,7 @@ Guru Meditation Codes:
 - #PS.00000003.FMPFAIL: FMP API request failed
 - #PS.00000004.FLOWFAIL: Metaflow execution failed
 - #PS.00000005.DBFAIL: Database operation failed
+- #PS.00000008.NOATTACH: Ambient cycle ran without Prospects attached
 """
 
 from __future__ import annotations
