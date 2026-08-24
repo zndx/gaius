@@ -29,9 +29,10 @@ ZERO_MODEL = "lightonai/ColBERT-Zero"
 
 
 def _zero(device: str | None = None):
-    from gaius.inference.search.colbert import ColBERTZeroEmbedder
+    """Process-wide ColBERT (light profile). Never construct a new load per window."""
+    from gaius.inference.search.colbert import get_colbert_embedder
 
-    return ColBERTZeroEmbedder(device=device or _default_device())
+    return get_colbert_embedder(device=device)
 
 
 def _qdrant():

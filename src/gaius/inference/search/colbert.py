@@ -12,6 +12,7 @@ Prompt alignment is mandatory: ``prompt_name="query"`` / ``"document"``.
 from __future__ import annotations
 
 import logging
+import threading
 from enum import Enum
 from typing import Any
 
@@ -160,20 +161,27 @@ def _as_token_matrix(raw: object) -> np.ndarray:
 
 
 _embedder: ColBERTZeroEmbedder | None = None
+_embedder_lock = threading.Lock()
 
 
 def get_colbert_embedder(
     model_name: str = DEFAULT_MODEL,
     device: str | None = None,
 ) -> ColBERTZeroEmbedder:
+    """One light-profile ColBERT. Pin the GPU; do not reload per MaxSim window."""
     global _embedder
-    from gaius.engine.sentinel_claim import embedding_cuda_device
+    with _embedder_lock:
+        if _embedder is not None and _embedder.model_name == model_name:
+            return _embedder
+        from gaius.engine.sentinel_claim import embedding_cuda_device
 
-    resolved = (device or "").strip() or embedding_cuda_device()
-    if (
-        _embedder is None
-        or _embedder.model_name != model_name
-        or _embedder.device != resolved
-    ):
+        resolved = (device or "").strip() or embedding_cuda_device()
         _embedder = ColBERTZeroEmbedder(model_name=model_name, device=resolved)
-    return _embedder
+        return _embedder
+
+
+def reset_colbert_embedder() -> None:
+    """Tests only."""
+    global _embedder
+    with _embedder_lock:
+        _embedder = None

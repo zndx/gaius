@@ -47,3 +47,29 @@ def test_maxsim_identity() -> None:
     e = ColBERTZeroEmbedder.__new__(ColBERTZeroEmbedder)
     q = np.array([[1.0, 0.0], [0.0, 1.0]], dtype=np.float32)
     assert e.compute_maxsim(q, q) == pytest.approx(2.0)
+
+
+def test_colbert_singleton_pins_first_light_gpu(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from gaius.inference.search.colbert import (
+        get_colbert_embedder,
+        reset_colbert_embedder,
+    )
+
+    picks = {"n": 0}
+
+    def _pick() -> str:
+        picks["n"] += 1
+        return "cuda:4" if picks["n"] == 1 else "cuda:5"
+
+    monkeypatch.setattr(
+        "gaius.engine.sentinel_claim.embedding_cuda_device", _pick
+    )
+    reset_colbert_embedder()
+    a = get_colbert_embedder()
+    b = get_colbert_embedder()
+    assert a is b
+    assert a.device == "cuda:4"
+    assert picks["n"] == 1
+    reset_colbert_embedder()

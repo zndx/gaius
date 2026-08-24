@@ -220,24 +220,37 @@ async def gather_slices(
     try:
         for axis, buf in axes:
             entries = await buf.snapshot()
-            for e in entries:
-                for span in admitted_spans(
-                    e.content or "",
-                    entry_id=getattr(e, "id", "") or "",
-                    axis=axis,
-                    stats=stats,
-                ):
-                    slices.append(
-                        {
-                            "source": axis,
-                            "content": (
-                                f"entry={span['entry_id'][:8]} "
-                                f"off={span['start']}:{span['end']} "
-                                f"topic={span['topic']}\n"
-                                f"{span['content'][:1200]}"
-                            ),
-                        }
-                    )
+            packed = [
+                (getattr(e, "id", "") or "", e.content or "") for e in entries
+            ]
+
+            def _scan(
+                rows: list[tuple[str, str]],
+                ax: str,
+                st: AdmitStats,
+            ) -> list[dict[str, str]]:
+                out: list[dict[str, str]] = []
+                for eid, content in rows:
+                    for span in admitted_spans(
+                        content,
+                        entry_id=eid,
+                        axis=ax,
+                        stats=st,
+                    ):
+                        out.append(
+                            {
+                                "source": ax,
+                                "content": (
+                                    f"entry={span['entry_id'][:8]} "
+                                    f"off={span['start']}:{span['end']} "
+                                    f"topic={span['topic']}\n"
+                                    f"{span['content'][:1200]}"
+                                ),
+                            }
+                        )
+                return out
+
+            slices.extend(await asyncio.to_thread(_scan, packed, axis, stats))
     except YkAdmitError:
         raise
     except Exception as e:

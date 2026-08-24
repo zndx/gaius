@@ -1047,8 +1047,20 @@ def ensure_embedding_claim() -> None:
         )
 
 
+_pinned_light_device: str | None = None
+
+
+def reset_light_device_pin() -> None:
+    """Tests only — next placement may pick again."""
+    global _pinned_light_device
+    _pinned_light_device = None
+
+
 def embedding_cuda_device() -> str:
-    """Map embedding's 1-GPU claim onto a device no other admitted WRK holds."""
+    """Map the light ColBERT claim onto one GPU and keep it."""
+    global _pinned_light_device
+    if _pinned_light_device:
+        return _pinned_light_device
     ensure_embedding_claim()
     held = vllm_held_gpu_ids()
     free = gpu_free_mib()
@@ -1058,7 +1070,8 @@ def embedding_cuda_device() -> str:
                 continue
             if mib < LIGHT_MIN_FREE_MIB:
                 continue
-            return f"cuda:{idx}"
+            _pinned_light_device = f"cuda:{idx}"
+            return _pinned_light_device
         raise YkAdmitError(
             GURU_GPUCOLLIDE,
             "Aperture/ColBERT would land on a GPU another admitted WRK occupies. "
@@ -1078,10 +1091,12 @@ def embedding_cuda_device() -> str:
                 GURU_GPUCOLLIDE,
                 "embedding Application admitted but CUDA is unavailable",
             )
-        return "cpu"
+        _pinned_light_device = "cpu"
+        return _pinned_light_device
     for i in range(n):
         if i not in held:
-            return f"cuda:{i}"
+            _pinned_light_device = f"cuda:{i}"
+            return _pinned_light_device
     raise YkAdmitError(
         GURU_GPUCOLLIDE,
         f"Aperture/ColBERT collided with vLLM GPUs {sorted(held)}. "

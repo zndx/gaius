@@ -618,11 +618,16 @@ def test_embedding_cuda_skips_thinking_gpus(monkeypatch: pytest.MonkeyPatch) -> 
     monkeypatch.setattr(
         "gaius.engine.sentinel_claim.vllm_held_gpu_ids", lambda: {0, 1, 2, 3}
     )
+    from gaius.engine.sentinel_claim import reset_light_device_pin
+
+    reset_light_device_pin()
     monkeypatch.setattr(
         "gaius.engine.sentinel_claim.gpu_free_mib",
         lambda: {0: 137, 1: 200, 2: 180, 3: 150, 4: 22000, 5: 23000},
     )
     assert embedding_cuda_device() == "cuda:4"
+    assert embedding_cuda_device() == "cuda:4"
+    reset_light_device_pin()
     monkeypatch.setattr(
         "gaius.engine.sentinel_claim.gpu_free_mib",
         lambda: {0: 137, 1: 200, 2: 180, 3: 150, 4: 200, 5: 180},
