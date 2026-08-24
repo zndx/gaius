@@ -51,6 +51,19 @@ def test_reminder_is_short_list() -> None:
     assert "DROP RANGE" in body
 
 
+def test_search_guru_finds_unique_code_in_repo() -> None:
+    from gaius.engine.services.cognition_synthesis import (
+        parse_guru_searches,
+        search_guru_in_repo,
+    )
+
+    reqs = parse_guru_searches("SEARCH_GURU #EN.00000031.FDWINGEST\n")
+    assert reqs == ["EN.00000031.FDWINGEST"]
+    hit = search_guru_in_repo("EN.00000031.FDWINGEST")
+    assert "EN.00000031.FDWINGEST" in hit
+    assert "no references" not in hit
+
+
 def test_brief_slot_and_operational_specifics() -> None:
     slots = slots_remaining({"brief": 4})
     assert slots["brief"] == 1

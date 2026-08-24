@@ -31,4 +31,5 @@ Feature: Cognition manages the forward agenda
     Then the audience is a sophisticated expert-technical executive
     And operational facts (warehouse expire, FDW, thinking vLLM) are stated accurately
     And guru meditation codes are not packed into the brief body
+    And Thinking may SEARCH_GURU unique codes in the codebase to inform RCA
     And the brief is not a toy coding problem

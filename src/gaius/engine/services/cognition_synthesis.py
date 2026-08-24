@@ -12,11 +12,14 @@ Guru: #COG.00000032.SYNTHFAIL
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
+import subprocess
 import uuid
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -62,9 +65,11 @@ SYNTH_PROMPT = """You are Gaius cognition. Admitted Aperture windows (unique Max
 topic, 512-token spans with offsets) are below. The Ambient, Prospects, and
 Publishing FIFOs still hold the full compacted text.
 
-Optional: if an admitted window needs rejected/unadmitted context, output one
-or more lines and nothing else:
+Optional tools (output these lines and nothing else, then wait):
 SEARCH_BUFFER <ambient|prospects|publish> <query>
+SEARCH_GURU <CODE>
+  (unique meditation code, e.g. EN.00000031.FDWINGEST — for your RCA only;
+   do not copy the code into SYNTHESIS/AGENDA bodies)
 
 Agenda densities (do not over-produce):
 - sessions: a few times a week, world events through Aperture
@@ -89,6 +94,11 @@ SEARCH_RE = re.compile(
     r"^SEARCH_BUFFER\s+(ambient|prospects|publish)\s+(.+)$",
     re.IGNORECASE | re.MULTILINE,
 )
+GURU_SEARCH_RE = re.compile(
+    r"^SEARCH_GURU\s+#?([A-Z]{2,5}\.\d{8}\.[A-Z0-9]+)\s*$",
+    re.IGNORECASE | re.MULTILINE,
+)
+_REPO_ROOT = Path(__file__).resolve().parents[4]
 
 
 def parse_agenda_payload(text: str) -> dict[str, list[dict[str, Any]]]:
@@ -116,6 +126,51 @@ def parse_agenda_payload(text: str) -> dict[str, list[dict[str, Any]]]:
 
 def parse_search_requests(text: str) -> list[tuple[str, str]]:
     return [(m.group(1).lower(), m.group(2).strip()) for m in SEARCH_RE.finditer(text or "")]
+
+
+def parse_guru_searches(text: str) -> list[str]:
+    return [m.group(1).upper() for m in GURU_SEARCH_RE.finditer(text or "")]
+
+
+def search_guru_in_repo(code: str, *, root: Path | None = None, max_hits: int = 16) -> str:
+    """Ripgrep a unique guru code. For Thinking RCA, not executive copy."""
+    code = code.lstrip("#").upper()
+    if not re.fullmatch(r"[A-Z]{2,5}\.\d{8}\.[A-Z0-9]+", code):
+        return f"[guru] invalid code {code!r}"
+    root = root or _REPO_ROOT
+    needle = f"#{code}"
+    try:
+        proc = subprocess.run(
+            [
+                "rg",
+                "-n",
+                "--no-heading",
+                "-g",
+                "!*.pyc",
+                "-g",
+                "!.devenv/**",
+                "-g",
+                "!**/generated/**",
+                needle,
+                "src",
+                "tests",
+                "features",
+                "docs",
+                "scripts",
+                "config",
+            ],
+            cwd=str(root),
+            capture_output=True,
+            text=True,
+            timeout=8,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired) as e:
+        return f"[guru] search failed: {e}"
+    lines = [ln for ln in (proc.stdout or "").splitlines() if ln.strip()]
+    if not lines:
+        return f"[guru] no references to #{code}"
+    clipped = lines[:max_hits]
+    return f"[guru #{code}]\n" + "\n".join(clipped)
 
 
 def synthesis_body(text: str) -> str:
@@ -317,7 +372,8 @@ async def run_synthesis_cycle(
         if not output:
             raise RuntimeError(f"{GURU}\n  empty thinking output")
         reqs = parse_search_requests(output)
-        if not reqs or "AGENDA:" in output:
+        gurus = parse_guru_searches(output)
+        if "AGENDA:" in output or (not reqs and not gurus):
             break
         found: list[str] = []
         for axis, q in reqs[:4]:
@@ -330,11 +386,16 @@ async def run_synthesis_cycle(
                     publishing_buffer=publishing_buffer,
                 )
             )
+        for code in gurus[:4]:
+            found.append(
+                await asyncio.to_thread(search_guru_in_repo, code)
+            )
         prompt = (
             prompt
             + "\n\nSEARCH RESULTS:\n"
             + "\n".join(found)
-            + "\n\nContinue. SEARCH_BUFFER again or write SYNTHESIS + AGENDA."
+            + "\n\nUse guru hits for RCA only. Do not pack codes into AGENDA. "
+            "SEARCH_BUFFER / SEARCH_GURU again or write SYNTHESIS + AGENDA."
         )
     latency_ms = int((datetime.now(timezone.utc) - t0).total_seconds() * 1000)
     response = last
