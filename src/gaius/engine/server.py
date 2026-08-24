@@ -281,6 +281,22 @@ class GaiusEngine:
 
         # 7. Start background tasks
         self._health_task = asyncio.create_task(self._health_broadcast_loop())
+        try:
+            from .services.cognition_waterfall import start_strip
+
+            start_strip()
+        except Exception:
+            logger.debug("waterfall strip poller not started", exc_info=True)
+        try:
+            from .services.warehouse_ingest import start_warehouse_ingest
+
+            start_warehouse_ingest()
+        except Exception:
+            logger.error(
+                "warehouse ingest did not start.\n"
+                "  Guru: #EN.00000031.FDWINGEST",
+                exc_info=True,
+            )
 
         # Autonomous startup: start evolution daemon if configured
         if self.config.startup.auto_start_evolution and self.config.evolution.enabled:
