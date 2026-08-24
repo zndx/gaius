@@ -52,8 +52,8 @@ def test_compact_if_needed_replaces_prefix_with_summary() -> None:
     from gaius.engine.services.ambient_buffer import AmbientBuffer
 
     async def _run() -> None:
-        buf = AmbientBuffer(max_bytes=8000)
-        for i in range(12):
+        buf = AmbientBuffer(max_bytes=50_000)
+        for i in range(16):
             await buf.add_entry(
                 BufferEntry.create(BufferRole.CONTENT, f"story-{i} " * 400)
             )
