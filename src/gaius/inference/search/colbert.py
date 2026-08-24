@@ -95,15 +95,28 @@ class ColBERTZeroEmbedder:
     ) -> tuple[np.ndarray, np.ndarray]:
         is_query = "query" in (prefix or "").lower()
         prompt_name = "query" if is_query else "document"
-        raw = self.model.encode(
-            [text],
-            batch_size=1,
-            is_query=is_query,
-            prompt_name=prompt_name,
-            show_progress_bar=False,
-        )
+        with _infer_lock:
+            raw = self.model.encode(
+                [text],
+                batch_size=1,
+                is_query=is_query,
+                prompt_name=prompt_name,
+                show_progress_bar=False,
+            )
         multi = _as_token_matrix(raw[0])
         return multi, self._aggregate(multi)
+
+    def offset_mapping(self, text: str) -> list[tuple[int, int]]:
+        """Tokenizer offsets. HuggingFace tokenizers is not thread-safe."""
+        with _infer_lock:
+            tok = self.model.tokenizer
+            encoded = tok(
+                text,
+                truncation=False,
+                return_offsets_mapping=True,
+                add_special_tokens=False,
+            )
+        return list(encoded["offset_mapping"])
 
     def encode_image(self, image: object) -> tuple[np.ndarray, np.ndarray]:
         raise ColBERTVisionError()
@@ -162,6 +175,7 @@ def _as_token_matrix(raw: object) -> np.ndarray:
 
 _embedder: ColBERTZeroEmbedder | None = None
 _embedder_lock = threading.Lock()
+_infer_lock = threading.Lock()
 
 
 def get_colbert_embedder(

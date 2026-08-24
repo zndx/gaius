@@ -73,3 +73,10 @@ def test_colbert_singleton_pins_first_light_gpu(
     assert a.device == "cuda:4"
     assert picks["n"] == 1
     reset_colbert_embedder()
+
+
+def test_offset_mapping_uses_infer_lock() -> None:
+    from gaius.inference.search.colbert import ColBERTZeroEmbedder, _infer_lock
+
+    assert _infer_lock is not None
+    assert hasattr(ColBERTZeroEmbedder, "offset_mapping")

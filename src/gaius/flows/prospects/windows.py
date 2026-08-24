@@ -66,15 +66,7 @@ def colbert_offsets(text: str) -> list[tuple[int, int]]:
     """Offsets from the ColBERT-Zero tokenizer (fail-fast if pylate missing)."""
     from gaius.inference.search.colbert import get_colbert_embedder
 
-    enc = get_colbert_embedder()
-    tok = enc.model.tokenizer
-    encoded = tok(
-        text,
-        truncation=False,
-        return_offsets_mapping=True,
-        add_special_tokens=False,
-    )
-    return list(encoded["offset_mapping"])
+    return get_colbert_embedder().offset_mapping(text)
 
 
 def scan_windows(
