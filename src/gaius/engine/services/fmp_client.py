@@ -42,6 +42,18 @@ from gaius.hx.fmp import (
 logger = logging.getLogger(__name__)
 
 
+def _fmp_rows(data: Any) -> list[dict]:
+    """Stable news endpoints return a list; older wrappers used {content|data}."""
+    if isinstance(data, list):
+        return [r for r in data if isinstance(r, dict)]
+    if isinstance(data, dict):
+        for key in ("content", "data", "news"):
+            inner = data.get(key)
+            if isinstance(inner, list):
+                return [r for r in inner if isinstance(r, dict)]
+    return []
+
+
 class FMPClientError(Exception):
     """FMP client error with Guru Meditation code."""
 
@@ -757,7 +769,7 @@ class FMPClient:
             path="/stable/news/stock-latest",
             params={"page": "0", "limit": str(limit)},
         )
-        return data if isinstance(data, list) else []
+        return _fmp_rows(data)
 
     async def get_latest_general_news(self, *, limit: int = 10) -> list[dict]:
         data = await self._request(
@@ -765,7 +777,7 @@ class FMPClient:
             path="/stable/news/general-latest",
             params={"page": "0", "limit": str(limit)},
         )
-        return data if isinstance(data, list) else []
+        return _fmp_rows(data)
 
     async def get_fmp_articles(self, *, limit: int = 10) -> list[dict]:
         data = await self._request(
@@ -773,7 +785,7 @@ class FMPClient:
             path="/stable/fmp-articles",
             params={"page": "0", "limit": str(limit)},
         )
-        return data if isinstance(data, list) else []
+        return _fmp_rows(data)
 
     async def get_latest_8k(self, *, days: int = 7, limit: int = 25) -> list[dict]:
         to_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")

@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import random
 import time
 from collections import defaultdict
@@ -1061,8 +1062,9 @@ class AmbientWorkloadService:
                 source_type=SourceType.HACKERNEWS,
                 base_url=buffer_cfg.source_url,
                 config={
-                    "newcomments": buffer_cfg.newcomments,
-                    "max_items": buffer_cfg.max_items,
+                    "firebase_stories": True,
+                    "newcomments": False,
+                    "max_items": max(buffer_cfg.max_items, 15),
                     "buffer_only": True,  # Always buffer-only for ambient
                 },
             )
@@ -1277,6 +1279,66 @@ class AmbientWorkloadService:
                 "latency_ms": int((time.time() - start_time) * 1000),
             }
 
+    async def _run_brave_proposals(self, queries: list[str]) -> dict[str, Any]:
+        """Execute Brave Search on Bytez proposals; store hits as CONTENT."""
+        import httpx
+
+        from gaius.core.config import get_config as _get_config
+
+        api_key = os.environ.get("BRAVE_API_KEY") or _get_config().providers.brave.api_key
+        if not api_key:
+            logger.error(
+                "BRAVE_API_KEY missing; SEARCH_QUERY entries not retrieved.\n"
+                "  Guru: #AMB.00000015.NOBRAVE"
+            )
+            return {"hits": 0, "error": "no brave key"}
+        hits = 0
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            for query in queries[:3]:
+                try:
+                    resp = await client.get(
+                        "https://api.search.brave.com/res/v1/web/search",
+                        params={"q": query, "count": "5"},
+                        headers={
+                            "Accept": "application/json",
+                            "X-Subscription-Token": api_key,
+                        },
+                    )
+                    if resp.status_code != 200:
+                        logger.error(
+                            "Brave search HTTP %s for %r.\n  Guru: #AMB.00000016.BRAVEHTTP",
+                            resp.status_code,
+                            query[:80],
+                        )
+                        continue
+                    web = (resp.json() or {}).get("web") or {}
+                    results = web.get("results") or []
+                    for row in results[:5]:
+                        title = str(row.get("title") or "")
+                        url = str(row.get("url") or "")
+                        desc = str(row.get("description") or "")
+                        if not title or not url:
+                            continue
+                        entry = BufferEntry.create(
+                            role=BufferRole.CONTENT,
+                            content=f"{title}\n{url}\n{desc}",
+                            source_url=url,
+                            metadata={
+                                "source": "brave",
+                                "query": query,
+                                "title": title,
+                            },
+                        )
+                        await self._buffer.add_entry(entry)
+                        hits += 1
+                except Exception as e:
+                    logger.error(
+                        "Brave search failed for %r: %s\n  Guru: #AMB.00000016.BRAVEHTTP",
+                        query[:80],
+                        e,
+                    )
+        return {"hits": hits}
+
     async def _analyze_buffer_with_bytez(self) -> dict[str, Any]:
         """Analyze new HN comments via Bytez, generate Brave Search queries.
 
@@ -1312,16 +1374,19 @@ class AmbientWorkloadService:
                 }
 
             # Build analysis prompt from recent unanalyzed entries
-            content_block = "\n".join([
-                f"- {e.metadata.get('story_title', 'Comment')}: {e.content_preview}"
-                for e in new_entries[:10]  # Limit to 10 most recent
-            ])
+            content_block = "\n".join(
+                [
+                    f"- {e.metadata.get('title') or e.metadata.get('story_title') or 'HN'}"
+                    f" {e.source_url}: {e.content_preview}"
+                    for e in new_entries[:10]
+                ]
+            )
 
-            prompt = f"""Analyze these Hacker News comments and generate exactly 3 Brave Search queries
-that would help research the topics being discussed. Focus on technical terms,
-products, or concepts that warrant deeper investigation.
+            prompt = f"""Analyze these Hacker News stories and generate exactly 3 Brave Search queries
+that would help research the topics. Prefer queries that match story URLs and titles
+(products, papers, companies, technical claims).
 
-Comments:
+Stories:
 {content_block}
 
 Output exactly 3 search queries, one per line, no numbering or bullets:"""
@@ -1380,16 +1445,19 @@ Output exactly 3 search queries, one per line, no numbering or bullets:"""
             for entry in new_entries:
                 entry.metadata["analyzed_at"] = now
 
+            brave = await self._run_brave_proposals(queries)
             latency_ms = int((time.time() - start_time) * 1000)
             logger.info(
                 f"Bytez analysis generated {len(queries)} search queries "
-                f"from {len(new_entries)} entries ({latency_ms}ms)"
+                f"from {len(new_entries)} entries; brave_hits={brave.get('hits', 0)} "
+                f"({latency_ms}ms)"
             )
 
             return {
                 "success": True,
                 "queries_generated": len(queries),
                 "queries": queries,
+                "brave_hits": brave.get("hits", 0),
                 "entries_analyzed": len(new_entries),
                 "latency_ms": latency_ms,
             }

@@ -59,6 +59,8 @@ def _format_market_row(kind: str, row: dict[str, Any]) -> str:
     body = str(
         row.get("text")
         or row.get("content")
+        or row.get("snippet")
+        or row.get("description")
         or row.get("formType")
         or row.get("transactionType")
         or ""

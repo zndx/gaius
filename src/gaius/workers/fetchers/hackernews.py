@@ -61,16 +61,19 @@ class HNFetcher(BaseFetcher):
         """
         config = source.config
         newcomments = config.get("newcomments", False)
+        firebase_stories = config.get("firebase_stories", True)
         max_items = config.get("max_items", 30)
         buffer_only = config.get("buffer_only", False)
 
         try:
-            if newcomments:
-                # Use Firebase API for new comments
+            if firebase_stories:
+                # Official HN API: /v0/topstories|askstories + /v0/item/<id>
+                items = await self._fetch_firebase_stories(max_items, source)
+                feed_url = f"{self.FIREBASE_BASE}/topstories.json"
+            elif newcomments:
                 items = await self._fetch_new_comments(max_items, source)
                 feed_url = self.UPDATES_URL
             else:
-                # Use RSS for front page stories
                 items = await self._fetch_feed(self.FRONT_PAGE_URL, max_items, source, False)
                 feed_url = self.FRONT_PAGE_URL
 
@@ -121,6 +124,114 @@ class HNFetcher(BaseFetcher):
                 items.append(item)
 
         return items
+
+    async def _fetch_firebase_stories(
+        self,
+        max_items: int,
+        source: FeedSource,
+    ) -> list[ContentItem]:
+        """Official Firebase lists: topstories, beststories, askstories.
+
+        https://github.com/HackerNews/API — item fields: title, url, text,
+        score, descendants. Ask HN has ``text`` and no url.
+        """
+        lists = ("topstories", "askstories")
+        seen: set[int] = set()
+        ordered: list[int] = []
+        for name in lists:
+            try:
+                response = await self.fetch_url(f"{self.FIREBASE_BASE}/{name}.json")
+                ids = response.json() or []
+            except Exception as e:
+                logger.warning("HN %s list failed: %s", name, e)
+                continue
+            for iid in ids:
+                try:
+                    n = int(iid)
+                except (TypeError, ValueError):
+                    continue
+                if n in seen:
+                    continue
+                seen.add(n)
+                ordered.append(n)
+        items: list[ContentItem] = []
+        for iid in ordered[: max(max_items * 2, max_items)]:
+            if len(items) >= max_items:
+                break
+            try:
+                item_response = await self.fetch_url(
+                    f"{self.FIREBASE_BASE}/item/{iid}.json"
+                )
+                data = item_response.json()
+                parsed = self._parse_firebase_story(data, source)
+                if parsed:
+                    items.append(parsed)
+                await asyncio.sleep(self.RATE_LIMIT_DELAY)
+            except Exception as e:
+                logger.debug("HN item %s: %s", iid, e)
+                continue
+        return items
+
+    def _parse_firebase_story(
+        self,
+        data: dict[str, Any] | None,
+        source: FeedSource,
+    ) -> ContentItem | None:
+        if not data or data.get("deleted") or data.get("dead"):
+            return None
+        if data.get("type") not in ("story", "job", "poll"):
+            return None
+        item_id = data.get("id")
+        title = (data.get("title") or "").strip()
+        if not item_id or not title:
+            return None
+        url = (data.get("url") or "").strip()
+        hn_url = f"https://news.ycombinator.com/item?id={item_id}"
+        text = self._clean_html(data.get("text") or "")
+        score = data.get("score")
+        descendants = data.get("descendants")
+        author = data.get("by") or ""
+        body_bits = [title]
+        if url:
+            body_bits.append(url)
+        body_bits.append(hn_url)
+        meta_line = []
+        if score is not None:
+            meta_line.append(f"score={score}")
+        if descendants is not None:
+            meta_line.append(f"comments={descendants}")
+        if meta_line:
+            body_bits.append(" ".join(meta_line))
+        if text:
+            body_bits.append(text)
+        content = "\n".join(body_bits)
+        published_at = None
+        if data.get("time"):
+            try:
+                published_at = datetime.fromtimestamp(int(data["time"]))
+            except (TypeError, ValueError, OverflowError):
+                published_at = None
+        return self.create_item(
+            source=source,
+            external_id=str(item_id),
+            title=title,
+            url=url or hn_url,
+            authors=[author] if author else [],
+            summary=text[:500] if text else title,
+            content=content,
+            content_type="text/plain",
+            published_at=published_at,
+            metadata={
+                "hn_id": str(item_id),
+                "is_comment": False,
+                "source_feed": "firebase_topstories",
+                "author": author,
+                "score": score,
+                "descendants": descendants,
+                "story_title": title,
+                "story_url": url or hn_url,
+            },
+        )
 
     async def _fetch_new_comments(
         self,
