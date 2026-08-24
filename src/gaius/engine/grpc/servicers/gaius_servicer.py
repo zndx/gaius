@@ -2278,7 +2278,6 @@ class GaiusServicer(GaiusServiceServicer):
         context: aio.ServicerContext,
     ) -> CognitionWaterfallResponse:
         from gaius.engine.services.cognition_waterfall import (
-            LIVE_WINDOW_S,
             fetch_gpu_metrics,
             recent_tape_energy,
             tick,
@@ -2313,12 +2312,10 @@ class GaiusServicer(GaiusServiceServicer):
                     ctx["embeddings"] = vecs
         except Exception:
             pass
-        warehouse_rows = None
-        if window > LIVE_WINDOW_S:
-            try:
-                warehouse_rows = await fetch_gpu_metrics(window)
-            except Exception as e:
-                return CognitionWaterfallResponse(error=str(e))
+        try:
+            warehouse_rows = await fetch_gpu_metrics(window)
+        except Exception as e:
+            return CognitionWaterfallResponse(error=str(e))
         try:
             state = tick(
                 window, self._services, ctx=ctx, warehouse_rows=warehouse_rows

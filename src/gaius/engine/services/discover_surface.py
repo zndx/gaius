@@ -18,7 +18,7 @@ GURU_NODB = (
     "  Try: /health fix postgres"
 )
 GURU_WINDOW = (
-    "Discover window must be like 36h, 7d, or 1h (1..3660 days).\n"
+    "Discover window must be like 1h, 24h, 36h, or 7d (1..3660 days).\n"
     "  Guru: #DI.00000002.BADWINDOW"
 )
 GURU_LIMIT = (
@@ -105,7 +105,7 @@ class DiscoverSurface:
 
 
 def parse_window(raw: str) -> timedelta:
-    token = (raw or "36h").strip().lower()
+    token = (raw or "1h").strip().lower()
     m = _WINDOW_RE.match(token)
     if not m:
         raise DiscoverError(GURU_WINDOW)
@@ -155,6 +155,13 @@ def parse_query(raw: str, feature_pins: list[str] | None = None) -> DiscoverQuer
         q.features.append((int(fm.group(1)), int(fm.group(2))))
     q.text = " ".join(leftover).strip()
     return q
+
+
+def discover_clock(delta: timedelta) -> str:
+    """1h Kumo follows wall/Prometheus; longer windows freeze on last tape."""
+    if delta <= timedelta(hours=2):
+        return "wall"
+    return "salience"
 
 
 def auto_interval(delta: timedelta) -> str:
@@ -210,9 +217,9 @@ def _cron_field(expr: str, lo: int, hi: int) -> set[int]:
 
 
 def _window_token(window: str) -> str:
-    w = (window or "36h").strip().lower()
+    w = (window or "1h").strip().lower()
     if w in ("", "salience"):
-        return "36h"
+        return "1h"
     return w
 
 
@@ -353,6 +360,8 @@ def _fill_minutes(
     sal_rows: list[Any],
     gpu_rows: list[Any],
     interval: str = "minute",
+    tremor_by: dict[datetime, float] | None = None,
+    util_by: dict[datetime, float] | None = None,
 ) -> list[DiscoverBucket]:
     sal_by: dict[datetime, tuple[int, float]] = {}
     for r in sal_rows:
@@ -380,6 +389,12 @@ def _fill_minutes(
     for m in minutes:
         n, sal = sal_by.get(m, (0, 0.0))
         w, u = gpu_by.get(m, (0.0, 0.0))
+        tr = (tremor_by or {}).get(m, 0.0)
+        pu = (util_by or {}).get(m, 0.0)
+        if u <= 0 and pu > 0:
+            u = pu
+        if tr > sal:
+            sal = tr
         n_s.append(n)
         sal_s.append(sal)
         w_s.append(w)
@@ -406,7 +421,7 @@ def _fill_minutes(
 async def load_discover(
     db_pool: Any,
     *,
-    window: str = "36h",
+    window: str = "1h",
     query: str = "",
     breakdown: str = "source",
     limit: int = 50,
@@ -446,8 +461,13 @@ async def load_discover(
     else:
         win_label = _window_token(window)
         delta = parse_window(win_label)
-        start, end, last_sal = await _salience_window(db_pool, now, delta)
-        clock = "salience"
+        if discover_clock(delta) == "wall":
+            start, end = now - delta, now
+            clock = "wall"
+            last_sal = await _last_salience_at(db_pool)
+        else:
+            start, end, last_sal = await _salience_window(db_pool, now, delta)
+            clock = "salience"
 
     interval = auto_interval(delta)
     scraped = now.isoformat()
@@ -583,47 +603,83 @@ async def load_discover(
         )
         for r in doc_rows
     ]
-    if clock == "salience":
+    # 1h wall can be empty while inflow still exists; show latest examples.
+    if (
+        not docs
+        and not parsed.features
+        and not parsed.source
+        and not parsed.text
+        and (not parsed.stream or parsed.stream == "inflow")
+    ):
         async with db_pool.acquire() as conn:
-            sal_rows = await conn.fetch(
+            latest = await conn.fetch(
                 f"""
-                SELECT date_trunc('{interval}', created_at) AS m,
-                       count(DISTINCT event_id)::int AS n,
-                       COALESCE(sum(activation), 0) AS sal
-                  FROM feature_tape
-                 WHERE created_at >= $1 AND created_at <= $2
-                 GROUP BY 1
-                 ORDER BY 1
-                """,
-                start,
-                end,
+                SELECT c.id, c.title, COALESCE(c.summary, '') AS body,
+                       c.fetched_at, COALESCE(c.url, '') AS url,
+                       COALESCE(s.name, '') AS source
+                  FROM content_items c
+                  LEFT JOIN feed_sources s ON s.id = c.source_id
+                 WHERE NOT COALESCE(c.summary_excluded, false)
+                 ORDER BY c.fetched_at DESC
+                 LIMIT {int(limit)}
+                """
             )
-            try:
-                gpu_rows = await conn.fetch(
-                    f"""
-                    SELECT date_trunc('{interval}', minute) AS m,
-                           COALESCE(sum(power_avg_w), 0) AS watts,
-                           COALESCE(avg(util_avg_pct), 0) AS util
-                      FROM meta.gpu_minute_stats
-                     WHERE minute >= $1 AND minute <= $2
+            if latest:
+                docs = [
+                    DiscoverDoc(
+                        id=f"inflow:{r['id']}",
+                        stream="inflow",
+                        source=str(r["source"] or ""),
+                        ts=_iso(r["fetched_at"]),
+                        title=str(r["title"] or ""),
+                        body=str(r["body"] or "")[:400],
+                        source_id=str(r["id"]),
+                        url=str(r["url"] or ""),
+                    )
+                    for r in latest
+                ]
+                facet_rows = await conn.fetch(
+                    """
+                    SELECT COALESCE(s.name, '') AS k, count(*)::int AS n
+                      FROM content_items c
+                      LEFT JOIN feed_sources s ON s.id = c.source_id
+                     WHERE NOT COALESCE(c.summary_excluded, false)
+                       AND c.fetched_at > NOW() - interval '36 hours'
                      GROUP BY 1
-                     ORDER BY 1
-                    """,
-                    start,
-                    end,
+                     ORDER BY n DESC
+                    """
                 )
-            except Exception:
-                gpu_rows = []
-        buckets = _fill_minutes(start, end, sal_rows, gpu_rows, interval)
-    else:
-        buckets = [
-            DiscoverBucket(
-                t=_iso(r["t"]),
-                n=int(r["n"]),
-                breakdown_key=str(r["k"] or ""),
-            )
-            for r in bucket_rows
-        ]
+    async with db_pool.acquire() as conn:
+        sal_rows = await conn.fetch(
+            f"""
+            SELECT date_trunc('{interval}', created_at) AS m,
+                   count(DISTINCT event_id)::int AS n,
+                   COALESCE(sum(activation), 0) AS sal
+              FROM feature_tape
+             WHERE created_at >= $1 AND created_at <= $2
+             GROUP BY 1
+             ORDER BY 1
+            """,
+            start,
+            end,
+        )
+    from gaius.engine.services.warehouse_ingest import fetch_gpu_hist_buckets
+
+    try:
+        gpu_rows = await fetch_gpu_hist_buckets(start, end, interval)
+    except Exception as e:
+        raise DiscoverError(
+            "Discover GPU hist failed reading warehouse gpu_metrics.\n"
+            "  Guru: #COG.00000031.NOWHFDW\n"
+            f"  {e}"
+        ) from e
+    buckets = _fill_minutes(
+        start,
+        end,
+        sal_rows,
+        gpu_rows,
+        interval,
+    )
     facets = [
         DiscoverFacet(key="inflow", kind="stream", count=total, salience=1.0)
     ]

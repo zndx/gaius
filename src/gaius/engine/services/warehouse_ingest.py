@@ -1,4 +1,4 @@
-"""Engine warehouse ingest: nvidia-smi → Postgres impala_fdw INSERT → Kudu.
+"""Engine warehouse: DCGM → Postgres impala_fdw INSERT → Kudu.
 
 The Gaius engine is the writer. Postgres :5455 `gpu_metrics_tier0`
 (kudu_scan) is the insert path. `gpu_metrics` is the HS2 UNION view of
@@ -11,8 +11,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-import subprocess
 import time
+from datetime import datetime, timezone
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -26,7 +26,7 @@ GURU = (
 )
 
 INTERVAL_S = float(os.environ.get("GAIUS_WAREHOUSE_INGEST_S", "1"))
-NVIDIA_SMI = os.environ.get("NVIDIA_SMI", "nvidia-smi")
+DCGM_METRICS_URL = os.environ.get("GAIUS_DCGM_METRICS_URL", "http://127.0.0.1:9400/metrics")
 _TASK: asyncio.Task[None] | None = None
 
 
@@ -38,37 +38,45 @@ def warehouse_dsn() -> str:
 
 
 def sample_gpus() -> list[dict[str, Any]]:
-    """Live nvidia-smi rows. Fail-fast if the binary or parse fails."""
-    proc = subprocess.run(
-        [
-            NVIDIA_SMI,
-            "--query-gpu=index,power.draw,utilization.gpu,memory.used,temperature.gpu",
-            "--format=csv,noheader,nounits",
-        ],
-        check=True,
-        capture_output=True,
-        text=True,
-        timeout=2.0,
+    """Live DCGM exporter rows. Fail-fast if :9400 is down or a GPU is missing."""
+    from gaius.engine.services.waterfall_drivers import (
+        _gpu_index,
+        _http_get,
+        parse_prom_text,
     )
-    rows: list[dict[str, Any]] = []
-    for line in proc.stdout.splitlines():
-        line = line.strip()
-        if not line:
+
+    text = _http_get(DCGM_METRICS_URL, timeout=1.0)
+    if not text:
+        raise RuntimeError(f"{GURU}\n  DCGM {DCGM_METRICS_URL} unreachable")
+    by: dict[int, dict[str, float]] = {}
+    for metric, labels, val in parse_prom_text(text):
+        i = _gpu_index(labels)
+        if i is None:
             continue
-        parts = [p.strip() for p in line.split(",")]
-        if len(parts) < 5:
-            raise RuntimeError(f"{GURU}\n  nvidia-smi parse: {line!r}")
-        rows.append(
-            {
-                "gpu_index": int(float(parts[0])),
-                "power_w": float(parts[1]),
-                "util_pct": float(parts[2]),
-                "mem_used_mb": float(parts[3]),
-                "temp_c": float(parts[4]),
-            }
-        )
+        rec = by.setdefault(i, {})
+        if metric == "DCGM_FI_DEV_POWER_USAGE":
+            rec["power_w"] = float(val)
+        elif metric == "DCGM_FI_DEV_GPU_UTIL":
+            rec["util_pct"] = float(val)
+        elif metric == "DCGM_FI_DEV_FB_USED":
+            rec["mem_used_mb"] = float(val)
+        elif metric == "DCGM_FI_DEV_GPU_TEMP":
+            rec["temp_c"] = float(val)
+    rows: list[dict[str, Any]] = []
+    for i in sorted(by):
+        rec = by[i]
+        missing = [
+            k
+            for k in ("power_w", "util_pct", "mem_used_mb", "temp_c")
+            if k not in rec
+        ]
+        if missing:
+            raise RuntimeError(
+                f"{GURU}\n  DCGM gpu={i} missing {', '.join(missing)}"
+            )
+        rows.append({"gpu_index": i, **rec})
     if not rows:
-        raise RuntimeError(f"{GURU}\n  nvidia-smi returned no GPUs")
+        raise RuntimeError(f"{GURU}\n  DCGM returned no GPUs")
     return rows
 
 
@@ -87,6 +95,86 @@ def _tuples(now: float, gpus: list[dict[str, Any]]) -> list[tuple[Any, ...]]:
         )
         for g in gpus
     ]
+
+
+def _bucket_ts(ts_ns: int, interval: str) -> datetime:
+    sec = ts_ns / 1_000_000_000.0
+    if interval == "day":
+        sec -= sec % 86400
+    elif interval == "hour":
+        sec -= sec % 3600
+    else:
+        sec -= sec % 60
+    return datetime.fromtimestamp(sec, tz=timezone.utc)
+
+
+async def fetch_gpu_hist_buckets(
+    start: datetime, end: datetime, interval: str
+) -> list[dict[str, Any]]:
+    """Watts/util from Kudu ∪ Iceberg. Query each FT with pushable preds."""
+    import asyncpg
+    from collections import defaultdict
+
+    if interval not in ("minute", "hour", "day"):
+        raise RuntimeError(f"{GURU}\n  bad hist interval {interval!r}")
+    start_ns = int(start.astimezone(timezone.utc).timestamp() * 1_000_000_000)
+    end_ns = int(end.astimezone(timezone.utc).timestamp() * 1_000_000_000)
+    start_h = int(start.astimezone(timezone.utc).timestamp()) // 3600
+    end_h = int(end.astimezone(timezone.utc).timestamp()) // 3600
+    conn = await asyncpg.connect(warehouse_dsn(), timeout=60)
+    per: dict[tuple[datetime, int], list[float]] = defaultdict(lambda: [0.0, 0.0, 0.0])
+    try:
+        kudu = await conn.fetch(
+            """
+            SELECT ts_ns, gpu_index, power_w, util_pct
+              FROM gpu_metrics_tier0
+             WHERE ts_ns >= $1 AND ts_ns < $2
+            """,
+            start_ns,
+            end_ns,
+        )
+        hot_hours = {int(r["ts_ns"]) // 1_000_000_000 // 3600 for r in kudu}
+        ice_hours = [
+            h for h in range(start_h, end_h + 1) if h not in hot_hours
+        ]
+        ice: list[Any] = []
+        if ice_hours:
+            ice = await conn.fetch(
+                """
+                SELECT ts_ns, gpu_index, power_w, util_pct
+                  FROM gpu_metrics_tier1
+                 WHERE epoch_hour = ANY($1::int[])
+                   AND ts_ns >= $2 AND ts_ns < $3
+                """,
+                ice_hours,
+                start_ns,
+                end_ns,
+            )
+    finally:
+        await conn.close()
+    for r in list(kudu) + list(ice):
+        m = _bucket_ts(int(r["ts_ns"]), interval)
+        gi = int(r["gpu_index"])
+        rec = per[(m, gi)]
+        rec[0] += float(r["power_w"] or 0.0)
+        rec[1] += float(r["util_pct"] or 0.0)
+        rec[2] += 1.0
+    by_m: dict[datetime, list[float]] = defaultdict(lambda: [0.0, 0.0, 0.0])
+    for (m, _gi), rec in per.items():
+        n = rec[2] or 1.0
+        slot = by_m[m]
+        slot[0] += rec[0] / n
+        slot[1] += rec[1] / n
+        slot[2] += 1.0
+    out = [
+        {
+            "m": m,
+            "watts": float(v[0]),
+            "util": float(v[1] / v[2]) if v[2] else 0.0,
+        }
+        for m, v in sorted(by_m.items())
+    ]
+    return out
 
 
 async def insert_gpu_rows(conn: Any, rows: list[tuple[Any, ...]]) -> None:

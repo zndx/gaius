@@ -35,6 +35,7 @@ GURU_WAREHOUSE = (
     "  Guru: #COG.00000031.NOWHFDW\n"
     "  Try: kinit; psql -h 127.0.0.1 -p 5455 -d signals "
     "-c 'SELECT count(*) FROM gpu_metrics'\n"
+    "  Engine writes that table (impala_fdw INSERT). Guru: #EN.00000031.FDWINGEST\n"
     "  Or:  /health fix engine"
 )
 
@@ -148,10 +149,10 @@ def tick(
 ) -> WaterfallState:
     if window_s < 1 or window_s > MAX_WINDOW_S:
         raise ValueError(GURU_WINDOW)
-    if window_s > LIVE_WINDOW_S:
-        if warehouse_rows is None:
-            raise ValueError(GURU_WAREHOUSE)
+    if warehouse_rows is not None:
         return tick_from_gpu_rows(warehouse_rows, window_s)
+    if window_s > LIVE_WINDOW_S:
+        raise ValueError(GURU_WAREHOUSE)
     hz = max(1, min(50, int(hz)))
     n_cols = window_s * hz
     now_ms = int(time.time() * 1000)

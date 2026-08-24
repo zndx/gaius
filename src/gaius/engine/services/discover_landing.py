@@ -390,7 +390,7 @@ def uses_landing_mv(
     from_ts: str = "",
     to_ts: str = "",
 ) -> bool:
-    """True when the request is the default 36h landing (the MV)."""
+    """True when the request is the explicit 36h landing (the MV)."""
     if from_ts.strip() and to_ts.strip():
         return False
     if _window_token(window) != "36h":
@@ -553,8 +553,24 @@ async def load_landing_mv(db_pool: Any, *, limit: int) -> DiscoverSurface:
             raise
     finally:
         await db_pool.release(conn)
+    from datetime import timedelta
+
+    from gaius.engine.services.warehouse_ingest import fetch_gpu_hist_buckets
+
+    end = datetime.now(timezone.utc)
+    start = end - timedelta(hours=36)
+    try:
+        gpu_rows = await fetch_gpu_hist_buckets(start, end, "hour")
+    except Exception as e:
+        from gaius.engine.services.discover_surface import DiscoverError
+
+        raise DiscoverError(
+            "Discover landing GPU hist failed reading warehouse gpu_metrics.\n"
+            "  Guru: #COG.00000031.NOWHFDW\n"
+            f"  {e}"
+        ) from e
     snap = surface_from_landing_rows(
-        rows, limit=limit, gpu_rows=[], episode=None
+        rows, limit=limit, gpu_rows=gpu_rows, episode=None
     )
     remember_landing(snap)
     if _strip_articles == 0 and _strip_projects == 0 and _strip_thoughts == 0:

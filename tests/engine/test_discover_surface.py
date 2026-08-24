@@ -51,12 +51,32 @@ def test_rolling_ma_trailing() -> None:
     assert rolling_ma([2, 4, 6, 8], 2) == [2.0, 3.0, 5.0, 7.0]
 
 
+def test_fill_minutes_uses_warehouse_gpu_rows() -> None:
+    from datetime import datetime, timezone
+
+    from gaius.engine.services.discover_surface import _fill_minutes, _iso
+
+    start = datetime(2026, 8, 23, 15, 0, tzinfo=timezone.utc)
+    end = datetime(2026, 8, 23, 15, 2, tzinfo=timezone.utc)
+    live_m = start.replace(second=0, microsecond=0)
+    gpu_rows = [{"m": live_m, "watts": 480.0, "util": 77.0}]
+    buckets = _fill_minutes(start, end, [], gpu_rows, "minute")
+    by = {b.t: b for b in buckets}
+    hit = by[_iso(live_m)]
+    assert hit.watts == 480.0
+    assert hit.util == 77.0
+
+
 def test_window_tokens() -> None:
-    assert _window_token("") == "36h"
-    assert _window_token("salience") == "36h"
+    assert _window_token("") == "1h"
+    assert _window_token("salience") == "1h"
     assert _window_token("24h") == "24h"
     assert _window_token("36h") == "36h"
     assert parse_window("24h") == timedelta(hours=24)
+    from gaius.engine.services.discover_surface import discover_clock
+
+    assert discover_clock(timedelta(hours=1)) == "wall"
+    assert discover_clock(timedelta(hours=36)) == "salience"
 
 
 def test_terms_in_text_skos_and_wiki() -> None:
@@ -149,8 +169,8 @@ def test_uses_landing_mv_default_only() -> None:
 
     empty = parse_query("")
     assert uses_landing_mv("36h", empty) is True
-    assert uses_landing_mv("", empty) is True
-    assert uses_landing_mv("salience", empty) is True
+    assert uses_landing_mv("", empty) is False
+    assert uses_landing_mv("salience", empty) is False
     assert uses_landing_mv("1h", empty) is False
     assert uses_landing_mv("7d", empty) is False
     assert uses_landing_mv("36h", parse_query("feature:11:8224")) is False

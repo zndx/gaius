@@ -1,11 +1,11 @@
-"""Live nvidia-smi parse for engine warehouse ingest (no static GPUs)."""
+"""Live DCGM parse for engine warehouse ingest (no static GPUs)."""
 
 from gaius.engine.services.warehouse_ingest import sample_gpus, _tuples
 
 
 def test_sample_gpus_live() -> None:
     rows = sample_gpus()
-    assert rows, "nvidia-smi returned no GPUs"
+    assert rows, "DCGM returned no GPUs"
     for r in rows:
         assert "gpu_index" in r
         assert r["power_w"] >= 0
