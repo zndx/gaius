@@ -61,6 +61,13 @@ def test_long_window_requires_warehouse() -> None:
         tick(120)
 
 
+def test_warehouse_null_ts_fail_fast() -> None:
+    reset_for_tests()
+    rows = [{"ts_ns": None, "gpu_index": 0, "power_w": 80.0, "util_pct": 10.0}]
+    with pytest.raises(ValueError, match="COG.00000031"):
+        tick(120, warehouse_rows=rows)
+
+
 def test_warehouse_rows_fill_gpu_channels() -> None:
     reset_for_tests()
     import time

@@ -226,7 +226,15 @@ def tick_from_gpu_rows(
             GURU_WAREHOUSE + "\n  warehouse query returned 0 rows for this window"
         )
     for r in rows:
-        ts_ns = int(r["ts_ns"])
+        raw_ts = r.get("ts_ns")
+        raw_gi = r.get("gpu_index")
+        if raw_ts is None or raw_gi is None:
+            raise ValueError(
+                GURU_WAREHOUSE
+                + "\n  gpu_metrics row missing ts_ns/gpu_index "
+                "(NULL — do not use the Postgres kudu_scan∪Iceberg VIEW)"
+            )
+        ts_ns = int(raw_ts)
         col = int((ts_ns // 1_000_000 - start_ms) // 1000)
         if col < 0:
             continue
@@ -269,7 +277,7 @@ async def fetch_gpu_metrics(window_s: int) -> list[dict[str, Any]]:
     end_ns = int(time.time() * 1_000_000_000)
     start_ns = end_ns - int(window_s) * 1_000_000_000
     try:
-        conn = await asyncpg.connect(dsn, timeout=8)
+        conn = await asyncpg.connect(dsn, timeout=60)
     except Exception as e:
         raise RuntimeError(f"{GURU_WAREHOUSE}\n  connect: {e}") from e
     try:
@@ -287,7 +295,13 @@ async def fetch_gpu_metrics(window_s: int) -> list[dict[str, Any]]:
         raise RuntimeError(f"{GURU_WAREHOUSE}\n  query: {e}") from e
     finally:
         await conn.close()
-    return [dict(r) for r in recs]
+    out = [dict(r) for r in recs]
+    for r in out:
+        if r.get("ts_ns") is None or r.get("gpu_index") is None:
+            raise RuntimeError(
+                f"{GURU_WAREHOUSE}\n  NULL ts_ns/gpu_index from gpu_metrics"
+            )
+    return out
 
 
 async def recent_tape_energy(pool: Any) -> tuple[int, float]:
