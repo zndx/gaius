@@ -121,6 +121,8 @@ Complete catalog of error codes used across the Gaius platform.
 | `#COG.00000029.NOENGINE` | Thin client cannot reach engine gRPC for surface | `/health fix engine` |
 | `#COG.00000030.BADWFWIN` | Cognition waterfall window_s not in 1..3600 | `/thoughts waterfall 60` |
 | `#COG.00000031.NOWHFDW` | Waterfall window_s > 60 but devenv Postgres `impala_fdw` `gpu_metrics` is unreachable | `kinit`; `psql :5455` `SELECT` from `gpu_metrics` |
+| `#COG.00000032.SYNTHFAIL` | Cognition synthesis via thinking failed | `/gpu status thinking`; check HX `llm.generations` |
+| `#COG.00000034.NOTOKENIZER` | Qwen3.8-27B tokenizer missing; cannot size thinking Completes | `HF_HOME=/raid/cache/huggingface`; snapshot `Qwen/Qwen3.8-27B` |
 
 ### THETA — ThetaService / sitrep
 

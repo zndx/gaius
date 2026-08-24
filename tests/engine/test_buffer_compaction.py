@@ -1,5 +1,7 @@
 """Pi-style cut / serialize — no LLM."""
 
+import pytest
+
 from gaius.engine.services.ambient_buffer import BufferEntry, BufferRole
 from gaius.engine.services.buffer_compaction import (
     estimate_tokens,
@@ -7,6 +9,22 @@ from gaius.engine.services.buffer_compaction import (
     plan_compaction,
     serialize_entries,
 )
+
+
+class _CharTok:
+    def encode(self, text: str, add_special_tokens: bool = False) -> list[str]:
+        return list(text or "")
+
+    def decode(self, ids: list[str], skip_special_tokens: bool = True) -> str:
+        return "".join(ids)
+
+
+@pytest.fixture(autouse=True)
+def _fake_thinking_tokenizer(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "gaius.engine.services.cognition_buffer.thinking_tokenizer",
+        lambda: _CharTok(),
+    )
 
 
 def test_find_cut_keeps_recent_window() -> None:
@@ -22,10 +40,10 @@ def test_find_cut_keeps_huge_last_entry() -> None:
     assert find_cut_index(counts, keep_recent_tokens=20_000) == 2
 
 
-def test_serialize_truncates() -> None:
+def test_serialize_keeps_full_entry() -> None:
     e = BufferEntry.create(BufferRole.CONTENT, "x" * 5000, source_url="http://n")
     blob = serialize_entries([e])
-    assert len(blob) < 2500
+    assert "x" * 5000 in blob
     assert "[content]" in blob
 
 

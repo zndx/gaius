@@ -16,10 +16,10 @@ from gaius.engine.services.cognition_buffer import (
     CHARS_PER_TOKEN,
     NEXT_QUESTION_RESERVE_TOKENS,
     THINKING_CONTEXT_TOKENS,
+    thinking_token_count,
 )
 
 KEEP_RECENT_TOKENS = 20_000
-TOOL_RESULT_CHARS = 2_000
 
 GURU = (
     "Buffer compaction needs thinking.\n"
@@ -53,7 +53,7 @@ Material to condense:
 def estimate_tokens(text: str) -> int:
     if not text:
         return 0
-    return max(1, (len(text) + CHARS_PER_TOKEN - 1) // CHARS_PER_TOKEN)
+    return max(1, thinking_token_count(text))
 
 
 def find_cut_index(token_counts: list[int], keep_recent_tokens: int) -> int:
@@ -78,7 +78,7 @@ def serialize_entries(entries: list) -> str:
     for e in entries:
         role = getattr(getattr(e, "role", None), "value", None) or "content"
         url = getattr(e, "source_url", "") or ""
-        body = (getattr(e, "content", "") or "")[:TOOL_RESULT_CHARS]
+        body = getattr(e, "content", "") or ""
         head = f"[{role}]"
         if url:
             head += f" {url}"
@@ -87,7 +87,11 @@ def serialize_entries(entries: list) -> str:
 
 
 def compaction_prompt(material: str, prior: str = "") -> str:
-    return COMPACT_PROMPT.format(prior=prior or "(none)", material=material)
+    from gaius.engine.services.cognition_buffer import pack_thinking_slices
+
+    prior_s = prior or "(none)"
+    tmpl = COMPACT_PROMPT.format(prior=prior_s, material="{slices}")
+    return pack_thinking_slices(tmpl, material)
 
 
 def over_token_budget(

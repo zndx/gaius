@@ -39,7 +39,92 @@ NEXT_QUESTION_RESERVE_TOKENS = 65_536
 DEFAULT_SCRATCH_TOKEN_BUDGET = (
     THINKING_CONTEXT_TOKENS - NEXT_QUESTION_RESERVE_TOKENS
 )
-CHARS_PER_TOKEN = 4
+CHARS_PER_TOKEN = 4  # byte-FIFO keep window only; vLLM budgets use the tokenizer
+
+THINKING_MODEL_ID = "Qwen/Qwen3.8-27B"
+GURU_NOTOKENIZER = (
+    "Qwen3.8-27B tokenizer is required to size thinking Completes.\n"
+    "  Guru: #COG.00000034.NOTOKENIZER\n"
+    "  Try: HF_HOME=/raid/cache/huggingface and the Qwen/Qwen3.8-27B snapshot"
+)
+
+_thinking_tokenizer = None
+
+
+def thinking_tokenizer():
+    """Qwen3.8-27B tokenizer (same model vLLM serves as thinking)."""
+    global _thinking_tokenizer
+    if _thinking_tokenizer is not None:
+        return _thinking_tokenizer
+    try:
+        from transformers import AutoTokenizer
+    except ImportError as e:
+        raise RuntimeError(f"{GURU_NOTOKENIZER}\n  {e}") from e
+    try:
+        _thinking_tokenizer = AutoTokenizer.from_pretrained(
+            THINKING_MODEL_ID,
+            use_fast=True,
+        )
+    except Exception as e:
+        raise RuntimeError(f"{GURU_NOTOKENIZER}\n  {e}") from e
+    return _thinking_tokenizer
+
+
+def thinking_token_count(text: str) -> int:
+    if not text:
+        return 0
+    ids = thinking_tokenizer().encode(text, add_special_tokens=False)
+    return int(len(ids))
+
+
+def clip_to_token_budget(text: str, max_tokens: int) -> str:
+    """Keep a prefix that is at most max_tokens on the thinking tokenizer."""
+    if max_tokens < 1:
+        return ""
+    tok = thinking_tokenizer()
+    ids = tok.encode(text or "", add_special_tokens=False)
+    if len(ids) <= max_tokens:
+        return text or ""
+    return tok.decode(ids[:max_tokens], skip_special_tokens=True)
+
+
+def thinking_output_tokens(prompt: str) -> int:
+    """Generation ceiling for Qwen3.8-27B thinking.
+
+    Context is 262_144. 65_536 stay empty for the next inbound question.
+    The rest (196_608) is this Complete: evidence + generation. Thinking
+    traces count against max_tokens, so the ceiling is whatever remains
+    after the prompt — counted with the model's tokenizer, not chars/4.
+    """
+    used = thinking_token_count(prompt)
+    left = DEFAULT_SCRATCH_TOKEN_BUDGET - used
+    if left < 1:
+        raise RuntimeError(
+            f"thinking prompt {used} tokens exceeds scratch budget "
+            f"{DEFAULT_SCRATCH_TOKEN_BUDGET} "
+            f"(context {THINKING_CONTEXT_TOKENS} − reserve "
+            f"{NEXT_QUESTION_RESERVE_TOKENS})."
+        )
+    return left
+
+
+def pack_thinking_slices(template: str, slices: str) -> str:
+    """Fit evidence so at least one full think (64k) remains for output."""
+    overhead = thinking_token_count(template.replace("{slices}", ""))
+    slice_budget = (
+        DEFAULT_SCRATCH_TOKEN_BUDGET
+        - NEXT_QUESTION_RESERVE_TOKENS
+        - overhead
+    )
+    if slice_budget < 1:
+        raise RuntimeError("SYNTH_PROMPT leaves no room for Aperture slices")
+    body = clip_to_token_budget(slices, slice_budget)
+    return template.format(slices=body)
+
+
+def thinking_read_timeout_s(max_tokens: int) -> float:
+    """HTTP/gRPC read timeout. ~8 tok/s floor + 3 min slack. Do not 420s-kill."""
+    return float(max(420, int(max_tokens) // 8 + 180))
 
 Stream = Literal["ambient", "prospects"]
 

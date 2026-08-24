@@ -28,14 +28,14 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+from gaius.engine.services.cognition_buffer import (
+    pack_thinking_slices,
+    thinking_output_tokens,
+)
+
 logger = logging.getLogger(__name__)
 
-THINKING_CONTEXT_TOKENS = 262_144
-# Held empty for one inbound question — not a conversation, not a session.
-NEXT_QUESTION_RESERVE_TOKENS = 65_536
-DEFAULT_SCRATCH_TOKEN_BUDGET = (
-    THINKING_CONTEXT_TOKENS - NEXT_QUESTION_RESERVE_TOKENS
-)
+# Context constants live in cognition_buffer.py (262_144 − 65_536 reserve).
 
 GURU = (
     "Cognition synthesis via thinking failed.\n"
@@ -262,7 +262,7 @@ async def gather_slices(
                                     f"entry={span['entry_id'][:8]} "
                                     f"off={span['start']}:{span['end']} "
                                     f"topic={span['topic']}\n"
-                                    f"{span['content'][:1200]}"
+                                    f"{span['content']}"
                                 ),
                             }
                         )
@@ -402,7 +402,7 @@ async def run_synthesis_cycle(
                 "content": (
                     f"REPLACE this weekly memo (path={standing.path}). "
                     "Write one letter in natural-register prose.\n"
-                    f"# {standing.title}\n{standing.body[:8000]}"
+                    f"# {standing.title}\n{standing.body}"
                 ),
             }
         )
@@ -410,7 +410,8 @@ async def run_synthesis_cycle(
     packed = "\n---\n".join(
         f"[{s['source']}]\n{s['content']}" for s in slices
     ) or "(no slices this cycle)"
-    prompt = SYNTH_PROMPT.format(slices=packed[:12000])
+    prompt = pack_thinking_slices(SYNTH_PROMPT, packed)
+    max_tokens = thinking_output_tokens(prompt)
     t0 = datetime.now(timezone.utc)
     output = ""
     thinking_trace = ""
@@ -419,11 +420,10 @@ async def run_synthesis_cycle(
         last = await backend_router.complete(
             prompt=prompt,
             agent_alias="thinking",
-            max_tokens=3072,
+            max_tokens=max_tokens,
             temperature=0.4,
             task_type="cognition_synthesis",
             enable_thinking=True,
-            reasoning_effort="low",
             preserve_thinking=True,
         )
         if getattr(last, "error", None):

@@ -1143,14 +1143,15 @@ class AmbientWorkloadService:
         return results
 
     async def _summarize_compaction(self, prompt: str) -> str:
+        from gaius.engine.services.cognition_buffer import thinking_output_tokens
+
         response = await self._backend_router.complete(
             prompt=prompt,
             agent_alias="thinking",
-            max_tokens=900,
+            max_tokens=thinking_output_tokens(prompt),
             temperature=0.2,
             task_type="buffer_compaction",
             enable_thinking=True,
-            reasoning_effort="low",
             preserve_thinking=True,
         )
         if getattr(response, "error", None):
@@ -1407,19 +1408,23 @@ class AmbientWorkloadService:
                     "latency_ms": int((time.time() - start_time) * 1000),
                 }
 
-            # Thinking on, effort low — always-on, cheap. Tokens are not the answer.
+            from gaius.engine.services.cognition_buffer import (
+                thinking_output_tokens,
+                thinking_read_timeout_s,
+            )
+
+            max_tok = thinking_output_tokens(summarize_prompt)
             response = await asyncio.wait_for(
                 self._backend_router.complete(
                     prompt=summarize_prompt,
                     agent_alias="thinking",
-                    max_tokens=max(buffer_cfg.summarize_max_tokens, 1024),
+                    max_tokens=max_tok,
                     temperature=1.0,
                     task_type="ambient_summarization",
                     enable_thinking=True,
-                    reasoning_effort="low",
                     preserve_thinking=True,
                 ),
-                timeout=120,
+                timeout=thinking_read_timeout_s(max_tok),
             )
 
             latency_ms = int((time.time() - start_time) * 1000)

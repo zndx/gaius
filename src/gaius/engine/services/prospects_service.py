@@ -394,8 +394,18 @@ class ProspectsService:
             raise RuntimeError(f"{GURU}\n  thinking has no sentinel")
 
         async def _summarize(prompt: str) -> str:
+            from gaius.engine.services.cognition_buffer import (
+                thinking_output_tokens,
+                thinking_read_timeout_s,
+            )
+
+            max_tok = thinking_output_tokens(prompt)
             result = await asyncio.to_thread(
-                complete, prompt, max_tokens=900, temperature=0.2
+                complete,
+                prompt,
+                max_tokens=max_tok,
+                temperature=0.2,
+                timeout_s=thinking_read_timeout_s(max_tok),
             )
             text = (result.text or result.reasoning_content or "").strip()
             if not text:

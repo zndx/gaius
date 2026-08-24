@@ -473,6 +473,11 @@ class VLLMController:
 
                 # Allocate port
                 port = self._allocate_port()
+                if agent_alias == "thinking":
+                    os.environ["GAIUS_THINKING_PORT"] = str(port)
+                    os.environ["GAIUS_VLLM_METRICS_URL"] = (
+                        f"http://127.0.0.1:{port}/metrics"
+                    )
 
                 # Create process state
                 # Get max_num_seqs and task from endpoint config if available
@@ -931,9 +936,15 @@ class VLLMController:
         start_time = datetime.now()
 
         try:
+            from gaius.engine.services.cognition_buffer import thinking_read_timeout_s
+
+            read_s = thinking_read_timeout_s(int(request.max_tokens or 0))
             response = await self._client.post(
                 f"http://localhost:{proc.port}/v1/chat/completions",
                 json=payload,
+                timeout=httpx.Timeout(
+                    connect=10.0, read=read_s, write=30.0, pool=30.0
+                ),
             )
             response.raise_for_status()
 
