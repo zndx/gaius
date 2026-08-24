@@ -75,10 +75,11 @@ def kb_root_from_env() -> Path:
             root = Path(devenv) / raw
         else:
             root = Path.cwd() / raw
-    return root
+    return root.resolve()
 
 
 def require_kb(root: Path) -> Path:
+    root = root.resolve()
     if not root.is_dir():
         raise AgendaError(GURU_NOKB)
     return root

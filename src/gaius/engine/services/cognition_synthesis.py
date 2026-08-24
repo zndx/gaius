@@ -110,27 +110,42 @@ GURU_SEARCH_RE = re.compile(
 _REPO_ROOT = Path(__file__).resolve().parents[4]
 
 
+def _memo_as_brief(text: str) -> dict[str, list[dict[str, Any]]]:
+    """Standing weekly letter when thinking wrote prose and no AGENDA JSON."""
+    body = synthesis_body(text).strip()
+    if not body:
+        raise RuntimeError(f"{GURU}\n  empty synthesis; no brief to file")
+    first = body.split("\n", 1)[0].strip()
+    title = first[:80].rstrip("—–- ,. ")
+    if len(first) > 80:
+        title = title.rsplit(" ", 1)[0]
+    return {
+        "briefs": [{"title": title or "Weekly memo", "body": body}],
+        "reminders": [],
+        "sessions": [],
+    }
+
+
 def parse_agenda_payload(text: str) -> dict[str, list[dict[str, Any]]]:
-    """Extract agenda JSON from a synthesis completion. Fail-fast if missing."""
-    blob = text
+    """Extract agenda JSON, or file SYNTHESIS as the standing brief."""
     m = re.search(r"AGENDA:\s*(\{.*\})\s*$", text, re.DOTALL | re.IGNORECASE)
-    if m:
-        blob = m.group(1)
-    else:
+    blob = m.group(1) if m else None
+    if blob is None:
         m = re.search(r"\{[\s\S]*\"briefs\"[\s\S]*\}", text)
-        if m:
-            blob = m.group(0)
-    try:
-        data = json.loads(blob)
-    except json.JSONDecodeError as e:
-        raise RuntimeError(f"{GURU}\n  agenda JSON: {e}\n  text={text[:400]!r}") from e
-    if not isinstance(data, dict) or "briefs" not in data:
-        raise RuntimeError(f"{GURU}\n  agenda missing briefs: {text[:400]!r}")
-    for key in ("briefs", "reminders", "sessions"):
-        data.setdefault(key, [])
-        if not isinstance(data[key], list):
-            data[key] = []
-    return data
+        blob = m.group(0) if m else None
+    if blob:
+        try:
+            data = json.loads(blob)
+        except json.JSONDecodeError:
+            return _memo_as_brief(text)
+        if not isinstance(data, dict) or "briefs" not in data:
+            return _memo_as_brief(text)
+        for key in ("briefs", "reminders", "sessions"):
+            data.setdefault(key, [])
+            if not isinstance(data[key], list):
+                data[key] = []
+        return data
+    return _memo_as_brief(text)
 
 
 def parse_search_requests(text: str) -> list[tuple[str, str]]:
@@ -184,6 +199,9 @@ def search_guru_in_repo(code: str, *, root: Path | None = None, max_hits: int = 
 
 def synthesis_body(text: str) -> str:
     m = re.search(r"SYNTHESIS:\s*(.*?)\s*AGENDA:", text, re.DOTALL | re.IGNORECASE)
+    if m:
+        return m.group(1).strip()
+    m = re.search(r"SYNTHESIS:\s*(.*)$", text, re.DOTALL | re.IGNORECASE)
     if m:
         return m.group(1).strip()
     return text.strip()
@@ -401,7 +419,7 @@ async def run_synthesis_cycle(
         last = await backend_router.complete(
             prompt=prompt,
             agent_alias="thinking",
-            max_tokens=1024,
+            max_tokens=3072,
             temperature=0.4,
             task_type="cognition_synthesis",
             enable_thinking=True,

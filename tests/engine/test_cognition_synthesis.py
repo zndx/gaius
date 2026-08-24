@@ -114,6 +114,21 @@ async def test_insert_agenda_fails_fast_without_kb(
         )
 
 
+def test_parse_agenda_files_synthesis_as_standing_brief() -> None:
+    from gaius.engine.services.cognition_synthesis import parse_agenda_payload
+
+    text = (
+        "SYNTHESIS:\n"
+        "Week 34 opened with federation architecture. Discover is usable.\n"
+        "Financial data tooling hardened.\n"
+    )
+    data = parse_agenda_payload(text)
+    assert data["briefs"][0]["body"].startswith("Week 34 opened")
+    assert "changelog" not in data["briefs"][0]["body"].lower()
+    assert data["reminders"] == []
+    assert data["sessions"] == []
+
+
 def test_synth_prompt_names_letter_list_catchup_genres() -> None:
     assert "letter or memo" in SYNTH_PROMPT
     assert "natural-register" in SYNTH_PROMPT
