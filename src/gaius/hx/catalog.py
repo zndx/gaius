@@ -90,6 +90,9 @@ def _create_rest_catalog(config: HxConfig) -> Catalog:
         "warehouse": config.catalog_name,
         "credential": config.polaris_credential,
         "scope": config.polaris_scope,
+        # PyIceberg defaults this to vended-credentials. Polarisfork has no
+        # STS for llm.generations — client FileIO uses RustFS keys instead.
+        "header.X-Iceberg-Access-Delegation": "",
         **_get_s3_properties(config),
     }
     logger.info(
