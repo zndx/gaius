@@ -3,6 +3,33 @@
 Started 2026-08-24 ~01:09Z (jsonl) / 01:35Z (1 Hz daemon). Real tinybox
 nvidia-smi (6× RTX 4090) written to `/tmp/gpu-metrics-hour.jsonl`.
 
+## Status 2026-08-24 02:32Z
+
+Live proof (no fake rows):
+
+- jsonl 1 Hz sampler still running (`scripts/gpu_metrics_kudu_ingest.py`,
+  C++ upsert every 30 ticks via `/tmp/gpu_kudu_ingest`).
+- Kudu `impala::signals_dataproducts.gpu_metrics_tier0` has the real ticks
+  (C++ create + backfill; HS2 CREATE still KUDU-2121).
+- devenv Postgres `:5455` foreign table `gpu_metrics` → `kudu_scan`.
+- Gaius Discover Strip=`1h warehouse`: Engine `CognitionWaterfall`
+  `driver=warehouse`, `n_times=3600`, `n_channels=20`, matrix 72000.
+  CLI `/thoughts waterfall 3600` and UI
+  `http://127.0.0.1:9890/api/gaius/v1/cognition/waterfall?window_s=3600`.
+- Closed hour 496537 analog:
+  `s3://signals-dataproducts/iceberg/gpu_metrics_tier1/epoch_hour=496537/gpu_metrics_hour_496537.h5`
+  (12156 rows) plus hdf5-iceberg pointer table under
+  `s3://signals-dataproducts/iceberg/gpu_metrics_tier1_meta/`.
+
+Still open (fail-fast, not stubbed):
+
+- Impala Java Kudu client TGT (`missing or expired TGT` after FQDN
+  `JAVA_TOOL_OPTIONS`). HMS-free catalog does not persist Iceberg
+  `gpu_metrics_tier1`; HS2 UNION view not live yet.
+- `#SL.00000022.HDF5REG` was duplicate FormatModel registration; FE now
+  logs and continues. Iceberg CREATE said success once, then catalog load
+  treated the name as Kudu.
+
 ## Query path under test
 
 Gaius Discover strip (`window_s=3600`) → Engine gRPC → devenv Postgres
