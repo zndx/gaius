@@ -913,7 +913,15 @@ class GaiusEngine:
                 pool=self._db_pool,
                 config=config,
             )
-            logger.info("Collections service initialized")
+            self._collection_service.start_publishing_axis()
+            if getattr(self, "_ambient_service", None) is not None:
+                self._ambient_service.attach_publishing(
+                    self._collection_service._axis.buffer
+                )
+                self._collection_service._axis.attach_summarize(
+                    self._ambient_service._summarize_compaction
+                )
+            logger.info("Collections service initialized (publishing axis rolling)")
 
             # Update gRPC service registry
             if self._grpc_server:
@@ -958,6 +966,10 @@ class GaiusEngine:
             )
             if getattr(self, "_prospects_service", None) is not None:
                 self._ambient_service.attach_prospects(self._prospects_service)
+            if getattr(self, "_collection_service", None) is not None:
+                self._ambient_service.attach_publishing(
+                    self._collection_service._axis.buffer
+                )
 
             # Update gRPC service registry
             if self._grpc_server:

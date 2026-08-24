@@ -115,6 +115,7 @@ async def gather_slices(
     *,
     ambient_buffer: Any | None,
     prospects_service: Any | None,
+    publishing_buffer: Any | None,
     db_pool: Any | None,
 ) -> list[dict[str, str]]:
     """Collect short slices. Empty is allowed; synthesis then says so."""
@@ -174,6 +175,29 @@ async def gather_slices(
                 )
         except Exception as e:
             logger.warning("publish slices skipped: %s", e)
+    if publishing_buffer is not None:
+        try:
+            from gaius.engine.services.ambient_buffer import BufferRole
+
+            summaries = await publishing_buffer.get_entries_by_role(
+                BufferRole.SUMMARY, limit=4
+            )
+            contents = await publishing_buffer.get_entries_by_role(
+                BufferRole.CONTENT, limit=4
+            )
+            for e in summaries + contents:
+                clt = (e.metadata or {}).get("clt") or []
+                topic = (e.metadata or {}).get("topic") or ""
+                slices.append(
+                    {
+                        "source": "publish",
+                        "content": (
+                            f"topic={topic} clt={clt}\n{(e.content or '')[:1200]}"
+                        ),
+                    }
+                )
+        except Exception as e:
+            logger.warning("publish buffer slices skipped: %s", e)
     return slices
 
 
@@ -236,6 +260,7 @@ async def run_synthesis_cycle(
     db_pool: Any,
     ambient_buffer: Any | None = None,
     prospects_service: Any | None = None,
+    publishing_buffer: Any | None = None,
 ) -> dict[str, Any]:
     """Thinking synthesis → cognition_buffer + agenda. Health = this succeeded."""
     if db_pool is None:
@@ -244,6 +269,7 @@ async def run_synthesis_cycle(
     slices = await gather_slices(
         ambient_buffer=ambient_buffer,
         prospects_service=prospects_service,
+        publishing_buffer=publishing_buffer,
         db_pool=db_pool,
     )
     episode_id = str(uuid.uuid4())

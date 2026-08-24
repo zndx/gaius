@@ -185,6 +185,10 @@ class AmbientWorkloadService:
         self._evicted_endpoints: list[str] = []
         self._gpu_paused = False
         self._prospects_service: Any | None = None
+        self._publishing_buffer: Any | None = None
+        from gaius.engine.services.axis_admit import AdmitStats
+
+        self._admit_stats = AdmitStats()
 
         # Ambient buffer for content fetching (byte-sized FIFO)
         # Fetch and summarize are ALWAYS enabled - this is core ambient work
@@ -198,6 +202,10 @@ class AmbientWorkloadService:
     def attach_prospects(self, prospects: Any) -> None:
         """FMP/prospects FIFO for cognition synthesis (not X bookmarks)."""
         self._prospects_service = prospects
+
+    def attach_publishing(self, buffer: Any) -> None:
+        """Independent Publishing axis buffer (cards + arxiv/biorxiv)."""
+        self._publishing_buffer = buffer
 
     def set_agenda_tracker(self, tracker: "AgendaTracker") -> None:
         """Set the agenda tracker for incident tracking.
@@ -1107,6 +1115,7 @@ class AmbientWorkloadService:
             db_pool=self._db_pool,
             ambient_buffer=self._buffer,
             prospects_service=self._prospects_service,
+            publishing_buffer=self._publishing_buffer,
         )
 
     async def _fetch_content(self) -> dict[str, Any]:
@@ -1165,6 +1174,12 @@ class AmbientWorkloadService:
                 for item in result.items:
                     content = item.content or item.summary or item.title
                     if content:
+                        from gaius.engine.services.axis_admit import try_prepare
+
+                        prepared = try_prepare(content, stats=self._admit_stats)
+                        if not prepared:
+                            continue
+                        content = prepared["text"]
                         # Build metadata with author and story info
                         item_meta = item.metadata or {}
                         meta = {
@@ -1172,6 +1187,9 @@ class AmbientWorkloadService:
                             "hn_id": item_meta.get("hn_id"),
                             "is_comment": item_meta.get("is_comment", False),
                             "fetched_at": datetime.now().isoformat(),
+                            "topic": prepared["topic"],
+                            "clt": prepared["clt"],
+                            "margin": prepared["margin"],
                         }
                         # Include author if available
                         if item_meta.get("author"):

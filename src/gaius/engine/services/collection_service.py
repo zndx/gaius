@@ -324,6 +324,12 @@ class CollectionService:
         """Initialize service with database pool."""
         self._pool = pool
         self._config = config or CollectionConfig()
+        from gaius.engine.services.publishing_axis import PublishingAxis
+
+        self._axis = PublishingAxis(pool)
+
+    def start_publishing_axis(self) -> None:
+        self._axis.start()
 
     # =========================================================================
     # Collection Operations

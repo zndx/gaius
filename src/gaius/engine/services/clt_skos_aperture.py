@@ -198,6 +198,52 @@ def maxsim_window(
     return code, score
 
 
+def unique_maxsim_window(
+    text: str,
+    *,
+    aperture: SdgAperture | None = None,
+    embedder: Any | None = None,
+) -> tuple[str, float, str]:
+    """Admit iff exactly one C point scores >= tau (Aegir unique-domain)."""
+    from qdrant_client import models
+
+    from gaius.engine.services.axis_admit import unique_topic
+
+    aperture = aperture or SdgAperture.load()
+    client = _qdrant()
+    if not client.collection_exists(aperture.collection):
+        raise RuntimeError(
+            f"{GURU_NOMAXSIM}\n  collection={aperture.collection!r} "
+            f"not on {QDRANT_HOST}:{QDRANT_PORT}"
+        )
+    enc = embedder or _zero()
+    multi, _ = enc.encode_text(text, prefix="search_query: ")
+    exclude = _exclude_codes(aperture)
+    flt = None
+    if exclude:
+        flt = models.Filter(
+            must_not=[
+                models.FieldCondition(
+                    key="code", match=models.MatchAny(any=sorted(exclude))
+                )
+            ]
+        )
+    hits = client.query_points(
+        collection_name=aperture.collection,
+        query=multi.tolist(),
+        limit=2,
+        query_filter=flt,
+        with_payload=True,
+    ).points
+    n_tok = max(1, int(multi.shape[0]))
+    ranked: list[tuple[str, float]] = []
+    for h in hits:
+        payload = h.payload or {}
+        code = str(payload.get("local_name") or payload.get("pref_label") or "")
+        ranked.append((code, float(h.score) / n_tok))
+    return unique_topic(ranked, aperture.tau)
+
+
 @lru_cache(maxsize=1)
 def live_maxsim() -> Any:
     """Callable for scan_windows; materializes C if missing."""
