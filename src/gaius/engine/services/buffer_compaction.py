@@ -112,11 +112,16 @@ def plan_compaction(
     entries: list,
     *,
     keep_recent_tokens: int = KEEP_RECENT_TOKENS,
+    keep_recent_bytes: int | None = None,
 ) -> CompactionPlan | None:
     if len(entries) < 2:
         return None
-    counts = [estimate_tokens(getattr(e, "content", "") or "") for e in entries]
-    cut = find_cut_index(counts, keep_recent_tokens)
+    if keep_recent_bytes is not None:
+        counts = [int(getattr(e, "content_bytes", 0) or 0) for e in entries]
+        cut = find_cut_index(counts, keep_recent_bytes)
+    else:
+        counts = [estimate_tokens(getattr(e, "content", "") or "") for e in entries]
+        cut = find_cut_index(counts, keep_recent_tokens)
     if cut <= 0:
         return None
     prefix = entries[:cut]

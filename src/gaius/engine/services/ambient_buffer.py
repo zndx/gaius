@@ -201,7 +201,18 @@ class AmbientBuffer:
             snapshot = list(self._entries)
         if not self.needs_compact() and self._current_bytes <= self._target_bytes:
             return {"skipped": True, "reason": "under budget"}
-        plan = plan_compaction(snapshot)
+        from gaius.engine.services.buffer_compaction import (
+            CHARS_PER_TOKEN,
+            KEEP_RECENT_TOKENS,
+        )
+
+        keep_bytes = None
+        if self._current_bytes > self._target_bytes:
+            keep_bytes = min(
+                KEEP_RECENT_TOKENS * CHARS_PER_TOKEN,
+                max(self._target_bytes // 2, 1),
+            )
+        plan = plan_compaction(snapshot, keep_recent_bytes=keep_bytes)
         if plan is None:
             return {"skipped": True, "reason": "nothing to cut"}
         drop_ids = {e.id for e in snapshot[: plan.cut_index]}
