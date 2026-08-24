@@ -1174,12 +1174,6 @@ class AmbientWorkloadService:
                 for item in result.items:
                     content = item.content or item.summary or item.title
                     if content:
-                        from gaius.engine.services.axis_admit import try_prepare
-
-                        prepared = try_prepare(content, stats=self._admit_stats)
-                        if not prepared:
-                            continue
-                        content = prepared["text"]
                         # Build metadata with author and story info
                         item_meta = item.metadata or {}
                         meta = {
@@ -1187,9 +1181,6 @@ class AmbientWorkloadService:
                             "hn_id": item_meta.get("hn_id"),
                             "is_comment": item_meta.get("is_comment", False),
                             "fetched_at": datetime.now().isoformat(),
-                            "topic": prepared["topic"],
-                            "clt": prepared["clt"],
-                            "margin": prepared["margin"],
                         }
                         # Include author if available
                         if item_meta.get("author"):

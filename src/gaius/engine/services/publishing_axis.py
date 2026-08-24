@@ -1,6 +1,6 @@
-"""Publishing axis: cards + arxiv/biorxiv → unique MaxSim → compact.
+"""Publishing axis: cards + arxiv/biorxiv into an independent compacted FIFO.
 
-Guru: #SDG.00000006.STARVE
+Aperture admission is a read-time window scan, not an ingest filter.
 """
 
 from __future__ import annotations
@@ -9,13 +9,7 @@ import asyncio
 import logging
 from typing import Any
 
-from gaius.engine.services.axis_admit import (
-    AdmitStats,
-    prepare_axis_item,
-    unique_maxsim,
-)
 from gaius.engine.services.publishing_buffer import PublishingBuffer, publishing_entry
-from gaius.engine.services.sdg_aperture import SdgAperture
 
 logger = logging.getLogger(__name__)
 
@@ -24,7 +18,6 @@ class PublishingAxis:
     def __init__(self, pool: Any) -> None:
         self._pool = pool
         self._buffer = PublishingBuffer(max_bytes=256 * 1024)
-        self._stats = AdmitStats()
         self._task: asyncio.Task[None] | None = None
         self._summarize: Any | None = None
         self._clt: Any | None = None
@@ -38,9 +31,6 @@ class PublishingAxis:
     @property
     def buffer(self) -> PublishingBuffer:
         return self._buffer
-
-    def stats(self) -> AdmitStats:
-        return self._stats
 
     def start(self) -> None:
         if self._task is None:
@@ -73,50 +63,19 @@ class PublishingAxis:
 
     async def ingest(self) -> dict[str, Any]:
         rows = await self._load_items()
-        aperture = SdgAperture.load()
         ingested = 0
         for row in rows:
             text = f"{row['title']}\n{row['body']}".strip()
             if not text:
                 continue
-            prepared = prepare_axis_item(
-                text,
-                aperture=aperture,
-                stats=self._stats,
-                maxsim=lambda chunk: unique_maxsim(chunk, aperture=aperture),
-                clt=self._clt,
-            )
-            if not prepared:
-                logger.warning(
-                    "publish aperture starve title=%r "
-                    "scanned=%s admitted=%s none=%s ambiguous=%s\n"
-                    "  Guru: #SDG.00000006.STARVE",
-                    row["title"][:80],
-                    self._stats.scanned,
-                    self._stats.admitted,
-                    self._stats.none,
-                    self._stats.ambiguous,
-                )
-                continue
             await self._buffer.add_entry(
                 publishing_entry(
-                    prepared["text"],
+                    text,
                     source=row["source"],
                     url=row.get("url") or "",
-                    topic=prepared["topic"],
-                    margin=prepared["margin"],
-                    clt=prepared["clt"],
                 )
             )
             ingested += 1
-        if self._stats.starved():
-            logger.warning(
-                "publish axis starved scanned=%s admitted=0 none=%s ambiguous=%s\n"
-                "  Guru: #SDG.00000006.STARVE (inspect for GEPA on C)",
-                self._stats.scanned,
-                self._stats.none,
-                self._stats.ambiguous,
-            )
         stats = self._buffer.get_stats()
         return {"ingested": ingested, "buffer_bytes": stats["current_bytes"]}
 

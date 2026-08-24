@@ -58,22 +58,29 @@ CREATE TABLE IF NOT EXISTS agenda_entries (
 );
 """
 
-SYNTH_PROMPT = """You are Gaius cognition. Refine these real-world slices into one
-incremental synthesis (what is in flight vs what landed). Then emit agenda JSON.
+SYNTH_PROMPT = """You are Gaius cognition. Admitted Aperture windows (unique MaxSim
+topic, 512-token spans with offsets) are below. The Ambient, Prospects, and
+Publishing FIFOs still hold the full compacted text.
 
-Slices:
-{slices}
+Optional: if an admitted window needs rejected/unadmitted context, output one
+or more lines and nothing else:
+SEARCH_BUFFER <ambient|prospects|publish> <query>
 
-Rules:
-- Use only these slices. No toy coding problems.
-- Agenda kinds: brief (situation), reminder (dated follow-up), session (work block).
-- Reply as:
+Or skip search and write:
 SYNTHESIS:
 <paragraphs>
 
 AGENDA:
 {{"briefs":[{{"title":"...","body":"..."}}],"reminders":[{{"title":"...","body":"...","due_at":null}}],"sessions":[{{"title":"...","body":"..."}}]}}
+
+Admitted windows:
+{slices}
 """
+
+SEARCH_RE = re.compile(
+    r"^SEARCH_BUFFER\s+(ambient|prospects|publish)\s+(.+)$",
+    re.IGNORECASE | re.MULTILINE,
+)
 
 
 def parse_agenda_payload(text: str) -> dict[str, list[dict[str, Any]]]:
@@ -99,6 +106,10 @@ def parse_agenda_payload(text: str) -> dict[str, list[dict[str, Any]]]:
     return data
 
 
+def parse_search_requests(text: str) -> list[tuple[str, str]]:
+    return [(m.group(1).lower(), m.group(2).strip()) for m in SEARCH_RE.finditer(text or "")]
+
+
 def synthesis_body(text: str) -> str:
     m = re.search(r"SYNTHESIS:\s*(.*?)\s*AGENDA:", text, re.DOTALL | re.IGNORECASE)
     if m:
@@ -116,89 +127,86 @@ async def gather_slices(
     ambient_buffer: Any | None,
     prospects_service: Any | None,
     publishing_buffer: Any | None,
-    db_pool: Any | None,
+    db_pool: Any | None = None,
 ) -> list[dict[str, str]]:
-    """Collect short slices. Empty is allowed; synthesis then says so."""
-    slices: list[dict[str, str]] = []
-    if ambient_buffer is not None:
-        for role_name in ("summary", "content"):
-            try:
-                from gaius.engine.services.ambient_buffer import BufferRole
+    """Admitted Aperture windows (offsets into full FIFO entries)."""
+    from gaius.engine.services.axis_admit import AdmitStats, admitted_spans
 
-                role = BufferRole.SUMMARY if role_name == "summary" else BufferRole.CONTENT
-                entries = await ambient_buffer.get_entries_by_role(role, limit=6)
-            except Exception:
-                entries = []
-            for e in entries:
-                slices.append(
-                    {
-                        "source": "ambient",
-                        "content": (e.content or "")[:1200],
-                    }
-                )
+    slices: list[dict[str, str]] = []
+    stats = AdmitStats()
+    axes: list[tuple[str, Any]] = []
+    if ambient_buffer is not None:
+        axes.append(("ambient", ambient_buffer))
     if prospects_service is not None:
         buf = getattr(prospects_service, "_buffer", None)
         if buf is not None:
-            try:
-                from gaius.engine.services.ambient_buffer import BufferRole
-
-                entries = await buf.get_entries_by_role(BufferRole.SUMMARY, limit=4)
-                if not entries:
-                    entries = await buf.get_entries_by_role(BufferRole.CONTENT, limit=4)
-            except Exception:
-                entries = []
-            for e in entries:
-                slices.append(
-                    {
-                        "source": "prospects",
-                        "content": (e.content or "")[:1200],
-                    }
-                )
-    if db_pool is not None:
-        try:
-            async with db_pool.acquire() as conn:
-                rows = await conn.fetch(
-                    """
-                    SELECT title, COALESCE(summary, '') AS summary
-                      FROM collections.cards
-                     WHERE status = 'published'
-                     ORDER BY published_at DESC NULLS LAST
-                     LIMIT 6
-                    """
-                )
-            for r in rows:
-                slices.append(
-                    {
-                        "source": "publish",
-                        "content": f"{r['title']}\n{r['summary']}"[:1200],
-                    }
-                )
-        except Exception as e:
-            logger.warning("publish slices skipped: %s", e)
+            axes.append(("prospects", buf))
     if publishing_buffer is not None:
-        try:
-            from gaius.engine.services.ambient_buffer import BufferRole
-
-            summaries = await publishing_buffer.get_entries_by_role(
-                BufferRole.SUMMARY, limit=4
-            )
-            contents = await publishing_buffer.get_entries_by_role(
-                BufferRole.CONTENT, limit=4
-            )
-            for e in summaries + contents:
-                clt = (e.metadata or {}).get("clt") or []
-                topic = (e.metadata or {}).get("topic") or ""
-                slices.append(
-                    {
-                        "source": "publish",
-                        "content": (
-                            f"topic={topic} clt={clt}\n{(e.content or '')[:1200]}"
-                        ),
-                    }
-                )
-        except Exception as e:
-            logger.warning("publish buffer slices skipped: %s", e)
+        axes.append(("publish", publishing_buffer))
+    try:
+        for axis, buf in axes:
+            entries = await buf.snapshot()
+            for e in entries:
+                for span in admitted_spans(
+                    e.content or "",
+                    entry_id=getattr(e, "id", "") or "",
+                    axis=axis,
+                    stats=stats,
+                ):
+                    slices.append(
+                        {
+                            "source": axis,
+                            "content": (
+                                f"entry={span['entry_id'][:8]} "
+                                f"off={span['start']}:{span['end']} "
+                                f"topic={span['topic']}\n"
+                                f"{span['content'][:1200]}"
+                            ),
+                        }
+                    )
+    except Exception as e:
+        logger.error(
+            "Aperture scan failed (buffers unchanged).\n"
+            "  Guru: #SDG.00000006.STARVE\n"
+            "  %s",
+            e,
+        )
+    if stats.starved():
+        logger.warning(
+            "Aperture admitted no windows scanned=%s none=%s ambiguous=%s\n"
+            "  Guru: #SDG.00000006.STARVE (inspect C/tau for GEPA)",
+            stats.scanned,
+            stats.none,
+            stats.ambiguous,
+        )
     return slices
+
+
+async def search_axes(
+    query: str,
+    axis: str,
+    *,
+    ambient_buffer: Any | None,
+    prospects_service: Any | None,
+    publishing_buffer: Any | None,
+) -> str:
+    buf = None
+    if axis == "ambient":
+        buf = ambient_buffer
+    elif axis == "prospects" and prospects_service is not None:
+        buf = getattr(prospects_service, "_buffer", None)
+    elif axis == "publish":
+        buf = publishing_buffer
+    if buf is None:
+        return f"[{axis}] buffer not attached"
+    hits = await buf.search(query, limit=6)
+    if not hits:
+        return f"[{axis}] no hits for {query!r}"
+    parts = [
+        f"[{axis} {getattr(h, 'id', '')[:8]}] {(h.content or '')[:800]}"
+        for h in hits
+    ]
+    return "\n".join(parts)
 
 
 async def store_hx_generation(
@@ -278,25 +286,50 @@ async def run_synthesis_cycle(
     ) or "(no slices this cycle)"
     prompt = SYNTH_PROMPT.format(slices=packed[:12000])
     t0 = datetime.now(timezone.utc)
-    response = await backend_router.complete(
-        prompt=prompt,
-        agent_alias="thinking",
-        max_tokens=1024,
-        temperature=0.4,
-        task_type="cognition_synthesis",
-        enable_thinking=True,
-        reasoning_effort="low",
-        preserve_thinking=True,
-    )
+    output = ""
+    thinking_trace = ""
+    last = None
+    for _round in range(3):
+        last = await backend_router.complete(
+            prompt=prompt,
+            agent_alias="thinking",
+            max_tokens=1024,
+            temperature=0.4,
+            task_type="cognition_synthesis",
+            enable_thinking=True,
+            reasoning_effort="low",
+            preserve_thinking=True,
+        )
+        if getattr(last, "error", None):
+            raise RuntimeError(f"{GURU}\n  complete: {last.error}")
+        output = (getattr(last, "content", None) or "").strip()
+        if not output:
+            output = (getattr(last, "reasoning_content", None) or "").strip()
+        thinking_trace = getattr(last, "reasoning_content", None) or thinking_trace
+        if not output:
+            raise RuntimeError(f"{GURU}\n  empty thinking output")
+        reqs = parse_search_requests(output)
+        if not reqs or "AGENDA:" in output:
+            break
+        found: list[str] = []
+        for axis, q in reqs[:4]:
+            found.append(
+                await search_axes(
+                    q,
+                    axis,
+                    ambient_buffer=ambient_buffer,
+                    prospects_service=prospects_service,
+                    publishing_buffer=publishing_buffer,
+                )
+            )
+        prompt = (
+            prompt
+            + "\n\nSEARCH RESULTS:\n"
+            + "\n".join(found)
+            + "\n\nContinue. SEARCH_BUFFER again or write SYNTHESIS + AGENDA."
+        )
     latency_ms = int((datetime.now(timezone.utc) - t0).total_seconds() * 1000)
-    if getattr(response, "error", None):
-        raise RuntimeError(f"{GURU}\n  complete: {response.error}")
-    output = (getattr(response, "content", None) or "").strip()
-    if not output:
-        output = (getattr(response, "reasoning_content", None) or "").strip()
-    if not output:
-        raise RuntimeError(f"{GURU}\n  empty thinking output")
-    thinking_trace = getattr(response, "reasoning_content", None) or ""
+    response = last
     hx_id = str(uuid.uuid4())
     try:
         await store_hx_generation(

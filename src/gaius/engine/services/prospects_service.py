@@ -361,16 +361,6 @@ class ProspectsService:
                 text = _format_market_row(kind, row)
                 if not text:
                     continue
-                from gaius.engine.services.axis_admit import AdmitStats, try_prepare
-
-                stats = getattr(self, "_admit_stats", None)
-                if stats is None:
-                    self._admit_stats = AdmitStats()
-                    stats = self._admit_stats
-                prepared = try_prepare(text, stats=stats)
-                if not prepared:
-                    continue
-                text = prepared["text"]
                 symbol = str(row.get("symbol") or row.get("ticker") or "")
                 rec = entry(
                     ProspectsRole.FMP,
@@ -380,9 +370,6 @@ class ProspectsService:
                     symbol=symbol,
                     primary=symbol in watch,
                     title=str(row.get("title") or row.get("companyName") or symbol),
-                    topic=prepared["topic"],
-                    clt=prepared["clt"],
-                    margin=prepared["margin"],
                 )
                 await self._buffer.add_entry(rec)
                 added += 1

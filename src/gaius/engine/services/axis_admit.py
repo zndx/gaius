@@ -157,6 +157,42 @@ def prepare_axis_item(
     }
 
 
+def admitted_spans(
+    content: str,
+    *,
+    entry_id: str = "",
+    axis: str = "",
+    aperture: SdgAperture | None = None,
+    maxsim: Callable[[str], tuple[str, float, str]] | None = None,
+    stats: AdmitStats | None = None,
+    encode_offsets: OffsetFn | None = None,
+) -> list[dict[str, Any]]:
+    """Sliding windows over one buffer entry. Offsets into that entry's text."""
+    aperture = aperture or SdgAperture.load()
+    ms = maxsim or (lambda chunk: unique_maxsim(chunk, aperture=aperture))
+    windows = admit_unique_windows(
+        content,
+        aperture=aperture,
+        maxsim=ms,
+        encode_offsets=encode_offsets,
+        stats=stats,
+    )
+    out: list[dict[str, Any]] = []
+    for w in windows:
+        out.append(
+            {
+                "axis": axis,
+                "entry_id": entry_id,
+                "start": w.start,
+                "end": w.end,
+                "topic": w.code,
+                "margin": w.margin,
+                "content": content[w.start : w.end],
+            }
+        )
+    return out
+
+
 def pack_admitted(windows: list[TokenWindow], *, limit_chars: int = 4000) -> str:
     parts: list[str] = []
     n = 0

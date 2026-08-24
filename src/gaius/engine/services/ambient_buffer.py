@@ -263,6 +263,25 @@ class AmbientBuffer:
                 matches = matches[-limit:]
             return list(matches)
 
+    async def snapshot(self) -> list[BufferEntry]:
+        async with self._lock:
+            return list(self._entries)
+
+    async def search(self, query: str, *, limit: int = 8) -> list[BufferEntry]:
+        """Keyword search over the full FIFO (admitted and not)."""
+        terms = [t for t in query.lower().split() if t]
+        if not terms:
+            return []
+        async with self._lock:
+            scored: list[tuple[int, BufferEntry]] = []
+            for e in self._entries:
+                blob = f"{e.content} {e.source_url}".lower()
+                score = sum(blob.count(t) for t in terms)
+                if score:
+                    scored.append((score, e))
+        scored.sort(key=lambda x: -x[0])
+        return [e for _, e in scored[:limit]]
+
     async def get_latest(
         self,
         role: BufferRole | None = None,
