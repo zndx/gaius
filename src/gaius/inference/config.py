@@ -227,9 +227,9 @@ class InferenceConfig:
 
         # Endpoint preference order (ports from agents.conf)
         endpoints = [
-            ("thinking", "http://localhost:8082/v1"),
+            ("thinking", "http://localhost:8081/v1"),
             ("orchestrator", "http://localhost:8080/v1"),
-            ("reasoning", "http://localhost:8081/v1"),
+            ("reasoning", "http://localhost:8083/v1"),
         ]
 
         for name, url in endpoints:

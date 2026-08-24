@@ -58,15 +58,9 @@ export SIGNALS_WAREHOUSE_DSN="${SIGNALS_WAREHOUSE_DSN:-postgresql://signals@127.
 # Engine is the Kudu writer (INSERT gpu_metrics_tier0). Do not start the
 # C++ sidecar ingest from this process.
 
-# ========================================================================
-# GPU CLEANUP — skip when vLLM is already healthy (ingest-only recycle)
-# ========================================================================
-if curl -sf -o /dev/null --max-time 2 "http://127.0.0.1:8081/health" \
-   || curl -sf -o /dev/null --max-time 2 "http://127.0.0.1:8081/v1/models"; then
-  echo "gaius-engine: vLLM healthy — skip gpu_cleanup"
-else
-  gpu_cleanup
-fi
+# Engine owns vLLM. Recycle always remediates GPU/vLLM state — do not skip
+# cleanup because :8081 answered once (that hid thinking deaths on restart).
+gpu_cleanup
 
 # ========================================================================
 # WAIT FOR AERON

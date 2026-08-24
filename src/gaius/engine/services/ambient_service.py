@@ -550,7 +550,21 @@ class AmbientWorkloadService:
             {ep: "healthy" if h else "unhealthy" for ep, h in health_results.items()},
         )
 
-        if health_results.get("thinking"):
+        if not health_results.get("thinking"):
+            logger.error(
+                "Thinking vLLM is not HEALTHY; cognition synthesis cannot run.\n"
+                "  Guru: #AMB.00000014.NOHEALTHY\n"
+                "  Try: /health fix endpoints\n"
+                "  Or:  /gpu status thinking"
+            )
+            self._total_daemon_tasks += 1
+            yield self._make_event(
+                pb.AMBIENT_PHASE_ERROR,
+                "thinking vLLM not HEALTHY — synthesis blocked",
+                1.0,
+                {"thinking": "unhealthy"},
+            )
+        else:
             yield self._make_event(
                 pb.AMBIENT_PHASE_BASELINE_WORKLOAD,
                 "Cognition synthesis (Publishing+Prospects+Ambient)",
@@ -572,19 +586,20 @@ class AmbientWorkloadService:
                     },
                 )
             except Exception as e:
-                logger.error("Cognition synthesis failed.\n  %s", e, exc_info=True)
+                logger.error(
+                    "Cognition synthesis failed (thinking path).\n"
+                    "  Guru: #COG.00000032.SYNTHFAIL\n"
+                    "  Try: /health fix endpoints\n"
+                    "  %s",
+                    e,
+                    exc_info=True,
+                )
                 self._total_daemon_tasks += 1
                 yield self._make_event(
-                    pb.AMBIENT_PHASE_BASELINE_WORKLOAD,
+                    pb.AMBIENT_PHASE_ERROR,
                     f"synthesis failed: {e}",
                     1.0,
                 )
-        else:
-            logger.error(
-                "Thinking unhealthy; skip cognition synthesis.\n"
-                "  Guru: #AMB.00000014.NOHEALTHY\n"
-                "  HN fetch already ran; continuing buffer analysis."
-            )
 
         # Phase 2.55: Buffer Analysis (Bytez - subscription, zero marginal cost)
         yield self._make_event(
@@ -847,6 +862,24 @@ class AmbientWorkloadService:
                 1.0,
                 {ep: "healthy" if h else "unhealthy" for ep, h in health_results.items()},
             )
+
+            if not health_results.get("thinking"):
+                yield self._make_event(
+                    pb.AMBIENT_PHASE_ERROR,
+                    "thinking vLLM not HEALTHY — synthesis blocked",
+                    0.0,
+                    {"thinking": "unhealthy"},
+                )
+                self._finalize_cycle(
+                    False,
+                    phases_completed,
+                    total_tasks,
+                    successful_tasks,
+                    {},
+                    start_time,
+                    "thinking vLLM not HEALTHY. Try: /health fix endpoints",
+                )
+                return
 
             # Phase 2: Cognition synthesis is the health workload (not toy Completes)
             self._current_phase = AmbientPhase.BASELINE_WORKLOAD
