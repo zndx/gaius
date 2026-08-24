@@ -275,6 +275,22 @@ class ProspectsService:
                         ingested,
                         result.get("buffer_bytes"),
                     )
+                    try:
+                        compacted = await self.compact_buffer()
+                        if not compacted.get("skipped"):
+                            logger.info(
+                                "FMP buffer compacted dropped=%s bytes=%s",
+                                compacted.get("dropped"),
+                                compacted.get("bytes"),
+                            )
+                    except Exception as e:
+                        logger.error(
+                            "FMP compaction failed (thinking path).\n"
+                            "  Guru: #BUF.00000001.COMPACTFAIL\n"
+                            "  Try: /health fix endpoints\n"
+                            "  %s",
+                            e,
+                        )
             except asyncio.CancelledError:
                 raise
             except Exception:
@@ -367,52 +383,29 @@ class ProspectsService:
         }
 
     async def compact_buffer(self) -> dict[str, Any]:
-        """Compact FIFO prose with standing thinking. No new GPU Application."""
-        from gaius.engine.services.ambient_buffer import BufferRole
-        from gaius.engine.services.prospects_buffer import ProspectsRole, entry
+        """Pi-style compaction. Thinking down is an error, not a skip."""
+        from gaius.engine.services.buffer_compaction import GURU
         from gaius.flows.lattice import complete
-
-        items = await self._buffer.get_entries_by_role(BufferRole.CONTENT, limit=24)
-        if not items:
-            return {"skipped": True, "reason": "buffer empty"}
-        watch = set(self._cached_candidates.keys())
-        lines: list[str] = []
-        for it in items:
-            mark = "*" if it.metadata.get("primary") or it.metadata.get("symbol") in watch else " "
-            title = it.metadata.get("title") or it.metadata.get("kind") or ""
-            lines.append(f"[{mark}] {title}: {it.content[:400]}")
-        prompt = (
-            "You are compacting a live FMP market buffer for an investment desk.\n"
-            "Watchlist names are marked [*]. Other names are the market aperture.\n"
-            "Write: (1) watchlist-relevant items (2) market-wide items worth "
-            "a closer look (3) one-line risks. Be terse.\n\n"
-            + "\n".join(lines)
-        )
         from gaius.engine.sentinel_claim import capability_workload_id, gpu_start_allowed
 
         think_id = capability_workload_id("thinking")
         if not gpu_start_allowed(think_id):
-            return {
-                "skipped": True,
-                "reason": "thinking process has no sentinel; skip compact",
-            }
-        try:
+            raise RuntimeError(f"{GURU}\n  thinking has no sentinel")
+
+        async def _summarize(prompt: str) -> str:
             result = await asyncio.to_thread(
-                complete, prompt, max_tokens=700, temperature=0.2
+                complete, prompt, max_tokens=900, temperature=0.2
             )
+            text = (result.text or result.reasoning_content or "").strip()
+            if not text:
+                raise RuntimeError("empty thinking compaction")
+            return text
+
+        try:
+            return await self._buffer.compact_if_needed(_summarize)
         except Exception as e:
-            return {"success": False, "error": str(e)}
-        text = (result.text or result.reasoning_content or "").strip()
-        if text:
-            await self._buffer.add_entry(
-                entry(ProspectsRole.COMPACT, text, source="thinking")
-            )
-        return {
-            "success": True,
-            "chars": len(text),
-            "model": result.model,
-            "prompt_tokens": result.prompt_tokens,
-        }
+            logger.error("FMP buffer compaction failed.\n  %s", e)
+            raise
 
     async def _load_watchlist(self) -> list[str]:
         """Load prospect watchlist from HOCON config.

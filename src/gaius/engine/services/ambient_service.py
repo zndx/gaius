@@ -493,6 +493,10 @@ class AmbientWorkloadService:
             result.get("items_fetched"),
             bytes_added,
         )
+        try:
+            await self._buffer.compact_if_needed(self._summarize_compaction)
+        except Exception as e:
+            logger.error("HN buffer compaction failed.\n  %s", e)
 
     async def _run_varied_cycle(self, baseline_only: bool) -> AsyncIterator[pb.AmbientPhaseEvent]:
         """Run a single cycle with varied task selection.
@@ -525,6 +529,21 @@ class AmbientWorkloadService:
             )
             self._total_daemon_tasks += 1
             self._successful_daemon_tasks += 1
+            try:
+                await self._buffer.compact_if_needed(self._summarize_compaction)
+            except Exception as e:
+                logger.error(
+                    "Ambient compaction failed (thinking path).\n"
+                    "  Guru: #BUF.00000001.COMPACTFAIL\n"
+                    "  Try: /health fix endpoints\n"
+                    "  %s",
+                    e,
+                )
+                yield self._make_event(
+                    pb.AMBIENT_PHASE_ERROR,
+                    f"compaction failed: {e}",
+                    1.0,
+                )
         else:
             yield self._make_event(
                 pb.AMBIENT_PHASE_FETCH_CONTENT,
@@ -1058,6 +1077,26 @@ class AmbientWorkloadService:
                 results[endpoint] = False
 
         return results
+
+    async def _summarize_compaction(self, prompt: str) -> str:
+        response = await self._backend_router.complete(
+            prompt=prompt,
+            agent_alias="thinking",
+            max_tokens=900,
+            temperature=0.2,
+            task_type="buffer_compaction",
+            enable_thinking=True,
+            reasoning_effort="low",
+            preserve_thinking=True,
+        )
+        if getattr(response, "error", None):
+            raise RuntimeError(str(response.error))
+        text = (getattr(response, "content", None) or "").strip()
+        if not text:
+            text = (getattr(response, "reasoning_content", None) or "").strip()
+        if not text:
+            raise RuntimeError("empty thinking compaction")
+        return text
 
     async def _run_cognition_synthesis(self) -> dict[str, Any]:
         """Publishing + Prospects + Ambient → thinking → buffer + agenda."""

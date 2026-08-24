@@ -161,17 +161,76 @@ class AmbientBuffer:
             The entry ID
         """
         async with self._lock:
-            # Proactive eviction: maintain buffer below target capacity
-            target_after_add = self._target_bytes - entry.content_bytes
-            while self._current_bytes > target_after_add and self._entries:
+            # Hard cap only. 90% target is compacted (summarized), not FIFO-dropped.
+            while (
+                self._current_bytes + entry.content_bytes > self._max_bytes
+                and self._entries
+            ):
                 evicted = self._entries.popleft()
                 self._current_bytes -= evicted.content_bytes
                 self._eviction_count += 1
-
-            # Add the new entry
             self._entries.append(entry)
             self._current_bytes += entry.content_bytes
             return entry.id
+
+    def token_estimate(self) -> int:
+        from gaius.engine.services.buffer_compaction import estimate_tokens
+
+        return sum(estimate_tokens(e.content) for e in self._entries)
+
+    def needs_compact(self) -> bool:
+        from gaius.engine.services.buffer_compaction import (
+            KEEP_RECENT_TOKENS,
+            over_token_budget,
+        )
+
+        if self._current_bytes > self._target_bytes:
+            return True
+        tokens = self.token_estimate()
+        return over_token_budget(tokens) or tokens > KEEP_RECENT_TOKENS * 2
+
+    async def compact_if_needed(self, summarize) -> dict[str, object]:
+        """Replace prefix with a structured summary. ``summarize(prompt) -> str``."""
+        from gaius.engine.services.buffer_compaction import (
+            GURU,
+            compaction_prompt,
+            plan_compaction,
+        )
+
+        async with self._lock:
+            snapshot = list(self._entries)
+        if not self.needs_compact() and self._current_bytes <= self._target_bytes:
+            return {"skipped": True, "reason": "under budget"}
+        plan = plan_compaction(snapshot)
+        if plan is None:
+            return {"skipped": True, "reason": "nothing to cut"}
+        drop_ids = {e.id for e in snapshot[: plan.cut_index]}
+        prompt = compaction_prompt(plan.material, plan.prior)
+        try:
+            summary = await summarize(prompt)
+        except Exception as e:
+            raise RuntimeError(f"{GURU}\n  {e}") from e
+        if not (summary or "").strip():
+            raise RuntimeError(f"{GURU}\n  empty summary")
+        compact_entry = BufferEntry.create(
+            role=BufferRole.SUMMARY,
+            content=summary.strip(),
+            metadata={
+                "kind": "compaction",
+                "first_kept_id": plan.first_kept_id,
+                "dropped": plan.dropped,
+            },
+        )
+        async with self._lock:
+            kept = [e for e in self._entries if e.id not in drop_ids]
+            self._entries = deque([compact_entry, *kept])
+            self._current_bytes = sum(e.content_bytes for e in self._entries)
+        return {
+            "success": True,
+            "dropped": plan.dropped,
+            "first_kept_id": plan.first_kept_id,
+            "bytes": self._current_bytes,
+        }
 
     async def get_entries_by_role(
         self,
