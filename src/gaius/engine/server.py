@@ -265,7 +265,10 @@ class GaiusEngine:
                 exc_info=True,
             )
 
-        # 2.6 Prospects service moved to after db_pool is created (in _autonomous_start_cognition)
+        # FMP/prospects FIFO does not need GPUs; fill the buffer during vLLM preload.
+        await self._init_prospects_service()
+
+        # 2.6 Collections still wait on cognition path below
         # 2.7 Collections service moved to after db_pool is created (in _autonomous_start_cognition)
 
         # 3. Initialize telemetry (disabled via OTEL_SDK_DISABLED=true env var)
@@ -673,9 +676,6 @@ class GaiusEngine:
         # Initialize Collections service (requires db_pool which is now available)
         await self._init_collection_service()
 
-        # Initialize Prospects service (requires db_pool which is now available)
-        await self._init_prospects_service()
-
     async def _autonomous_start_flow_scheduler(self) -> None:
         """Start the flow scheduler daemon automatically.
 
@@ -836,8 +836,10 @@ class GaiusEngine:
 
         Runs via Metaflow flows triggered by gRPC RPCs.
 
-        MUST be called after self._db_pool is created (in _autonomous_start_cognition).
+        MUST be called after self._db_pool is created.
         """
+        if getattr(self, "_prospects_service", None) is not None:
+            return
         if not getattr(self, "_db_pool", None):
             logger.error(
                 "Cannot initialize Prospects service: shared db_pool not created.\n"
