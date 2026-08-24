@@ -10,6 +10,7 @@ import pytest
 from gaius.engine.services.agenda_notes import (
     AgendaError,
     create_item,
+    find_standing_brief,
     get_item,
     google_calendar_url,
     item_calendar_day,
@@ -195,3 +196,23 @@ def test_list_skips_legacy_scratch_without_kind(tmp_path: Path) -> None:
     listed = list_items(kb, now=now)
     assert [i.title for i in listed] == ["Real card"]
     assert listed[0].prev == ""
+
+
+def test_find_standing_brief_prefers_latest_w34(tmp_path: Path) -> None:
+    kb = tmp_path / "kb"
+    old = kb / "scratch" / "2026-08-17"
+    new = kb / "scratch" / "2026-08-24"
+    old.mkdir(parents=True)
+    new.mkdir(parents=True)
+    (old / "2026-08-17-024851_w34-summary.md").write_text(
+        "kind: note\nintent: brief\n\n# Old W34\n\nchangelog\n",
+        encoding="utf-8",
+    )
+    (new / "2026-08-24-150000_w34-summary.md").write_text(
+        "kind: note\nintent: brief\n\n# Weekly Signals Summary · 2026-W34\n\ncommits\n",
+        encoding="utf-8",
+    )
+    hit = find_standing_brief(kb)
+    assert hit is not None
+    assert hit.path.endswith("2026-08-24-150000_w34-summary.md")
+    assert "Weekly Signals Summary" in hit.title

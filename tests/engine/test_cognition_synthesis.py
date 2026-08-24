@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from gaius.engine.services.agenda_notes import AgendaError, list_items
+from gaius.engine.services.agenda_notes import AgendaError, get_item, list_items
 from gaius.engine.services.cognition_synthesis import (
     SYNTH_PROMPT,
     insert_agenda,
@@ -121,3 +121,75 @@ def test_synth_prompt_names_letter_list_catchup_genres() -> None:
     assert "catch up with a colleague" in SYNTH_PROMPT
     assert "discussion headlines" in SYNTH_PROMPT.lower()
     assert "Do NOT pack guru" in SYNTH_PROMPT
+    assert "agenda_standing_brief" in SYNTH_PROMPT
+
+
+@pytest.mark.asyncio
+async def test_insert_agenda_replaces_standing_weekly_brief(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    kb = tmp_path / "kb"
+    day = kb / "scratch" / "2026-08-24"
+    day.mkdir(parents=True)
+    rel = "scratch/2026-08-24/2026-08-24-150000_w34-summary.md"
+    (kb / rel).write_text(
+        "kind: note\nintent: brief\n\n# Weekly Signals Summary · 2026-W34\n\n"
+        "changelog of Gaius commits\n",
+        encoding="utf-8",
+    )
+    from datetime import datetime, timezone
+    from gaius.engine.services.agenda_notes import create_item
+
+    now = datetime(2026, 8, 24, 18, 0, tzinfo=timezone.utc)
+    for i in range(5):
+        create_item(kb, kind="note", title=f"Extra brief {i}", intent="brief", now=now)
+    monkeypatch.setenv("GAIUS_KB_ROOT", str(kb))
+    conn = _Conn()
+    n = await insert_agenda(
+        _Pool(conn),
+        "ep-w34",
+        "hx-w34",
+        {
+            "briefs": [
+                {
+                    "title": "What the week actually changed",
+                    "body": (
+                        "The analog of closed warehouse hours is now on Iceberg; "
+                        "the open hour stays on Kudu. That is the operating picture, "
+                        "not a commit log."
+                    ),
+                }
+            ],
+            "reminders": [],
+            "sessions": [],
+        },
+    )
+    assert n == 1
+    item = get_item(kb, rel)
+    assert item.intent == "brief"
+    assert item.pin is True
+    assert "Iceberg" in item.body
+    assert "commit log" in item.body
+    assert "changelog of Gaius" not in item.body
+    assert "What the week actually changed" in item.title
+
+
+@pytest.mark.asyncio
+async def test_insert_agenda_fails_if_standing_brief_omitted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    kb = tmp_path / "kb"
+    day = kb / "scratch" / "2026-08-24"
+    day.mkdir(parents=True)
+    (day / "2026-08-24-150000_w34-summary.md").write_text(
+        "kind: note\nintent: brief\n\n# Weekly Signals Summary · 2026-W34\n\ncommits\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("GAIUS_KB_ROOT", str(kb))
+    with pytest.raises(RuntimeError, match="omitted briefs"):
+        await insert_agenda(
+            _Pool(_Conn()),
+            "ep-x",
+            "hx-x",
+            {"briefs": [], "reminders": [], "sessions": []},
+        )

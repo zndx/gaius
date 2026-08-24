@@ -80,6 +80,8 @@ SEARCH_GURU <CODE>
 Agenda genres (natural register; densities apply). These land on /agenda:
 - brief: a letter or memo written for an executive, in natural-register
   prose. Continuous paragraphs. Not a changelog, wiki dump, or bullet list.
+  If slices include agenda_standing_brief, your first brief REPLACES that
+  weekly memo. Do not emit a Gaius commit log.
 - reminder: a short list of helpful suggestions shared with operators and
   (later) other agents. One item per line; they become checkboxes.
 - session: a time to catch up with a colleague. Body = discussion headlines
@@ -350,6 +352,23 @@ async def run_synthesis_cycle(
         publishing_buffer=publishing_buffer,
         db_pool=db_pool,
     )
+    from gaius.engine.services.agenda_notes import (
+        find_standing_brief,
+        kb_root_from_env,
+    )
+
+    standing = find_standing_brief(kb_root_from_env())
+    if standing is not None:
+        slices.append(
+            {
+                "source": "agenda_standing_brief",
+                "content": (
+                    f"REPLACE this weekly memo (path={standing.path}). "
+                    "Write one letter in natural-register prose.\n"
+                    f"# {standing.title}\n{standing.body[:8000]}"
+                ),
+            }
+        )
     episode_id = str(uuid.uuid4())
     packed = "\n---\n".join(
         f"[{s['source']}]\n{s['content']}" for s in slices
@@ -487,12 +506,15 @@ async def insert_agenda(
     now = datetime.now(timezone.utc)
     from gaius.engine.services.agenda_notes import (
         create_item,
+        find_standing_brief,
         kb_root_from_env,
         list_items,
         parse_when,
+        update_item,
     )
 
     root = kb_root_from_env()
+    standing = find_standing_brief(root)
     surface = list_items(root, window_days=7, now=now)
     surface_counts = {"session": 0, "brief": 0, "reminder": 0}
     surface_dues: list[datetime] = []
@@ -531,8 +553,49 @@ async def insert_agenda(
         session_times = next_session_slots(
             now, existing_dues, per_week=DEFAULT_DENSITY.sessions_per_week
         )
+        brief_src = list(agenda.get("briefs") or [])
+        if standing is not None and not brief_src:
+            raise RuntimeError(
+                f"{GURU}\n  thinking omitted briefs; standing weekly memo not replaced"
+            )
+        if standing is not None and brief_src:
+            item = brief_src[0]
+            title = str(item.get("title") or standing.title).strip()
+            if not title:
+                title = standing.title
+            body = strip_packed_guru(str(item.get("body") or ""))[:8000]
+            if not body.strip():
+                raise RuntimeError(f"{GURU}\n  standing brief replacement empty")
+            tags = list(
+                dict.fromkeys(
+                    list(standing.tags or []) + ["cognition", "memo", "weekly"]
+                )
+            )
+            update_item(
+                root,
+                standing.path,
+                kind="note",
+                title=title[:240],
+                body=body,
+                intent="brief",
+                pin=True,
+                tags=tags,
+            )
+            await conn.execute(
+                """
+                INSERT INTO agenda_entries
+                    (kind, title, body, due_at, episode_id, hx_generation_id)
+                VALUES ('brief', $1, $2, NULL, $3, $4)
+                """,
+                title[:240],
+                body,
+                episode_id,
+                hx_id,
+            )
+            n += 1
+            brief_src = brief_src[1:]
         planned = {
-            "brief": take_kind(agenda.get("briefs") or [], kind="brief", slots=slots["brief"]),
+            "brief": take_kind(brief_src, kind="brief", slots=slots["brief"]),
             "reminder": take_kind(
                 agenda.get("reminders") or [],
                 kind="reminder",

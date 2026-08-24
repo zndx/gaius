@@ -402,6 +402,23 @@ def iter_scratch_md(root: Path) -> list[Path]:
     return out
 
 
+STANDING_WEEKLY_RE = re.compile(r"_w\d{2}-summary\.md$")
+
+
+def find_standing_brief(root: Path, slug: str = "w34-summary") -> AgendaItem | None:
+    """Latest weekly memo card (``*_w34-summary.md``), else latest ``*_wNN-summary``."""
+    root = require_kb(root)
+    preferred = [p for p in iter_scratch_md(root) if p.name.endswith(f"_{slug}.md")]
+    if preferred:
+        preferred.sort(key=lambda p: p.as_posix())
+        return parse_item(root, preferred[-1])
+    weekly = [p for p in iter_scratch_md(root) if STANDING_WEEKLY_RE.search(p.name)]
+    if not weekly:
+        return None
+    weekly.sort(key=lambda p: p.as_posix())
+    return parse_item(root, weekly[-1])
+
+
 def find_by_slug(root: Path, day: str, slug: str) -> Path | None:
     folder = root / "scratch" / day
     if not folder.is_dir():
