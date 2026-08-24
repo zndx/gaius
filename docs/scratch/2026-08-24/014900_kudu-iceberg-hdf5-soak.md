@@ -3,6 +3,18 @@
 Started 2026-08-24 ~01:09Z (jsonl) / 01:35Z (1 Hz daemon). Real tinybox
 nvidia-smi (6× RTX 4090) written to `/tmp/gpu-metrics-hour.jsonl`.
 
+## Status 2026-08-24 02:45Z
+
+- Sampler still C++ (`kudu_via=cpp`), jsonl ~86 min (hours 496537+496538).
+- `catalog_tables` now has `signals_dataproducts.gpu_metrics_tier0` (KUDU, FQDN masters).
+- `kudu.properties` FQDN; Polarisfork `warehouse=signals` + OAuth `admin:admin`;
+  `config/impala/kudu-jaas.conf` for catalogd JVM keytab.
+- IcebergMetaProvider previously died with `Please specify a warehouse`
+  (`iceberg.rest.warehouse` is not the Iceberg/Trino key). Polarisfork catalog
+  `signals` exists; analog `.h5` is on RustFS. HS2 UNION still not live
+  (Java Kudu TGT + Iceberg REST warehouse mapping).
+- Gaius Strip=1h still `driver=warehouse` via FDW `kudu_scan`.
+
 ## Status 2026-08-24 02:32Z
 
 Live proof (no fake rows):
