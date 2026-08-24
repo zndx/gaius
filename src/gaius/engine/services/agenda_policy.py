@@ -3,13 +3,14 @@
 Kinds:
 - session: a few times a week, Aperture-world-events, calendar description
 - reminder: short follow-up lists (content, ops, discretionary)
-- brief: regular expert-technical executive notes; keep operational specifics
+- brief: expert-technical executive notes; accurate ops, no packed guru codes
 
 Guru: #COG.00000033.AGENDADENSE
 """
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -133,6 +134,17 @@ def session_invite_description(
     )
 
 
-def brief_keeps_operations(body: str) -> bool:
-    """Executive briefs must not strip guru codes, DROP RANGE, or FDW."""
-    return True  # formatting is additive; never redact
+GURU_PACK_RE = re.compile(r"#(?:[A-Z]{2,5}\.)?\d{8}\.[A-Z0-9]+")
+
+
+def contains_packed_guru(body: str) -> bool:
+    """True if the text dumps guru meditation codes into executive copy."""
+    return bool(GURU_PACK_RE.search(body or ""))
+
+
+def strip_packed_guru(body: str) -> str:
+    """Remove packed guru codes; keep operational facts (DROP RANGE, FDW, vLLM)."""
+    cleaned = GURU_PACK_RE.sub("", body or "")
+    cleaned = re.sub(r"\s{2,}", " ", cleaned)
+    cleaned = re.sub(r"\s+([,;.:])", r"\1", cleaned)
+    return cleaned.strip()

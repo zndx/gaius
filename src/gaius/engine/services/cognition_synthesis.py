@@ -69,7 +69,10 @@ SEARCH_BUFFER <ambient|prospects|publish> <query>
 Agenda densities (do not over-produce):
 - sessions: a few times a week, world events through Aperture
 - reminders: short lists (content, ops follow-up, discretionary)
-- briefs: expert-technical executive; keep guru codes, DROP RANGE, FDW, vLLM
+- briefs: expert-technical executive. Report root cause and operational
+  facts (what failed, what to do). Do NOT pack guru meditation codes
+  (#XX.00000000.MNEMONIC) into brief/reminder/session bodies — those codes
+  are for your own RCA, not the executive text.
 
 Or skip search and write:
 SYNTHESIS:
@@ -408,6 +411,7 @@ async def insert_agenda(
         next_session_slots,
         session_invite_description,
         slots_remaining,
+        strip_packed_guru,
         take_kind,
     )
 
@@ -454,7 +458,7 @@ async def insert_agenda(
                 continue
             body = session_invite_description(
                 title=title,
-                body=str(item.get("body") or ""),
+                body=strip_packed_guru(str(item.get("body") or "")),
                 episode_id=episode_id,
                 hx_generation_id=hx_id,
                 due_at=due_at,
@@ -485,7 +489,7 @@ async def insert_agenda(
                     """,
                     kind,
                     title[:240],
-                    str(item.get("body") or "")[:4000],
+                    strip_packed_guru(str(item.get("body") or ""))[:4000],
                     episode_id,
                     hx_id,
                 )

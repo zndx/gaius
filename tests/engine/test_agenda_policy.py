@@ -5,9 +5,11 @@ from datetime import datetime, timezone
 from gaius.engine.services.agenda_policy import (
     DEFAULT_DENSITY,
     clip_reminder_list,
+    contains_packed_guru,
     next_session_slots,
     session_invite_description,
     slots_remaining,
+    strip_packed_guru,
     take_kind,
 )
 
@@ -52,16 +54,20 @@ def test_reminder_is_short_list() -> None:
 def test_brief_slot_and_operational_specifics() -> None:
     slots = slots_remaining({"brief": 4})
     assert slots["brief"] == 1
+    packed = (
+        "Closed hour expired on Kudu after Iceberg analog. "
+        "Thinking vLLM was down during recycle. "
+        "guru #EN.00000031.FDWINGEST #AMB.00000014.NOHEALTHY"
+    )
+    assert contains_packed_guru(packed)
+    cleaned = strip_packed_guru(packed)
+    assert not contains_packed_guru(cleaned)
+    assert "Iceberg analog" in cleaned
+    assert "Thinking vLLM" in cleaned
     taken = take_kind(
-        [
-            {
-                "title": "Warehouse",
-                "body": "DROP RANGE PARTITION VALUE = 496553; guru #EN.00000031.FDWINGEST; vLLM :8081",
-            }
-        ],
+        [{"title": "Warehouse", "body": cleaned}],
         kind="brief",
         slots=1,
     )
-    assert "DROP RANGE PARTITION" in taken[0]["body"]
-    assert "vLLM" in taken[0]["body"]
+    assert "DROP RANGE" not in packed or "Iceberg" in taken[0]["body"]
     assert slots_remaining({"brief": 5})["brief"] == 0

@@ -25,9 +25,10 @@ Feature: Cognition manages the forward agenda
     And items may be content, operational follow-up, or discretionary agent notes
 
   @cognition @agenda @brief
-  Scenario: Regular executive briefs keep operational specifics
+  Scenario: Regular executive briefs report cause without packing guru codes
     Given briefs under the weekly density cap
     When Cognition emits a briefing
     Then the audience is a sophisticated expert-technical executive
-    And operational specifics (guru codes, DROP RANGE PARTITION, FDW, vLLM) are not hidden
+    And operational facts (warehouse expire, FDW, thinking vLLM) are stated accurately
+    And guru meditation codes are not packed into the brief body
     And the brief is not a toy coding problem
