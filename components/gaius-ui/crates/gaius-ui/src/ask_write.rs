@@ -231,6 +231,30 @@ pub fn looks_like_agenda_write(prompt: &str) -> bool {
     verbs.iter().any(|v| t.contains(v)) && nouns.iter().any(|n| t.contains(n))
 }
 
+/// Drop `:::gaius-artifact … :::` blocks, keeping the prose around them.
+///
+/// A chart or agenda spec rides in a fence the reader must not see, but the
+/// answer beside it still has to reach them. Blanking the whole turn instead
+/// is what made a sitrep vanish behind a failed follow-up chart.
+pub fn strip_artifact_fences(text: &str) -> String {
+    const OPEN: &str = ":::gaius-artifact";
+    let mut out = String::new();
+    let mut rest = text;
+    while let Some(start) = rest.find(OPEN) {
+        out.push_str(&rest[..start]);
+        let after = &rest[start + OPEN.len()..];
+        match after.find(":::") {
+            Some(end) => rest = &after[end + ":::".len()..],
+            None => {
+                // Unterminated fence: drop the tail rather than leak JSON.
+                rest = "";
+            }
+        }
+    }
+    out.push_str(rest);
+    out.trim().to_string()
+}
+
 fn fence_body<'a>(text: &'a str, open: &str) -> Option<&'a str> {
     let start = text.find(open)?;
     let after = text.get(start + open.len()..)?;
@@ -636,6 +660,44 @@ mod tests {
         let raw = ":::gaius-handoff\n{\"to\":\"thinking\",\"task\":\"agenda.write\",\"reason\":\"create\"}\n:::";
         let v = parse_handoff(raw).expect("handoff");
         assert_eq!(v["to"], "thinking");
+    }
+
+    #[test]
+    #[test]
+    fn strip_artifact_fences_keeps_the_prose() {
+        let text = r#"GAIUS SITUATION REPORT
+SYSTEM STATUS: HEALTHY
+
+:::gaius-artifact
+{"type":"ohlc","symbol":"SLB.PA"}
+:::
+
+Everything nominal."#;
+        let out = strip_artifact_fences(text);
+        assert!(out.contains("GAIUS SITUATION REPORT"), "{out}");
+        assert!(out.contains("Everything nominal."), "{out}");
+        assert!(!out.contains("gaius-artifact"), "{out}");
+        assert!(!out.contains("SLB.PA"), "{out}");
+    }
+
+    #[test]
+    fn strip_artifact_fences_is_a_noop_without_one() {
+        assert_eq!(strip_artifact_fences("just prose"), "just prose");
+        assert_eq!(strip_artifact_fences(""), "");
+    }
+
+    #[test]
+    fn strip_artifact_fences_drops_an_unterminated_fence() {
+        let out = strip_artifact_fences("answer\n:::gaius-artifact\n{\"type\":\"ohlc\"");
+        assert_eq!(out, "answer");
+    }
+
+    #[test]
+    fn strip_artifact_fences_handles_two_fences() {
+        let text = "a\n:::gaius-artifact\n{}\n:::\nb\n:::gaius-artifact\n{}\n:::\nc";
+        let out = strip_artifact_fences(text);
+        assert!(out.contains('a') && out.contains('b') && out.contains('c'));
+        assert!(!out.contains("gaius-artifact"));
     }
 
     #[test]

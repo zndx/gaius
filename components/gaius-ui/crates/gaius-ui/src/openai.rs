@@ -945,11 +945,13 @@ async fn apply_chart(
             }
         },
         Err(e) => {
+            // The chart is optional; say so, and keep the provider's text
+            // clearly subordinate to whatever the turn already answered.
             let _ = tx
                 .send(ctx.delta(
                     Some("Chart fetch failed"),
                     None,
-                    Some(&format!("{e}")),
+                    Some(&format!("\n\n_Chart for {symbol} unavailable — {e}_\n")),
                 ))
                 .await;
         }
@@ -1205,11 +1207,19 @@ async fn stream_complete(
             }
 
             if !should_escalate {
+                // A chart or agenda write is a follow-up, not a replacement.
+                // Emitting "" here dropped the answer the model had already
+                // written — a sitrep vanished behind a failed SLB.PA chart,
+                // leaving only the raw FMP 402 on screen.
+                let aside = visible_completion(
+                    &ask_write::strip_artifact_fences(&stripped),
+                    &reasoning,
+                );
                 if let Some(ohlc) = ohlc {
-                    emit_turn(&tx, &ctx, &out, pin_est, &reasoning, "", &calls).await;
+                    emit_turn(&tx, &ctx, &out, pin_est, &reasoning, &aside, &calls).await;
                     apply_chart(&tx, &ctx, &state.artifacts, &ohlc).await;
                 } else if let Some(spec) = spec {
-                    emit_turn(&tx, &ctx, &out, pin_est, &reasoning, "", &calls).await;
+                    emit_turn(&tx, &ctx, &out, pin_est, &reasoning, &aside, &calls).await;
                     apply_and_confirm(&tx, &ctx, &spec, clock.as_ref()).await;
                 } else {
                     let content = visible_completion(&stripped, &reasoning);
