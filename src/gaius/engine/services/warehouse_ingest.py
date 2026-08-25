@@ -266,9 +266,12 @@ async def ensure_day_partitions(conn: Any, hour: int) -> dict[str, str]:
     for tbl in _TIER0_TABLES:
         errs: list[str] = []
         for d in (day0, day0 + HOURS_PER_DAY):
+            # impala_fdw_exec fences DDL to the bare `ADD RANGE PARTITION` form;
+            # an already-present range comes back as an error we treat as
+            # success below, which is what IF NOT EXISTS would have done.
             add = (
                 f"ALTER TABLE signals_dataproducts.{tbl} "
-                f"ADD IF NOT EXISTS RANGE PARTITION {d} <= VALUES < {d + HOURS_PER_DAY}"
+                f"ADD RANGE PARTITION {d} <= VALUES < {d + HOURS_PER_DAY}"
             )
             try:
                 await conn.fetchval("SELECT impala_fdw_exec($1, $2)", "impala_kudu_srv", add)
