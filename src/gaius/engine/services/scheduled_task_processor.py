@@ -69,7 +69,9 @@ TaskHandler = Callable[[ScheduledTask], Awaitable[dict[str, Any]]]
 # Long GPU/Metaflow clocks: one in-process run at a time. Watchdog
 # 15m reset of publish_cards while LuxCore was still rendering left
 # the listen loop blocked and duplicate restore rows unclaimed.
-SINGLETON_TASK_TYPES = frozenset({"publish_cards", "article_curate"})
+SINGLETON_TASK_TYPES = frozenset(
+    {"publish_cards", "article_curate", "gpu_metrics_settle"}
+)
 
 
 class CognitionTaskRunner(Protocol):
@@ -783,6 +785,27 @@ class ScheduledTaskProcessor(BaseDaemon):
         self.register_handler("board_reindex", handle_board_reindex)
         self.register_handler("weekly_signals_summary", handle_weekly_signals_summary)
         self.register_handler("knowledge_summary", handle_knowledge_summary)
+
+        async def handle_gpu_metrics_settle(task: ScheduledTask) -> dict[str, Any]:
+            if not (os.environ.get("SIGNALS_ROOT") or "").strip():
+                raise RuntimeError(
+                    "#SL.00000026.SETTLE SIGNALS_ROOT required for gpu_metrics_settle"
+                )
+            return await self._run_spawned_metaflow(
+                kind="gpu-metrics-settle",
+                task=task,
+                argv=[
+                    "uv",
+                    "run",
+                    "python",
+                    "-m",
+                    "gaius.engine.services.gpu_metrics_settle",
+                ],
+                log_prefix="GpuMetricsSettle",
+                idle_timeout=1800,
+            )
+
+        self.register_handler("gpu_metrics_settle", handle_gpu_metrics_settle)
 
         async def handle_feature_probe(task: ScheduledTask) -> dict[str, Any]:
             from .feature_probe import run_probe_batch

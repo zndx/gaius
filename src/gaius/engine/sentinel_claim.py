@@ -308,6 +308,8 @@ _KIND_CLASS: dict[str, ResourceClass] = {
     # via zndx.engine.v1 only when none is healthy.
     "optillm": COMPUTE,
     "gaius-optillm": COMPUTE,
+    "gpu-metrics-settle": COMPUTE,
+    "gpu_metrics_settle": COMPUTE,
     # ColBERT-Zero MaxSim: 1 GPU model → light (same leaf as Ask 1.7B).
     # In-engine Aperture CUDA is undeclared Metaflow debt; admit light first.
     "embedding": LIGHT,
@@ -436,6 +438,8 @@ _KIND_PHASE: dict[str, str] = {
     "gaius-thinking": "think",
     "optillm": "proxy",
     "gaius-optillm": "proxy",
+    "gpu-metrics-settle": "settle",
+    "gpu_metrics_settle": "settle",
     "embedding": "embed",
     "gaius-embedding": "embed",
     "colbert": "embed",
