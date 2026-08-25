@@ -63,7 +63,9 @@ def test_long_window_requires_warehouse() -> None:
 
 def test_warehouse_null_ts_fail_fast() -> None:
     reset_for_tests()
-    rows = [{"ts_ns": None, "gpu_index": 0, "power_w": 80.0, "util_pct": 10.0}]
+    from gaius.engine.services.warehouse_ingest import series_id_of
+
+    rows = [{"ts_ns": None, "gpu": 0, "series_id": series_id_of("dcgm.power_mw"), "val_i": 80000}]
     with pytest.raises(ValueError, match="COG.00000031"):
         tick(120, warehouse_rows=rows)
 
@@ -72,14 +74,13 @@ def test_warehouse_rows_fill_gpu_channels() -> None:
     reset_for_tests()
     import time
 
+    from gaius.engine.services.warehouse_ingest import series_id_of
+
     now_ns = int(time.time() * 1_000_000_000)
+    # signal_tier0 is narrow: one row per series. Power is INT mW, util INT %.
     rows = [
-        {
-            "ts_ns": now_ns,
-            "gpu_index": 0,
-            "power_w": 80.0,
-            "util_pct": 10.0,
-        }
+        {"ts_ns": now_ns, "gpu": 0, "series_id": series_id_of("dcgm.power_mw"), "val_i": 80_000},
+        {"ts_ns": now_ns, "gpu": 0, "series_id": series_id_of("dcgm.gpu_util_pct"), "val_i": 10},
     ]
     state = tick(120, warehouse_rows=rows)
     assert state.driver == "warehouse"

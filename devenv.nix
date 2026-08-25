@@ -417,6 +417,17 @@
     '';
     process-compose = {
       depends_on.aeron-driver.condition = "process_started";
+      # Without a probe process-compose reports the engine as "starting"
+      # indefinitely after a restart, which reads as a failure in
+      # `devenv processes list` and in systemd verify. Ready means
+      # zndx.engine.v1.Engine/Status answers project=gaius on :50051.
+      readiness_probe = {
+        exec.command = "${config.devenv.root}/.devenv/state/venv/bin/python ${config.devenv.root}/scripts/zndx_status_ok.py";
+        initial_delay_seconds = 10;
+        period_seconds = 10;
+        timeout_seconds = 5;
+        failure_threshold = 90;
+      };
     };
   };
 

@@ -32,10 +32,10 @@ GURU_WINDOW = (
 )
 GURU_WAREHOUSE = (
     "Cognition waterfall window_s > 60 requires Signals warehouse "
-    "via devenv Postgres impala_fdw (gpu_metrics).\n"
+    "via devenv Postgres impala_fdw (signal_tier0).\n"
     "  Guru: #COG.00000031.NOWHFDW\n"
     "  Try: kinit; psql -h 127.0.0.1 -p 5455 -d signals "
-    "-c 'SELECT count(*) FROM gpu_metrics'\n"
+    "-c 'SELECT count(*) FROM signal_tier0'\n"
     "  Engine writes that table (impala_fdw INSERT). Guru: #EN.00000031.FDWINGEST\n"
     "  Or:  /health fix engine"
 )
@@ -214,15 +214,17 @@ def tick_from_gpu_rows(
     window_s: int,
     cognition_rows: list[dict[str, Any]] | None = None,
 ) -> WaterfallState:
-    """Build a 1 Hz strip from warehouse rows (Kudu ∪ Iceberg via FDW).
+    """Build a 1 Hz strip from signal_tier0 rows (Kudu via impala_fdw kudu_scan).
 
-    Every channel the strip advertises is sourced here. Before cognition was
-    persisted, this filled only gpu-N/util-N and the other eight channels sat
-    permanently at zero while still being advertised — the waterfall looked
-    unwired because it was.
+    ``rows`` are narrow series samples: ts_ns, series_id, gpu, val_i for the
+    two DCGM series the strip paints (power_mw, gpu_util_pct). ``cognition_rows``
+    are the same shape with val_d and the series name resolved to a channel.
+    Every channel the strip advertises is sourced here — a channel with no rows
+    in the window stays at zero honestly, it is not faked.
     """
     from gaius.engine.services.waterfall_color import pack_gpu
     from gaius.engine.services.waterfall_drivers import _IDLE_W, _BUSY_W, _clip
+    from gaius.engine.services.warehouse_ingest import series_id_of
 
     names = all_channel_names()
     n_ch = len(names)
@@ -235,31 +237,35 @@ def tick_from_gpu_rows(
         raise ValueError(
             GURU_WAREHOUSE + "\n  warehouse query returned 0 rows for this window"
         )
+    sid_w = series_id_of("dcgm.power_mw")
+    sid_u = series_id_of("dcgm.gpu_util_pct")
+    # Pair power and util per (gpu, column) so the packed gpu-N cell has both.
+    cell: dict[tuple[int, int], list[float | None]] = {}
     for r in rows:
         raw_ts = r.get("ts_ns")
-        raw_gi = r.get("gpu_index")
+        raw_gi = r.get("gpu")
         if raw_ts is None or raw_gi is None:
-            raise ValueError(
-                GURU_WAREHOUSE
-                + "\n  gpu_metrics row missing ts_ns/gpu_index "
-                "(NULL — do not use the Postgres kudu_scan∪Iceberg VIEW)"
-            )
-        ts_ns = int(raw_ts)
-        col = int((ts_ns // 1_000_000 - start_ms) // 1000)
+            raise ValueError(GURU_WAREHOUSE + "\n  signal_tier0 row missing ts_ns/gpu")
+        col = int((int(raw_ts) // 1_000_000 - start_ms) // 1000)
         if col < 0:
             continue
         if col >= n_cols:
             col = n_cols - 1
-        gi = int(r["gpu_index"])
-        watts = float(r["power_w"] or 0.0)
-        util = float(r["util_pct"] or 0.0) / 100.0
-        p = _clip((watts - _IDLE_W) / (_BUSY_W - _IDLE_W))
-        packed = pack_gpu(p, util)
+        gi = int(raw_gi)
+        slot = cell.setdefault((gi, col), [None, None])
+        sid = int(r["series_id"])
+        if sid == sid_w:
+            slot[0] = int(r["val_i"]) / 1000.0  # mW → W at the display boundary
+        elif sid == sid_u:
+            slot[1] = int(r["val_i"]) / 100.0
+    for (gi, col), (watts, util) in cell.items():
         gk = f"gpu-{gi}"
         uk = f"util-{gi}"
-        if gk in name_i:
-            matrix[name_i[gk]][col] = packed
-        if uk in name_i:
+        if watts is not None and gk in name_i:
+            u = _clip(util if util is not None else 0.0)
+            p = _clip((watts - _IDLE_W) / (_BUSY_W - _IDLE_W))
+            matrix[name_i[gk]][col] = pack_gpu(p, u)
+        if util is not None and uk in name_i:
             matrix[name_i[uk]][col] = _clip(util)
     envelope = 0.0
     for r in cognition_rows or []:
@@ -267,16 +273,14 @@ def tick_from_gpu_rows(
         if ch is None or ch not in name_i:
             continue  # a channel the strip does not show (probe rows, retired)
         raw_ts = r.get("ts_ns")
-        if raw_ts is None:
+        if raw_ts is None or r.get("val_d") is None:
             continue
         col = int((int(raw_ts) // 1_000_000 - start_ms) // 1000)
         if col < 0:
             continue
         if col >= n_cols:
             col = n_cols - 1
-        if not r.get("present", True):
-            continue  # a gap stays a gap; do not paint it as zero
-        val = float(r.get("value") or 0.0)
+        val = float(r["val_d"])
         matrix[name_i[ch]][col] = val
         if ch in ONSET_NAMES:
             envelope = max(envelope, abs(val))
@@ -299,32 +303,14 @@ def tick_from_gpu_rows(
     )
 
 
-# The strip reads tier0, never the UNION views. Two reasons, both measured.
+# The strip reads signal_tier0 (Kudu, kudu_scan): its window is at most
+# LIVE_WINDOW_S of wall clock, always inside the hot day, so the hierarchy view
+# would add an HS2 round trip for rows that can only live in Kudu. The broad
+# Kumo window is the one that spans tiers and it reads the `signal` view.
 #
-# 1. The Iceberg HDF5 tier does not evaluate predicates. Straight to Impala:
-#
-#      gpu_metrics_tier0  WHERE ts_ns = <one instant>  ->          6 rows
-#      gpu_metrics_tier1  WHERE ts_ns = <one instant>  ->    493,476 rows
-#      gpu_metrics (view)                              ->    493,482 rows
-#
-#    493,476 is the whole of tier1. The FDW pushes the right SQL — EXPLAIN
-#    VERBOSE shows `WHERE ts_ns = ...` as Remote SQL — and the custom HDF5
-#    FileFormat reader returns every row regardless. Any filtered read of the
-#    view therefore drags the entire settled history back per call: 12-24s,
-#    which tripped the Discover strip's 4s budget into a 503 loop.
-#
-# 2. Even with a correct reader the view would be wasted work here: the
-#    strip's window is at most LIVE_WINDOW_S of wall clock, always inside the
-#    open Kudu hour, so tier1 can contribute nothing.
-#
-# tier0 answers the same window in ~13ms. The views stay the analytical
-# surface and become trustworthy once the HDF5 reader honours predicates.
 # One warehouse connection, reused. Opening a Postgres backend costs an
-# impala_fdw session — Kerberos, Kudu client, table metadata — which was
-# measured at 2.8-15.7s even for a 7,977-row count. The strip polls every few
-# seconds and made two fresh connections per poll, so it could never fit the
-# Discover surface's 4s budget and 503'd in a loop. Warm, the same reads are
-# ~10ms. The ingest loop already reuses its connection this way.
+# impala_fdw session — Kerberos, Kudu client, table metadata — measured at
+# 2.8-15.7s; warm, the same reads are ~10ms.
 _CONN: Any = None
 _CONN_LOCK: Any = None
 
@@ -381,46 +367,71 @@ def _warehouse_dsn() -> str:
 
 
 async def fetch_cognition_metrics(window_s: int) -> list[dict[str, Any]]:
-    """SELECT cognition_metrics through impala_fdw (Kudu tier0 ∪ Iceberg tier1).
+    """Cognition channels from signal_tier0 (series cog.<channel>, DECIMAL).
 
-    Same transport as the GPU strip: the waterfall reads the warehouse, never
-    the in-process drivers. Returns [] rather than raising when the window has
-    no cognition rows — a quiet cognition surface is not a warehouse fault,
-    and the GPU strip must still render.
+    Same transport as the GPU strip. Returns [] when the window has no
+    cognition rows — a quiet cognition surface is not a warehouse fault, and
+    the GPU strip must still render.
     """
-    # cognition_metrics is parked — see warehouse_ingest. Until the table is
-    # recreated through the C++ Kudu client, the strip shows GPU channels only
-    # and the cognition rows are simply absent rather than faked.
-    _ = window_s
-    return []
+    from gaius.engine.services.warehouse_ingest import series_id_of
+    from gaius.engine.services.waterfall_drivers import cognition_channel_names
 
-
-async def fetch_gpu_metrics(window_s: int) -> list[dict[str, Any]]:
-    """SELECT gpu_metrics_tier0 through devenv Postgres impala_fdw. Fail-fast."""
+    names = cognition_channel_names()
+    if not names:
+        return []
+    by_sid = {series_id_of(f"cog.{n}"): n for n in names}
     end_ns = int(time.time() * 1_000_000_000)
     start_ns = end_ns - int(window_s) * 1_000_000_000
+    hour = end_ns // 1_000_000_000 // 3600
     async with _conn_lock():
         conn = await _warehouse_conn()
         try:
             recs = await conn.fetch(
                 """
-                SELECT ts_ns, gpu_index, power_w, util_pct
-                  FROM gpu_metrics_tier0
-                 WHERE ts_ns >= $1 AND ts_ns < $2
-                 ORDER BY ts_ns, gpu_index
+                SELECT ts_ns, series_id, val_d
+                  FROM signal_tier0
+                 WHERE epoch_hour >= $1 AND ts_ns >= $2 AND ts_ns < $3
+                   AND series_id = ANY($4::bigint[])
                 """,
-                start_ns,
-                end_ns,
+                hour - 1, start_ns, end_ns, list(by_sid),
+            )
+        except Exception as e:
+            await _drop_warehouse_conn()
+            raise RuntimeError(f"{GURU_WAREHOUSE}\n  cognition query: {e}") from e
+    return [
+        {"ts_ns": int(r["ts_ns"]), "channel": by_sid[int(r["series_id"])], "val_d": r["val_d"]}
+        for r in recs
+    ]
+
+
+async def fetch_gpu_metrics(window_s: int) -> list[dict[str, Any]]:
+    """Power/util series from signal_tier0 through impala_fdw kudu_scan. Fail-fast."""
+    from gaius.engine.services.warehouse_ingest import series_id_of
+
+    sids = [series_id_of("dcgm.power_mw"), series_id_of("dcgm.gpu_util_pct")]
+    end_ns = int(time.time() * 1_000_000_000)
+    start_ns = end_ns - int(window_s) * 1_000_000_000
+    hour = end_ns // 1_000_000_000 // 3600
+    async with _conn_lock():
+        conn = await _warehouse_conn()
+        try:
+            recs = await conn.fetch(
+                """
+                SELECT ts_ns, gpu, series_id, val_i
+                  FROM signal_tier0
+                 WHERE epoch_hour >= $1 AND ts_ns >= $2 AND ts_ns < $3
+                   AND series_id = ANY($4::bigint[])
+                 ORDER BY ts_ns, gpu
+                """,
+                hour - 1, start_ns, end_ns, sids,
             )
         except Exception as e:
             await _drop_warehouse_conn()
             raise RuntimeError(f"{GURU_WAREHOUSE}\n  query: {e}") from e
     out = [dict(r) for r in recs]
     for r in out:
-        if r.get("ts_ns") is None or r.get("gpu_index") is None:
-            raise RuntimeError(
-                f"{GURU_WAREHOUSE}\n  NULL ts_ns/gpu_index from gpu_metrics"
-            )
+        if r.get("ts_ns") is None or r.get("gpu") is None:
+            raise RuntimeError(f"{GURU_WAREHOUSE}\n  NULL ts_ns/gpu from signal_tier0")
     return out
 
 

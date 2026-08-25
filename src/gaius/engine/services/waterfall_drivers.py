@@ -76,8 +76,18 @@ def _clip(x: float) -> float:
     return x
 
 
-def parse_prom_text(text: str) -> list[tuple[str, dict[str, str], float]]:
-    out: list[tuple[str, dict[str, str], float]] = []
+def parse_prom_text_raw(text: str) -> list[tuple[str, dict[str, str], str]]:
+    """Prometheus text as (metric, labels, value TEXT). The warehouse ingest
+    types each series itself (INT stays INT, float becomes DECIMAL); handing it
+    a float here would widen integers before they are ever seen."""
+    out: list[tuple[str, dict[str, str], str]] = []
+    for metric, labels, val in _parse_prom_lines(text):
+        out.append((metric, labels, val))
+    return out
+
+
+def _parse_prom_lines(text: str) -> list[tuple[str, dict[str, str], str]]:
+    out: list[tuple[str, dict[str, str], str]] = []
     for raw in (text or "").splitlines():
         if not raw or raw.startswith("#"):
             continue
@@ -89,16 +99,21 @@ def parse_prom_text(text: str) -> list[tuple[str, dict[str, str], float]]:
                     continue
                 k, v = part.split("=", 1)
                 labels[k.strip()] = v.strip().strip('"')
-            try:
-                out.append((m.group(1), labels, float(m.group(3))))
-            except ValueError:
-                continue
+            out.append((m.group(1), labels, m.group(3)))
             continue
         p = _PROM_PLAIN.match(raw)
         if not p:
             continue
+        out.append((p.group(1), {}, p.group(2)))
+    return out
+
+
+def parse_prom_text(text: str) -> list[tuple[str, dict[str, str], float]]:
+    """Drivers render floats; the warehouse ingest uses parse_prom_text_raw."""
+    out: list[tuple[str, dict[str, str], float]] = []
+    for metric, labels, val in _parse_prom_lines(text):
         try:
-            out.append((p.group(1), {}, float(p.group(2))))
+            out.append((metric, labels, float(val)))
         except ValueError:
             continue
     return out
