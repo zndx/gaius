@@ -6393,6 +6393,7 @@ Respond with:
             /health inference          - Check inference endpoints
             /health clt-labels         - Tape-hot CLT features with display prefLabels
             /health diagnose <service> - Deep diagnostics for a service
+            /health wedged             - Probe endpoints directly for a hung vLLM
             /health fix [service]      - Fix unhealthy services (via engine gRPC)
             /health fix <issue#>       - Re-run ACP investigation for GitHub issue
             /health fix --dry-run      - Show fix plan without executing
@@ -6449,6 +6450,10 @@ Respond with:
         # Handle fix subcommand
         if subcmd == "fix":
             return await self._health_fix(checker, subargs)
+
+        # Handle wedged subcommand - direct endpoint probe, no engine needed
+        if subcmd == "wedged":
+            return await self._health_wedged()
 
         # Handle close subcommand - verify and close GitHub issue via ACP
         if subcmd == "close":
@@ -6848,6 +6853,18 @@ Respond with:
                             )
                             restarted.append(name)
 
+                    # The orchestrator can report a wedged endpoint as
+                    # healthy — its own status went stale when the endpoint
+                    # stopped answering. Probe the host regardless.
+                    wedged = await self._fix_wedged_endpoints(dry_run)
+                    if wedged is not None:
+                        wedged["restarted"] = restarted
+                        wedged["note"] = (
+                            "Orchestrator reported no unhealthy endpoint, but a "
+                            "direct probe found one wedged. " + wedged["note"]
+                        )
+                        return wedged
+
                     return {
                         "service": service,
                         "restarted": restarted,
@@ -6855,6 +6872,13 @@ Respond with:
                     }
 
                 except Exception as e:
+                    # Orchestrator.status is exactly what a wedged endpoint
+                    # blocks, so a timeout here is not evidence the engine is
+                    # off. Probe the endpoints directly before blaming it.
+                    wedged = await self._fix_wedged_endpoints(dry_run)
+                    if wedged is not None:
+                        wedged["orchestrator_error"] = str(e)
+                        return wedged
                     return {
                         "error": f"Engine not available: {e}",
                         "guru_meditation": "#GR.00000001.ENGINEOFF",
@@ -7297,6 +7321,92 @@ Respond with:
                     "guru_meditation": "#HO.00000001.CHECKFAIL",
                     "remediation": "Check engine logs: journalctl -u gaius-engine -n 50",
                 }
+
+    async def _health_wedged(self) -> dict:
+        """Report any wedged inference endpoint. Detection only, no signals.
+
+        Deliberately bypasses the engine: a wedged endpoint blocks the
+        orchestrator, so anything that asks Orchestrator.status first cannot
+        see the very failure it is looking for.
+        """
+        from .health.wedged_endpoint import scan_endpoints, summarize
+
+        probes = await scan_endpoints()
+        report = summarize(probes)
+        if not probes:
+            report["note"] = "No vLLM endpoints are running on this host."
+        elif report["wedged"]:
+            report["detail"] = [p.guru_report() for p in probes if p.is_wedged]
+        else:
+            report["note"] = "All endpoints answered."
+        return report
+
+    async def _fix_wedged_endpoints(self, dry_run: bool = False) -> dict | None:
+        """Detect and clear wedged vLLM endpoints without the orchestrator.
+
+        A wedged endpoint keeps its port bound, its process alive and its GPU
+        memory held while answering nothing — and it blocks the orchestrator,
+        so the usual `/health fix endpoints` path cannot even see it. This
+        probes the host directly and ends the hung process; the engine's own
+        supervision then starts a replacement.
+
+        Returns None when nothing is wedged, so callers can fall through to
+        their existing error handling.
+        """
+        from .health.wedged_endpoint import (
+            GURU_WEDGED,
+            remediate_wedged,
+            scan_endpoints,
+            summarize,
+        )
+
+        probes = await scan_endpoints()
+        wedged = [p for p in probes if p.is_wedged]
+        if not wedged:
+            return None
+
+        report = summarize(probes)
+        report["service"] = "endpoints"
+        report["guru_meditation"] = GURU_WEDGED
+
+        if dry_run:
+            report["dry_run"] = True
+            report["would_restart"] = [p.port for p in wedged]
+            report["note"] = (
+                "Run without --dry-run to end the hung process; the engine "
+                "restarts it."
+            )
+            return report
+
+        cleared, failed = [], []
+        for probe in wedged:
+            outcome = await remediate_wedged(probe)
+            entry = {
+                "port": probe.port,
+                "pid": probe.pid,
+                "model": probe.model,
+                "signalled": outcome.signalled,
+            }
+            if outcome.success:
+                cleared.append(entry)
+            else:
+                entry["error"] = outcome.error
+                failed.append(entry)
+
+        report["cleared"] = cleared
+        report["failed"] = failed
+        report["success"] = bool(cleared) and not failed
+        report["note"] = (
+            "Hung endpoint(s) ended; the engine's health loop starts a "
+            "replacement. A cold start takes several minutes — watch "
+            "/gpu status."
+        )
+        if failed:
+            report["remediation"] = (
+                "Could not end every hung process.\n"
+                "  Try: devenv processes restart gaius-engine"
+            )
+        return report
 
     async def _health_fix_issue(self, issue_number: int, dry_run: bool = False) -> dict:
         """Re-run ACP investigation for a GitHub issue.

@@ -1980,6 +1980,61 @@ class DiscoverFixStrategy(ServiceFixStrategy):
         ]
 
 
+class WedgedEndpointFixStrategy(ServiceFixStrategy):
+    """Fix a vLLM that is alive, bound, and answering nothing.
+
+    Distinct from EndpointFixStrategy, which asks the orchestrator what is
+    unhealthy. A wedged endpoint is precisely what blocks the orchestrator,
+    and its cached status often still reads HEALTHY — so this path probes the
+    host directly and never consults the engine.
+
+    Guru: #EP.00000019.WEDGED
+    """
+
+    def __init__(self):
+        super().__init__("wedged")
+
+    def create_fix_actions(
+        self, check_result: dict | None = None
+    ) -> list[RemediationAction]:
+        return [
+            RemediationAction(
+                name="Probe endpoints directly",
+                description=(
+                    "Classify every vLLM on this host: healthy, starting, "
+                    "wedged or down — without the orchestrator"
+                ),
+                command=(
+                    'uv run gaius-cli --cmd "/health wedged" --format json'
+                ),
+                safety=SafetyLevel.SAFE,
+                timeout=90,
+            ),
+            RemediationAction(
+                name="End the hung endpoint",
+                description=(
+                    "SIGTERM then SIGKILL the wedged process; the engine's "
+                    "health loop starts a replacement. Endpoints younger than "
+                    "the startup floor are never signalled."
+                ),
+                command=(
+                    'uv run gaius-cli --cmd "/health fix endpoints" --format json'
+                ),
+                safety=SafetyLevel.CAUTION,
+                timeout=180,
+            ),
+            RemediationAction(
+                name="Verify the replacement",
+                description="Confirm the endpoint answers again",
+                command=(
+                    'uv run gaius-cli --cmd "/gpu status" --format json'
+                ),
+                safety=SafetyLevel.SAFE,
+                timeout=120,
+            ),
+        ]
+
+
 SERVICE_STRATEGIES: dict[str, ServiceFixStrategy] = {
     "discover": DiscoverFixStrategy(),
     "engine": EngineFixStrategy(),
@@ -1994,6 +2049,8 @@ SERVICE_STRATEGIES: dict[str, ServiceFixStrategy] = {
     "all": AllServicesFixStrategy(),
     "endpoints": EndpointFixStrategy(),
     "inference": EndpointFixStrategy(),  # Alias
+    "wedged": WedgedEndpointFixStrategy(),
+    "hung": WedgedEndpointFixStrategy(),  # Alias
     "evolution": EvolutionFixStrategy(),
     "evolve": EvolutionFixStrategy(),  # Alias
     "dataset": DatasetFixStrategy(),
