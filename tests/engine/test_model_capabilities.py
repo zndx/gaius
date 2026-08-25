@@ -44,6 +44,9 @@ def test_agents_conf_thinking_is_primary() -> None:
     extra = thinking.endpoint.extra_args
     assert "--reasoning-parser" in extra
     assert "qwen3" in extra
+    assert "--enable-auto-tool-choice" in extra
+    assert "--tool-call-parser" in extra
+    assert "qwen3_coder" in extra
     assert "--enable-prefix-caching" in extra
     assert "--default-chat-template-kwargs" in extra
     assert "instruct" not in cfg.agents
@@ -65,3 +68,9 @@ def test_registry_registers_qwen() -> None:
     spec = get_model_registry().get("Qwen/Qwen3.8-27B")
     assert spec is not None
     assert spec.capability_labels()[0] == "thinking"
+    assert spec.vllm_config is not None
+    assert spec.vllm_config.tool_call_parser == "qwen3_coder"
+    assert spec.vllm_config.enable_auto_tool_choice is True
+    args = spec.vllm_config.to_cli_args()
+    assert "--enable-auto-tool-choice" in args
+    assert "--tool-call-parser=qwen3_coder" in args

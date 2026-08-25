@@ -714,6 +714,8 @@ QWEN38_27B = ModelSpec(
         enforce_eager=True,
         swap_space=8,
         reasoning_parser="qwen3",
+        tool_call_parser="qwen3_coder",
+        enable_auto_tool_choice=True,
         extra_args={
             "default-chat-template-kwargs": (
                 '{"enable_thinking":true,"preserve_thinking":true}'
