@@ -4,14 +4,11 @@ Iceberg analog without Kudu `DROP RANGE` double-counts UNION. The soak
 loop analoged hours and sometimes missed the drop because **no scheduler
 owned the workflow**.
 
-Clocks now:
+Clock is **Gaius pg_cron on zndx_gaius :5444** (`gpu-metrics-settle` at
+`:05`). It inserts `scheduled_tasks.gpu_metrics_settle`. The engine
+runs the walk / `SELECT gpu_metrics_settle()` on the warehouse DSN
+(`:5455`). That database holds the foreign tables; it is not the clock.
 
-1. **pg_cron on Signals :5455** — `public.gpu_metrics_settle()` at `:05`
-   every hour. Iceberg verify, then `DROP RANGE VALUE = <closed hour>`.
-   Fail-closed if analog is missing. Live hour stays on Kudu.
-2. **pg_cron on Gaius :5444** — inserts `scheduled_tasks.gpu_metrics_settle`;
-   engine STP spawns the same walk (`SIGNALS_ROOT`).
-3. **Airflow DAG `gpu_metrics_settle`** — Metaflow work, analog if Iceberg
-   is empty, then verify + drop.
+Airflow DAG `gpu_metrics_settle` is the platform Metaflow clock.
 
 Guru `#SL.00000026.SETTLE`.
