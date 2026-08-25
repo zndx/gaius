@@ -63,7 +63,7 @@ def _looks_like_ticker(symbol: str) -> bool:
     return 1 <= len(s) <= 5 and s.isalpha()
 
 
-def _parse_list(raw: str, what: str) -> list[Any]::
+def _parse_list(raw: str, what: str) -> list[Any]:
     text = (raw or "").strip()
     if not text:
         return []

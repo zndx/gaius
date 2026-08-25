@@ -5,22 +5,6 @@ entry points (``start_colpali_endpoint``, ``embed_texts``) so existing
 callers do not fork, but the weights are ``lightonai/ColBERT-Zero``.
 """
 
-Manages ColQwen2.5 multi-vector embedding model lifecycle with GPU allocation.
-Unlike standard embedding models, ColPali produces multi-vector embeddings
-(one 128-dim vector per token for colnomic) for late-interaction retrieval.
-
-Key Differences from EmbeddingController:
-    - Multi-vector output: [batch, num_tokens, 128] instead of [batch, dim]
-    - Uses ColQwen2.5 from colpali-engine instead of SentenceTransformer
-    - Supports both text and image embeddings (multimodal)
-    - Designed for late-interaction similarity (MaxSim) scoring
-    - colnomic projects from 3584 hidden dim to 128 embedding dim
-
-GPU Resource Coordination:
-    Similar to EmbeddingController, uses CUDA device placement via
-    device_map parameter for ColQwen2.5 model loading.
-"""
-
 import asyncio
 import logging
 import os
