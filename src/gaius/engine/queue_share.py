@@ -70,19 +70,10 @@ def require_uuid7(value: str) -> str:
 
 
 def leaf_for_gpu_tokens(n: int, *, offline: bool = False) -> ResourceClass:
-    """heavy/medium/light from GPU requirement; extract if offline; compute if 0."""
-    from gaius.engine.sentinel_claim import COMPUTE, EXTRACT, HEAVY, LIGHT, MEDIUM
+    """light=1 GPU, medium=2 consecutive, heavy=4 consecutive; extract if offline."""
+    from gaius.engine.sentinel_claim import class_for_gpu_tokens
 
-    tokens = int(n)
-    if tokens <= 0:
-        return COMPUTE
-    if offline:
-        return EXTRACT
-    if tokens >= 4:
-        return HEAVY
-    if tokens >= 2:
-        return MEDIUM
-    return LIGHT
+    return class_for_gpu_tokens(n, offline=offline)
 
 
 def _addr() -> str:
@@ -146,11 +137,19 @@ def _send(req) -> object:
     channel = grpc.insecure_channel(_addr())
     try:
         stub = spb_grpc.SchedulerStub(channel)
-        resp = stub.RequestQueueShare(req, timeout=5.0)
+        resp = stub.RequestQueueShare(req, timeout=1.5)
     except grpc.RpcError as e:
-        if e.code() == grpc.StatusCode.UNIMPLEMENTED:
+        # Signals has not implemented persist yet, or Scheduler is down.
+        # Do not take down Engine/UI. REJECTED is the only hard no-admit.
+        transient = (
+            grpc.StatusCode.UNIMPLEMENTED,
+            grpc.StatusCode.DEADLINE_EXCEEDED,
+            grpc.StatusCode.UNAVAILABLE,
+        )
+        if e.code() in transient:
             log.info(
-                "RequestQueueShare UNIMPLEMENTED (Signals behind proto) wrk=%s queue=%s",
+                "RequestQueueShare %s (Signals not ready) wrk=%s queue=%s",
+                e.code().name,
                 req.workloads[0].wrk if req.workloads else "",
                 req.shares[0].queue if req.shares else "",
             )
@@ -232,12 +231,18 @@ def list_queue_share_requests(
             spb.ListQueueShareRequestsRequest(
                 peer=peer, queue=queue, since_ns=since_ns, limit=limit
             ),
-            timeout=5.0,
+            timeout=1.5,
         )
     except grpc.RpcError as e:
-        if e.code() == grpc.StatusCode.UNIMPLEMENTED:
+        transient = (
+            grpc.StatusCode.UNIMPLEMENTED,
+            grpc.StatusCode.DEADLINE_EXCEEDED,
+            grpc.StatusCode.UNAVAILABLE,
+        )
+        if e.code() in transient:
             log.info(
-                "ListQueueShareRequests UNIMPLEMENTED (Signals behind proto) peer=%s",
+                "ListQueueShareRequests %s (Signals not ready) peer=%s",
+                e.code().name,
                 peer,
             )
             return []

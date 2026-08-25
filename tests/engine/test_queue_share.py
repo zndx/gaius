@@ -178,14 +178,28 @@ class _Unavailable(spbg.SchedulerServicer):
         context.abort(grpc.StatusCode.UNAVAILABLE, "engine down")
 
 
-def test_other_grpc_error_is_sharefail(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_unavailable_does_not_kill_admit(monkeypatch: pytest.MonkeyPatch) -> None:
     server, addr = _serve(_Unavailable())
+    monkeypatch.setenv("SIGNALS_ENGINE_TARGET", addr)
+    try:
+        assert request_queue_share("thinking", HEAVY) is False
+        assert list_queue_share_requests() == []
+        assert notify_admit("optillm", COMPUTE) is False
+    finally:
+        server.stop(grace=0)
+
+
+class _Internal(spbg.SchedulerServicer):
+    def RequestQueueShare(self, request, context):
+        context.abort(grpc.StatusCode.INTERNAL, "persist boom")
+
+
+def test_internal_grpc_error_is_sharefail(monkeypatch: pytest.MonkeyPatch) -> None:
+    server, addr = _serve(_Internal())
     monkeypatch.setenv("SIGNALS_ENGINE_TARGET", addr)
     try:
         with pytest.raises(RuntimeError, match=r"#YK\.00000007\.SHAREFAIL"):
             request_queue_share("thinking", HEAVY)
-        with pytest.raises(RuntimeError, match=r"#YK\.00000007\.SHAREFAIL"):
-            list_queue_share_requests()
     finally:
         server.stop(grace=0)
 
