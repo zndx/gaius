@@ -92,6 +92,7 @@ impl Lattice {
                 clock_json: extras.clock_json,
                 tools_json: extras.tools_json,
                 tool_choice: extras.tool_choice,
+                messages_json: extras.messages_json,
             })
             .await?
             .into_inner();
@@ -122,6 +123,11 @@ pub struct CompleteExtras {
     /// "auto" | "required" | "none" | named-tool JSON. Empty = engine default
     /// ("auto" whenever tools_json is set).
     pub tool_choice: String,
+    /// Full OpenAI messages[] as a JSON array string. Empty keeps the
+    /// prompt/system_prompt pair. A tool loop must set this — a flattened
+    /// prompt loses the tool_call/tool_result pairing and the model re-issues
+    /// calls it has already made.
+    pub messages_json: String,
 }
 
 pub struct CompleteOut {

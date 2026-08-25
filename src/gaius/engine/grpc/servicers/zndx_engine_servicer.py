@@ -31,6 +31,58 @@ ASK_REPLICAS = ("interpretable", "interpretable-b")
 ASK_SAE = ("ask-sae",)
 _HEALTHY_STATUSES = frozenset({"healthy", "running", "ready"})
 
+_MESSAGE_ROLES = frozenset({"system", "developer", "user", "assistant", "tool"})
+
+
+def parse_messages_json(raw: str) -> list[dict] | None:
+    """Validate CompleteRequest.messages_json into an OpenAI messages[].
+
+    Empty returns None, meaning "use the system_prompt/prompt pair". A tool
+    loop must send this: flattening assistant tool_calls and tool results into
+    one prompt string drops the pairing the chat template renders, and the
+    model re-issues calls it has already made.
+    """
+    import json as _json
+
+    value = (raw or "").strip()
+    if not value:
+        return None
+    try:
+        messages = _json.loads(value)
+    except _json.JSONDecodeError as e:
+        raise ValueError(
+            f"messages_json is not valid JSON: {e}\n"
+            "  Guru: #GR.00000013.MESSAGES"
+        ) from e
+    if not isinstance(messages, list) or not messages:
+        raise ValueError(
+            "messages_json must be a non-empty OpenAI messages[] array; send "
+            "an empty string to use prompt/system_prompt.\n"
+            "  Guru: #GR.00000013.MESSAGES"
+        )
+    for i, m in enumerate(messages):
+        if not isinstance(m, dict):
+            raise ValueError(
+                f"messages_json[{i}] must be an object.\n"
+                "  Guru: #GR.00000013.MESSAGES"
+            )
+        role = m.get("role")
+        if role not in _MESSAGE_ROLES:
+            raise ValueError(
+                f"messages_json[{i}].role={role!r} is not one of "
+                f"{sorted(_MESSAGE_ROLES)}.\n"
+                "  Guru: #GR.00000013.MESSAGES"
+            )
+        # A tool turn without its id cannot be paired with the call it answers.
+        if role == "tool" and not (m.get("tool_call_id") or "").strip():
+            raise ValueError(
+                f"messages_json[{i}] is a tool turn with no tool_call_id; the "
+                "chat template cannot pair it with the call it answers.\n"
+                "  Guru: #GR.00000013.MESSAGES"
+            )
+    return messages
+
+
 _TOOL_CHOICE_MODES = frozenset({"auto", "required", "none"})
 
 
@@ -282,10 +334,23 @@ class GaiusZndxEngineServicer(zpb_grpc.EngineServicer):
             )
 
         try:
+            messages = parse_messages_json(getattr(request, "messages_json", ""))
+        except ValueError as e:
+            await context.abort(grpc.StatusCode.INVALID_ARGUMENT, str(e))
+        if messages is not None:
+            logger.info(
+                "zndx Complete messages capability=%s n_messages=%s roles=%s",
+                agent_alias,
+                len(messages),
+                ",".join(m.get("role", "?") for m in messages[-4:]),
+            )
+
+        try:
             result = await router.complete(
                 prompt=request.prompt,
                 agent_alias=agent_alias,
                 system_prompt=request.system_prompt or None,
+                messages=messages,
                 temperature=request.temperature or 0.7,
                 max_tokens=request.max_tokens or 2048,
                 task_type="zndx_complete",

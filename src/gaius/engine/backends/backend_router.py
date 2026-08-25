@@ -473,6 +473,7 @@ class BackendRouter:
         reasoning_effort: str = "xhigh",
         preserve_thinking: bool = True,
         extra_body: dict[str, Any] | None = None,
+        messages: list[dict[str, Any]] | None = None,
     ) -> InferenceResponse:
         """Convenience method for simple completions.
 
@@ -480,6 +481,10 @@ class BackendRouter:
             prompt: User prompt
             agent_alias: Agent to use
             system_prompt: Optional system prompt
+            messages: Full OpenAI messages[], used verbatim instead of the
+                system_prompt/prompt pair. A tool loop needs this: assistant
+                tool_calls and their tool results must reach the chat template
+                as their own turns, or the model re-issues calls it has made.
             temperature: Sampling temperature
             max_tokens: Maximum tokens
             technique: Optional optillm technique
@@ -489,10 +494,11 @@ class BackendRouter:
         Returns:
             InferenceResponse with exchange_id/request_hash for external backends
         """
-        messages = []
-        if system_prompt:
-            messages.append({"role": "system", "content": system_prompt})
-        messages.append({"role": "user", "content": prompt})
+        if messages is None:
+            messages = []
+            if system_prompt:
+                messages.append({"role": "system", "content": system_prompt})
+            messages.append({"role": "user", "content": prompt})
 
         # Auto-build source_context if task_type provided but not full context
         if source_context is None and task_type:

@@ -367,6 +367,69 @@ fn tool_calls_json(calls: &[ParsedToolCall]) -> serde_json::Value {
         .collect::<Vec<_>>())
 }
 
+/// Rebuild the harness turns as an OpenAI `messages[]` for
+/// `CompleteRequest.messages_json`, with `system` as the leading system turn.
+///
+/// `flatten_messages` collapses the transcript into one prompt string, and
+/// `thinking_complete_prompt` then keeps only lines that begin with
+/// "Assistant:" or "Tool result". That drops the `Assistant tool_calls:` line
+/// outright and truncates every tool result to its first line — so a `ps aux`
+/// or `read_file` result reached the model as a single fragment with no call
+/// attached to it. The model could not tell the work had been done and
+/// re-issued the same command, forever. Tool turns must reach the chat
+/// template as their own turns.
+pub fn harness_messages(messages: &[ChatMessage], system: &str) -> serde_json::Value {
+    let mut out = vec![json!({"role": "system", "content": system})];
+    for m in messages {
+        match m.role.as_str() {
+            // Already merged into `system` by flatten_messages.
+            "system" | "developer" => {}
+            "assistant" => {
+                let text = rewrite_xai_identity(&message_text(&m.content));
+                match m.tool_calls.as_ref() {
+                    Some(calls) => out.push(json!({
+                        "role": "assistant",
+                        "content": text,
+                        "tool_calls": calls,
+                    })),
+                    None if !text.trim().is_empty() => {
+                        out.push(json!({"role": "assistant", "content": text}))
+                    }
+                    None => {}
+                }
+            }
+            "tool" => {
+                // vLLM pairs the result to its call by id; without one the
+                // template cannot render a <tool_response> for it.
+                let id = m.tool_call_id.as_deref().unwrap_or("").trim().to_string();
+                if id.is_empty() {
+                    continue;
+                }
+                out.push(json!({
+                    "role": "tool",
+                    "tool_call_id": id,
+                    "content": message_text(&m.content),
+                }));
+            }
+            _ => {
+                let text = rewrite_xai_identity(&message_text(&m.content));
+                if !text.trim().is_empty() {
+                    out.push(json!({"role": "user", "content": text}));
+                }
+            }
+        }
+    }
+    serde_json::Value::Array(out)
+}
+
+/// True when the transcript carries a tool turn — the case the flattened
+/// prompt cannot represent.
+pub fn has_tool_turns(messages: &[ChatMessage]) -> bool {
+    messages
+        .iter()
+        .any(|m| m.role == "tool" || m.tool_calls.is_some())
+}
+
 /// Serialize the harness `tools[]` for `CompleteRequest.tools_json`.
 /// Anything that is not a non-empty array is a text-only Complete.
 pub fn tools_json(tools: Option<&serde_json::Value>) -> String {
@@ -933,9 +996,20 @@ async fn stream_complete(
     clock: Option<serde_json::Value>,
     tools_json: String,
     tool_choice: String,
+    turns: Vec<ChatMessage>,
 ) -> Response {
     let (tx, rx) = tokio::sync::mpsc::channel::<String>(32);
-    let pin_est = estimate_tokens(system.len() + prompt.len());
+    // A structured turn sends the whole transcript, not the narrowed prompt;
+    // estimate against what actually goes on the wire.
+    let payload_chars = if turns.is_empty() {
+        prompt.len()
+    } else {
+        turns
+            .iter()
+            .map(|m| message_text(&m.content).len())
+            .sum::<usize>()
+    };
+    let pin_est = estimate_tokens(system.len() + payload_chars);
     tokio::spawn(async move {
         let client = if ask_write::is_small_ask(&cap) {
             "ask"
@@ -1018,11 +1092,19 @@ async fn stream_complete(
             .as_ref()
             .map(|c| c.to_string())
             .unwrap_or_default();
+        // first_system is the system turn the engine will send; the harness
+        // turns follow it verbatim so tool_calls keep their results.
+        let messages_json = if turns.is_empty() {
+            String::new()
+        } else {
+            harness_messages(&turns, &first_system).to_string()
+        };
         let extras = CompleteExtras {
             timezone: tz.clone(),
             clock_json: clock_json.clone(),
             tools_json,
             tool_choice,
+            messages_json,
         };
         let first = complete_ticked(
             state.lattice.clone(),
@@ -1248,11 +1330,15 @@ pub async fn chat_completions(
     } else {
         tool_choice_str(req.tool_choice.as_ref())
     };
+    // Ask has no tool harness, so its transcript flattens without loss. The
+    // Terminal's does not: a tool turn only survives as its own message.
+    let structured = !small && (has_tool_turns(&req.messages) || !tools_json.is_empty());
     tracing::info!(
         model = req.model.as_deref().unwrap_or("-"),
         system_chars = system.len(),
         prompt_chars = intent.len(),
         tools_chars = tools_json.len(),
+        structured,
         // "-" when no tools are declared: tool_choice is meaningless there.
         tool_choice = %if tools_json.is_empty() {
             "-"
@@ -1281,9 +1367,15 @@ pub async fn chat_completions(
             req.clock.clone(),
             tools_json,
             tool_choice,
+            if structured { req.messages } else { Vec::new() },
         )
         .await;
     }
+    let messages_json = if structured {
+        harness_messages(&req.messages, &system).to_string()
+    } else {
+        String::new()
+    };
     let _inflight = state.complete_watch.guard(&cap, client, &intent);
     match state
         .lattice
@@ -1307,6 +1399,7 @@ pub async fn chat_completions(
                     .unwrap_or_default(),
                 tools_json,
                 tool_choice,
+                messages_json,
             },
         )
         .await
@@ -1582,6 +1675,111 @@ gaius__theta_sitrep
         assert!(ask_write::is_small_ask("interpretable"));
         assert!(ask_write::is_small_ask("ask-sae"));
         assert!(!ask_write::is_small_ask("thinking"));
+    }
+
+    fn tool_loop_turns() -> Vec<ChatMessage> {
+        vec![
+            ChatMessage {
+                role: "system".into(),
+                content: json!("You are Grok released by xAI."),
+                ..Default::default()
+            },
+            ChatMessage {
+                role: "user".into(),
+                content: json!("<user_query>\nwhat port is vllm on?\n</user_query>"),
+                ..Default::default()
+            },
+            ChatMessage {
+                role: "assistant".into(),
+                content: json!(""),
+                tool_calls: Some(json!([{
+                    "id": "gaius-call-0",
+                    "type": "function",
+                    "function": {"name": "run_terminal_command",
+                                 "arguments": "{\"command\": \"ps aux | grep vllm\"}"}
+                }])),
+                tool_call_id: None,
+            },
+            ChatMessage {
+                role: "tool".into(),
+                content: json!(
+                    "rch 468868 vllm serve Qwen/Qwen3.8-27B --port 8081\n                     rch 473186 VLLM::EngineCore\n                     rch 474932 VLLM::Worker_TP0\n                     rch 474933 VLLM::Worker_TP1"
+                ),
+                tool_call_id: Some("gaius-call-0".into()),
+                tool_calls: None,
+            },
+        ]
+    }
+
+    /// The loop this fixes: flattening keeps only lines that start with
+    /// "Assistant:" or "Tool result", so a multi-line tool result lost every
+    /// line but its first and the tool_calls line vanished entirely.
+    #[test]
+    fn flattening_truncates_multiline_tool_results() {
+        let (_, body) = flatten_messages(&tool_loop_turns());
+        let kept = ask_write::thinking_complete_prompt(&body);
+        assert!(kept.contains("--port 8081"));
+        // Everything after the first line of the result is gone.
+        assert!(!kept.contains("VLLM::Worker_TP1"));
+        assert!(!kept.contains("VLLM::EngineCore"));
+        // And the model never learns which call produced it.
+        assert!(!kept.contains("run_terminal_command"));
+    }
+
+    #[test]
+    fn harness_messages_keeps_the_whole_tool_result() {
+        let v = harness_messages(&tool_loop_turns(), "SYSTEM");
+        let arr = v.as_array().unwrap();
+        let roles: Vec<&str> = arr.iter().map(|m| m["role"].as_str().unwrap()).collect();
+        assert_eq!(roles, vec!["system", "user", "assistant", "tool"]);
+        assert_eq!(arr[0]["content"], "SYSTEM");
+
+        let tool = &arr[3];
+        let content = tool["content"].as_str().unwrap();
+        for line in ["--port 8081", "VLLM::EngineCore", "VLLM::Worker_TP1"] {
+            assert!(content.contains(line), "tool result lost {line}");
+        }
+        assert_eq!(tool["tool_call_id"], "gaius-call-0");
+
+        // The call that produced it is paired, by id, as its own turn.
+        let call = &arr[2]["tool_calls"][0];
+        assert_eq!(call["id"], "gaius-call-0");
+        assert_eq!(call["function"]["name"], "run_terminal_command");
+    }
+
+    #[test]
+    fn harness_messages_drops_a_tool_turn_with_no_id() {
+        let turns = vec![
+            ChatMessage {
+                role: "user".into(),
+                content: json!("hi"),
+                ..Default::default()
+            },
+            ChatMessage {
+                role: "tool".into(),
+                content: json!("orphan output"),
+                tool_call_id: None,
+                tool_calls: None,
+            },
+        ];
+        let v = harness_messages(&turns, "S");
+        let roles: Vec<&str> = v
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|m| m["role"].as_str().unwrap())
+            .collect();
+        assert_eq!(roles, vec!["system", "user"]);
+    }
+
+    #[test]
+    fn has_tool_turns_detects_both_sides_of_a_call() {
+        assert!(has_tool_turns(&tool_loop_turns()));
+        assert!(!has_tool_turns(&[ChatMessage {
+            role: "user".into(),
+            content: json!("plain question"),
+            ..Default::default()
+        }]));
     }
 
     #[test]

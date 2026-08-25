@@ -6,6 +6,7 @@ appear in the body. Tests operate at the protobuf boundary with mocked services.
 
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -19,6 +20,7 @@ from gaius.engine.grpc.servicers.zndx_engine_servicer import (
     GaiusZndxEngineServicer,
     build_status_response,
     normalize_tool_choice,
+    parse_messages_json,
     pick_ask_replica,
     resolve_complete_alias,
 )
@@ -309,3 +311,97 @@ class TestCompleteToolCalling:
                 zpb.CompleteRequest(prompt="x", tools_json="[]"), ctx
             )
         assert "TOOLSJSON" in ctx.abort.await_args.args[1]
+
+
+TOOL_LOOP_MESSAGES = [
+    {"role": "system", "content": "You are a CLI agent."},
+    {"role": "user", "content": "what port is vllm on?"},
+    {
+        "role": "assistant",
+        "content": "",
+        "tool_calls": [
+            {
+                "id": "gaius-call-0",
+                "type": "function",
+                "function": {
+                    "name": "run_terminal_command",
+                    "arguments": '{"command": "ps aux | grep vllm"}',
+                },
+            }
+        ],
+    },
+    {
+        "role": "tool",
+        "tool_call_id": "gaius-call-0",
+        "content": "rch 468868 vllm serve --port 8081\nrch 473186 VLLM::EngineCore",
+    },
+]
+
+
+class TestCompleteMessages:
+    """A tool loop needs real turns, not a flattened prompt.
+
+    Flattening drops the assistant tool_calls line and truncates a multi-line
+    tool result to its first line, so the model cannot tell the call already
+    ran and re-issues it forever.
+    """
+
+    def test_empty_means_prompt_pair(self):
+        assert parse_messages_json("") is None
+        assert parse_messages_json("   ") is None
+
+    def test_roundtrips_a_tool_loop(self):
+        parsed = parse_messages_json(json.dumps(TOOL_LOOP_MESSAGES))
+        assert [m["role"] for m in parsed] == ["system", "user", "assistant", "tool"]
+        assert "VLLM::EngineCore" in parsed[3]["content"]
+        assert parsed[3]["tool_call_id"] == "gaius-call-0"
+
+    def test_rejects_tool_turn_without_id(self):
+        broken = [{"role": "tool", "content": "orphan"}]
+        with pytest.raises(ValueError, match="tool_call_id"):
+            parse_messages_json(json.dumps(broken))
+
+    def test_rejects_unknown_role(self):
+        with pytest.raises(ValueError, match="MESSAGES"):
+            parse_messages_json(json.dumps([{"role": "narrator", "content": "x"}]))
+
+    def test_rejects_malformed_and_empty(self):
+        for bad in ("{not json", "[]", '"a string"', "[1,2]"):
+            with pytest.raises(ValueError, match="MESSAGES"):
+                parse_messages_json(bad)
+
+    @pytest.mark.asyncio
+    async def test_messages_reach_the_router_verbatim(self):
+        router = _ok_router()
+        servicer = GaiusZndxEngineServicer(_services(backend_router=router))
+        req = zpb.CompleteRequest(
+            capability="thinking",
+            prompt="flattened fallback",
+            system_prompt="sys",
+            tools_json=TOOLS_JSON,
+            messages_json=json.dumps(TOOL_LOOP_MESSAGES),
+        )
+        await servicer.Complete(req, MagicMock())
+        sent = router.complete.await_args.kwargs["messages"]
+        assert [m["role"] for m in sent] == ["system", "user", "assistant", "tool"]
+        assert "VLLM::EngineCore" in sent[3]["content"]
+
+    @pytest.mark.asyncio
+    async def test_no_messages_keeps_the_prompt_pair(self):
+        router = _ok_router()
+        servicer = GaiusZndxEngineServicer(_services(backend_router=router))
+        await servicer.Complete(
+            zpb.CompleteRequest(capability="thinking", prompt="hi"), MagicMock()
+        )
+        assert router.complete.await_args.kwargs["messages"] is None
+
+    @pytest.mark.asyncio
+    async def test_malformed_messages_abort(self):
+        servicer = GaiusZndxEngineServicer(_services(backend_router=MagicMock()))
+        ctx = MagicMock()
+        ctx.abort = AsyncMock(side_effect=grpc.aio.AbortError("invalid"))
+        with pytest.raises(grpc.aio.AbortError):
+            await servicer.Complete(
+                zpb.CompleteRequest(prompt="x", messages_json="{nope"), ctx
+            )
+        assert "MESSAGES" in ctx.abort.await_args.args[1]
