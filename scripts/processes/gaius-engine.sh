@@ -55,6 +55,7 @@ export GAIUS_HX_CATALOG_NAME="${GAIUS_HX_CATALOG_NAME:-signals}"
 export GAIUS_HX_POLARIS_URI="${GAIUS_HX_POLARIS_URI:-http://127.0.0.1:8181/api/catalog}"
 # Discover 1h strip + 1 Hz warehouse INSERT: devenv Postgres impala_fdw → Kudu.
 export SIGNALS_WAREHOUSE_DSN="${SIGNALS_WAREHOUSE_DSN:-postgresql://signals@127.0.0.1:5455/signals}"
+export GAIUS_WAREHOUSE_DSN="${GAIUS_WAREHOUSE_DSN:-postgresql://gaius:gaius@127.0.0.1:${PGPORT:-5444}/zndx_gaius}"
 export SIGNALS_ROOT="${SIGNALS_ROOT:-$HOME/local/src/wxs/signals}"
 # Engine is the Kudu writer (INSERT gpu_metrics_tier0). Do not start the
 # C++ sidecar ingest from this process.

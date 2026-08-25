@@ -1,8 +1,9 @@
 """Engine warehouse: DCGM → Postgres impala_fdw INSERT → Kudu.
 
-The Gaius engine is the writer. Postgres :5455 `gpu_metrics_tier0`
-(kudu_scan) is the insert path. `gpu_metrics` is the HS2 UNION view of
-hot Kudu ∪ cold Iceberg and is not writable (N3).
+The Gaius engine is the writer. Local zndx_gaius `gpu_metrics_tier0`
+(impala_fdw → system Kudu) is the insert path. `gpu_metrics` is the HS2
+UNION of hot Kudu ∪ cold Iceberg and is not writable (N3). Signals
+:5455 FDW stays; set GAIUS_WAREHOUSE_USE_SIGNALS=1 to use it.
 Guru: #EN.00000031.FDWINGEST
 """
 
@@ -20,7 +21,7 @@ logger = logging.getLogger(__name__)
 GURU = (
     "Engine warehouse ingest via Postgres impala_fdw failed.\n"
     "  Guru: #EN.00000031.FDWINGEST\n"
-    "  Try: psql -h 127.0.0.1 -p 5455 -U signals -d signals "
+    "  Try: psql -h 127.0.0.1 -p 5444 -d zndx_gaius "
     "-c 'INSERT INTO gpu_metrics_tier0 ...'\n"
     "  Or:  /health fix engine"
 )
@@ -31,10 +32,20 @@ _TASK: asyncio.Task[None] | None = None
 
 
 def warehouse_dsn() -> str:
-    return os.environ.get(
-        "SIGNALS_WAREHOUSE_DSN",
-        "postgresql://signals@127.0.0.1:5455/signals",
-    )
+    """Gaius Postgres with impala_fdw. Signals :5455 remains a fallback."""
+    if os.environ.get("GAIUS_WAREHOUSE_DSN"):
+        return os.environ["GAIUS_WAREHOUSE_DSN"]
+    if os.environ.get("GAIUS_WAREHOUSE_USE_SIGNALS", "").lower() in (
+        "1",
+        "true",
+        "yes",
+    ):
+        return os.environ.get(
+            "SIGNALS_WAREHOUSE_DSN",
+            "postgresql://signals@127.0.0.1:5455/signals",
+        )
+    port = os.environ.get("PGPORT", "5444")
+    return f"postgresql://gaius:gaius@127.0.0.1:{port}/zndx_gaius"
 
 
 def sample_gpus() -> list[dict[str, Any]]:

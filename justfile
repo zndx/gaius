@@ -6,6 +6,10 @@ set positional-arguments
 
 # ─── Stack Management ────────────────────────────────────────────
 
+# Register system Impala/Kudu on Gaius zndx_gaius via impala_fdw (Signals FDW stays).
+warehouse-fdw:
+    bash scripts/warehouse/install_impala_fdw.sh
+
 # Start product stack in background (postgres · aeron · engine · …)
 # Used by scripts/systemd_start.sh (Signals lattice peer unit).
 up:

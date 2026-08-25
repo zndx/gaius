@@ -101,6 +101,11 @@
   # Project-specific Metaflow config (instead of ~/.metaflowconfig)
   env.METAFLOW_HOME = "${config.devenv.root}/.metaflow";
 
+  # System Impala/Kudu (Signals-operated on this host). Gaius Postgres is an
+  # FDW client; the postmaster needs this krb5.conf for kudu_scan kinit.
+  env.SIGNALS_ROOT = "${builtins.getEnv "HOME"}/local/src/wxs/signals";
+  env.KRB5_CONFIG = "${config.env.SIGNALS_ROOT}/.devenv/kdc/krb5.conf";
+
   # Kubernetes configuration for RKE2
   # The root-owned /etc/rancher/rke2/rke2.yaml is unreadable by non-root users.
   # Copy it once:

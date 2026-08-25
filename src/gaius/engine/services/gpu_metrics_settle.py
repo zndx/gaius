@@ -29,6 +29,13 @@ def _signals_src() -> Path:
 
 
 def run(*, apply: bool = True, analog: bool = True) -> dict:
+    # Prefer Gaius zndx_gaius FDW (system Impala/Kudu). Signals walk still
+    # defaults SIGNALS_PGPORT=5455 unless we bind the operator database.
+    os.environ.setdefault("SIGNALS_PGHOST", "127.0.0.1")
+    os.environ.setdefault("SIGNALS_PGPORT", os.environ.get("PGPORT", "5444"))
+    os.environ.setdefault("SIGNALS_PGUSER", os.environ.get("PGUSER", "gaius"))
+    os.environ.setdefault("SIGNALS_PGDATABASE", "zndx_gaius")
+    os.environ.setdefault("PGPASSWORD", os.environ.get("PGPASSWORD", "gaius"))
     src = _signals_src()
     if str(src) not in sys.path:
         sys.path.insert(0, str(src))
