@@ -709,6 +709,41 @@ def _seed_drivers() -> None:
 _seed_drivers()
 
 
+# HardwareDriver's channels are the GPU strip and already land in
+# gpu_metrics. Everything else is cognition and belongs in cognition_metrics.
+HARDWARE_DRIVER_NAME = "hardware"
+
+
+def cognition_channel_names() -> tuple[str, ...]:
+    """Channel names the warehouse carries in cognition_metrics."""
+    names: list[str] = []
+    for d in DRIVERS:
+        if d.name == HARDWARE_DRIVER_NAME:
+            continue
+        names.extend(d.channel_names())
+    return tuple(names)
+
+
+def cognition_samples() -> list[Sample]:
+    """Latest cached cognition samples, for the warehouse writer.
+
+    Reads the poller's cache rather than re-sampling: RicciDriver runs an
+    Ollivier curvature pass that must not be driven at ingest cadence.
+    Channels the poller has not filled yet come back ``present=False`` so a
+    gap is recorded as a gap, not as zero.
+    """
+    out: list[Sample] = []
+    for d in DRIVERS:
+        if d.name == HARDWARE_DRIVER_NAME:
+            continue
+        cached = _CACHE.get(d.name)
+        if cached:
+            out.extend(cached)
+        else:
+            out.extend(Sample(n, 0.0, present=False) for n in d.channel_names())
+    return out
+
+
 def all_channel_names() -> tuple[str, ...]:
     names: list[str] = []
     for d in DRIVERS:

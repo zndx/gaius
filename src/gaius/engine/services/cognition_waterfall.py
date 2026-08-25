@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from gaius.engine.services.waterfall_drivers import (
+    ONSET_NAMES,
     all_channel_names,
     onset_envelope,
     reset_for_tests as reset_drivers_for_tests,
@@ -146,11 +147,12 @@ def tick(
     salience: float = 0.0,
     ctx: dict[str, Any] | None = None,
     warehouse_rows: list[dict[str, Any]] | None = None,
+    cognition_rows: list[dict[str, Any]] | None = None,
 ) -> WaterfallState:
     if window_s < 1 or window_s > MAX_WINDOW_S:
         raise ValueError(GURU_WINDOW)
     if warehouse_rows is not None:
-        return tick_from_gpu_rows(warehouse_rows, window_s)
+        return tick_from_gpu_rows(warehouse_rows, window_s, cognition_rows)
     if window_s > LIVE_WINDOW_S:
         raise ValueError(GURU_WAREHOUSE)
     hz = max(1, min(50, int(hz)))
@@ -208,9 +210,17 @@ def tick(
 
 
 def tick_from_gpu_rows(
-    rows: list[dict[str, Any]], window_s: int
+    rows: list[dict[str, Any]],
+    window_s: int,
+    cognition_rows: list[dict[str, Any]] | None = None,
 ) -> WaterfallState:
-    """Build a 1 Hz strip from warehouse GPU rows (Kudu ∪ Iceberg via FDW)."""
+    """Build a 1 Hz strip from warehouse rows (Kudu ∪ Iceberg via FDW).
+
+    Every channel the strip advertises is sourced here. Before cognition was
+    persisted, this filled only gpu-N/util-N and the other eight channels sat
+    permanently at zero while still being advertised — the waterfall looked
+    unwired because it was.
+    """
     from gaius.engine.services.waterfall_color import pack_gpu
     from gaius.engine.services.waterfall_drivers import _IDLE_W, _BUSY_W, _clip
 
@@ -251,7 +261,33 @@ def tick_from_gpu_rows(
             matrix[name_i[gk]][col] = packed
         if uk in name_i:
             matrix[name_i[uk]][col] = _clip(util)
+    envelope = 0.0
+    for r in cognition_rows or []:
+        ch = r.get("channel")
+        if ch is None or ch not in name_i:
+            continue  # a channel the strip does not show (probe rows, retired)
+        raw_ts = r.get("ts_ns")
+        if raw_ts is None:
+            continue
+        col = int((int(raw_ts) // 1_000_000 - start_ms) // 1000)
+        if col < 0:
+            continue
+        if col >= n_cols:
+            col = n_cols - 1
+        if not r.get("present", True):
+            continue  # a gap stays a gap; do not paint it as zero
+        val = float(r.get("value") or 0.0)
+        matrix[name_i[ch]][col] = val
+        if ch in ONSET_NAMES:
+            envelope = max(envelope, abs(val))
+
     last_ts = max(int(r["ts_ns"]) for r in rows)
+    try:
+        from gaius.engine.metrics import EngineMetrics
+
+        EngineMetrics.get_instance().set_cognition_tremor(envelope)
+    except Exception:
+        pass
     return WaterfallState(
         window_s=window_s,
         epoch_unix_ms=last_ts // 1_000_000,
@@ -259,7 +295,60 @@ def tick_from_gpu_rows(
         matrix=matrix,
         driver="warehouse",
         hz=1,
+        salience=envelope,
     )
+
+
+# The strip reads tier0, not the UNION views. Its window is at most
+# LIVE_WINDOW_S of wall clock, always inside the open Kudu hour, so tier1 can
+# contribute nothing and scanning Iceberg is pure cost. It is also the robust
+# choice: Impala reads an Iceberg table that has never been written
+# (current-snapshot-id = -1) as snapshot 0 and the whole UNION fails with
+# "Cannot find snapshot with ID 0" until tier-up lands a first HDF5 commit.
+# The views remain the analytical surface for historical windows.
+def _warehouse_dsn() -> str:
+    import os
+
+    return os.environ.get(
+        "SIGNALS_WAREHOUSE_DSN",
+        "postgresql://signals@127.0.0.1:5455/signals",
+    )
+
+
+async def fetch_cognition_metrics(window_s: int) -> list[dict[str, Any]]:
+    """SELECT cognition_metrics through impala_fdw (Kudu tier0 ∪ Iceberg tier1).
+
+    Same transport as the GPU strip: the waterfall reads the warehouse, never
+    the in-process drivers. Returns [] rather than raising when the window has
+    no cognition rows — a quiet cognition surface is not a warehouse fault,
+    and the GPU strip must still render.
+    """
+    try:
+        import asyncpg
+    except ImportError as e:
+        raise RuntimeError(GURU_WAREHOUSE) from e
+    end_ns = int(time.time() * 1_000_000_000)
+    start_ns = end_ns - int(window_s) * 1_000_000_000
+    try:
+        conn = await asyncpg.connect(_warehouse_dsn(), timeout=60)
+    except Exception as e:
+        raise RuntimeError(f"{GURU_WAREHOUSE}\n  connect: {e}") from e
+    try:
+        recs = await conn.fetch(
+            """
+            SELECT ts_ns, channel, value, present
+              FROM cognition_metrics_tier0
+             WHERE ts_ns >= $1 AND ts_ns < $2
+             ORDER BY ts_ns
+            """,
+            start_ns,
+            end_ns,
+        )
+    except Exception as e:
+        raise RuntimeError(f"{GURU_WAREHOUSE}\n  query: {e}") from e
+    finally:
+        await conn.close()
+    return [dict(r) for r in recs]
 
 
 async def fetch_gpu_metrics(window_s: int) -> list[dict[str, Any]]:
@@ -284,7 +373,7 @@ async def fetch_gpu_metrics(window_s: int) -> list[dict[str, Any]]:
         recs = await conn.fetch(
             """
             SELECT ts_ns, gpu_index, power_w, util_pct
-              FROM gpu_metrics
+              FROM gpu_metrics_tier0
              WHERE ts_ns >= $1 AND ts_ns < $2
              ORDER BY ts_ns, gpu_index
             """,

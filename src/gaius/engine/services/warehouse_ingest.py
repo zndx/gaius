@@ -28,6 +28,21 @@ GURU = (
 
 INTERVAL_S = float(os.environ.get("GAIUS_WAREHOUSE_INGEST_S", "1"))
 DCGM_METRICS_URL = os.environ.get("GAIUS_DCGM_METRICS_URL", "http://127.0.0.1:9400/metrics")
+
+# Extended DCGM fields land narrow in gpu_dcgm (field, value) rather than as
+# columns on gpu_metrics: that table is created by the C++ gpu_kudu_create
+# client, so Impala resolves it read-only and ADD COLUMNS raises
+# TableNotFoundException. A further field here costs no warehouse DDL.
+_DCGM_EXTRA = {
+    "DCGM_FI_DEV_SM_CLOCK": "sm_clock_mhz",
+    "DCGM_FI_DEV_MEMORY_TEMP": "mem_temp_c",
+    "DCGM_FI_DEV_TOTAL_ENERGY_CONSUMPTION": "energy_mj",
+    "DCGM_FI_DEV_XID_ERRORS": "xid_errors",
+}
+# Core fields are required — a GPU missing one is a fail-fast. The extended
+# fields are recorded when the exporter offers them; absence is a missing row,
+# never a zero.
+_DCGM_CORE = ("power_w", "util_pct", "mem_used_mb", "temp_c")
 _TASK: asyncio.Task[None] | None = None
 
 
@@ -73,14 +88,12 @@ def sample_gpus() -> list[dict[str, Any]]:
             rec["mem_used_mb"] = float(val)
         elif metric == "DCGM_FI_DEV_GPU_TEMP":
             rec["temp_c"] = float(val)
+        elif metric in _DCGM_EXTRA:
+            rec[_DCGM_EXTRA[metric]] = float(val)
     rows: list[dict[str, Any]] = []
     for i in sorted(by):
         rec = by[i]
-        missing = [
-            k
-            for k in ("power_w", "util_pct", "mem_used_mb", "temp_c")
-            if k not in rec
-        ]
+        missing = [k for k in _DCGM_CORE if k not in rec]
         if missing:
             raise RuntimeError(
                 f"{GURU}\n  DCGM gpu={i} missing {', '.join(missing)}"
@@ -188,6 +201,93 @@ async def fetch_gpu_hist_buckets(
     return out
 
 
+def dcgm_tuples(now: float, gpus: list[dict[str, Any]]) -> list[tuple[Any, ...]]:
+    """Narrow gpu_dcgm rows for whichever extended fields DCGM offered."""
+    ts_ns = int(now * 1_000_000_000)
+    epoch_hour = int(now) // 3600
+    out: list[tuple[Any, ...]] = []
+    for g in gpus:
+        for field in _DCGM_EXTRA.values():
+            if field in g:
+                out.append((epoch_hour, ts_ns, g["gpu_index"], field, float(g[field])))
+    return out
+
+
+def cognition_tuples(now: float, samples: list[Any]) -> list[tuple[Any, ...]]:
+    """Narrow cognition_metrics rows. A gap is present=False, not zero."""
+    ts_ns = int(now * 1_000_000_000)
+    epoch_hour = int(now) // 3600
+    return [
+        (epoch_hour, ts_ns, s.name, float(s.value), bool(s.present)) for s in samples
+    ]
+
+
+async def insert_dcgm_rows(conn: Any, rows: list[tuple[Any, ...]]) -> None:
+    if not rows:
+        return
+    await conn.executemany(
+        """
+        INSERT INTO gpu_dcgm_tier0 (epoch_hour, ts_ns, gpu_index, field, value)
+        VALUES ($1, $2, $3, $4, $5)
+        """,
+        rows,
+    )
+
+
+async def insert_cognition_rows(conn: Any, rows: list[tuple[Any, ...]]) -> None:
+    if not rows:
+        return
+    await conn.executemany(
+        """
+        INSERT INTO cognition_metrics_tier0 (
+            epoch_hour, ts_ns, channel, value, present
+        ) VALUES ($1, $2, $3, $4, $5)
+        """,
+        rows,
+    )
+
+
+# Kudu range partitions are per UTC hour; an INSERT into an hour with no
+# partition fails the flush. impala_fdw_exec permits exactly this DDL.
+_TIER0_TABLES = ("gpu_metrics_tier0", "gpu_dcgm_tier0", "cognition_metrics_tier0")
+
+
+async def ensure_hour_partition(conn: Any, hour: int) -> dict[str, str]:
+    """Best-effort ADD RANGE PARTITION for ``hour`` on every tier0 table.
+
+    Already-present is success. Anything else is returned for the caller to
+    log — the INSERT that follows carries the real fail-fast.
+    """
+    out: dict[str, str] = {}
+    for tbl in _TIER0_TABLES:
+        add = (
+            f"ALTER TABLE signals_dataproducts.{tbl} "
+            f"ADD RANGE PARTITION {hour} <= VALUES < {hour + 1}"
+        )
+        err = ""
+        try:
+            await conn.fetchval("SELECT impala_fdw_exec($1, $2)", "impala_kudu_srv", add)
+        except Exception as e:
+            err = " ".join(str(e).split())[:160]
+        # The FDW's own post-ALTER check reads SHOW RANGE PARTITIONS before the
+        # catalog has settled and reports "did not verify" for a partition that
+        # is in fact present. Ask again ourselves — that answer is the one that
+        # decides whether the hour's INSERTs can land.
+        try:
+            shown = await conn.fetchval(
+                "SELECT impala_fdw_exec($1, $2)",
+                "impala_kudu_srv",
+                f"SHOW RANGE PARTITIONS signals_dataproducts.{tbl}",
+            )
+        except Exception as e:
+            out[tbl] = err or " ".join(str(e).split())[:160]
+            continue
+        out[tbl] = "present" if f"VALUE = {hour}" in (shown or "") else (
+            err or "partition absent after ADD"
+        )
+    return out
+
+
 async def insert_gpu_rows(conn: Any, rows: list[tuple[Any, ...]]) -> None:
     await conn.executemany(
         """
@@ -202,10 +302,22 @@ async def insert_gpu_rows(conn: Any, rows: list[tuple[Any, ...]]) -> None:
 async def _loop() -> None:
     import asyncpg
 
+    # The cognition drivers only run under the poller. The in-process strip
+    # used to start it; now the warehouse writer is their only consumer, so
+    # the ingest owns that. Without this every cognition channel records
+    # present=False forever and the strip shows eight dead rows.
+    try:
+        from gaius.engine.services.waterfall_drivers import ensure_poller
+
+        ensure_poller()
+    except Exception:
+        logger.warning("waterfall poller not started; cognition will be empty")
+
     dsn = warehouse_dsn()
     conn = None
     inserted = 0
     ticks = 0
+    last_hour = -1
     while True:
         t0 = time.monotonic()
         try:
@@ -213,15 +325,29 @@ async def _loop() -> None:
             now = time.time()
             if conn is None or conn.is_closed():
                 conn = await asyncpg.connect(dsn, timeout=8)
+            hour = int(now) // 3600
+            if hour != last_hour:
+                # New UTC hour: its range partition must exist before the
+                # first INSERT of the hour, on every tier0 table.
+                status = await ensure_hour_partition(conn, hour)
+                logger.info("warehouse partitions hour=%s %s", hour, status)
+                last_hour = hour
             await insert_gpu_rows(conn, _tuples(now, gpus))
+            await insert_dcgm_rows(conn, dcgm_tuples(now, gpus))
+            from gaius.engine.services.waterfall_drivers import cognition_samples
+
+            cog = cognition_tuples(now, cognition_samples())
+            await insert_cognition_rows(conn, cog)
             inserted += len(gpus)
             ticks += 1
             if ticks == 1 or ticks % 30 == 0:
                 logger.info(
-                    "warehouse ingest ticks=%s inserted=%s gpus=%s last_w=%s",
+                    "warehouse ingest ticks=%s inserted=%s gpus=%s cognition=%s "
+                    "last_w=%s",
                     ticks,
                     inserted,
                     len(gpus),
+                    sum(1 for r in cog if r[4]),
                     [round(g["power_w"], 1) for g in gpus],
                 )
         except asyncio.CancelledError:

@@ -2278,6 +2278,7 @@ class GaiusServicer(GaiusServiceServicer):
         context: aio.ServicerContext,
     ) -> CognitionWaterfallResponse:
         from gaius.engine.services.cognition_waterfall import (
+            fetch_cognition_metrics,
             fetch_gpu_metrics,
             recent_tape_energy,
             tick,
@@ -2316,9 +2317,21 @@ class GaiusServicer(GaiusServiceServicer):
             warehouse_rows = await fetch_gpu_metrics(window)
         except Exception as e:
             return CognitionWaterfallResponse(error=str(e))
+        # Cognition rides the same warehouse transport. A quiet cognition
+        # surface must not blank the GPU strip, so its absence is logged and
+        # the turn continues with an empty set.
+        try:
+            cognition_rows = await fetch_cognition_metrics(window)
+        except Exception as e:
+            logger.warning("waterfall cognition read failed: %s", e)
+            cognition_rows = []
         try:
             state = tick(
-                window, self._services, ctx=ctx, warehouse_rows=warehouse_rows
+                window,
+                self._services,
+                ctx=ctx,
+                warehouse_rows=warehouse_rows,
+                cognition_rows=cognition_rows,
             )
         except ValueError as e:
             return CognitionWaterfallResponse(error=str(e))
