@@ -185,3 +185,40 @@ def test_cognition_pickup_types_omit_gpu_when_busy() -> None:
     assert "llm_triage" not in busy_types
     assert "cognition_cycle" in idle_types
     assert "feed_check" in idle_types
+
+
+def test_prospects_requests_the_platform_metaflow_profile() -> None:
+    """Prospects reads the Signals datastore, so its child cannot run local.
+
+    ProspectsUpdateFlow.start() calls require_signals_metaflow(), which
+    fail-fasts on METAFLOW_DEFAULT_DATASTORE=local (#MF.00000006.NOPLATFORM).
+    The spawner defaults to local for host ticks, so prospects must opt out
+    explicitly or every run exits 1.
+    """
+    import inspect
+
+    from gaius.engine.services import scheduled_task_processor as stp
+
+    src = inspect.getsource(stp.ScheduledTaskProcessor)
+    handler = src[src.index("async def handle_prospects_update") :]
+    handler = handler[: handler.index("async def handle_metabase_sync")]
+    assert 'metaflow_mode="platform"' in handler
+
+    # And the spawner still defaults to local for everything else.
+    sig = inspect.signature(stp.ScheduledTaskProcessor._run_spawned_metaflow)
+    assert sig.parameters["metaflow_mode"].default == "local"
+
+
+def test_only_prospects_opts_into_platform() -> None:
+    """A flow with @kubernetes steps hangs under the platform profile."""
+    import inspect
+
+    from gaius.engine.services import scheduled_task_processor as stp
+
+    src = inspect.getsource(stp.ScheduledTaskProcessor)
+    # Actual call-site arguments, not the prose explaining them.
+    opt_ins = [
+        line for line in src.splitlines()
+        if line.strip() == 'metaflow_mode="platform",'
+    ]
+    assert len(opt_ins) == 1, opt_ins

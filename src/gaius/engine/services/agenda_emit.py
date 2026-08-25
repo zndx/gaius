@@ -128,20 +128,35 @@ def _next_session_slot(now: datetime) -> datetime:
     return slot
 
 
+# A spawned flow reports these with no `error` key — the diagnosis is in
+# `last_lines`. Treating them as anything but a failure buries the reason.
+_PROSPECTS_FAILURES = frozenset({"error", "failed", "stalled"})
+
+
 def emit_prospects_update(result: dict[str, Any], root: Path | None = None) -> AgendaItem | None:
-    """Error → reminder. Completed filings → session. Else brief."""
+    """Failure → reminder. Completed filings → session. Else brief."""
     now = datetime.now(timezone.utc)
     symbols = result.get("symbols") or []
     status = result.get("status") or ("error" if result.get("error") else "unknown")
     filings = result.get("new_filings_count")
     err = (result.get("error") or "").strip()
+    failed = bool(err) or status in _PROSPECTS_FAILURES
+    if failed and not err:
+        # _run_spawned_metaflow carries the child's tail here instead of an
+        # `error` key. It is present on success too, so only read it once the
+        # status already says this run failed.
+        tail = result.get("last_lines") or []
+        err = "\n".join(str(line) for line in tail if str(line).strip())
     sym = ", ".join(str(s) for s in symbols) or "(none)"
 
-    if err or status == "error":
+    if failed:
+        rc = result.get("returncode")
+        detail = err or "no output captured"
         body = (
-            f"Prospects update failed ({status}).\n\n"
+            f"Prospects update failed ({status}"
+            f"{f', exit {rc}' if rc is not None else ''}).\n\n"
             f"Symbols: {sym}.\n\n"
-            f"{err[:400]}\n"
+            f"{detail[-1200:]}\n"
             "\n"
             "- [ ] Re-admit on a prospects-update claim, not the standing "
             "article-curate pod\n"

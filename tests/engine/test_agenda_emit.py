@@ -69,6 +69,82 @@ def test_prospects_error_is_reminder(tmp_path: Path) -> None:
     assert item.kind == "list"
 
 
+def test_prospects_failed_exit_surfaces_the_child_tail(tmp_path: Path) -> None:
+    """A spawned flow reports status=failed with no `error` key.
+
+    The diagnosis lives in last_lines; reading it as a benign brief is what
+    turned every prospects failure into "No new filing count — nothing to
+    book" for five days running.
+    """
+    kb = tmp_path / "kb"
+    (kb / "scratch").mkdir(parents=True)
+    item = emit_prospects_update(
+        {
+            "status": "failed",
+            "returncode": 1,
+            "symbols": ["MTN", "LLY"],
+            "last_lines": [
+                "  File \"gaius/flows/prospects/update_flow.py\", line 192, in start",
+                "    require_signals_metaflow()",
+                "PlatformMetaflowError: #MF.00000006.NOPLATFORM Prospects uses the "
+                "Signals Metaflow datastore. METAFLOW_DEFAULT_DATASTORE='local'.",
+                "",
+            ],
+        },
+        root=kb,
+    )
+    assert item is not None
+    assert item.intent == "reminder"
+    assert item.kind == "list"
+    assert "#MF.00000006.NOPLATFORM" in item.body
+    assert "exit 1" in item.body
+    assert "nothing to book" not in item.body
+
+
+def test_prospects_stalled_is_a_failure(tmp_path: Path) -> None:
+    kb = tmp_path / "kb"
+    (kb / "scratch").mkdir(parents=True)
+    item = emit_prospects_update(
+        {"status": "stalled", "symbols": ["XOM"], "idle_seconds": 3601,
+         "last_lines": ["no output for 3601s"]},
+        root=kb,
+    )
+    assert item is not None
+    assert item.intent == "reminder"
+    assert "no output for 3601s" in item.body
+
+
+def test_prospects_completed_tail_is_not_an_error(tmp_path: Path) -> None:
+    """last_lines rides along on success too — it must not raise an alarm."""
+    kb = tmp_path / "kb"
+    (kb / "scratch").mkdir(parents=True)
+    item = emit_prospects_update(
+        {
+            "status": "completed",
+            "returncode": 0,
+            "symbols": ["SLB"],
+            "last_lines": ["Done!", "Workflow completed."],
+        },
+        root=kb,
+    )
+    assert item is not None
+    assert item.intent == "brief"
+    assert "nothing to book" in item.body
+
+
+def test_prospects_yielded_is_not_an_alarm(tmp_path: Path) -> None:
+    """A YK yield is preemption, not a fault."""
+    kb = tmp_path / "kb"
+    (kb / "scratch").mkdir(parents=True)
+    item = emit_prospects_update(
+        {"status": "yielded", "symbols": ["INTC"], "returncode": -9,
+         "last_lines": ["terminated"]},
+        root=kb,
+    )
+    assert item is not None
+    assert item.intent == "brief"
+
+
 def test_prospects_filings_book_session(tmp_path: Path) -> None:
     kb = tmp_path / "kb"
     (kb / "scratch").mkdir(parents=True)

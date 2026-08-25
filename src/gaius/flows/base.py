@@ -208,7 +208,11 @@ class GaiusFlow(FlowSpec):
             resource_class_for,
         )
 
-        tokens = int(getattr(type(self), "gpu_tokens", 0) or 0)
+        # Metaflow installs a property on the running flow class for every
+        # inherited class attribute, so a class-level read hands back the
+        # descriptor and int() raises. The instance resolves it — and to the
+        # subclass's own value when it declares one.
+        tokens = int(getattr(self, "gpu_tokens", 0) or 0)
         if tokens:
             rc = resource_class_for(kind)
             expected = class_for_gpu_tokens(tokens)

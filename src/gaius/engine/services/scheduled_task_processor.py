@@ -146,8 +146,16 @@ class ScheduledTaskProcessor(BaseDaemon):
         argv: list[str],
         log_prefix: str,
         idle_timeout: int = 900,
+        metaflow_mode: str = "local",
     ) -> dict[str, Any]:
-        """Spawn a Metaflow CLI child, register it for Yield, optional YK sentinel."""
+        """Spawn a Metaflow CLI child, register it for Yield, optional YK sentinel.
+
+        ``metaflow_mode`` picks the child's Metaflow profile. "local" is right
+        for host ticks — the platform profile's @kubernetes / S3 step hangs
+        after start. A flow whose datastore is the Signals system of record
+        must ask for "platform": it calls ``require_signals_metaflow()`` and
+        fail-fasts on a local datastore.
+        """
         import time
 
         from gaius.engine.flow_processes import (
@@ -172,8 +180,10 @@ class ScheduledTaskProcessor(BaseDaemon):
         from gaius.flows.config import metaflow_child_env
 
         # Sentinel-spawned ticks run on this host (YK pause pod + host CUDA).
-        # Platform profile (@kubernetes / S3) hangs the step after start.
-        env = metaflow_child_env(mode="local")
+        # Platform profile (@kubernetes / S3) hangs the step after start —
+        # except for flows that read/write the Signals datastore, which pass
+        # metaflow_mode="platform" and have no @kubernetes steps.
+        env = metaflow_child_env(mode=metaflow_mode)
         env["GAIUS_YK_APPLICATION_ID"] = wid
         env["GAIUS_YK_KIND"] = kind
         cwd = os.environ.get("GAIUS_ROOT", "/home/rch/local/src/zndx/gaius")
@@ -593,11 +603,10 @@ class ScheduledTaskProcessor(BaseDaemon):
                 logger.warning("prospects_update task has no symbols in payload")
                 return {"status": "skipped", "reason": "no symbols"}
             symbols_csv = ",".join(symbols)
-            env = dict(os.environ)
             logger.info(
                 f"Triggering ProspectsUpdateFlow symbols={symbols_csv} "
-                f"FMP_API_KEY={'present' if 'FMP_API_KEY' in env else 'MISSING'} "
-                f"XAI_API_KEY={'present' if 'XAI_API_KEY' in env else 'MISSING'}"
+                f"FMP_API_KEY={'present' if 'FMP_API_KEY' in os.environ else 'MISSING'} "
+                f"XAI_API_KEY={'present' if 'XAI_API_KEY' in os.environ else 'MISSING'}"
             )
             result = await self._run_spawned_metaflow(
                 kind="prospects-update",
@@ -609,6 +618,10 @@ class ScheduledTaskProcessor(BaseDaemon):
                 ],
                 log_prefix="ProspectsUpdate",
                 idle_timeout=3600,
+                # Prospects reads and writes the Signals datastore; its steps
+                # are plain @step, so the platform profile runs them on this
+                # host without the @kubernetes hang.
+                metaflow_mode="platform",
             )
             result["symbols"] = symbols
             from gaius.engine.services.agenda_emit import emit_prospects_update
