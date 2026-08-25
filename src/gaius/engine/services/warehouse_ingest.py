@@ -249,7 +249,7 @@ async def insert_cognition_rows(conn: Any, rows: list[tuple[Any, ...]]) -> None:
 
 # Kudu range partitions are per UTC hour; an INSERT into an hour with no
 # partition fails the flush. impala_fdw_exec permits exactly this DDL.
-_TIER0_TABLES = ("gpu_metrics_tier0", "gpu_dcgm_tier0", "cognition_metrics_tier0")
+_TIER0_TABLES = ("gpu_metrics_tier0",)
 
 
 async def ensure_hour_partition(conn: Any, hour: int) -> dict[str, str]:
@@ -333,11 +333,13 @@ async def _loop() -> None:
                 logger.info("warehouse partitions hour=%s %s", hour, status)
                 last_hour = hour
             await insert_gpu_rows(conn, _tuples(now, gpus))
-            await insert_dcgm_rows(conn, dcgm_tuples(now, gpus))
-            from gaius.engine.services.waterfall_drivers import cognition_samples
-
-            cog = cognition_tuples(now, cognition_samples())
-            await insert_cognition_rows(conn, cog)
+            # gpu_dcgm / cognition_metrics writes are parked: creating those
+            # Kudu tables through HS2 CREATE ... STORED AS KUDU put the shared
+            # tablet server into a SIGSEGV restart loop (see
+            # docs/scratch/2026-08-25). They must be recreated through the
+            # sanctioned C++ Kudu client, with an all-INT primary key, before
+            # this writes them again.
+            cog: list[tuple] = []
             inserted += len(gpus)
             ticks += 1
             if ticks == 1 or ticks % 30 == 0:

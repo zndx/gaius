@@ -388,25 +388,11 @@ async def fetch_cognition_metrics(window_s: int) -> list[dict[str, Any]]:
     no cognition rows — a quiet cognition surface is not a warehouse fault,
     and the GPU strip must still render.
     """
-    end_ns = int(time.time() * 1_000_000_000)
-    start_ns = end_ns - int(window_s) * 1_000_000_000
-    async with _conn_lock():
-        conn = await _warehouse_conn()
-        try:
-            recs = await conn.fetch(
-                """
-                SELECT ts_ns, channel, value, present
-                  FROM cognition_metrics_tier0
-                 WHERE ts_ns >= $1 AND ts_ns < $2
-                 ORDER BY ts_ns
-                """,
-                start_ns,
-                end_ns,
-            )
-        except Exception as e:
-            await _drop_warehouse_conn()
-            raise RuntimeError(f"{GURU_WAREHOUSE}\n  query: {e}") from e
-    return [dict(r) for r in recs]
+    # cognition_metrics is parked — see warehouse_ingest. Until the table is
+    # recreated through the C++ Kudu client, the strip shows GPU channels only
+    # and the cognition rows are simply absent rather than faked.
+    _ = window_s
+    return []
 
 
 async def fetch_gpu_metrics(window_s: int) -> list[dict[str, Any]]:
