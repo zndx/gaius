@@ -5,6 +5,7 @@ Handles process startup, health monitoring, and graceful shutdown.
 """
 
 import asyncio
+import json
 import logging
 import os
 import re
@@ -254,6 +255,11 @@ class VLLMProcess:
     # Metrics
     requests_served: int = 0
 
+    # True when the serve argv carried --enable-auto-tool-choice. vLLM rejects
+    # a tools[] request on an endpoint without it, and its engine-level tool
+    # parser silently eats <tool_call> markup when tools[] is absent.
+    supports_tool_calls: bool = False
+
     @property
     def base_url(self) -> str:
         """Get base URL for this endpoint."""
@@ -304,11 +310,94 @@ class VLLMResponse:
     latency_ms: int = 0
     error: Optional[str] = None
     reasoning_content: str = ""
+    finish_reason: str = ""
 
     @property
     def success(self) -> bool:
         """Whether request succeeded."""
         return self.error is None
+
+
+def qwen_tool_call_markup(tool_calls: Any) -> str:
+    """Encode OpenAI-shaped vLLM tool_calls as ``<tool_call>`` JSON.
+
+    Engine/Complete is text-in/text-out. The gaius-ui façade parses
+    ``<tool_call>{"name":…,"arguments":{…}}</tool_call>`` into Grok
+    ``tool_calls``. Native vLLM parsers empty ``content`` when they
+    extract structured calls, so Complete must put that markup back
+    in the body or the web terminal ends the turn after reasoning.
+    """
+    if not tool_calls:
+        return ""
+    if not isinstance(tool_calls, list):
+        return ""
+    blocks: list[str] = []
+    for tc in tool_calls:
+        if not isinstance(tc, dict):
+            continue
+        fn = tc.get("function") if isinstance(tc.get("function"), dict) else {}
+        name = (fn.get("name") or tc.get("name") or "").strip()
+        if not name:
+            continue
+        raw_args = fn.get("arguments", tc.get("arguments", {}))
+        if isinstance(raw_args, str):
+            try:
+                args = json.loads(raw_args) if raw_args.strip() else {}
+            except json.JSONDecodeError:
+                args = {"_raw": raw_args}
+        elif isinstance(raw_args, dict):
+            args = raw_args
+        else:
+            args = {}
+        payload = json.dumps(
+            {"name": name, "arguments": args},
+            separators=(",", ":"),
+        )
+        blocks.append(f"<tool_call>{payload}</tool_call>")
+    return "\n".join(blocks)
+
+
+def parse_qwen_tool_call_markup(text: str) -> tuple[str, list[dict[str, Any]]]:
+    """Inverse of :func:`qwen_tool_call_markup`.
+
+    Returns the text with every ``<tool_call>`` block removed and the calls
+    it carried. The gaius-ui façade has its own Rust implementation of this;
+    this one backs the CLI so ``/engine toolcall`` verifies the same wire
+    format the Web Terminal consumes.
+    """
+    calls: list[dict[str, Any]] = []
+    out: list[str] = []
+    rest = text or ""
+    open_tag, close_tag = "<tool_call>", "</tool_call>"
+    while True:
+        start = rest.find(open_tag)
+        if start == -1:
+            break
+        out.append(rest[:start])
+        after = rest[start + len(open_tag) :]
+        end = after.find(close_tag)
+        if end == -1:
+            # Unterminated block: keep it visible rather than eat the tail.
+            out.append(rest[start:])
+            rest = ""
+            break
+        body = after[:end].strip()
+        try:
+            parsed = json.loads(body)
+        except json.JSONDecodeError:
+            parsed = None
+        if isinstance(parsed, dict) and parsed.get("name"):
+            calls.append(
+                {
+                    "name": parsed["name"],
+                    "arguments": parsed.get("arguments") or {},
+                }
+            )
+        else:
+            out.append(rest[start : start + len(open_tag) + end + len(close_tag)])
+        rest = after[end + len(close_tag) :]
+    out.append(rest)
+    return "".join(out).strip(), calls
 
 
 class VLLMController:
@@ -689,6 +778,8 @@ class VLLMController:
             # Add extra args from config
             cmd.extend(self._extra_args)
 
+        proc.supports_tool_calls = "--enable-auto-tool-choice" in cmd
+
         logger.info(
             f"Starting vLLM for {proc.agent_alias}: "
             f"CUDA_VISIBLE_DEVICES={gpu_str} {' '.join(cmd)}"
@@ -918,6 +1009,20 @@ class VLLMController:
                 error=error_msg,
             )
 
+        # tools[] on an endpoint launched without --enable-auto-tool-choice is
+        # a 400 from vLLM. Say so here, naming the endpoint and the flag.
+        if request.extra_body.get("tools") and not proc.supports_tool_calls:
+            error_msg = (
+                f"Endpoint {proc.agent_alias} ({proc.model} :{proc.port}) was launched "
+                "without --enable-auto-tool-choice, so it cannot serve tools[].\n"
+                f"  Add --enable-auto-tool-choice and --tool-call-parser to the "
+                f"{proc.agent_alias} extra-args in config/agents.conf, then restart.\n"
+                "  Try: /health fix engine\n"
+                "  Guru: #VLLM.00000004.NOTOOLCALL"
+            )
+            logger.error(error_msg)
+            return VLLMResponse(content="", model=request.model, error=error_msg)
+
         # Build OpenAI-compatible request
         payload: dict[str, Any] = {
             "model": request.model,
@@ -974,9 +1079,15 @@ class VLLMController:
                 if end != -1:
                     reasoning = content[: end + len("</think>")]
                     content = content[end + len("</think>") :].lstrip()
+            markup = qwen_tool_call_markup(message.get("tool_calls"))
+            if markup and "<tool_call>" not in content:
+                content = f"{content}\n{markup}".strip() if content else markup
+            finish_reason = choice.get("finish_reason") or ""
             logger.info(
                 f"VLLMController.complete: content_length={len(content)}, "
                 f"reasoning_length={len(reasoning)}, "
+                f"tool_calls={markup.count('<tool_call>')}, "
+                f"finish_reason={finish_reason}, "
                 f"output_tokens={usage.get('completion_tokens', 0)}, "
                 f"latency_ms={latency_ms}"
             )
@@ -990,6 +1101,7 @@ class VLLMController:
                 output_tokens=usage.get("completion_tokens", 0),
                 latency_ms=latency_ms,
                 reasoning_content=reasoning if isinstance(reasoning, str) else "",
+                finish_reason=finish_reason,
             )
 
         except httpx.HTTPStatusError as e:

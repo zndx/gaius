@@ -79,6 +79,7 @@ class InferenceResponse:
     exchange_id: Optional[str] = None
     request_hash: Optional[str] = None
     reasoning_content: str = ""
+    finish_reason: str = ""
 
     @property
     def success(self) -> bool:
@@ -412,6 +413,7 @@ class BackendRouter:
             latency_ms=response.latency_ms,
             error=response.error,
             reasoning_content=response.reasoning_content,
+            finish_reason=getattr(response, "finish_reason", ""),
         )
 
     async def _route_to_dynamic_vllm(
@@ -454,6 +456,7 @@ class BackendRouter:
             latency_ms=response.latency_ms,
             error=response.error,
             reasoning_content=response.reasoning_content,
+            finish_reason=getattr(response, "finish_reason", ""),
         )
 
     async def complete(

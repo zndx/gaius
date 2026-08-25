@@ -57,10 +57,20 @@ def complete(
     max_tokens: int = 2048,
     temperature: float = 0.7,
     json_schema: dict[str, Any] | str | None = None,
+    tools: list[dict[str, Any]] | str | None = None,
+    tool_choice: str = "",
     timeout_s: float = 300.0,
     target: str | None = None,
 ) -> LatticeComplete:
-    """Blocking Complete for Metaflow steps (sync FlowSpec)."""
+    """Blocking Complete for Metaflow steps (sync FlowSpec).
+
+    ``tools`` takes an OpenAI ``tools[]`` array. The capability's endpoint must
+    have been launched with ``--enable-auto-tool-choice``; its engine-level tool
+    parser then returns native calls, which Complete hands back as
+    ``<tool_call>`` markup inside :attr:`LatticeComplete.text`.
+    ``tool_choice`` is ``auto`` (default), ``required``, ``none``, or a
+    named-tool JSON object. Mutually exclusive with ``json_schema``.
+    """
     import grpc
 
     from gaius.engine.generated.zndx.engine.v1 import engine_pb2 as zpb
@@ -70,6 +80,14 @@ def complete(
     schema = ""
     if json_schema is not None:
         schema = json_schema if isinstance(json_schema, str) else json.dumps(json_schema)
+    tools_json = ""
+    if tools is not None:
+        tools_json = tools if isinstance(tools, str) else json.dumps(tools)
+    if tools_json and schema:
+        raise RuntimeError(
+            f"{GURU_NOCAP} tools and json_schema are mutually exclusive: "
+            "guided_json disables thinking and suppresses tool_calls."
+        )
     cap = (capability or DEFAULT_CAPABILITY).strip() or DEFAULT_CAPABILITY
     req = zpb.CompleteRequest(
         capability=cap,
@@ -78,6 +96,8 @@ def complete(
         max_tokens=int(max_tokens),
         temperature=float(temperature),
         json_schema=schema,
+        tools_json=tools_json,
+        tool_choice=(tool_choice or "").strip(),
     )
     channel = grpc.insecure_channel(addr)
     try:

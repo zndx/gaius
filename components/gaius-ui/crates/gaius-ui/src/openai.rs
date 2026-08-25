@@ -20,7 +20,7 @@ use tokio_stream::StreamExt;
 
 use crate::artifact::ArtifactBus;
 use crate::ask_write;
-use crate::engine::{CompleteOut, EngineError, Lattice};
+use crate::engine::{CompleteExtras, CompleteOut, EngineError, Lattice};
 use crate::brand::Brand;
 use crate::pty::Sessions;
 use std::path::PathBuf;
@@ -65,10 +65,16 @@ pub struct ChatRequest {
     /// Browser Clock (IANA timezone + resolved morning instants).
     #[serde(default)]
     pub clock: Option<serde_json::Value>,
-    /// OpenAI tools[] from the Grok harness. Names go into Complete so
-    /// thinking can emit <tool_call> that we translate back to tool_calls.
+    /// OpenAI tools[] from the Grok harness. Declared to Complete verbatim:
+    /// the thinking endpoint runs an engine-level tool parser, so a turn with
+    /// no tools[] has its <tool_call> markup eaten and comes back as bare
+    /// reasoning — which is what ended Web Terminal turns after one step.
     #[serde(default)]
     pub tools: Option<serde_json::Value>,
+    /// OpenAI tool_choice: "auto" | "required" | "none" | named-tool object.
+    /// Absent = the engine default (auto whenever tools are declared).
+    #[serde(default)]
+    pub tool_choice: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -361,27 +367,24 @@ fn tool_calls_json(calls: &[ParsedToolCall]) -> serde_json::Value {
         .collect::<Vec<_>>())
 }
 
-#[allow(dead_code)]
-fn tool_roster(tools: Option<&serde_json::Value>) -> Option<String> {
-    let arr = tools?.as_array()?;
-    let mut names = Vec::new();
-    for t in arr {
-        let name = t
-            .pointer("/function/name")
-            .or_else(|| t.get("name"))
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
-        if !name.is_empty() {
-            names.push(name.to_string());
-        }
+/// Serialize the harness `tools[]` for `CompleteRequest.tools_json`.
+/// Anything that is not a non-empty array is a text-only Complete.
+pub fn tools_json(tools: Option<&serde_json::Value>) -> String {
+    match tools.and_then(|v| v.as_array()) {
+        Some(arr) if !arr.is_empty() => serde_json::Value::Array(arr.clone()).to_string(),
+        _ => String::new(),
     }
-    if names.is_empty() {
-        return None;
+}
+
+/// Serialize `tool_choice` for `CompleteRequest.tool_choice`. A bare string
+/// ("auto" / "required" / "none") passes through; a named-tool object is sent
+/// as JSON. Absent leaves the engine default.
+pub fn tool_choice_str(choice: Option<&serde_json::Value>) -> String {
+    match choice {
+        Some(serde_json::Value::String(s)) => s.trim().to_string(),
+        Some(v @ serde_json::Value::Object(_)) => v.to_string(),
+        _ => String::new(),
     }
-    Some(format!(
-        "Harness tools (emit <tool_call>{{\"name\":\"…\"}} ): {}",
-        names.join(", ")
-    ))
 }
 
 fn stream_tool_deltas(calls: &[ParsedToolCall]) -> serde_json::Value {
@@ -730,8 +733,7 @@ async fn complete_ticked(
     max_tokens: i32,
     temperature: f32,
     pin_est: u32,
-    timezone: String,
-    clock_json: String,
+    extras: CompleteExtras,
     ctx: SseCtx,
 ) -> Result<CompleteOut, EngineError> {
     let _ = tx
@@ -767,15 +769,7 @@ async fn complete_ticked(
         })
     };
     let result = lattice
-        .complete_as(
-            cap,
-            prompt,
-            system,
-            max_tokens,
-            temperature,
-            timezone,
-            clock_json,
-        )
+        .complete_as(cap, prompt, system, max_tokens, temperature, extras)
         .await;
     ticker.abort();
     result
@@ -937,6 +931,8 @@ async fn stream_complete(
     temperature: f32,
     escalate: Option<String>,
     clock: Option<serde_json::Value>,
+    tools_json: String,
+    tool_choice: String,
 ) -> Response {
     let (tx, rx) = tokio::sync::mpsc::channel::<String>(32);
     let pin_est = estimate_tokens(system.len() + prompt.len());
@@ -1022,6 +1018,12 @@ async fn stream_complete(
             .as_ref()
             .map(|c| c.to_string())
             .unwrap_or_default();
+        let extras = CompleteExtras {
+            timezone: tz.clone(),
+            clock_json: clock_json.clone(),
+            tools_json,
+            tool_choice,
+        };
         let first = complete_ticked(
             state.lattice.clone(),
             tx.clone(),
@@ -1031,8 +1033,7 @@ async fn stream_complete(
             first_max,
             temperature,
             pin_est,
-            tz.clone(),
-            clock_json.clone(),
+            extras.clone(),
             ctx.clone(),
         )
         .await;
@@ -1053,8 +1054,7 @@ async fn stream_complete(
                     first_max,
                     temperature,
                     pin_est,
-                    tz.clone(),
-                    clock_json.clone(),
+                    extras.clone(),
                     ctx.clone(),
                 )
                 .await
@@ -1080,6 +1080,14 @@ async fn stream_complete(
         let mut should_escalate = false;
         if let Some(out) = first_out {
             let (parsed, calls) = parse_qwen_tool_calls(&out.text);
+            if out.finish_reason == "tool_calls" && calls.is_empty() {
+                tracing::warn!(
+                    cap = %cap,
+                    text_chars = out.text.len(),
+                    "Complete finished on tool_calls but no <tool_call> survived — \
+                     the turn ends with no call for the harness to run"
+                );
+            }
             let (stripped, peeled) = peel_think(&parsed);
             let reasoning = merge_reasoning(&out.reasoning, &peeled);
             let pairs = call_pairs(&calls);
@@ -1154,8 +1162,7 @@ async fn stream_complete(
                 max_tokens,
                 temperature,
                 pin_est,
-                tz,
-                clock_json,
+                extras,
                 ctx.clone(),
             )
             .await
@@ -1215,26 +1222,50 @@ pub async fn chat_completions(
     Json(req): Json<ChatRequest>,
 ) -> Response {
     let (mut system, prompt) = flatten_messages(&req.messages);
-    // ACP/Grok may attach 180 MCP schemas. Thinking Complete gets the
-    // slash+FMP card instead — Qwen chooses FMP, we do not detect tickers.
     let intent = ask_write::thinking_complete_prompt(&prompt);
     let max_tokens = req.max_tokens.unwrap_or(8192);
     let temperature = req.temperature.unwrap_or(0.2);
     let stream = req.stream.unwrap_or(false);
+    let cap = ask_capability(&state, req.model.as_deref());
+    let small = ask_write::is_small_ask(&cap);
+    // Ask (1.7B / SAE) is served by endpoints launched without
+    // --enable-auto-tool-choice and has no tool harness: it answers in
+    // artifact fences. Only the Terminal capability declares tools[].
+    //
+    // These used to be dropped to keep the prompt small (ACP can attach ~180
+    // MCP schemas). That is no longer optional: the thinking endpoint's
+    // engine-level parser eats <tool_call> markup from an undeclared turn, so
+    // dropping tools[] costs the whole tool channel. Grok Build reaches MCP
+    // through search_tool/use_tool, so it declares ~24 built-ins, not the
+    // server rosters. `tools_chars` below is the size to watch.
+    let tools_json = if small {
+        String::new()
+    } else {
+        tools_json(req.tools.as_ref())
+    };
+    let tool_choice = if tools_json.is_empty() {
+        String::new()
+    } else {
+        tool_choice_str(req.tool_choice.as_ref())
+    };
     tracing::info!(
         model = req.model.as_deref().unwrap_or("-"),
         system_chars = system.len(),
         prompt_chars = intent.len(),
+        tools_chars = tools_json.len(),
+        // "-" when no tools are declared: tool_choice is meaningless there.
+        tool_choice = %if tools_json.is_empty() {
+            "-"
+        } else if tool_choice.is_empty() {
+            "auto"
+        } else {
+            &tool_choice
+        },
         stream,
         "Engine/Complete façade"
     );
-    let cap = ask_capability(&state, req.model.as_deref());
-    let client = if ask_write::is_small_ask(&cap) {
-        "ask"
-    } else {
-        "terminal"
-    };
-    if !ask_write::is_small_ask(&cap) {
+    let client = if small { "ask" } else { "terminal" };
+    if !small {
         system.push_str("\n\n");
         system.push_str(&crate::gaius_slash::thinking_capability_card());
     }
@@ -1248,6 +1279,8 @@ pub async fn chat_completions(
             temperature,
             req.escalate.clone(),
             req.clock.clone(),
+            tools_json,
+            tool_choice,
         )
         .await;
     }
@@ -1260,15 +1293,21 @@ pub async fn chat_completions(
             system,
             max_tokens,
             temperature,
-            req.clock
-                .as_ref()
-                .and_then(|c| c.get("timezone").and_then(|v| v.as_str()))
-                .unwrap_or("")
-                .to_string(),
-            req.clock
-                .as_ref()
-                .map(|c| c.to_string())
-                .unwrap_or_default(),
+            CompleteExtras {
+                timezone: req
+                    .clock
+                    .as_ref()
+                    .and_then(|c| c.get("timezone").and_then(|v| v.as_str()))
+                    .unwrap_or("")
+                    .to_string(),
+                clock_json: req
+                    .clock
+                    .as_ref()
+                    .map(|c| c.to_string())
+                    .unwrap_or_default(),
+                tools_json,
+                tool_choice,
+            },
         )
         .await
     {
@@ -1280,6 +1319,7 @@ pub async fn chat_completions(
             tracing::info!(
                 engine_model = %out.model,
                 tool_calls = calls.len(),
+                finish_reason = %out.finish_reason,
                 text_chars = parsed.len(),
                 reasoning_chars = reasoning.len(),
                 visible_chars = content.len(),
@@ -1502,5 +1542,56 @@ gaius__theta_sitrep
         );
         assert_eq!(visible_completion("shown", "ignored"), "shown");
         assert_eq!(visible_completion("  ", ""), "");
+    }
+
+    #[test]
+    fn tools_json_forwards_harness_schemas() {
+        let tools = json!([
+            {"type": "function", "function": {"name": "run_terminal_command"}},
+            {"type": "function", "function": {"name": "read_file"}}
+        ]);
+        let encoded = tools_json(Some(&tools));
+        let back: serde_json::Value = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(back.as_array().unwrap().len(), 2);
+        assert_eq!(back[0]["function"]["name"], "run_terminal_command");
+    }
+
+    #[test]
+    fn tools_json_empty_for_text_only_complete() {
+        assert_eq!(tools_json(None), "");
+        assert_eq!(tools_json(Some(&json!([]))), "");
+        assert_eq!(tools_json(Some(&json!("nonsense"))), "");
+    }
+
+    #[test]
+    fn tool_choice_passes_auto_required_and_named() {
+        assert_eq!(tool_choice_str(Some(&json!("auto"))), "auto");
+        assert_eq!(tool_choice_str(Some(&json!("required"))), "required");
+        assert_eq!(tool_choice_str(None), "");
+        let named = json!({"type": "function", "function": {"name": "read_file"}});
+        let s = tool_choice_str(Some(&named));
+        let back: serde_json::Value = serde_json::from_str(&s).unwrap();
+        assert_eq!(back["function"]["name"], "read_file");
+    }
+
+    /// The thinking endpoint's engine-level parser eats <tool_call> markup
+    /// when the request declares no tools[], so a Terminal turn must always
+    /// forward them. Ask has no tool harness and its endpoints lack the flag.
+    #[test]
+    fn ask_capability_never_declares_tools() {
+        assert!(ask_write::is_small_ask("interpretable"));
+        assert!(ask_write::is_small_ask("ask-sae"));
+        assert!(!ask_write::is_small_ask("thinking"));
+    }
+
+    #[test]
+    fn native_tool_calls_round_trip_as_markup() {
+        // What VLLMController.qwen_tool_call_markup writes back into content.
+        let raw = r#"<tool_call>{"name":"run_terminal_command","arguments":{"command":"ss -ltnp"}}</tool_call>"#;
+        let (text, calls) = parse_qwen_tool_calls(raw);
+        assert_eq!(text, "");
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].name, "run_terminal_command");
+        assert_eq!(calls[0].arguments["command"], "ss -ltnp");
     }
 }

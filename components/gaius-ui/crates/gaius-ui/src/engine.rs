@@ -60,8 +60,7 @@ impl Lattice {
             system_prompt,
             max_tokens,
             temperature,
-            String::new(),
-            String::new(),
+            CompleteExtras::default(),
         )
         .await
     }
@@ -73,8 +72,7 @@ impl Lattice {
         system_prompt: String,
         max_tokens: i32,
         temperature: f32,
-        timezone: String,
-        clock_json: String,
+        extras: CompleteExtras,
     ) -> Result<CompleteOut, EngineError> {
         let endpoint = format!("http://{}", self.target.trim());
         let ch = Channel::from_shared(endpoint)
@@ -90,8 +88,10 @@ impl Lattice {
                 max_tokens,
                 temperature,
                 json_schema: String::new(),
-                timezone,
-                clock_json,
+                timezone: extras.timezone,
+                clock_json: extras.clock_json,
+                tools_json: extras.tools_json,
+                tool_choice: extras.tool_choice,
             })
             .await?
             .into_inner();
@@ -101,8 +101,27 @@ impl Lattice {
             model: r.model,
             prompt_tokens: r.prompt_tokens.max(0) as u32,
             completion_tokens: r.completion_tokens.max(0) as u32,
+            finish_reason: r.finish_reason,
         })
     }
+}
+
+/// Optional CompleteRequest fields. Grouped so the call sites stay readable
+/// as the lattice proto grows.
+#[derive(Clone, Debug, Default)]
+pub struct CompleteExtras {
+    /// Browser IANA zone.
+    pub timezone: String,
+    /// Browser Clock JSON.
+    pub clock_json: String,
+    /// OpenAI tools[] as a JSON array string. Empty = text-only Complete.
+    /// The thinking endpoint runs an engine-level tool parser, so a turn that
+    /// should call a tool MUST declare them here — markup emitted without a
+    /// tools[] declaration is swallowed by the parser and never reaches us.
+    pub tools_json: String,
+    /// "auto" | "required" | "none" | named-tool JSON. Empty = engine default
+    /// ("auto" whenever tools_json is set).
+    pub tool_choice: String,
 }
 
 pub struct CompleteOut {
@@ -111,4 +130,5 @@ pub struct CompleteOut {
     pub model: String,
     pub prompt_tokens: u32,
     pub completion_tokens: u32,
+    pub finish_reason: String,
 }

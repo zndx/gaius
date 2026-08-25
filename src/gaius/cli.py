@@ -1577,6 +1577,7 @@ class GaiusCLI:
                     "dtype": cfg.dtype,
                     "trust_remote_code": cfg.trust_remote_code,
                     "tool_call_parser": cfg.tool_call_parser,
+                    "enable_auto_tool_choice": cfg.enable_auto_tool_choice,
                     "reasoning_parser": cfg.reasoning_parser,
                     "attention_backend": cfg.attention_backend,
                 }
@@ -4852,14 +4853,26 @@ Respond with:
             /engine status       - Show engine status and health
             /engine reconnect    - Reconnect to engine
             /engine test         - Test engine round-trip
+            /engine complete <prompt>
+                                 - Complete via zndx.engine.v1.Engine/Complete
+            /engine toolcall [auto|required|none] [prompt]
+                                 - Complete with a probe tool declared; proves
+                                   the capability returns native tool_calls
 
         The engine is required for inference, evolution, and orchestration.
         Uses gRPC for communication with gaius-engine on port 50051.
         """
         parts = args.split(maxsplit=1) if args else ["status"]
         subcmd = parts[0].lower()
+        rest = parts[1] if len(parts) > 1 else ""
 
         from .client.grpc_client import GrpcEngineClient, GrpcClientConfig
+
+        if subcmd == "complete":
+            return await self._cmd_engine_complete(rest)
+
+        if subcmd == "toolcall":
+            return await self._cmd_engine_toolcall(rest)
 
         if subcmd == "status":
             config = GrpcClientConfig.from_env()
@@ -4953,6 +4966,107 @@ Respond with:
 
         else:
             return {"error": f"Unknown engine command: {subcmd}"}
+
+    # The probe the Web Terminal harness would send. Keep it small: the point
+    # is proving the capability emits a native call, not exercising a schema.
+    _TOOLCALL_PROBE = [
+        {
+            "type": "function",
+            "function": {
+                "name": "run_terminal_command",
+                "description": "Run a shell command and return its output",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "command": {
+                            "type": "string",
+                            "description": "The shell command to run",
+                        }
+                    },
+                    "required": ["command"],
+                },
+            },
+        }
+    ]
+
+    async def _cmd_engine_complete(self, args: str) -> dict:
+        """Complete via the lattice face (zndx.engine.v1.Engine/Complete)."""
+        if not args.strip():
+            return {"error": "Usage: /engine complete <prompt>"}
+        return await self._lattice_complete(args.strip(), tools=None, tool_choice="")
+
+    async def _cmd_engine_toolcall(self, args: str) -> dict:
+        """Prove the thinking capability still returns native tool calls.
+
+        The endpoint runs an engine-level Qwen3 tool parser: a turn that
+        declares no tools[] has its <tool_call> markup swallowed and comes
+        back as bare reasoning. That is what stopped Web Terminal turns
+        after one step, so this is the CLI gate for the fix.
+        """
+        choice = ""
+        prompt = args.strip()
+        first, _, tail = prompt.partition(" ")
+        if first.lower() in ("auto", "required", "none"):
+            choice = first.lower()
+            prompt = tail.strip()
+        if not prompt:
+            prompt = (
+                "Identify which port vLLM is serving Qwen3.8 on. "
+                "Use run_terminal_command."
+            )
+        return await self._lattice_complete(
+            prompt, tools=self._TOOLCALL_PROBE, tool_choice=choice
+        )
+
+    async def _lattice_complete(
+        self,
+        prompt: str,
+        tools: list[dict] | None,
+        tool_choice: str,
+    ) -> dict:
+        """Run one lattice Complete and report the tool-call shape."""
+        import asyncio as _asyncio
+
+        from .engine.backends.vllm_controller import parse_qwen_tool_call_markup
+        from .flows import lattice as _lattice
+
+        def _call():
+            return _lattice.complete(
+                prompt,
+                capability="thinking",
+                max_tokens=768,
+                temperature=0.2,
+                tools=tools,
+                tool_choice=tool_choice,
+                timeout_s=300.0,
+            )
+
+        try:
+            out = await _asyncio.to_thread(_call)
+        except Exception as e:
+            return {
+                "ok": False,
+                "capability": "thinking",
+                "tool_choice": tool_choice or ("auto" if tools else ""),
+                "error": str(e),
+            }
+
+        text, calls = parse_qwen_tool_call_markup(out.text)
+        return {
+            "ok": True,
+            "capability": "thinking",
+            "model": out.model,
+            "tool_choice": tool_choice or ("auto" if tools else ""),
+            "tools_declared": len(tools or []),
+            "finish_reason": out.finish_reason,
+            "tool_calls": calls,
+            "n_tool_calls": len(calls),
+            "text": text,
+            "reasoning_chars": len(out.reasoning_content),
+            "prompt_tokens": out.prompt_tokens,
+            "completion_tokens": out.completion_tokens,
+            "latency_ms": out.latency_ms,
+        }
 
     async def _cmd_exec(self, args: str) -> dict:
         """Execute a command via Engine's CommandService (unified entry point).

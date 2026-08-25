@@ -31,6 +31,36 @@ ASK_REPLICAS = ("interpretable", "interpretable-b")
 ASK_SAE = ("ask-sae",)
 _HEALTHY_STATUSES = frozenset({"healthy", "running", "ready"})
 
+_TOOL_CHOICE_MODES = frozenset({"auto", "required", "none"})
+
+
+def normalize_tool_choice(raw: str) -> str | dict:
+    """Map a CompleteRequest.tool_choice string onto an OpenAI tool_choice.
+
+    Empty means "auto": a capability handed tools[] should be free to call
+    them. ``required`` forces a call every turn — the caller owns the loop.
+    A JSON object selects one named function and is forwarded verbatim.
+    """
+    import json as _json
+
+    value = (raw or "").strip()
+    if not value:
+        return "auto"
+    if value in _TOOL_CHOICE_MODES:
+        return value
+    if value.startswith("{"):
+        try:
+            named = _json.loads(value)
+        except _json.JSONDecodeError:
+            named = None
+        if isinstance(named, dict):
+            return named
+    raise ValueError(
+        f"tool_choice must be auto | required | none | named-tool JSON, got {value!r}.\n"
+        "  Guru: #GR.00000012.TOOLCHOICE"
+    )
+
+
 def resolve_complete_alias(capability: str, services: object | None = None) -> str:
     """Empty / lattice cognition face → standing thinking endpoint.
 
@@ -194,10 +224,19 @@ class GaiusZndxEngineServicer(zpb_grpc.EngineServicer):
                 len(getattr(request, "clock_json", "") or ""),
             )
 
+        import json as _json
+
+        raw_tools = (getattr(request, "tools_json", "") or "").strip()
+        if raw_tools and request.json_schema:
+            await context.abort(
+                grpc.StatusCode.INVALID_ARGUMENT,
+                "tools_json and json_schema are mutually exclusive: guided_json "
+                "disables thinking and suppresses tool_calls.\n"
+                "  Guru: #GR.00000010.TOOLSCHEMA",
+            )
+
         extra_body: dict | None = None
         if request.json_schema:
-            import json as _json
-
             try:
                 schema = _json.loads(request.json_schema)
             except _json.JSONDecodeError as e:
@@ -213,6 +252,34 @@ class GaiusZndxEngineServicer(zpb_grpc.EngineServicer):
                     "enable_thinking": False,
                 },
             }
+        elif raw_tools:
+            try:
+                tools = _json.loads(raw_tools)
+            except _json.JSONDecodeError as e:
+                await context.abort(
+                    grpc.StatusCode.INVALID_ARGUMENT,
+                    f"tools_json is not valid JSON: {e}\n"
+                    "  Guru: #GR.00000011.TOOLSJSON",
+                )
+            if not isinstance(tools, list) or not tools:
+                await context.abort(
+                    grpc.StatusCode.INVALID_ARGUMENT,
+                    "tools_json must be a non-empty OpenAI tools[] array; send "
+                    "an empty string for a text-only Complete.\n"
+                    "  Guru: #GR.00000011.TOOLSJSON",
+                )
+            try:
+                choice = normalize_tool_choice(getattr(request, "tool_choice", ""))
+            except ValueError as e:
+                await context.abort(grpc.StatusCode.INVALID_ARGUMENT, str(e))
+            extra_body = {"tools": tools, "tool_choice": choice}
+            logger.info(
+                "zndx Complete tools capability=%s n_tools=%s tool_choice=%s chars=%s",
+                agent_alias,
+                len(tools),
+                choice if isinstance(choice, str) else "named",
+                len(raw_tools),
+            )
 
         try:
             result = await router.complete(
@@ -248,7 +315,7 @@ class GaiusZndxEngineServicer(zpb_grpc.EngineServicer):
             completion_tokens=int(getattr(result, "output_tokens", 0) or 0),
             latency_ms=float(getattr(result, "latency_ms", 0.0) or 0.0),
             reasoning_content=getattr(result, "reasoning_content", "") or "",
-            finish_reason="stop",
+            finish_reason=getattr(result, "finish_reason", "") or "stop",
         )
 
     async def Remediate(
