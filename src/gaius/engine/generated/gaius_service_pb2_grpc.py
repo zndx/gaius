@@ -205,6 +205,11 @@ class GaiusServiceStub(object):
                 request_serializer=gaius__service__pb2.CognitionSurfaceRequest.SerializeToString,
                 response_deserializer=gaius__service__pb2.CognitionSurfaceResponse.FromString,
                 _registered_method=True)
+        self.CognitionWaterfall = channel.unary_unary(
+                '/gaius.engine.GaiusService/CognitionWaterfall',
+                request_serializer=gaius__service__pb2.CognitionWaterfallRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.CognitionWaterfallResponse.FromString,
+                _registered_method=True)
         self.SelfObservation = channel.unary_unary(
                 '/gaius.engine.GaiusService/SelfObservation',
                 request_serializer=gaius__service__pb2.SelfObservationRequest.SerializeToString,
@@ -1017,6 +1022,12 @@ class GaiusServiceServicer(object):
         raise NotImplementedError('Method not implemented!')
 
     def CognitionSurface(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def CognitionWaterfall(self, request, context):
         """Missing associated documentation comment in .proto file."""
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -1979,6 +1990,11 @@ def add_GaiusServiceServicer_to_server(servicer, server):
                     servicer.CognitionSurface,
                     request_deserializer=gaius__service__pb2.CognitionSurfaceRequest.FromString,
                     response_serializer=gaius__service__pb2.CognitionSurfaceResponse.SerializeToString,
+            ),
+            'CognitionWaterfall': grpc.unary_unary_rpc_method_handler(
+                    servicer.CognitionWaterfall,
+                    request_deserializer=gaius__service__pb2.CognitionWaterfallRequest.FromString,
+                    response_serializer=gaius__service__pb2.CognitionWaterfallResponse.SerializeToString,
             ),
             'SelfObservation': grpc.unary_unary_rpc_method_handler(
                     servicer.SelfObservation,
@@ -3469,6 +3485,33 @@ class GaiusService(object):
             '/gaius.engine.GaiusService/CognitionSurface',
             gaius__service__pb2.CognitionSurfaceRequest.SerializeToString,
             gaius__service__pb2.CognitionSurfaceResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def CognitionWaterfall(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/gaius.engine.GaiusService/CognitionWaterfall',
+            gaius__service__pb2.CognitionWaterfallRequest.SerializeToString,
+            gaius__service__pb2.CognitionWaterfallResponse.FromString,
             options,
             channel_credentials,
             insecure,

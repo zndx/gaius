@@ -807,6 +807,36 @@ class CognitionSurfaceResponse(_message.Message):
     error: str
     def __init__(self, running: bool = ..., cycles_completed: _Optional[int] = ..., cycles_in_window: _Optional[int] = ..., last_cycle_timestamp_ms: _Optional[int] = ..., current_task: _Optional[str] = ..., thoughts: _Optional[int] = ..., streams: _Optional[int] = ..., active_days: _Optional[int] = ..., thoughts_per_cycle: _Optional[float] = ..., concentration_stream: _Optional[str] = ..., concentration_pct: _Optional[float] = ..., reserve_tokens: _Optional[int] = ..., project: _Optional[str] = ..., unit: _Optional[str] = ..., recent: _Optional[_Iterable[_Union[ThoughtMessage, _Mapping]]] = ..., top: _Optional[_Iterable[_Union[ThoughtMessage, _Mapping]]] = ..., days: _Optional[_Iterable[_Union[CognitionDayBucket, _Mapping]]] = ..., hours: _Optional[_Iterable[_Union[CognitionHourCell, _Mapping]]] = ..., stream_counts: _Optional[_Iterable[_Union[CognitionStreamCount, _Mapping]]] = ..., error: _Optional[str] = ...) -> None: ...
 
+class CognitionWaterfallRequest(_message.Message):
+    __slots__ = ("window_s",)
+    WINDOW_S_FIELD_NUMBER: _ClassVar[int]
+    window_s: int
+    def __init__(self, window_s: _Optional[int] = ...) -> None: ...
+
+class CognitionWaterfallResponse(_message.Message):
+    __slots__ = ("epoch_unix_ms", "n_channels", "n_times", "channel_names", "matrix", "driver", "error", "hn_tokens", "fmp_tokens", "bokeh_json")
+    EPOCH_UNIX_MS_FIELD_NUMBER: _ClassVar[int]
+    N_CHANNELS_FIELD_NUMBER: _ClassVar[int]
+    N_TIMES_FIELD_NUMBER: _ClassVar[int]
+    CHANNEL_NAMES_FIELD_NUMBER: _ClassVar[int]
+    MATRIX_FIELD_NUMBER: _ClassVar[int]
+    DRIVER_FIELD_NUMBER: _ClassVar[int]
+    ERROR_FIELD_NUMBER: _ClassVar[int]
+    HN_TOKENS_FIELD_NUMBER: _ClassVar[int]
+    FMP_TOKENS_FIELD_NUMBER: _ClassVar[int]
+    BOKEH_JSON_FIELD_NUMBER: _ClassVar[int]
+    epoch_unix_ms: int
+    n_channels: int
+    n_times: int
+    channel_names: _containers.RepeatedScalarFieldContainer[str]
+    matrix: _containers.RepeatedScalarFieldContainer[float]
+    driver: str
+    error: str
+    hn_tokens: int
+    fmp_tokens: int
+    bokeh_json: str
+    def __init__(self, epoch_unix_ms: _Optional[int] = ..., n_channels: _Optional[int] = ..., n_times: _Optional[int] = ..., channel_names: _Optional[_Iterable[str]] = ..., matrix: _Optional[_Iterable[float]] = ..., driver: _Optional[str] = ..., error: _Optional[str] = ..., hn_tokens: _Optional[int] = ..., fmp_tokens: _Optional[int] = ..., bokeh_json: _Optional[str] = ...) -> None: ...
+
 class CognitionStreamRequest(_message.Message):
     __slots__ = ("buffer_size", "event_types")
     BUFFER_SIZE_FIELD_NUMBER: _ClassVar[int]

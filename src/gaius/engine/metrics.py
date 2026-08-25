@@ -122,6 +122,7 @@ class EngineMetrics:
         self._pipeline_cards_published: Any = None  # Counter
         self._pipeline_articles_curated: Any = None  # Counter
         self._pipeline_pending_cards: Any = None  # Gauge
+        self._cognition_tremor: Any = None  # Gauge — Discover 1h Kumo SoR
 
         self._init_instruments()
 
@@ -164,6 +165,7 @@ class EngineMetrics:
             self._create_exception_instruments()
             self._create_operation_instruments()
             self._create_pipeline_instruments()
+            self._create_cognition_instruments()
 
             self._initialized = True
             logger.info("Engine OTel metrics instruments created")
@@ -933,6 +935,22 @@ class EngineMetrics:
             return
         self._pipeline_pending_cards.set(pending_cards)
         logger.debug(f"Pipeline backlog: {pending_cards} pending cards")
+
+    def _create_cognition_instruments(self) -> None:
+        if not self._meter:
+            return
+        self._cognition_tremor = self._meter.create_gauge(
+            "gaius.cognition.tremor",
+            description="Waterfall onset envelope (Ricci Δ, CLT, vLLM rates)",
+            unit="1",
+        )
+
+    def set_cognition_tremor(self, energy: float) -> None:
+        """Publish tremor 0..1 for Prometheus scrape (1s)."""
+        if not self._cognition_tremor:
+            return
+        v = max(0.0, min(1.0, float(energy)))
+        self._cognition_tremor.set(v)
 
     @classmethod
     def get_instance(cls) -> "EngineMetrics":

@@ -137,6 +137,10 @@ a:hover {
   border-radius: 1px 1px 0 0;
 }
 .discover-hist .hist-bar.empty { background: var(--chrome-line); opacity: 0.35; }
+.discover-hist .hist-bar.live {
+  background: #6ecf9a;
+  box-shadow: 0 0 6px rgba(110, 207, 154, 0.45);
+}
 .discover-trends {
   position: absolute; left: 0; right: 0; top: 0;
   height: 84px; pointer-events: none;
@@ -1798,6 +1802,15 @@ body:has(.cog-page) .shell-footer {
 .cog-panel-head h3 {
   margin: 0;
   font-size: 0.95rem;
+}
+.discover-waterfall {
+  display: block;
+  width: 100%;
+  height: 200px;
+  margin-top: 6px;
+  border-radius: 4px;
+  background: var(--color-kumo-base, #101418);
+  image-rendering: pixelated;
 }
 .cog-split {
   display: grid;

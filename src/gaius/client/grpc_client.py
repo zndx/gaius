@@ -1475,6 +1475,29 @@ class GrpcEngineClient:
                 "active_thoughts": response.active_thoughts,
             }
 
+        elif action == "waterfall":
+            from ..engine.generated import CognitionWaterfallRequest
+
+            response = await self._stub.CognitionWaterfall(
+                CognitionWaterfallRequest(
+                    window_s=int(params.get("window_s") or 60),
+                ),
+                timeout=timeout,
+            )
+            if response.error:
+                return {"error": response.error}
+            return {
+                "epoch_unix_ms": response.epoch_unix_ms,
+                "n_channels": response.n_channels,
+                "n_times": response.n_times,
+                "channel_names": list(response.channel_names),
+                "matrix": list(response.matrix),
+                "driver": response.driver,
+                "hn_tokens": response.hn_tokens,
+                "fmp_tokens": response.fmp_tokens,
+                "bokeh_json": response.bokeh_json,
+            }
+
         elif action == "surface":
             from ..engine.generated import CognitionSurfaceRequest
 

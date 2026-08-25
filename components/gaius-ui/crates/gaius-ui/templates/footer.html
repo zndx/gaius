@@ -39,6 +39,7 @@
       function apply(mode) {
         root.setAttribute('data-mode', mode);
         try { localStorage.setItem('gaius-ui-mode', mode); } catch (e) {}
+        try { root.dispatchEvent(new Event('gaius-mode')); } catch (e) {}
         if (btn) {
           var next = mode === 'light' ? 'Switch to dark' : 'Switch to light';
           btn.title = next;

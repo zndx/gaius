@@ -63,13 +63,19 @@ dependencies = [
     "hf-mem>=0.1.1",
     "vulture>=2.14",
     "metabase-api>=3.5.2",
-    "sqlglot>=26.0.0",  # SQL parser/transpiler for fluent query compilation
-    "xai-sdk>=1.4.0",  # xAI Grok API (Collections support requires 1.4.0+)
+    "sqlglot>=26.0.0", # SQL parser/transpiler for fluent query compilation
+    "xai-sdk>=1.4.0", # xAI Grok API (Collections support requires 1.4.0+)
+    "holoviews>=1.23.1",
+    "bokeh>=3.9.2",
 ]
 
 [project.optional-dependencies]
 # TDA features (differential geometry + persistent homology)
 # Uses Ollivier-Ricci curvature and fast ripser for topology
+waterfall = [
+    "holoviews>=1.20.0",
+    "bokeh>=3.6.0",
+]
 tda = [
     "numpy>=1.24.0",
     "scikit-learn>=1.3.0",

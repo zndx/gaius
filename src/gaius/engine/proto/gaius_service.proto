@@ -488,6 +488,25 @@ message CognitionSurfaceResponse {
   string error = 20;
 }
 
+// EEG-style cognition waterfall (1 Hz epochs). Matrix is row-major
+// n_channels × n_times; column 0 is oldest (left), last is newest (right).
+message CognitionWaterfallRequest {
+  int32 window_s = 1;  // 1..300; default 60
+}
+
+message CognitionWaterfallResponse {
+  int64 epoch_unix_ms = 1;
+  int32 n_channels = 2;
+  int32 n_times = 3;
+  repeated string channel_names = 4;
+  repeated float matrix = 5;
+  string driver = 6;          // prototype | clt | colbert
+  string error = 7;
+  int32 hn_tokens = 8;
+  int32 fmp_tokens = 9;
+  string bokeh_json = 10;  // Holoviews Image via Bokeh json_item
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // Cognition Streaming Messages (TUI Real-time Updates)
 // ═══════════════════════════════════════════════════════════════════════════
@@ -3170,7 +3189,7 @@ message SignalsTelemetryResponse {
 
 // Discover landing — ELK hist + Activation Examples on our corpus.
 message DiscoverSurfaceRequest {
-  string window = 1;                 // default 36h; also 1h | 24h | 7d | 30d
+  string window = 1;                 // default 1h; also 24h | 36h | 7d | 30d
   string query = 2;                  // stream: source: feature: + free text
   string breakdown = 3;              // stream | source | layer
   int32 limit = 4;                   // docs page size, default 50
@@ -3344,6 +3363,7 @@ service GaiusService {
   rpc TriggerCognition(TriggerCognitionRequest) returns (TriggerCognitionResponse);
   rpc CognitionActivity(google.protobuf.Empty) returns (CognitionActivityResponse);
   rpc CognitionSurface(CognitionSurfaceRequest) returns (CognitionSurfaceResponse);
+  rpc CognitionWaterfall(CognitionWaterfallRequest) returns (CognitionWaterfallResponse);
   rpc SelfObservation(SelfObservationRequest) returns (SelfObservationResponse);
   rpc EngineAudit(EngineAuditRequest) returns (EngineAuditResponse);
 

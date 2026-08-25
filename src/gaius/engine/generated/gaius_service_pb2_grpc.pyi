@@ -115,6 +115,7 @@ class GaiusServiceStub:
     TriggerCognition: grpc.UnaryUnaryMultiCallable[gaius_service_pb2.TriggerCognitionRequest, gaius_service_pb2.TriggerCognitionResponse]
     CognitionActivity: grpc.UnaryUnaryMultiCallable[google.protobuf.empty_pb2.Empty, gaius_service_pb2.CognitionActivityResponse]
     CognitionSurface: grpc.UnaryUnaryMultiCallable[gaius_service_pb2.CognitionSurfaceRequest, gaius_service_pb2.CognitionSurfaceResponse]
+    CognitionWaterfall: grpc.UnaryUnaryMultiCallable[gaius_service_pb2.CognitionWaterfallRequest, gaius_service_pb2.CognitionWaterfallResponse]
     SelfObservation: grpc.UnaryUnaryMultiCallable[gaius_service_pb2.SelfObservationRequest, gaius_service_pb2.SelfObservationResponse]
     EngineAudit: grpc.UnaryUnaryMultiCallable[gaius_service_pb2.EngineAuditRequest, gaius_service_pb2.EngineAuditResponse]
     SubscribeCognition: grpc.UnaryStreamMultiCallable[gaius_service_pb2.CognitionStreamRequest, gaius_service_pb2.CognitionEvent]
@@ -440,6 +441,7 @@ class GaiusServiceAsyncStub(GaiusServiceStub):
     TriggerCognition: grpc.aio.UnaryUnaryMultiCallable[gaius_service_pb2.TriggerCognitionRequest, gaius_service_pb2.TriggerCognitionResponse]  # type: ignore[assignment]
     CognitionActivity: grpc.aio.UnaryUnaryMultiCallable[google.protobuf.empty_pb2.Empty, gaius_service_pb2.CognitionActivityResponse]  # type: ignore[assignment]
     CognitionSurface: grpc.aio.UnaryUnaryMultiCallable[gaius_service_pb2.CognitionSurfaceRequest, gaius_service_pb2.CognitionSurfaceResponse]  # type: ignore[assignment]
+    CognitionWaterfall: grpc.aio.UnaryUnaryMultiCallable[gaius_service_pb2.CognitionWaterfallRequest, gaius_service_pb2.CognitionWaterfallResponse]  # type: ignore[assignment]
     SelfObservation: grpc.aio.UnaryUnaryMultiCallable[gaius_service_pb2.SelfObservationRequest, gaius_service_pb2.SelfObservationResponse]  # type: ignore[assignment]
     EngineAudit: grpc.aio.UnaryUnaryMultiCallable[gaius_service_pb2.EngineAuditRequest, gaius_service_pb2.EngineAuditResponse]  # type: ignore[assignment]
     SubscribeCognition: grpc.aio.UnaryStreamMultiCallable[gaius_service_pb2.CognitionStreamRequest, gaius_service_pb2.CognitionEvent]  # type: ignore[assignment]
@@ -966,6 +968,13 @@ class GaiusServiceServicer(metaclass=abc.ABCMeta):
         request: gaius_service_pb2.CognitionSurfaceRequest,
         context: _ServicerContext,
     ) -> typing.Union[gaius_service_pb2.CognitionSurfaceResponse, collections.abc.Awaitable[gaius_service_pb2.CognitionSurfaceResponse]]: ...
+
+    @abc.abstractmethod
+    def CognitionWaterfall(
+        self,
+        request: gaius_service_pb2.CognitionWaterfallRequest,
+        context: _ServicerContext,
+    ) -> typing.Union[gaius_service_pb2.CognitionWaterfallResponse, collections.abc.Awaitable[gaius_service_pb2.CognitionWaterfallResponse]]: ...
 
     @abc.abstractmethod
     def SelfObservation(

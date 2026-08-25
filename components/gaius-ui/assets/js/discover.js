@@ -239,12 +239,14 @@
     });
     var maxS = 1;
     buckets.forEach(function (b) {
-      var s = Number(b.salience || b.n || 0);
+      var s = Number(b.salience || 0);
+      if (s <= 0) s = Number(b.watts || 0);
       if (s > maxS) maxS = s;
     });
     histEl.innerHTML = buckets
       .map(function (b) {
         var s = Number(b.salience || 0);
+        if (s <= 0) s = Number(b.watts || 0);
         var hgt = s > 0 ? Math.max(3, Math.round((s / maxS) * 72)) : 1;
         return (
           '<div class="hist-bar' +
@@ -599,7 +601,10 @@
         var hpP = highpass(pw);
         var hpU = highpass(ut);
         for (x = 0; x < T; x++) {
-          var pVis = clip01(0.45 * clip01(pw[x]) + 0.9 * Math.abs(hpP[x]));
+          /* pw is signed [-1,1]; occupancy is [0,1]. clip01(signed) zeros idle. */
+          var pVis = clip01(
+            0.45 * clip01((pw[x] + 1) * 0.5) + 0.9 * Math.abs(hpP[x])
+          );
           var uVis = clip01(0.45 * clip01(ut[x]) + 0.9 * Math.abs(hpU[x]));
           var e = Math.abs(ep[x]) >= Math.abs(eu[x]) ? ep[x] : eu[x];
           rowC[x] = overlayMotion(dkcyan2(pVis, uVis), e);

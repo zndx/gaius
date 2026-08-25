@@ -13,6 +13,7 @@ pub mod pb {
 use pb::{
     gaius_service_client::GaiusServiceClient, AgendaCheck, AgendaCreateRequest,
     AgendaGetRequest, AgendaListRequest, AgendaUpdateRequest, CognitionSurfaceRequest,
+    CognitionWaterfallRequest,
     SummaryForkRequest, SummaryGetRequest, SummaryHopRequest, SummaryIndexRequest,
     SummaryScheduleTriggerRequest, SummarySchedulesRequest,
     FederationSurfacesRequest, AskPresentRequest,
@@ -91,7 +92,7 @@ impl Gaius {
         let r = c
             .discover_surface(DiscoverSurfaceRequest {
                 window: if window.is_empty() {
-                    "36h".into()
+                    "1h".into()
                 } else {
                     window
                 },
@@ -272,6 +273,31 @@ impl Gaius {
             return Err(GaiusError::Message(r.error));
         }
         Ok(CognitionSurfaceJson::from(r))
+    }
+
+    pub async fn cognition_waterfall(
+        &self,
+        window_s: i32,
+    ) -> Result<CognitionWaterfallJson, GaiusError> {
+        let mut c = self.client().await?;
+        let r = c
+            .cognition_waterfall(CognitionWaterfallRequest { window_s })
+            .await?
+            .into_inner();
+        if !r.error.is_empty() {
+            return Err(GaiusError::Message(r.error));
+        }
+        Ok(CognitionWaterfallJson {
+            epoch_unix_ms: r.epoch_unix_ms,
+            n_channels: r.n_channels,
+            n_times: r.n_times,
+            channel_names: r.channel_names,
+            matrix: r.matrix,
+            driver: r.driver,
+            hn_tokens: r.hn_tokens,
+            fmp_tokens: r.fmp_tokens,
+            bokeh_json: r.bokeh_json,
+        })
     }
 
     async fn client(&self) -> Result<GaiusServiceClient<Channel>, GaiusError> {
@@ -689,6 +715,19 @@ pub struct HourJson {
 pub struct StreamJson {
     pub id: String,
     pub thoughts: i32,
+}
+
+#[derive(Serialize)]
+pub struct CognitionWaterfallJson {
+    pub epoch_unix_ms: i64,
+    pub n_channels: i32,
+    pub n_times: i32,
+    pub channel_names: Vec<String>,
+    pub matrix: Vec<f32>,
+    pub driver: String,
+    pub hn_tokens: i32,
+    pub fmp_tokens: i32,
+    pub bokeh_json: String,
 }
 
 impl From<pb::CognitionSurfaceResponse> for CognitionSurfaceJson {

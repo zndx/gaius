@@ -4102,7 +4102,7 @@ Respond with:
                 "refresh",
                 {"reason": reason},
             )
-        window = "36h"
+        window = "1h"
         query_parts: list[str] = []
         if parts and (
             parts[0].lower() in ("salience", "1h", "24h", "36h")
@@ -6039,6 +6039,7 @@ Respond with:
             /thoughts recent 5  - Show last 5 thoughts
             /thoughts surface   - Federation cognition dashboard (default 365d)
             /thoughts surface 30 [stream] - Windowed surface; optional thought_type
+            /thoughts waterfall - 10 Hz named-measure strip (60s window)
             /thoughts self      - Trigger self-observation (thoughts about thoughts)
             /thoughts audit     - Trigger engine audit
             /thoughts chain [id]- Show thought chain
@@ -6057,6 +6058,39 @@ Respond with:
             }
 
         args_lower = args.strip().lower() if args else ""
+
+        if args_lower.startswith("waterfall"):
+            parts = args.split() if args else []
+            window_s = 60
+            if len(parts) > 1:
+                try:
+                    window_s = int(parts[1])
+                except ValueError:
+                    return {
+                        "error": (
+                            "window_s must be an integer.\n"
+                            "  Guru: #COG.00000030.BADWFWIN\n"
+                            "  Try: /thoughts waterfall 60"
+                        ),
+                        "mode": "waterfall",
+                    }
+            try:
+                from .client.grpc_client import get_grpc_client
+
+                client = await get_grpc_client()
+                if not client:
+                    return {
+                        "error": (
+                            "Engine gRPC not available.\n"
+                            "  Guru: #COG.00000029.NOENGINE\n"
+                            "  Try: /health fix engine"
+                        ),
+                        "mode": "waterfall",
+                    }
+                data = await client.call("Cognition", "waterfall", {"window_s": window_s})
+                return {"mode": "waterfall", **data}
+            except Exception as e:
+                return {"error": str(e), "mode": "waterfall"}
 
         # /thoughts surface [days] [stream] — engine CognitionSurface
         if args_lower.startswith("surface"):
