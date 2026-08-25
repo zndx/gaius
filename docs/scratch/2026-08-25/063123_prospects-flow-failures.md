@@ -135,3 +135,34 @@ opt-in and the spawner's local default.
 `gpu_metrics_settle` fails differently — an upload to the
 `signals-dataproducts` bucket from `signals/scripts/gpu_metrics_tier_up.py`.
 Separate problem, left alone.
+
+## Confirmed through the engine's own handler
+
+Enqueueing a `prospects_update` row and letting `ScheduledTaskProcessor` run it:
+
+```text
+ProspectsUpdate completed workload_id=prospects-update-16058
+2026-08-25 06:47:17.676 Done!
+scheduled_tasks.result -> status=completed, returncode=0
+```
+
+Run 1002 on the Signals metadata service walked all eleven steps and the YK
+sentinel cleaned itself up.
+
+The failure path is confirmed too, by accident: an earlier attempt (task 16054)
+ran against a stale engine and failed, and the reporting fix wrote a proper
+`kind: list` / `intent: reminder` note titled **"Prospects update failed"**
+carrying `exit 1` and the whole `#MF.00000006.NOPLATFORM` traceback — where the
+old code would have written "No new filing count — nothing to book".
+
+Two operational notes from doing this:
+
+- `devenv processes restart gaius-engine` printed `Phase: ready` while leaving
+  the previous process running, so the first engine-path attempt tested the old
+  code. Port :50051 staying bound is not evidence of a restart — compare PIDs.
+- Running the flow by hand leaves its YK sentinel pod behind; the spawner is
+  what deletes it. A leftover `manual-verify-2` held the only
+  `federation.zndx.org/gpu` token in `root.internal.inference.extract` and left
+  the next real task `Pending` with the engine silent after
+  `RequestQueueShare … wrk=prospects-update`. Deleting the orphan admitted it
+  at once.

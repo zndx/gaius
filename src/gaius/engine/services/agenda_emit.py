@@ -133,6 +133,23 @@ def _next_session_slot(now: datetime) -> datetime:
 _PROSPECTS_FAILURES = frozenset({"error", "failed", "stalled"})
 
 
+def _tail_lines(text: str, budget: int = 1200) -> str:
+    """Last whole lines that fit in ``budget``.
+
+    Slicing a traceback by character starts the note mid-token
+    ("ice.py\", line 186, in ..."), which reads as corruption.
+    """
+    lines = (text or "").strip().splitlines()
+    kept: list[str] = []
+    used = 0
+    for line in reversed(lines):
+        used += len(line) + 1
+        if kept and used > budget:
+            break
+        kept.append(line)
+    return "\n".join(reversed(kept))
+
+
 def emit_prospects_update(result: dict[str, Any], root: Path | None = None) -> AgendaItem | None:
     """Failure → reminder. Completed filings → session. Else brief."""
     now = datetime.now(timezone.utc)
@@ -151,12 +168,12 @@ def emit_prospects_update(result: dict[str, Any], root: Path | None = None) -> A
 
     if failed:
         rc = result.get("returncode")
-        detail = err or "no output captured"
+        detail = _tail_lines(err) or "no output captured"
         body = (
             f"Prospects update failed ({status}"
             f"{f', exit {rc}' if rc is not None else ''}).\n\n"
             f"Symbols: {sym}.\n\n"
-            f"{detail[-1200:]}\n"
+            f"{detail}\n"
             "\n"
             "- [ ] Re-admit on a prospects-update claim, not the standing "
             "article-curate pod\n"

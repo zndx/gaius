@@ -101,6 +101,28 @@ def test_prospects_failed_exit_surfaces_the_child_tail(tmp_path: Path) -> None:
     assert "nothing to book" not in item.body
 
 
+def test_prospects_failure_body_starts_on_a_whole_line(tmp_path: Path) -> None:
+    """Slicing the tail by character opened the note mid-token."""
+    kb = tmp_path / "kb"
+    (kb / "scratch").mkdir(parents=True)
+    item = emit_prospects_update(
+        {
+            "status": "failed",
+            "returncode": 1,
+            "symbols": ["SLB"],
+            "last_lines": [f"frame {i}: " + "x" * 90 for i in range(40)]
+            + ["PlatformMetaflowError: #MF.00000006.NOPLATFORM boom"],
+        },
+        root=kb,
+    )
+    assert item is not None
+    # The newest line survives, and nothing is cut mid-token.
+    assert "#MF.00000006.NOPLATFORM" in item.body
+    diagnosis = [ln for ln in item.body.splitlines() if ln.startswith("frame ")]
+    assert diagnosis, item.body
+    assert all(ln.startswith("frame ") for ln in diagnosis)
+
+
 def test_prospects_stalled_is_a_failure(tmp_path: Path) -> None:
     kb = tmp_path / "kb"
     (kb / "scratch").mkdir(parents=True)
