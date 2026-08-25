@@ -299,13 +299,78 @@ def tick_from_gpu_rows(
     )
 
 
-# The strip reads tier0, not the UNION views. Its window is at most
-# LIVE_WINDOW_S of wall clock, always inside the open Kudu hour, so tier1 can
-# contribute nothing and scanning Iceberg is pure cost. It is also the robust
-# choice: Impala reads an Iceberg table that has never been written
-# (current-snapshot-id = -1) as snapshot 0 and the whole UNION fails with
-# "Cannot find snapshot with ID 0" until tier-up lands a first HDF5 commit.
-# The views remain the analytical surface for historical windows.
+# The strip reads tier0, never the UNION views. Two reasons, both measured.
+#
+# 1. The Iceberg HDF5 tier does not evaluate predicates. Straight to Impala:
+#
+#      gpu_metrics_tier0  WHERE ts_ns = <one instant>  ->          6 rows
+#      gpu_metrics_tier1  WHERE ts_ns = <one instant>  ->    493,476 rows
+#      gpu_metrics (view)                              ->    493,482 rows
+#
+#    493,476 is the whole of tier1. The FDW pushes the right SQL — EXPLAIN
+#    VERBOSE shows `WHERE ts_ns = ...` as Remote SQL — and the custom HDF5
+#    FileFormat reader returns every row regardless. Any filtered read of the
+#    view therefore drags the entire settled history back per call: 12-24s,
+#    which tripped the Discover strip's 4s budget into a 503 loop.
+#
+# 2. Even with a correct reader the view would be wasted work here: the
+#    strip's window is at most LIVE_WINDOW_S of wall clock, always inside the
+#    open Kudu hour, so tier1 can contribute nothing.
+#
+# tier0 answers the same window in ~13ms. The views stay the analytical
+# surface and become trustworthy once the HDF5 reader honours predicates.
+# One warehouse connection, reused. Opening a Postgres backend costs an
+# impala_fdw session — Kerberos, Kudu client, table metadata — which was
+# measured at 2.8-15.7s even for a 7,977-row count. The strip polls every few
+# seconds and made two fresh connections per poll, so it could never fit the
+# Discover surface's 4s budget and 503'd in a loop. Warm, the same reads are
+# ~10ms. The ingest loop already reuses its connection this way.
+_CONN: Any = None
+_CONN_LOCK: Any = None
+
+
+def _conn_lock() -> Any:
+    global _CONN_LOCK
+    if _CONN_LOCK is None:
+        import asyncio as _asyncio
+
+        _CONN_LOCK = _asyncio.Lock()
+    return _CONN_LOCK
+
+
+async def _warehouse_conn() -> Any:
+    """Live warehouse connection, reconnecting if the last one died."""
+    global _CONN
+    try:
+        import asyncpg
+    except ImportError as e:
+        raise RuntimeError(GURU_WAREHOUSE) from e
+    if _CONN is not None and not _CONN.is_closed():
+        return _CONN
+    try:
+        _CONN = await asyncpg.connect(_warehouse_dsn(), timeout=60)
+    except Exception as e:
+        _CONN = None
+        raise RuntimeError(f"{GURU_WAREHOUSE}\n  connect: {e}") from e
+    return _CONN
+
+
+async def _drop_warehouse_conn() -> None:
+    """Discard the cached connection so the next read reconnects."""
+    global _CONN
+    conn, _CONN = _CONN, None
+    if conn is not None and not conn.is_closed():
+        try:
+            await conn.close()
+        except Exception:
+            pass
+
+
+def reset_warehouse_conn_for_tests() -> None:
+    global _CONN
+    _CONN = None
+
+
 def _warehouse_dsn() -> str:
     import os
 
@@ -323,67 +388,47 @@ async def fetch_cognition_metrics(window_s: int) -> list[dict[str, Any]]:
     no cognition rows — a quiet cognition surface is not a warehouse fault,
     and the GPU strip must still render.
     """
-    try:
-        import asyncpg
-    except ImportError as e:
-        raise RuntimeError(GURU_WAREHOUSE) from e
     end_ns = int(time.time() * 1_000_000_000)
     start_ns = end_ns - int(window_s) * 1_000_000_000
-    try:
-        conn = await asyncpg.connect(_warehouse_dsn(), timeout=60)
-    except Exception as e:
-        raise RuntimeError(f"{GURU_WAREHOUSE}\n  connect: {e}") from e
-    try:
-        recs = await conn.fetch(
-            """
-            SELECT ts_ns, channel, value, present
-              FROM cognition_metrics_tier0
-             WHERE ts_ns >= $1 AND ts_ns < $2
-             ORDER BY ts_ns
-            """,
-            start_ns,
-            end_ns,
-        )
-    except Exception as e:
-        raise RuntimeError(f"{GURU_WAREHOUSE}\n  query: {e}") from e
-    finally:
-        await conn.close()
+    async with _conn_lock():
+        conn = await _warehouse_conn()
+        try:
+            recs = await conn.fetch(
+                """
+                SELECT ts_ns, channel, value, present
+                  FROM cognition_metrics_tier0
+                 WHERE ts_ns >= $1 AND ts_ns < $2
+                 ORDER BY ts_ns
+                """,
+                start_ns,
+                end_ns,
+            )
+        except Exception as e:
+            await _drop_warehouse_conn()
+            raise RuntimeError(f"{GURU_WAREHOUSE}\n  query: {e}") from e
     return [dict(r) for r in recs]
 
 
 async def fetch_gpu_metrics(window_s: int) -> list[dict[str, Any]]:
-    """SELECT gpu_metrics through devenv Postgres impala_fdw. Fail-fast."""
-    import os
-
-    dsn = os.environ.get(
-        "SIGNALS_WAREHOUSE_DSN",
-        "postgresql://signals@127.0.0.1:5455/signals",
-    )
-    try:
-        import asyncpg
-    except ImportError as e:
-        raise RuntimeError(GURU_WAREHOUSE) from e
+    """SELECT gpu_metrics_tier0 through devenv Postgres impala_fdw. Fail-fast."""
     end_ns = int(time.time() * 1_000_000_000)
     start_ns = end_ns - int(window_s) * 1_000_000_000
-    try:
-        conn = await asyncpg.connect(dsn, timeout=60)
-    except Exception as e:
-        raise RuntimeError(f"{GURU_WAREHOUSE}\n  connect: {e}") from e
-    try:
-        recs = await conn.fetch(
-            """
-            SELECT ts_ns, gpu_index, power_w, util_pct
-              FROM gpu_metrics_tier0
-             WHERE ts_ns >= $1 AND ts_ns < $2
-             ORDER BY ts_ns, gpu_index
-            """,
-            start_ns,
-            end_ns,
-        )
-    except Exception as e:
-        raise RuntimeError(f"{GURU_WAREHOUSE}\n  query: {e}") from e
-    finally:
-        await conn.close()
+    async with _conn_lock():
+        conn = await _warehouse_conn()
+        try:
+            recs = await conn.fetch(
+                """
+                SELECT ts_ns, gpu_index, power_w, util_pct
+                  FROM gpu_metrics_tier0
+                 WHERE ts_ns >= $1 AND ts_ns < $2
+                 ORDER BY ts_ns, gpu_index
+                """,
+                start_ns,
+                end_ns,
+            )
+        except Exception as e:
+            await _drop_warehouse_conn()
+            raise RuntimeError(f"{GURU_WAREHOUSE}\n  query: {e}") from e
     out = [dict(r) for r in recs]
     for r in out:
         if r.get("ts_ns") is None or r.get("gpu_index") is None:
