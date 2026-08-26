@@ -545,7 +545,7 @@
   }
 
   function stripRgb(name, amp, prevAmp) {
-    if (name && name.indexOf("gpu-") === 0) {
+    if (name && (name.indexOf("gpu-") === 0 || name.indexOf("mem-") === 0)) {
       var un = unpackGpu(typeof amp === "number" ? amp : 0);
       var pv =
         prevAmp === undefined ? undefined : unpackGpu(typeof prevAmp === "number" ? prevAmp : 0);
@@ -588,7 +588,8 @@
     for (ry = 0; ry < C; ry++) {
       var nm = names[ry] || "";
       var rowC = [];
-      if (nm.indexOf("gpu-") === 0) {
+      /* gpu-N (power×util) and mem-N (bandwidth×VRAM) are both pack_gpu bivariate. */
+      if (nm.indexOf("gpu-") === 0 || nm.indexOf("mem-") === 0) {
         var pw = [];
         var ut = [];
         for (x = 0; x < T; x++) {

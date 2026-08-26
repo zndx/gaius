@@ -165,18 +165,15 @@ class HardwareDriver:
     url = "http://127.0.0.1:9400/metrics"
 
     def channel_names(self) -> tuple[str, ...]:
-        # gpu-N is bivariate — util drives the color's y axis, power the x —
-        # so a standalone util-N row is redundant (dropped). The freed real
-        # estate now carries GPU-workload signals from the same DCGM source:
-        #   vram-N : per-GPU framebuffer occupancy — OOM headroom for training,
-        #            fine-tuning, weights merging (rising toward the ceiling
-        #            reads as a red onset).
-        #   membw  : worst-GPU memory-copy utilization — the compute-vs-memory-
-        #            bandwidth tell when gpu-util is pegged.
-        return (
-            tuple(f"gpu-{i}" for i in range(_N_GPU))
-            + tuple(f"vram-{i}" for i in range(_N_GPU))
-            + ("membw",)
+        # Two bivariate rows per GPU, both packed with pack_gpu (x, y):
+        #   gpu-N : compute — power (x) × util (y). Dropped the redundant util-N.
+        #   mem-N : memory  — mem_copy bandwidth (x) × VRAM occupancy (y). One
+        #           row carries OOM headroom (height rising toward the ceiling
+        #           reads red) and the compute-vs-bandwidth tell, per GPU — more
+        #           signal than separate vram-N rows + a lossy aggregate membw,
+        #           and shorter, so every row gets more height.
+        return tuple(f"gpu-{i}" for i in range(_N_GPU)) + tuple(
+            f"mem-{i}" for i in range(_N_GPU)
         )
 
     def sample(self, ctx: dict[str, Any]) -> list[Sample]:
@@ -213,21 +210,16 @@ class HardwareDriver:
                 out.append(
                     Sample(f"gpu-{i}", pack_gpu(_power_signed(power[i]), u), present=True)
                 )
-        # vram-N: framebuffer occupancy fraction (used / (used + free)).
+        # mem-N: bivariate memory cell — VRAM occupancy (y) × mem_copy bandwidth
+        # (x), packed like gpu-N. Occupancy = fb_used / (fb_used + fb_free).
         for i in range(_N_GPU):
             if fb_used[i] is None or fb_free[i] is None:
-                out.append(Sample(f"vram-{i}", 0.0, present=False))
+                out.append(Sample(f"mem-{i}", 0.0, present=False))
             else:
                 total = float(fb_used[i]) + float(fb_free[i])
-                frac = float(fb_used[i]) / total if total > 0 else 0.0
-                out.append(Sample(f"vram-{i}", _clip(frac), present=True))
-        # membw: worst-GPU memory-copy utilization (fraction).
-        mvals = [float(m) for m in mem_copy if m is not None]
-        out.append(
-            Sample("membw", _clip(max(mvals) / 100.0), present=True)
-            if mvals
-            else Sample("membw", 0.0, present=False)
-        )
+                vram = _clip(float(fb_used[i]) / total if total > 0 else 0.0)
+                bw = _clip(float(mem_copy[i]) / 100.0 if mem_copy[i] is not None else 0.0)
+                out.append(Sample(f"mem-{i}", pack_gpu(bw, vram), present=True))
         _record_hardware(power, util)
         return out
 

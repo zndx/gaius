@@ -293,7 +293,7 @@ def tick_from_gpu_rows(
     sid_ff = series_id_of("dcgm.fb_free_mib")
     sid_mc = series_id_of("dcgm.mem_copy_util_pct")
     # Collect all five DCGM series per (gpu, column): power+util feed the packed
-    # gpu-N cell, fb_used+fb_free give vram-N occupancy, mem_copy feeds membw.
+    # gpu-N cell; fb_used+fb_free (occupancy) and mem_copy (bandwidth) feed mem-N.
     # slot = [watts, util, fb_used_mib, fb_free_mib, mem_copy_frac]
     cell: dict[tuple[int, int], list[float | None]] = {}
     for r in rows:
@@ -322,27 +322,21 @@ def tick_from_gpu_rows(
             slot[3] = float(v)
         elif sid == sid_mc:
             slot[4] = int(v) / 100.0
-    membw_i = name_i.get("membw")
-    membw_col: dict[int, float] = {}  # worst-GPU mem_copy per column
     for (gi, col), (watts, util, fbu, fbf, mc) in cell.items():
         gk = f"gpu-{gi}"
-        vk = f"vram-{gi}"
+        mk = f"mem-{gi}"
         if watts is not None and gk in name_i:
             u = _clip(util if util is not None else 0.0)
             p = _clip((watts - _IDLE_W) / (_BUSY_W - _IDLE_W))
             matrix[name_i[gk]][col] = pack_gpu(p, u)
             present[name_i[gk]][col] = True
-        if fbu is not None and fbf is not None and vk in name_i:
+        # mem-N: VRAM occupancy (y) × mem_copy bandwidth (x), packed like gpu-N.
+        if fbu is not None and fbf is not None and mk in name_i:
             total = fbu + fbf
-            matrix[name_i[vk]][col] = _clip(fbu / total if total > 0 else 0.0)
-            present[name_i[vk]][col] = True
-        if mc is not None:
-            prev = membw_col.get(col)
-            membw_col[col] = mc if prev is None else max(prev, mc)
-    if membw_i is not None:
-        for col, mv in membw_col.items():
-            matrix[membw_i][col] = _clip(mv)
-            present[membw_i][col] = True
+            vram = _clip(fbu / total if total > 0 else 0.0)
+            bw = _clip(mc if mc is not None else 0.0)
+            matrix[name_i[mk]][col] = pack_gpu(bw, vram)
+            present[name_i[mk]][col] = True
     envelope = 0.0
     for r in cognition_rows or []:
         ch = r.get("channel")
@@ -523,8 +517,8 @@ async def fetch_gpu_metrics(window_s: int) -> list[dict[str, Any]]:
     """Power/util series from signal_tier0 through impala_fdw kudu_scan. Fail-fast."""
     from gaius.engine.services.warehouse_ingest import series_id_of
 
-    # power/util pair into the bivariate gpu-N; fb_used+fb_free give vram-N
-    # occupancy; mem_copy_util gives membw. All five are dcgm.* series in Kudu.
+    # power/util pair into the bivariate gpu-N; fb_used+fb_free (occupancy) and
+    # mem_copy_util (bandwidth) pair into the bivariate mem-N. dcgm.* in Kudu.
     sids = [
         series_id_of("dcgm.power_mw"),
         series_id_of("dcgm.gpu_util_pct"),
