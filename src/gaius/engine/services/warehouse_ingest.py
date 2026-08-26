@@ -199,7 +199,9 @@ def dcgm_rows(now: float, gpus: dict[int, dict[str, int]]) -> list[tuple[Any, ..
     out: list[tuple[Any, ...]] = []
     for gi in sorted(gpus):
         for name, v in gpus[gi].items():
-            out.append((eh, ts_ns, series_id_of(name), SRC_DCGM, gi, None, v, None))
+            # inst=-1: DCGM series have no endpoint instance. gpu carries the
+            # ordinal so the 6 GPUs of one series do not collide on the PK.
+            out.append((eh, ts_ns, series_id_of(name), SRC_DCGM, gi, -1, v, None))
     return out
 
 
@@ -212,7 +214,8 @@ def cognition_rows(now: float, samples: list[Any]) -> list[tuple[Any, ...]]:
         if not s.present:
             continue
         d = Decimal(repr(float(s.value))).quantize(DEC_Q)
-        out.append((eh, ts_ns, series_id_of(f"cog.{s.name}"), SRC_ENGINE, None, None, None, d))
+        # gpu=-1, inst=-1: cognition channels are scalar, no GPU/instance dim.
+        out.append((eh, ts_ns, series_id_of(f"cog.{s.name}"), SRC_ENGINE, -1, -1, None, d))
     return out
 
 
