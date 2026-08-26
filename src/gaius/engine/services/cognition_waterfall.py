@@ -22,6 +22,12 @@ from gaius.engine.services.waterfall_drivers import (
 HZ = 10
 DEFAULT_WINDOW_S = 60
 LIVE_WINDOW_S = 60
+# The strip anchor sits a couple of seconds behind now (newest settled
+# second), so the oldest column reaches back window_s + backoff seconds. Fetch
+# that much plus slack: rows older than the oldest column map to col < 0 and
+# are dropped, but without the slack col 0 is never populated and its 0->value
+# step reads as a rising edge that paints a fixed red blob at the left edge.
+_EDGE_MARGIN_S = 4
 MAX_WINDOW_S = 3600
 CHANNEL_NAMES: tuple[str, ...] = all_channel_names()
 N_CHANNELS = len(CHANNEL_NAMES)
@@ -454,7 +460,7 @@ async def fetch_cognition_metrics(window_s: int) -> list[dict[str, Any]]:
         return []
     by_sid = {series_id_of(f"cog.{n}"): n for n in names}
     end_ns = int(time.time() * 1_000_000_000)
-    start_ns = end_ns - int(window_s) * 1_000_000_000
+    start_ns = end_ns - int(window_s + _EDGE_MARGIN_S) * 1_000_000_000
     hour = end_ns // 1_000_000_000 // 3600
     async with _conn_lock():
         conn = await _warehouse_conn()
@@ -483,7 +489,7 @@ async def fetch_gpu_metrics(window_s: int) -> list[dict[str, Any]]:
 
     sids = [series_id_of("dcgm.power_mw"), series_id_of("dcgm.gpu_util_pct")]
     end_ns = int(time.time() * 1_000_000_000)
-    start_ns = end_ns - int(window_s) * 1_000_000_000
+    start_ns = end_ns - int(window_s + _EDGE_MARGIN_S) * 1_000_000_000
     hour = end_ns // 1_000_000_000 // 3600
     async with _conn_lock():
         conn = await _warehouse_conn()
