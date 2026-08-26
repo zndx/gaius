@@ -165,9 +165,11 @@ class HardwareDriver:
     url = "http://127.0.0.1:9400/metrics"
 
     def channel_names(self) -> tuple[str, ...]:
-        return tuple(f"gpu-{i}" for i in range(_N_GPU)) + tuple(
-            f"util-{i}" for i in range(_N_GPU)
-        )
+        # gpu-N is bivariate — util drives the color's y axis, power the x —
+        # so a standalone util-N row is redundant. Dropped to free strip real
+        # estate for GPU-workload metrics (training / fine-tune / weights merge,
+        # Aegir). dcgm.gpu_util_pct is still ingested and paired into gpu-N.
+        return tuple(f"gpu-{i}" for i in range(_N_GPU))
 
     def sample(self, ctx: dict[str, Any]) -> list[Sample]:
         text = _http_get(self.url, timeout=1.0)
@@ -194,11 +196,8 @@ class HardwareDriver:
                 out.append(
                     Sample(f"gpu-{i}", pack_gpu(_power_signed(power[i]), u), present=True)
                 )
-        for i in range(_N_GPU):
-            if util[i] is None:
-                out.append(Sample(f"util-{i}", 0.0, present=False))
-            else:
-                out.append(Sample(f"util-{i}", _clip(float(util[i]) / 100.0)))
+        # util-N rows were dropped from the strip (gpu-N carries util on its
+        # color y axis). power/util are still recorded for the warehouse writer.
         _record_hardware(power, util)
         return out
 
