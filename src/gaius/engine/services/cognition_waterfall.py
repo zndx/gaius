@@ -253,16 +253,30 @@ def tick_from_gpu_rows(
     #    newest drags the whole anchor back, then the view jumps when it catches
     #    up.
     #
-    # Bound the anchor by the newest GPU sample second and never let it exceed
-    # what GPU actually returned: min(now - 1, newest GPU second). GPU is dense
-    # (1 Hz) so this is a stable clock; cognition is always the *later* fetch, so
-    # its newest second is >= GPU's and it therefore already contains this
-    # second too — the edge is present for every channel, final when painted,
-    # and identical as it scrolls. Stragglers newer than the anchor map past the
-    # edge and are dropped. epoch below is this same second, so the client
-    # repaints once per second and shifts left one column a frame.
+    # Anchor the rightmost column to the newest *fully settled* second, so the
+    # edge value is final the instant it is painted and only ever scrolls left.
+    #
+    # "Settled" is the crux. A second's samples do not all land at once: the six
+    # GPUs each INSERT their own row and the cognition metrics land in a separate
+    # fetch, all with ~0.65 s of ingest lag and a little skew between them. So the
+    # newest second that has *any* row (max ts over the GPU rows) is often still
+    # filling — one GPU or one cognition channel has not written it yet. Anchor
+    # there and that channel's edge cell is carried forward from the prior second,
+    # then corrected a frame later when its real sample arrives: a right-edge cell
+    # that changes value instead of scrolling — the "disappearing" flicker.
+    #
+    # Back off one whole second: min(now - 2, newest GPU second - 1). Once *any*
+    # row for second S exists, S-1 is complete for every channel — all sources
+    # sample at 1 Hz with sub-second lag, so none can still be mid-write on a
+    # second a newer one already exists for. Cognition is the later fetch with a
+    # newest >= GPU's, so it too has S-1 settled (its metrics land together per
+    # tick). Costs ~1 s more edge latency, invisible on a 60 s view; buys a
+    # right edge that is correct when it appears and identical as it slides left.
+    # Stragglers newer than the anchor map past the edge and are dropped. epoch
+    # below is this same second, so the client repaints once per second and
+    # shifts left one column a frame.
     _gpu_newest = max(int(r["ts_ns"]) for r in rows) // 1_000_000_000
-    anchor_sec = min(int(time.time()) - 1, _gpu_newest)
+    anchor_sec = min(int(time.time()) - 2, _gpu_newest - 1)
 
     def _col_for(ts_ns: int) -> int:
         return n_cols - 1 - (anchor_sec - int(ts_ns) // 1_000_000_000)
