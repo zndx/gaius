@@ -229,7 +229,12 @@ def tick_from_gpu_rows(
     in the window stays at zero honestly, it is not faked.
     """
     from gaius.engine.services.waterfall_color import pack_gpu
-    from gaius.engine.services.waterfall_drivers import _IDLE_W, _BUSY_W, _clip
+    from gaius.engine.services.waterfall_drivers import (
+        _IDLE_W,
+        _BUSY_W,
+        _clip,
+        _membw_axis,
+    )
     from gaius.engine.services.warehouse_ingest import series_id_of
 
     names = all_channel_names()
@@ -334,7 +339,7 @@ def tick_from_gpu_rows(
         if fbu is not None and fbf is not None and mk in name_i:
             total = fbu + fbf
             vram = _clip(fbu / total if total > 0 else 0.0)
-            bw = _clip(mc if mc is not None else 0.0)
+            bw = _membw_axis(mc) if mc is not None else 0.0
             matrix[name_i[mk]][col] = pack_gpu(bw, vram)
             present[name_i[mk]][col] = True
     envelope = 0.0

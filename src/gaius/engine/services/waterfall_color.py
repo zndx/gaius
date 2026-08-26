@@ -58,9 +58,16 @@ def _clip11(x: float) -> float:
 
 
 def pack_gpu(power: float, util: float) -> float:
-    """Pack signed power [-1,1] and util [0,1]. 0 is reserved for absent."""
+    """Pack signed power [-1,1] and util [0,1]. 0 is reserved for absent.
+
+    util is quantized to the 1e-4 grid (unpack recovers it with the same
+    floor). Without this, a util that is not already a clean multiple of 1e-4 —
+    e.g. mem-N's VRAM ratio fb_used/(fb_used+fb_free) = 0.885060… — spills its
+    sub-1e-4 digits into the power/bandwidth residual and corrupts it. gpu-N's
+    util is int/100 so it was unaffected; mem-N exposed the assumption.
+    """
     p01 = (_clip11(power) + 1.0) * 0.5
-    u01 = _clip01(util)
+    u01 = math.floor(_clip01(util) * 10000.0) / 10000.0
     return _PACK_BASE + u01 + p01 * _PACK_P
 
 

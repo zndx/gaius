@@ -35,6 +35,11 @@ _PROM_PLAIN = re.compile(r"^([a-zA-Z_:][a-zA-Z0-9_:]*)\s+([-+0-9.eE]+)\s*$")
 # burst should). Tune these to the hardware's real band, not its TDP.
 _IDLE_W = 10.0
 _BUSY_W = 200.0
+# mem-N bandwidth axis (mem_copy_util %). Log-scaled to a reference so the low
+# but non-trivial inference band (~20%) lifts off the palette's light floor into
+# a vivid cell instead of washing out, while training's higher bandwidth still
+# has headroom before saturating. Mirrors the log scaling of gen-tps/wait.
+_MEMBW_REF = 50.0
 _N_GPU = 6  # tinybox green: six 4090s; 0-3 thinking, 4 CLT, 5 spare
 _RICCI_N = 12
 _RICCI_K = 5
@@ -83,6 +88,13 @@ def _clip(x: float) -> float:
     if x < -1.0:
         return -1.0
     return x
+
+
+def _membw_axis(mem_copy_frac: float) -> float:
+    """mem-N bandwidth axis: log-scale mem_copy [0,1] so a low-but-real load is
+    a vivid cell, not a washed-out one. 0 stays 0; ~20% -> ~0.77; >=ref -> 1."""
+    pct = max(0.0, min(1.0, mem_copy_frac)) * 100.0
+    return _clip(math.log1p(pct) / math.log1p(_MEMBW_REF))
 
 
 def parse_prom_text_raw(text: str) -> list[tuple[str, dict[str, str], str]]:
@@ -218,7 +230,7 @@ class HardwareDriver:
             else:
                 total = float(fb_used[i]) + float(fb_free[i])
                 vram = _clip(float(fb_used[i]) / total if total > 0 else 0.0)
-                bw = _clip(float(mem_copy[i]) / 100.0 if mem_copy[i] is not None else 0.0)
+                bw = _membw_axis(float(mem_copy[i]) / 100.0) if mem_copy[i] is not None else 0.0
                 out.append(Sample(f"mem-{i}", pack_gpu(bw, vram), present=True))
         _record_hardware(power, util)
         return out
