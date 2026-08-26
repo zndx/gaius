@@ -166,10 +166,18 @@ class HardwareDriver:
 
     def channel_names(self) -> tuple[str, ...]:
         # gpu-N is bivariate — util drives the color's y axis, power the x —
-        # so a standalone util-N row is redundant. Dropped to free strip real
-        # estate for GPU-workload metrics (training / fine-tune / weights merge,
-        # Aegir). dcgm.gpu_util_pct is still ingested and paired into gpu-N.
-        return tuple(f"gpu-{i}" for i in range(_N_GPU))
+        # so a standalone util-N row is redundant (dropped). The freed real
+        # estate now carries GPU-workload signals from the same DCGM source:
+        #   vram-N : per-GPU framebuffer occupancy — OOM headroom for training,
+        #            fine-tuning, weights merging (rising toward the ceiling
+        #            reads as a red onset).
+        #   membw  : worst-GPU memory-copy utilization — the compute-vs-memory-
+        #            bandwidth tell when gpu-util is pegged.
+        return (
+            tuple(f"gpu-{i}" for i in range(_N_GPU))
+            + tuple(f"vram-{i}" for i in range(_N_GPU))
+            + ("membw",)
+        )
 
     def sample(self, ctx: dict[str, Any]) -> list[Sample]:
         text = _http_get(self.url, timeout=1.0)
@@ -177,6 +185,9 @@ class HardwareDriver:
             return [Sample(n, 0.0, present=False) for n in self.channel_names()]
         power: list[float | None] = [None] * _N_GPU
         util: list[float | None] = [None] * _N_GPU
+        fb_used: list[float | None] = [None] * _N_GPU
+        fb_free: list[float | None] = [None] * _N_GPU
+        mem_copy: list[float | None] = [None] * _N_GPU
         for metric, labels, val in parse_prom_text(text):
             i = _gpu_index(labels)
             if i is None or i >= _N_GPU:
@@ -185,6 +196,12 @@ class HardwareDriver:
                 power[i] = val
             elif metric == "DCGM_FI_DEV_GPU_UTIL":
                 util[i] = val
+            elif metric == "DCGM_FI_DEV_FB_USED":
+                fb_used[i] = val
+            elif metric == "DCGM_FI_DEV_FB_FREE":
+                fb_free[i] = val
+            elif metric == "DCGM_FI_DEV_MEM_COPY_UTIL":
+                mem_copy[i] = val
         out: list[Sample] = []
         for i in range(_N_GPU):
             if power[i] is None:
@@ -196,8 +213,21 @@ class HardwareDriver:
                 out.append(
                     Sample(f"gpu-{i}", pack_gpu(_power_signed(power[i]), u), present=True)
                 )
-        # util-N rows were dropped from the strip (gpu-N carries util on its
-        # color y axis). power/util are still recorded for the warehouse writer.
+        # vram-N: framebuffer occupancy fraction (used / (used + free)).
+        for i in range(_N_GPU):
+            if fb_used[i] is None or fb_free[i] is None:
+                out.append(Sample(f"vram-{i}", 0.0, present=False))
+            else:
+                total = float(fb_used[i]) + float(fb_free[i])
+                frac = float(fb_used[i]) / total if total > 0 else 0.0
+                out.append(Sample(f"vram-{i}", _clip(frac), present=True))
+        # membw: worst-GPU memory-copy utilization (fraction).
+        mvals = [float(m) for m in mem_copy if m is not None]
+        out.append(
+            Sample("membw", _clip(max(mvals) / 100.0), present=True)
+            if mvals
+            else Sample("membw", 0.0, present=False)
+        )
         _record_hardware(power, util)
         return out
 
@@ -221,7 +251,7 @@ class VllmDriver:
         self._prev: dict[str, tuple[float, float]] = {}
 
     def channel_names(self) -> tuple[str, ...]:
-        return ("kv", "run", "gen-tps", "prefill")
+        return ("kv", "run", "gen-tps", "prefill", "wait", "preempt")
 
     def sample(self, ctx: dict[str, Any]) -> list[Sample]:
         text = _http_get(self._url())
@@ -230,18 +260,26 @@ class VllmDriver:
             return [Sample(n, 0.0, present=False) for n in self.channel_names()]
         kv = run = None
         gen = pre = None
+        wait = preempt = None
         for metric, _labels, val in parse_prom_text(text):
             base = _metric_base(metric)
             if base in ("vllm:kv_cache_usage_perc", "vllm:gpu_cache_usage_perc"):
                 kv = val
             elif base == "vllm:num_requests_running":
                 run = val
+            elif base == "vllm:num_requests_waiting":
+                wait = val
             elif base == "vllm:generation_tokens_total":
                 gen = val
             elif base == "vllm:prompt_tokens_total":
                 pre = val
+            elif base == "vllm:num_preemptions_total":
+                preempt = val
         gen_tps = self._rate("gen", gen, now)
         pre_tps = self._rate("pre", pre, now)
+        # Preemptions are a monotonic counter; the strip wants the event rate, so
+        # a burst reads as a spike (rising -> red) rather than an ever-rising line.
+        preempt_rate = self._rate("preempt", preempt, now)
         return [
             Sample("kv", _clip(kv if kv is not None else 0.0), kv is not None),
             Sample("run", _clip(1.0 if (run or 0) > 0 else 0.0), run is not None),
@@ -254,6 +292,18 @@ class VllmDriver:
                 "prefill",
                 _clip(math.log1p(pre_tps) / math.log1p(200.0)),
                 pre is not None,
+            ),
+            # Queue depth (log-scaled so a queue of a few is already visible) and
+            # preemption rate — the two congestion signals for vLLM serving.
+            Sample(
+                "wait",
+                _clip(math.log1p(wait or 0.0) / math.log1p(64.0)),
+                wait is not None,
+            ),
+            Sample(
+                "preempt",
+                _clip(math.log1p(preempt_rate) / math.log1p(20.0)),
+                preempt is not None,
             ),
         ]
 
