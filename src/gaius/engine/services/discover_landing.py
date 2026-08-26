@@ -338,7 +338,11 @@ async def refresh_landing_strip(db_pool: Any) -> None:
             logger.exception("discover strip thoughts count failed")
         try:
             running = await conn.fetchval(
-                "SELECT count(*) FROM scheduled_tasks WHERE status = 'running'"
+                # scheduled_tasks has no status column; a running task is one
+                # picked up but not yet completed and without a recorded error.
+                "SELECT count(*) FROM scheduled_tasks "
+                "WHERE picked_up_at IS NOT NULL AND completed_at IS NULL "
+                "AND error IS NULL"
             )
             if running is not None:
                 _strip_workflows = int(running)
