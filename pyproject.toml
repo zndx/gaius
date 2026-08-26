@@ -264,6 +264,30 @@ override-dependencies = [
     # vLLM wants opencv-python-headless (no libGL). Having both installed causes
     # opencv-python to win the import and crash. Force headless everywhere.
     "opencv-python>=4.11 ; sys_platform == 'never'",
+
+    # CUDA-13 nvidia wheels clobber the cu12 libs torch 2.13+cu129 needs: a
+    # cu13 lib shares a soname with its cu12 twin (libnccl.so.2, libcudnn.so.9,
+    # libcusparseLt.so.0, nvshmem) and last-writer-wins overwrites the cu12
+    # file, dropping symbols like ncclCommResume that torch links. torch/vllm
+    # here use the -cu12 variants; block every bare/cu13 nvidia wheel so no
+    # transitive resolve can pull the cu13 set. See docs + memory
+    # gaius-venv-cuda13-clobber-repair.
+    "nvidia-cublas ; sys_platform == 'never'",
+    "nvidia-cuda-cupti ; sys_platform == 'never'",
+    "nvidia-cuda-nvrtc ; sys_platform == 'never'",
+    "nvidia-cuda-runtime ; sys_platform == 'never'",
+    "nvidia-cuda-nvdisasm ; sys_platform == 'never'",
+    "nvidia-cufft ; sys_platform == 'never'",
+    "nvidia-cufile ; sys_platform == 'never'",
+    "nvidia-curand ; sys_platform == 'never'",
+    "nvidia-cusolver ; sys_platform == 'never'",
+    "nvidia-cusparse ; sys_platform == 'never'",
+    "nvidia-nvjitlink ; sys_platform == 'never'",
+    "nvidia-nvtx ; sys_platform == 'never'",
+    "nvidia-cudnn-cu13 ; sys_platform == 'never'",
+    "nvidia-cusparselt-cu13 ; sys_platform == 'never'",
+    "nvidia-nccl-cu13 ; sys_platform == 'never'",
+    "nvidia-nvshmem-cu13 ; sys_platform == 'never'",
     # ninja pip package is a manylinux ELF binary linked against host glibc.
     # It picks up Nix libstdc++ (glibc 2.42) via LD_LIBRARY_PATH but runs against
     # host glibc (2.35), causing GLIBC_2.38 not found. devenv provides ninja via Nix
