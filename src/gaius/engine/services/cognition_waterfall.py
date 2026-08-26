@@ -230,24 +230,33 @@ def tick_from_gpu_rows(
     n_ch = len(names)
     n_cols = max(1, int(window_s))
     matrix = [[0.0] * n_cols for _ in range(n_ch)]
+    # Whether each (channel, column) got a real sample. Used for sample-and-hold
+    # below: a column with no sample is filled with the last known value rather
+    # than left at 0, so the onset field never sees a phantom drop-to-zero.
+    present = [[False] * n_cols for _ in range(n_ch)]
     name_i = {n: i for i, n in enumerate(names)}
     if not rows:
         raise ValueError(
             GURU_WAREHOUSE + "\n  warehouse query returned 0 rows for this window"
         )
-    # Anchor the newest column to the newest sample's whole second, not
-    # wall-clock now. Two reasons, both seen in the strip:
-    #  - Integer-second columns: the ingest writes ~1 Hz, so a sample maps to a
-    #    stable column that shifts left exactly once per second. Sub-second ms
-    #    arithmetic against an advancing `now` put a boundary sample in col 59
-    #    or 58 by the poll's offset, flickering an active GPU's edge cell.
-    #  - Anchoring on the newest sample (not now) means the rightmost column
-    #    always holds real data. Anchored on now, the current second often has
-    #    no sample yet, so the edge column read 0 — a false drop-to-zero that
-    #    onset_field painted as the saturated blue band at the right edge that
-    #    vanished a moment later when the sample landed. Idle GPUs (steady 0)
-    #    showed neither artifact, matching "only gpu-0..3 under load".
-    anchor_sec = max(int(r["ts_ns"]) for r in rows) // 1_000_000_000
+    # Columns are wall-clock whole seconds; the rightmost is the current second.
+    # This, plus epoch_unix_ms below being that same wall second, is what makes
+    # a painted onset scroll smoothly: the client repaints when epoch changes,
+    # so with a wall-clock epoch it repaints exactly once per second and every
+    # frame shifts left by exactly one column.
+    #
+    # Anchoring instead on the newest *sample* second (the obvious choice, and
+    # what this did before) makes the shift jitter: consecutive ~1 Hz samples'
+    # second-floors usually differ by 1, but the ingest phase drifts, so a
+    # repaint occasionally jumps 2 columns or 0. Narrow onset events then jump
+    # past or stall for a frame — "some scroll, some appear then disappear",
+    # only on actively-changing GPUs (steady ones have no onset to lose).
+    #
+    # The current second usually has no sample yet, so its column would read 0
+    # — a phantom drop-to-zero the onset field paints as a false edge flash.
+    # The sample-and-hold pass below fills it with the last known value, so the
+    # edge shows real continuity, not a false onset.
+    anchor_sec = int(time.time())
 
     def _col_for(ts_ns: int) -> int:
         return n_cols - 1 - (anchor_sec - int(ts_ns) // 1_000_000_000)
@@ -280,8 +289,10 @@ def tick_from_gpu_rows(
             u = _clip(util if util is not None else 0.0)
             p = _clip((watts - _IDLE_W) / (_BUSY_W - _IDLE_W))
             matrix[name_i[gk]][col] = pack_gpu(p, u)
+            present[name_i[gk]][col] = True
         if util is not None and uk in name_i:
             matrix[name_i[uk]][col] = _clip(util)
+            present[name_i[uk]][col] = True
     envelope = 0.0
     for r in cognition_rows or []:
         ch = r.get("channel")
@@ -297,10 +308,34 @@ def tick_from_gpu_rows(
             col = n_cols - 1
         val = float(r["val_d"])
         matrix[name_i[ch]][col] = val
+        present[name_i[ch]][col] = True
         if ch in ONSET_NAMES:
             envelope = max(envelope, abs(val))
+    # Sample-and-hold across absent columns, for every channel. A second with
+    # no sample is "same as last known", not a drop to zero: without this the
+    # client's onset field sees a phantom drop-to-zero wherever a column is
+    # empty — most often the current second, before its ~1 Hz sample lands —
+    # and paints a false blue/red flash at the right edge that vanishes when
+    # the sample arrives, instead of a real onset that scrolls across. Uses the
+    # presence bitmap, not value==0, so a genuine zero reading is preserved and
+    # a channel that never had data (e.g. a silent cognition source) stays 0.
+    # Bridge only short gaps (the current second, an occasional dropped
+    # sample). A channel silent longer than this goes dark honestly rather
+    # than freezing a stale value across the whole view.
+    max_hold = 3
+    for ri in range(n_ch):
+        row = matrix[ri]
+        pres = present[ri]
+        last: float | None = None
+        held = 0
+        for c in range(n_cols):
+            if pres[c]:
+                last = row[c]
+                held = 0
+            elif last is not None and held < max_hold:
+                row[c] = last
+                held += 1
 
-    last_ts = max(int(r["ts_ns"]) for r in rows)
     try:
         from gaius.engine.metrics import EngineMetrics
 
@@ -309,7 +344,10 @@ def tick_from_gpu_rows(
         pass
     return WaterfallState(
         window_s=window_s,
-        epoch_unix_ms=last_ts // 1_000_000,
+        # The wall-clock second the columns are anchored to. The client
+        # repaints when this changes, i.e. exactly once per second, so each
+        # frame scrolls left by exactly one column.
+        epoch_unix_ms=anchor_sec * 1000,
         channel_names=tuple(names),
         matrix=matrix,
         driver="warehouse",
