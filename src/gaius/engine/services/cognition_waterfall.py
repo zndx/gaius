@@ -252,11 +252,16 @@ def tick_from_gpu_rows(
     # past or stall for a frame — "some scroll, some appear then disappear",
     # only on actively-changing GPUs (steady ones have no onset to lose).
     #
-    # The current second usually has no sample yet, so its column would read 0
-    # — a phantom drop-to-zero the onset field paints as a false edge flash.
-    # The sample-and-hold pass below fills it with the last known value, so the
-    # edge shows real continuity, not a false onset.
-    anchor_sec = int(time.time())
+    # The rightmost column is the last COMPLETE second (now - 1), never the one
+    # still forming. The forming second has no sample yet; holding its column at
+    # the previous value and then correcting it when the real (often different)
+    # sample lands painted a transient wrong cell at the edge that vanished a
+    # frame later instead of scrolling — the "temporary paints on the right edge
+    # that disappear". The last complete second always has its real sample, so
+    # the edge value is final and identical as it scrolls left. Costs ~1 s of
+    # latency. Samples from the forming second map past the edge and are dropped
+    # below, not clamped onto it.
+    anchor_sec = int(time.time()) - 1
 
     def _col_for(ts_ns: int) -> int:
         return n_cols - 1 - (anchor_sec - int(ts_ns) // 1_000_000_000)
@@ -274,7 +279,7 @@ def tick_from_gpu_rows(
         if col < 0:
             continue
         if col >= n_cols:
-            col = n_cols - 1
+            continue  # forming current second — not shown until complete
         gi = int(raw_gi)
         slot = cell.setdefault((gi, col), [None, None])
         sid = int(r["series_id"])
@@ -305,7 +310,7 @@ def tick_from_gpu_rows(
         if col < 0:
             continue
         if col >= n_cols:
-            col = n_cols - 1
+            continue  # forming current second — not shown until complete
         val = float(r["val_d"])
         matrix[name_i[ch]][col] = val
         present[name_i[ch]][col] = True
@@ -344,9 +349,9 @@ def tick_from_gpu_rows(
         pass
     return WaterfallState(
         window_s=window_s,
-        # The wall-clock second the columns are anchored to. The client
-        # repaints when this changes, i.e. exactly once per second, so each
-        # frame scrolls left by exactly one column.
+        # The wall-clock second the columns are anchored to (the last complete
+        # second). Advances by 1 each wall second, so the client repaints once
+        # per second and every frame scrolls left by exactly one column.
         epoch_unix_ms=anchor_sec * 1000,
         channel_names=tuple(names),
         matrix=matrix,
