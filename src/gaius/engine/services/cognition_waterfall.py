@@ -239,35 +239,30 @@ def tick_from_gpu_rows(
         raise ValueError(
             GURU_WAREHOUSE + "\n  warehouse query returned 0 rows for this window"
         )
-    # The rightmost column is the newest whole second that BOTH the GPU rows and
-    # the cognition rows actually contain — the min of each set's newest sample
-    # second. Everything about the edge behaviour came down to this choice:
+    # The rightmost column is a whole second that every channel's fetch already
+    # contains. Getting this exactly right was the whole battle:
     #
-    #  - Wall-clock now (or now-1): the GPU and cognition rows are fetched by two
-    #    separate queries that each capture their own `now`, so a wall-clock
-    #    anchor computed afterwards can name a second one of the fetches did not
-    #    include yet. That column is then held at the previous value and
-    #    corrected a frame later when the real (often different) sample appears
-    #    — a transient wrong cell at the edge that vanishes instead of scrolling.
-    #    Seen on the cognition channels, which are the second fetch.
-    #  - Newest sample of just one set: the same race, one-sided.
-    #  - min(newest of each set): a second both sets have a sample for, so the
-    #    edge value is final the moment it is painted and identical as it scrolls
-    #    left. Both sets share tick timestamps, so the min second is present in
-    #    each. Anything newer (a straggler from one fetch) maps past the edge and
-    #    is dropped below, not clamped onto it.
+    #  - A wall-clock anchor (now, or now-1) can name a second a fetch has not
+    #    returned yet: the GPU rows and cognition rows come from two separate
+    #    queries with their own `now`. That column was then held at the previous
+    #    value and corrected a frame later when the real (usually different)
+    #    sample appeared — a transient wrong cell at the right edge that vanished
+    #    instead of scrolling. Seen on the cognition channels (the later fetch).
+    #  - min(newest GPU second, newest cognition second) over-corrects the other
+    #    way: while a cognition source is stale (e.g. vLLM restarting) its old
+    #    newest drags the whole anchor back, then the view jumps when it catches
+    #    up.
     #
-    # epoch_unix_ms below is this same second, so the client — which repaints on
-    # epoch change — repaints once per second and shifts left one column a frame.
+    # Bound the anchor by the newest GPU sample second and never let it exceed
+    # what GPU actually returned: min(now - 1, newest GPU second). GPU is dense
+    # (1 Hz) so this is a stable clock; cognition is always the *later* fetch, so
+    # its newest second is >= GPU's and it therefore already contains this
+    # second too — the edge is present for every channel, final when painted,
+    # and identical as it scrolls. Stragglers newer than the anchor map past the
+    # edge and are dropped. epoch below is this same second, so the client
+    # repaints once per second and shifts left one column a frame.
     _gpu_newest = max(int(r["ts_ns"]) for r in rows) // 1_000_000_000
-    _cog_ts = [
-        int(r["ts_ns"])
-        for r in (cognition_rows or [])
-        if r.get("ts_ns") is not None
-    ]
-    anchor_sec = (
-        min(_gpu_newest, max(_cog_ts) // 1_000_000_000) if _cog_ts else _gpu_newest
-    )
+    anchor_sec = min(int(time.time()) - 1, _gpu_newest)
 
     def _col_for(ts_ns: int) -> int:
         return n_cols - 1 - (anchor_sec - int(ts_ns) // 1_000_000_000)
