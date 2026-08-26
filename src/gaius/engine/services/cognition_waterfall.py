@@ -361,6 +361,18 @@ def tick_from_gpu_rows(
             elif last is not None and held < max_hold:
                 row[c] = last
                 held += 1
+        # The forward pass carries a value rightward, so it cannot fill a gap at
+        # column 0 — there is nothing to its left. When the oldest column's
+        # sample momentarily lands just outside the fetch window, that leaves a
+        # lone zero at the left edge that reads as an onset. Backfill a SHORT
+        # leading gap from the first present column, but only a short one: the
+        # long empty run right after a restart (history not yet window-deep) is
+        # genuine and must stay dark, not be painted with fabricated history.
+        first = next((c for c in range(n_cols) if pres[c]), None)
+        if first is not None and 0 < first <= max_hold:
+            fill = row[first]
+            for c in range(first):
+                row[c] = fill
 
     try:
         from gaius.engine.metrics import EngineMetrics
