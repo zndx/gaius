@@ -229,14 +229,29 @@ def tick_from_gpu_rows(
     names = all_channel_names()
     n_ch = len(names)
     n_cols = max(1, int(window_s))
-    now_ms = int(time.time() * 1000)
-    start_ms = now_ms - n_cols * 1000
     matrix = [[0.0] * n_cols for _ in range(n_ch)]
     name_i = {n: i for i, n in enumerate(names)}
     if not rows:
         raise ValueError(
             GURU_WAREHOUSE + "\n  warehouse query returned 0 rows for this window"
         )
+    # Anchor the newest column to the newest sample's whole second, not
+    # wall-clock now. Two reasons, both seen in the strip:
+    #  - Integer-second columns: the ingest writes ~1 Hz, so a sample maps to a
+    #    stable column that shifts left exactly once per second. Sub-second ms
+    #    arithmetic against an advancing `now` put a boundary sample in col 59
+    #    or 58 by the poll's offset, flickering an active GPU's edge cell.
+    #  - Anchoring on the newest sample (not now) means the rightmost column
+    #    always holds real data. Anchored on now, the current second often has
+    #    no sample yet, so the edge column read 0 — a false drop-to-zero that
+    #    onset_field painted as the saturated blue band at the right edge that
+    #    vanished a moment later when the sample landed. Idle GPUs (steady 0)
+    #    showed neither artifact, matching "only gpu-0..3 under load".
+    anchor_sec = max(int(r["ts_ns"]) for r in rows) // 1_000_000_000
+
+    def _col_for(ts_ns: int) -> int:
+        return n_cols - 1 - (anchor_sec - int(ts_ns) // 1_000_000_000)
+
     sid_w = series_id_of("dcgm.power_mw")
     sid_u = series_id_of("dcgm.gpu_util_pct")
     # Pair power and util per (gpu, column) so the packed gpu-N cell has both.
@@ -246,7 +261,7 @@ def tick_from_gpu_rows(
         raw_gi = r.get("gpu")
         if raw_ts is None or raw_gi is None:
             raise ValueError(GURU_WAREHOUSE + "\n  signal_tier0 row missing ts_ns/gpu")
-        col = int((int(raw_ts) // 1_000_000 - start_ms) // 1000)
+        col = _col_for(raw_ts)
         if col < 0:
             continue
         if col >= n_cols:
@@ -275,7 +290,7 @@ def tick_from_gpu_rows(
         raw_ts = r.get("ts_ns")
         if raw_ts is None or r.get("val_d") is None:
             continue
-        col = int((int(raw_ts) // 1_000_000 - start_ms) // 1000)
+        col = _col_for(raw_ts)
         if col < 0:
             continue
         if col >= n_cols:
