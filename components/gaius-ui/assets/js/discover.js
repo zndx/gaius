@@ -598,14 +598,17 @@
         }
         var ep = onsetField(pw);
         var eu = onsetField(ut);
-        var hpP = highpass(pw);
-        var hpU = highpass(ut);
         for (x = 0; x < T; x++) {
-          /* pw is signed [-1,1]; occupancy is [0,1]. clip01(signed) zeros idle. */
-          var pVis = clip01(
-            0.45 * clip01((pw[x] + 1) * 0.5) + 0.9 * Math.abs(hpP[x])
-          );
-          var uVis = clip01(0.45 * clip01(ut[x]) + 0.9 * Math.abs(hpU[x]));
+          /* Bar HEIGHT drives the steady DkCyan2 color across the FULL palette:
+             power level -> x axis, util level -> y axis. pw/ut are already the
+             normalized levels in [0,1] (unpackGpu). The previous
+             0.45*level + 0.9*|highpass| pinned every steady bar into the light
+             top-left corner (level capped at 0.45) and folded motion into the
+             hue, so a full bar and a partial bar read as nearly the same color.
+             Motion is kept fully separate: overlayMotion paints the rise->red /
+             fall->blue derivative on top. */
+          var pVis = clip01(pw[x]);
+          var uVis = clip01(ut[x]);
           var e = Math.abs(ep[x]) >= Math.abs(eu[x]) ? ep[x] : eu[x];
           rowC[x] = overlayMotion(dkcyan2(pVis, uVis), e);
         }
