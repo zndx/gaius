@@ -24,8 +24,17 @@ _PROM_LABELED = re.compile(
     r"^([a-zA-Z_:][a-zA-Z0-9_:]*)\{([^}]*)\}\s+([-+0-9.eE]+)"
 )
 _PROM_PLAIN = re.compile(r"^([a-zA-Z_:][a-zA-Z0-9_:]*)\s+([-+0-9.eE]+)\s*$")
-_IDLE_W = 22.0
-_BUSY_W = 350.0
+# Power-load normalization band for the gpu-N bivariate color/onset. Set to the
+# real 4090 operating envelope, not the 450 W TDP: idle ~14-25 W, and vLLM decode
+# lives at ~95-135 W. The old 22..350 mapped that whole decode swing into a
+# ~0.10-wide slice, so the power axis of the DkCyan2 palette barely moved and
+# power's per-second derivative stayed under the onset threshold — power looked
+# dead. 10..200 centers decode near mid-palette (~0.45-0.65) where the bivariate
+# color has the most contrast and a 95->135 W move clears the red/blue threshold,
+# while leaving headroom for prefill/training bursts (which saturate to max, as a
+# burst should). Tune these to the hardware's real band, not its TDP.
+_IDLE_W = 10.0
+_BUSY_W = 200.0
 _N_GPU = 6  # tinybox green: six 4090s; 0-3 thinking, 4 CLT, 5 spare
 _RICCI_N = 12
 _RICCI_K = 5
