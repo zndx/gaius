@@ -239,29 +239,35 @@ def tick_from_gpu_rows(
         raise ValueError(
             GURU_WAREHOUSE + "\n  warehouse query returned 0 rows for this window"
         )
-    # Columns are wall-clock whole seconds; the rightmost is the current second.
-    # This, plus epoch_unix_ms below being that same wall second, is what makes
-    # a painted onset scroll smoothly: the client repaints when epoch changes,
-    # so with a wall-clock epoch it repaints exactly once per second and every
-    # frame shifts left by exactly one column.
+    # The rightmost column is the newest whole second that BOTH the GPU rows and
+    # the cognition rows actually contain — the min of each set's newest sample
+    # second. Everything about the edge behaviour came down to this choice:
     #
-    # Anchoring instead on the newest *sample* second (the obvious choice, and
-    # what this did before) makes the shift jitter: consecutive ~1 Hz samples'
-    # second-floors usually differ by 1, but the ingest phase drifts, so a
-    # repaint occasionally jumps 2 columns or 0. Narrow onset events then jump
-    # past or stall for a frame — "some scroll, some appear then disappear",
-    # only on actively-changing GPUs (steady ones have no onset to lose).
+    #  - Wall-clock now (or now-1): the GPU and cognition rows are fetched by two
+    #    separate queries that each capture their own `now`, so a wall-clock
+    #    anchor computed afterwards can name a second one of the fetches did not
+    #    include yet. That column is then held at the previous value and
+    #    corrected a frame later when the real (often different) sample appears
+    #    — a transient wrong cell at the edge that vanishes instead of scrolling.
+    #    Seen on the cognition channels, which are the second fetch.
+    #  - Newest sample of just one set: the same race, one-sided.
+    #  - min(newest of each set): a second both sets have a sample for, so the
+    #    edge value is final the moment it is painted and identical as it scrolls
+    #    left. Both sets share tick timestamps, so the min second is present in
+    #    each. Anything newer (a straggler from one fetch) maps past the edge and
+    #    is dropped below, not clamped onto it.
     #
-    # The rightmost column is the last COMPLETE second (now - 1), never the one
-    # still forming. The forming second has no sample yet; holding its column at
-    # the previous value and then correcting it when the real (often different)
-    # sample lands painted a transient wrong cell at the edge that vanished a
-    # frame later instead of scrolling — the "temporary paints on the right edge
-    # that disappear". The last complete second always has its real sample, so
-    # the edge value is final and identical as it scrolls left. Costs ~1 s of
-    # latency. Samples from the forming second map past the edge and are dropped
-    # below, not clamped onto it.
-    anchor_sec = int(time.time()) - 1
+    # epoch_unix_ms below is this same second, so the client — which repaints on
+    # epoch change — repaints once per second and shifts left one column a frame.
+    _gpu_newest = max(int(r["ts_ns"]) for r in rows) // 1_000_000_000
+    _cog_ts = [
+        int(r["ts_ns"])
+        for r in (cognition_rows or [])
+        if r.get("ts_ns") is not None
+    ]
+    anchor_sec = (
+        min(_gpu_newest, max(_cog_ts) // 1_000_000_000) if _cog_ts else _gpu_newest
+    )
 
     def _col_for(ts_ns: int) -> int:
         return n_cols - 1 - (anchor_sec - int(ts_ns) // 1_000_000_000)
