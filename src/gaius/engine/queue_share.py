@@ -95,10 +95,17 @@ def share_for_class(
 ) -> object:
     """Build a QueueShareRequest. Always mints a new UUIDv7."""
     from gaius.engine.generated.zndx.scheduler.v1 import scheduler_pb2 as spb
+    from gaius.engine.generated.zndx.engine.v1 import engine_pb2 as zpb
 
     tokens = int(rc.gpu_tokens if gpu is None else gpu)
     max_gpu = int(rc.gpu_tokens) if int(rc.gpu_tokens) >= 2 else (2 if int(rc.gpu_tokens) else 0)
     apps = 0 if tokens == 0 else (1 if applications is None else int(applications))
+    _rc_enum = (
+        zpb.RESOURCE_CLASS_COMPUTE if tokens <= 0
+        else zpb.RESOURCE_CLASS_LIGHT if tokens == 1
+        else zpb.RESOURCE_CLASS_MEDIUM if tokens == 2
+        else zpb.RESOURCE_CLASS_HEAVY
+    )
     share = spb.QueueShare(
         queue=rc.queue,
         guaranteed=spb.ResourceMap(quantities={GPU_KEY: tokens}),
@@ -108,8 +115,15 @@ def share_for_class(
     wrk = spb.WorkloadIntent(
         wrk=kind.replace("_", "-"),
         queue=rc.queue,
-        resource_class=rc.name,
+        resource_class=_rc_enum,
         applications=apps,
+        requirements=zpb.WorkloadRequirements(
+            backend=(
+                zpb.SERVING_BACKEND_VLLM_LOCAL if tokens > 0
+                else zpb.SERVING_BACKEND_CPU_PROXY
+            ),
+            footprint=zpb.ResourceFootprint(gpu=tokens),
+        ),
     )
     return spb.QueueShareRequest(
         peer=PEER,
@@ -137,7 +151,9 @@ def _send(req) -> object:
     channel = grpc.insecure_channel(_addr())
     try:
         stub = spb_grpc.SchedulerStub(channel)
-        resp = stub.RequestQueueShare(req, timeout=1.5)
+        # Generous: the record is fast (apply is off the hot path server-side), but
+        # YuniKorn ops legitimately take 3-5s; 1.5s was the 2026-08-26 false timeout.
+        resp = stub.RequestQueueShare(req, timeout=8)
     except grpc.RpcError as e:
         # Signals has not implemented persist yet, or Scheduler is down.
         # Do not take down Engine/UI. REJECTED is the only hard no-admit.
@@ -181,8 +197,36 @@ def _send(req) -> object:
     return resp
 
 
+def _wait_applied(
+    request_id: str, *, queue: str = "", deadline_s: float = 30.0, poll_s: float = 1.5
+) -> str:
+    """Positively wait until the share reaches APPLIED — the Scheduler has actually
+    promoted the footprint-sized config to YuniKorn. The apply is off the RPC hot
+    path, so APPLIED lands shortly after RECORDED; if it stays RECORDED past the
+    deadline, YuniKorn/kubectl is not reconciling — logged plainly (the pod-admit
+    sentinel then surfaces it), never silently proceeded past on a bare accept.
+    """
+    from gaius.engine.generated.zndx.scheduler.v1 import scheduler_pb2 as spb
+
+    end = time.monotonic() + deadline_s
+    while time.monotonic() < end:
+        for r in list_queue_share_requests(queue=queue):
+            if r.request.request_id == request_id:
+                if r.state == spb.QUEUE_SHARE_APPLIED:
+                    log.info("queue share APPLIED id=%s queue=%s", request_id, queue)
+                    return "APPLIED"
+                break
+        time.sleep(poll_s)
+    log.warning(
+        "queue share not APPLIED within %ss (still RECORDED) id=%s queue=%s — "
+        "YuniKorn/kubectl reconcile lagging",
+        deadline_s, request_id, queue,
+    )
+    return "RECORDED"
+
+
 def request_queue_share(kind: str, rc: ResourceClass) -> bool:
-    """Tell Signals the occupancy intent. True if recorded.
+    """Tell Signals the occupancy intent, then positively wait for APPLIED.
 
     UNIMPLEMENTED: log, do not fail admit.
     REJECTED or persist error: fail-fast SHAREFAIL, do not admit.
@@ -192,6 +236,10 @@ def request_queue_share(kind: str, rc: ResourceClass) -> bool:
     if resp is None:
         return False
     _ADMIT_IDS[kind.replace("_", "-")] = req.request_id
+    if resp.accepted and int(getattr(rc, "gpu_tokens", 0)):
+        # GPU occupancy: gate on the queue actually being promoted before we let the
+        # pod race YuniKorn admission. Zero-floor (ends) don't need to wait.
+        _wait_applied(req.request_id, queue=rc.queue)
     return bool(resp.accepted)
 
 

@@ -389,7 +389,7 @@ def local_response(
     if kind == zpb.SERVER_QUERY_KIND_QUEUES:
         resp.queues.extend(declared_queues())
     if kind == zpb.SERVER_QUERY_KIND_WORKLOADS:
-        resp.workloads.extend(declared_workloads())
+        resp.workloads.extend(declared_workloads(peer=resp.project))
     # SCHEDULES: empty until the catalog lands (P3). Honest, not invented.
     return resp
 
@@ -456,20 +456,46 @@ def declared_queues() -> list[zpb.QueueHint]:
     ]
 
 
-def declared_workloads() -> list:
-    """WRK model + capabilities + tp/pp. Queue names stay light/medium/heavy."""
+def _resource_class_enum(gpu_tokens: int) -> int:
+    """Physical gpu_tokens → ResourceClass need (the former 'extract' folds into LIGHT)."""
+    if gpu_tokens <= 0:
+        return zpb.RESOURCE_CLASS_COMPUTE
+    if gpu_tokens == 1:
+        return zpb.RESOURCE_CLASS_LIGHT
+    if gpu_tokens == 2:
+        return zpb.RESOURCE_CLASS_MEDIUM
+    return zpb.RESOURCE_CLASS_HEAVY
+
+
+def declared_workloads(peer: str = "gaius") -> list:
+    """This peer's WorkloadOffers: model + capabilities + typed requirements.
+    Local vLLM; the footprint is what the Signals engine reads to reconcile
+    YuniKorn queue guarantees/maximums across its federated view."""
     from gaius.engine.sentinel_claim import DEPLOYMENT_PROFILES
 
     out = []
     for p in DEPLOYMENT_PROFILES.values():
+        gpu = int(p.gpu_tokens)
+        backend = (
+            zpb.SERVING_BACKEND_CPU_PROXY if gpu <= 0
+            else zpb.SERVING_BACKEND_VLLM_LOCAL
+        )
         out.append(
-            zpb.WorkloadHint(
-                wrk=p.wrk,
+            zpb.WorkloadOffer(
+                peer=peer,
                 model=p.model,
                 capabilities=list(p.capabilities),
-                tensor_parallel=p.tensor_parallel,
-                pipeline_parallel=p.pipeline_parallel,
-                gpu_tokens=p.gpu_tokens,
+                requirements=zpb.WorkloadRequirements(
+                    backend=backend,
+                    parallelism=zpb.ModelParallelism(
+                        tensor_parallel=p.tensor_parallel,
+                        pipeline_parallel=p.pipeline_parallel,
+                        data_parallel=1,
+                    ),
+                    footprint=zpb.ResourceFootprint(gpu=gpu),
+                ),
+                resource_class=_resource_class_enum(gpu),
+                queue=getattr(p, "queue", ""),
             )
         )
     return out
