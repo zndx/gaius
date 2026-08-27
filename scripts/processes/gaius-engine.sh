@@ -89,6 +89,22 @@ export CLOUDFLARE_COLLECTIONS_KV_NAMESPACE_ID="${CLOUDFLARE_COLLECTIONS_KV_NAMES
 
 echo ""
 
+# Crash-gated GPU defer. crash-guard.service drops this marker when the
+# previous boot ended uncleanly (no graceful-shutdown sentinel). Hold the
+# GPU workloads (preload + ambient + evolution) so a load-induced crash
+# can't loop into a reboot cycle; the engine still comes up for inspection
+# (warehouse, CLI, health, cognition). Marker is on the root disk, NOT /raid.
+# Resume once you've inspected: `just resume-gpu` (scripts/gpu-resume.sh).
+GAIUS_DEFER_MARKER="${GAIUS_DEFER_MARKER:-/var/lib/gaius/defer-gpu}"
+if [[ -f "$GAIUS_DEFER_MARKER" ]]; then
+  echo "GPU-DEFER: unclean-reboot marker present ($GAIUS_DEFER_MARKER)"
+  echo "GPU-DEFER: holding GPU workloads (preload/ambient/evolution) — engine boots for inspection only"
+  echo "GPU-DEFER: resume with 'just resume-gpu' (or scripts/gpu-resume.sh) once cleared to run"
+  export GAIUS_CLEAN_START=false
+  export GAIUS_AUTO_START_AMBIENT=false
+  export GAIUS_AUTO_EVOLUTION=false
+fi
+
 echo "Starting gaius-engine (manages optillm/vLLM dynamically)..."
 export PYTHONPATH=""
 exec .devenv/state/venv/bin/python -m gaius.engine --config config/agents.conf -v

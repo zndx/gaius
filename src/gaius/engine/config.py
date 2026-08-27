@@ -555,34 +555,37 @@ def _parse_config(conf: "ConfigTree") -> EngineConfig:
 
     # Parse startup config
     startup_conf = get("gaius.startup", {})
+
+    # HOCON ${?ENV} overrides substitute *strings* — "false" is truthy, so
+    # env-overridden boolean flags (auto-start-ambient, auto-start-evolution,
+    # …) were silently ignored. Coerce every boolean flag through _sb so the
+    # documented env levers actually work (crash-gated GPU defer relies on it).
+    def _sb(key: str, default: bool) -> bool:
+        if not hasattr(startup_conf, "get"):
+            return default
+        v = startup_conf.get(key, default)
+        if isinstance(v, bool):
+            return v
+        if v is None:
+            return default
+        if isinstance(v, str):
+            return v.strip().lower() in ("1", "true", "yes", "on")
+        return bool(v)
+
     startup = StartupConfig(
-        clean_start=startup_conf.get("clean-start", True)
-        if hasattr(startup_conf, "get")
-        else True,
+        clean_start=_sb("clean-start", True),
         preload_endpoints=list(startup_conf.get("preload-endpoints", ["orchestrator", "thinking"]))
         if hasattr(startup_conf, "get")
         else ["orchestrator", "thinking"],
-        auto_start_evolution=startup_conf.get("auto-start-evolution", True)
-        if hasattr(startup_conf, "get")
-        else True,
-        auto_start_cognition=startup_conf.get("auto-start-cognition", True)
-        if hasattr(startup_conf, "get")
-        else True,
-        auto_start_flow_scheduler=startup_conf.get("auto-start-flow-scheduler", True)
-        if hasattr(startup_conf, "get")
-        else True,
-        auto_restart_failed=startup_conf.get("auto-restart-failed", True)
-        if hasattr(startup_conf, "get")
-        else True,
+        auto_start_evolution=_sb("auto-start-evolution", True),
+        auto_start_cognition=_sb("auto-start-cognition", True),
+        auto_start_flow_scheduler=_sb("auto-start-flow-scheduler", True),
+        auto_restart_failed=_sb("auto-restart-failed", True),
         max_restart_attempts=startup_conf.get("max-restart-attempts", 3)
         if hasattr(startup_conf, "get")
         else 3,
-        auto_resume_ambient=startup_conf.get("auto-resume-ambient", True)
-        if hasattr(startup_conf, "get")
-        else True,
-        auto_start_ambient=startup_conf.get("auto-start-ambient", True)
-        if hasattr(startup_conf, "get")
-        else True,
+        auto_resume_ambient=_sb("auto-resume-ambient", True),
+        auto_start_ambient=_sb("auto-start-ambient", True),
     )
     # Engine-only recycle: skip stale-vLLM kill + preload so existing
     # cards keep serving. Empty/unset leaves HOCON default.

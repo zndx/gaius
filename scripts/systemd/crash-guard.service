@@ -1,0 +1,17 @@
+[Unit]
+Description=Gaius crash-guard (GPU-defer marker on unclean reboot)
+Documentation=file:///home/rch/local/src/zndx/gaius/docs/scratch/2026-08-26/170000_crash-recovery-hardening.md
+# Must run before the GPU-starting units so the defer marker (if any) exists
+# by the time gaius-engine.sh launches. Default shutdown ordering makes ExecStop
+# run at shutdown (writes the clean-shutdown sentinel).
+After=local-fs.target
+Before=signals.target gaius.service aegir.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/home/rch/local/src/zndx/gaius/scripts/crash-guard.sh boot
+ExecStop=/home/rch/local/src/zndx/gaius/scripts/crash-guard.sh shutdown
+
+[Install]
+WantedBy=multi-user.target
