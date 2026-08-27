@@ -124,6 +124,10 @@ proto-generate:
           --python_out="$OUT_DIR" \
           --grpc_python_out="$OUT_DIR" \
           "$ZNDX_PROTO/zndx/scheduler/v1/scheduler.proto"
+        # scheduler.proto imports engine.proto (WorkloadRequirements) — rewrite the
+        # cross-file import in the message module to the nested package path too.
+        sed -i 's/^from zndx\.engine\.v1 import engine_pb2 as /from gaius.engine.generated.zndx.engine.v1 import engine_pb2 as /' \
+          "$OUT_DIR/zndx/scheduler/v1/scheduler_pb2.py"
         sed -i 's/^from zndx\.scheduler\.v1 import scheduler_pb2 as /from gaius.engine.generated.zndx.scheduler.v1 import scheduler_pb2 as /' \
           "$OUT_DIR/zndx/scheduler/v1/scheduler_pb2_grpc.py"
         mkdir -p "$OUT_DIR/zndx/scheduler/v1"
@@ -142,6 +146,10 @@ proto-generate:
     ls -la "$OUT_DIR"/gaius_service_pb2*.py "$OUT_DIR"/gaius_service_pb2*.pyi 2>/dev/null || ls -la "$OUT_DIR"/gaius_service_pb2*
 
 # ─── GPU ─────────────────────────────────────────────────────────
+
+# Resume GPU workloads after a deferred (unclean-reboot) boot; clears the defer marker
+resume-gpu:
+    bash scripts/gpu-resume.sh
 
 # Kill stale vLLM processes, reclaim unheld /dev/shm offload maps, show GPU memory
 gpu-cleanup:
