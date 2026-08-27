@@ -116,3 +116,14 @@ scripts/output/
 # Private configuration (prospects, API keys, etc.)
 config/
 .coverage
+
+# nvcc --keep JIT intermediates (stray CUDA compilation at repo root, e.g. t.cu)
+/t.cpp*.ii
+/t.cudafe1.*
+/t.fatbin
+/t.fatbin.c
+/t.module_id
+/t.ptx
+/t.sm_*.cubin
+# stray compiled Java bytecode (e.g. Kudu client probes)
+/org/**/*.class
