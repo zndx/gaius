@@ -148,6 +148,34 @@ def onset_field(values: list[float]) -> list[float]:
     return e
 
 
+def dsd_envelope(
+    e: list[float], decay: float = 0.5, reversal: float = 0.1
+) -> list[float]:
+    """Delta-sigma-style damping of the signed rise(+)/fall(-) onset stream.
+
+    Now that the source runs at 4 Hz, small column-to-column jitter (the ±1W
+    power flicker the LCD shows) reaches the onset field and would speckle the
+    strip red/blue per column. A leaky integrator reconstructs a smooth envelope
+    from that 1-bit-ish stream (DSD: the bitstream is pleasant only after a
+    low-pass) so sustained motion reads as a fading gradient instead of noise —
+    while a genuine sign reversal above ``reversal`` SNAPS the accumulator to the
+    new direction, so a sharp turn (rise->red flipping to fall->blue) stays crisp
+    instead of averaging into mush. Rise leaves a decaying red trail; fall a blue
+    one; a reversal punches straight through.
+    """
+    out: list[float] = []
+    acc = 0.0
+    for x in e:
+        x = _clip11(float(x))
+        opposes = acc != 0.0 and x != 0.0 and (x > 0.0) != (acc > 0.0)
+        if opposes and abs(x) >= reversal:
+            acc = x  # sharp reversal — surface it, do not average it away
+        else:
+            acc = decay * acc + (1.0 - decay) * x  # leaky integrate -> gradient
+        out.append(_clip11(acc))
+    return out
+
+
 def _lerp_rgb(
     a: tuple[int, int, int], b: tuple[int, int, int], t: float
 ) -> tuple[int, int, int]:
@@ -242,8 +270,8 @@ def rgb_raster(
                 p, u, on = unpack_gpu(val)
                 powers.append(p if on else 0.0)
                 utils.append(u if on else 0.0)
-            ep = onset_field(powers)
-            eu = onset_field(utils)
+            ep = dsd_envelope(onset_field(powers))
+            eu = dsd_envelope(onset_field(utils))
             hp_p = highpass(powers)
             hp_u = highpass(utils)
             for i, val in enumerate(row):
@@ -257,7 +285,7 @@ def rgb_raster(
                 e = ep[i] if abs(ep[i]) >= abs(eu[i]) else eu[i]
                 colored.append(overlay_motion(base, e))
         else:
-            e = onset_field(row)
+            e = dsd_envelope(onset_field(row))
             for i, val in enumerate(row):
                 mag = _clip01(abs(val))
                 base = dkcyan2(mag, mag)

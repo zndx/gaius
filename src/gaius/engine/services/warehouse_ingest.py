@@ -38,7 +38,10 @@ GURU = (
     "  Or:  /health fix engine"
 )
 
-INTERVAL_S = float(os.environ.get("GAIUS_WAREHOUSE_INGEST_S", "1"))
+# 4 Hz (250ms) to match the tinybox LCD (NVML) and the dcgm-exporter collect
+# interval — the source now refreshes every 250ms, so pulling at 1 Hz would drop
+# 3 of every 4 fresh samples. The error path (below) still backs off to >=2s.
+INTERVAL_S = float(os.environ.get("GAIUS_WAREHOUSE_INGEST_S", "0.25"))
 DCGM_METRICS_URL = os.environ.get("GAIUS_DCGM_METRICS_URL", "http://127.0.0.1:9400/metrics")
 
 VT_INT = 0

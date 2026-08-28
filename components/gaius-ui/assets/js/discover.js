@@ -483,6 +483,33 @@
     return e;
   }
 
+  /* Delta-sigma-style damping of the signed rise(+)/fall(-) onset stream. At 4 Hz
+     the source's fine jitter (the ±1W power flicker the tinybox LCD shows) reaches
+     the onset field and would speckle the strip per column. A leaky integrator
+     reconstructs a smooth envelope (DSD: the 1-bit-ish stream is pleasant only
+     after a low-pass) so sustained motion reads as a fading gradient, while a
+     genuine sign reversal above `reversal` SNAPS the accumulator so sharp turns
+     (rise->red flipping to fall->blue) stay crisp. Keep in lockstep with
+     waterfall_color.py:dsd_envelope. */
+  function dsdEnvelope(e, decay, reversal) {
+    decay = decay === undefined ? 0.5 : decay;
+    reversal = reversal === undefined ? 0.1 : reversal;
+    var out = [];
+    var acc = 0;
+    var i;
+    for (i = 0; i < e.length; i++) {
+      var x = Math.max(-1, Math.min(1, e[i]));
+      var opposes = acc !== 0 && x !== 0 && x > 0 !== acc > 0;
+      if (opposes && Math.abs(x) >= reversal) {
+        acc = x;
+      } else {
+        acc = decay * acc + (1 - decay) * x;
+      }
+      out.push(Math.max(-1, Math.min(1, acc)));
+    }
+    return out;
+  }
+
   function highpass(values, alpha) {
     alpha = alpha === undefined ? 0.12 : alpha;
     var ema = values.length ? values[0] : 0;
@@ -597,8 +624,8 @@
           pw.push(un.on ? un.p : 0);
           ut.push(un.on ? un.u : 0);
         }
-        var ep = onsetField(pw);
-        var eu = onsetField(ut);
+        var ep = dsdEnvelope(onsetField(pw));
+        var eu = dsdEnvelope(onsetField(ut));
         for (x = 0; x < T; x++) {
           /* Bar HEIGHT drives the steady DkCyan2 color across the FULL palette:
              power level -> x axis, util level -> y axis. pw/ut are already the
@@ -616,7 +643,7 @@
       } else {
         var vals = [];
         for (x = 0; x < T; x++) vals.push(Number(data.matrix[ry * T + x]) || 0);
-        var ev = onsetField(vals);
+        var ev = dsdEnvelope(onsetField(vals));
         for (x = 0; x < T; x++) {
           var mag = clip01(Math.abs(vals[x]));
           rowC[x] = overlayMotion(dkcyan2(mag, mag), ev[x]);
