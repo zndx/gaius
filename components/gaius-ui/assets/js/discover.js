@@ -485,14 +485,14 @@
 
   /* Delta-sigma-style damping of the signed rise(+)/fall(-) onset stream. At 4 Hz
      the source's fine jitter (the ±1W power flicker the tinybox LCD shows) reaches
-     the onset field and would speckle the strip per column. A leaky integrator
-     reconstructs a smooth envelope (DSD: the 1-bit-ish stream is pleasant only
-     after a low-pass) so sustained motion reads as a fading gradient, while a
-     genuine sign reversal above `reversal` SNAPS the accumulator so sharp turns
-     (rise->red flipping to fall->blue) stay crisp. Keep in lockstep with
-     waterfall_color.py:dsd_envelope. */
-  function dsdEnvelope(e, decay, reversal) {
-    decay = decay === undefined ? 0.5 : decay;
+     the onset field and would speckle the strip per column. A peak-follower
+     (fast `attack`, slow `release`) shapes the 1-bit-ish stream so an onset snaps
+     up sharply then trails off as a fading gradient, while a genuine sign reversal
+     above `reversal` SNAPS the accumulator so sharp turns (rise->red flipping to
+     fall->blue) stay crisp. Keep in lockstep with waterfall_color.py:dsd_envelope. */
+  function dsdEnvelope(e, attack, release, reversal) {
+    attack = attack === undefined ? 0.9 : attack;
+    release = release === undefined ? 0.28 : release;
     reversal = reversal === undefined ? 0.1 : reversal;
     var out = [];
     var acc = 0;
@@ -501,9 +501,11 @@
       var x = Math.max(-1, Math.min(1, e[i]));
       var opposes = acc !== 0 && x !== 0 && x > 0 !== acc > 0;
       if (opposes && Math.abs(x) >= reversal) {
-        acc = x;
+        acc = x; /* sharp reversal snaps */
+      } else if (Math.abs(x) > Math.abs(acc)) {
+        acc = attack * x + (1 - attack) * acc; /* steep attack: snap up */
       } else {
-        acc = decay * acc + (1 - decay) * x;
+        acc = release * x + (1 - release) * acc; /* slow release: trail off */
       }
       out.push(Math.max(-1, Math.min(1, acc)));
     }

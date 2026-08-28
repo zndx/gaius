@@ -149,19 +149,21 @@ def onset_field(values: list[float]) -> list[float]:
 
 
 def dsd_envelope(
-    e: list[float], decay: float = 0.5, reversal: float = 0.1
+    e: list[float],
+    attack: float = 0.9,
+    release: float = 0.28,
+    reversal: float = 0.1,
 ) -> list[float]:
-    """Delta-sigma-style damping of the signed rise(+)/fall(-) onset stream.
+    """Asymmetric peak-follower over the signed rise(+)/fall(-) onset stream.
 
-    Now that the source runs at 4 Hz, small column-to-column jitter (the ±1W
-    power flicker the LCD shows) reaches the onset field and would speckle the
-    strip red/blue per column. A leaky integrator reconstructs a smooth envelope
-    from that 1-bit-ish stream (DSD: the bitstream is pleasant only after a
-    low-pass) so sustained motion reads as a fading gradient instead of noise —
-    while a genuine sign reversal above ``reversal`` SNAPS the accumulator to the
-    new direction, so a sharp turn (rise->red flipping to fall->blue) stays crisp
-    instead of averaging into mush. Rise leaves a decaying red trail; fall a blue
-    one; a reversal punches straight through.
+    Delta-sigma in spirit: a 1-bit-ish rise/fall stream is only pleasant after
+    shaping. But a *symmetric* low-pass softens the rising edge as much as the
+    fall, so onsets look mushy. Instead follow the peak with a **fast attack**
+    (``attack`` near 1 — a growing onset snaps up in ~one column, so the red/blue
+    hits sharply) and a **slow release** (``release`` low — a fading onset trails
+    off, leaving the pleasant gradient and taming 4 Hz jitter). A genuine sign
+    reversal above ``reversal`` SNAPS straight to the new direction so a rise->red
+    flipping to fall->blue stays crisp instead of averaging into mush.
     """
     out: list[float] = []
     acc = 0.0
@@ -170,8 +172,10 @@ def dsd_envelope(
         opposes = acc != 0.0 and x != 0.0 and (x > 0.0) != (acc > 0.0)
         if opposes and abs(x) >= reversal:
             acc = x  # sharp reversal — surface it, do not average it away
+        elif abs(x) > abs(acc):
+            acc = attack * x + (1.0 - attack) * acc  # steep attack: snap up
         else:
-            acc = decay * acc + (1.0 - decay) * x  # leaky integrate -> gradient
+            acc = release * x + (1.0 - release) * acc  # slow release: trail off
         out.append(_clip11(acc))
     return out
 
