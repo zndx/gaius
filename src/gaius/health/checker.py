@@ -871,6 +871,29 @@ class HealthChecker:
                 message=f"Connection failed: {str(e)[:80]}",
             )
 
+    async def _endpoint_serving(self, port: int) -> bool:
+        """True iff the endpoint's HTTP frontend actually answers /health.
+
+        A vLLM endpoint can report status=healthy (process up, sentinel pod
+        Running) while its frontend is wedged — e.g. the accept queue jammed by a
+        connection storm, the 2026-08-28 outage. status is a liveness PROXY, not
+        proof of service, so probe the real thing. Two quick attempts so a single
+        dropped packet does not read as a failure; a genuine jam fails both.
+        """
+        import httpx
+
+        for attempt in range(2):
+            try:
+                async with httpx.AsyncClient(timeout=3.0) as c:
+                    r = await c.get(f"http://127.0.0.1:{port}/health")
+                    if r.status_code == 200:
+                        return True
+            except Exception:
+                pass
+            if attempt == 0:
+                await asyncio.sleep(0.5)
+        return False
+
     async def _check_endpoints(self) -> CheckResult:
         """Check inference endpoint health."""
         try:
@@ -912,10 +935,46 @@ class HealthChecker:
                     suggestion=f"Restart unhealthy: /engine restart {unhealthy[0]}",
                 )
 
+            # Liveness proxy passed (all report healthy). Now verify they actually
+            # SERVE — a wedged frontend reports healthy but answers nothing. This
+            # closes the observation blind spot behind the 2026-08-28 multi-hour
+            # outage: thinking was "healthy" while its frontend was jammed, so the
+            # observer never saw a failure and never recycled. FAIL here flows to
+            # the endpoints fix strategy (recycle) and surfaces an incident, so the
+            # failure is acted on AND left as an actionable signal, not hidden.
+            not_serving = []
+            for name, e in endpoints.items():
+                if not isinstance(e, dict) or e.get("status") not in healthy_statuses:
+                    continue
+                port = e.get("port")
+                if not port:
+                    continue
+                if not await self._endpoint_serving(int(port)):
+                    not_serving.append(name)
+            if not_serving:
+                return CheckResult(
+                    name="Engine Endpoints",
+                    status=CheckStatus.FAIL,
+                    message=(
+                        f"#HL.00004.NOTSERVING {', '.join(not_serving)} report healthy "
+                        f"but do not answer /health (frontend wedged)"
+                    ),
+                    details={
+                        "total": total, "healthy": healthy, "not_serving": not_serving,
+                    },
+                    suggestion="Complete-recycle the unit: /health fix engine",
+                    # engine (unit recycle), NOT endpoints: a wedged frontend still
+                    # reports status=healthy, so the endpoints strategy (restarts
+                    # UNHEALTHY ones) would no-op. The unit recycle is the proven
+                    # 2026-08-28 recovery and also clears rogue forks / socket
+                    # squatters an endpoint restart cannot.
+                    fix_service="engine",
+                )
+
             return CheckResult(
                 name="Engine Endpoints",
                 status=CheckStatus.PASS,
-                message=f"All {total} endpoints healthy",
+                message=f"All {total} endpoints serving",
                 details={"total": total, "healthy": healthy, "endpoints": list(endpoints.keys())},
             )
 
