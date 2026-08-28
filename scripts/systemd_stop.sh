@@ -16,6 +16,18 @@ reap_gaius_compose
 reap_gaius_engines
 stop_orphan_gaius_postgres
 
+# Reap gaius MiNIFi sentinel pods (K8s stand-ins for gaius GPU/compute workloads)
+# so a unit restart is a COMPLETE recycle: the fresh engine admits from a clean
+# slate instead of racing a stale gaius-thinking sentinel. These are K8s objects,
+# not GPU leases, so this does not touch sibling projects' GPU workloads. Best
+# effort — on a full reboot k8s may already be down (pods die with the node).
+KUBECONFIG="${KUBECONFIG:-$HOME/.config/kube/rke2.yaml}" \
+  kubectl -n federation-signals delete pods \
+    -l 'federation.project=gaius,app.kubernetes.io/component=minifi-sentinel' \
+    --ignore-not-found --wait=false >/dev/null 2>&1 \
+  && info "reaped gaius sentinel pods" \
+  || info "sentinel reap skipped (kubectl/k8s unavailable)"
+
 if [[ "$(listener_count)" -gt 0 ]]; then
   info "WARN :${GRPC_PORT} still listening after stop" >&2
   ss -ltnpH 2>/dev/null | grep -E ":${GRPC_PORT}[[:space:]]" >&2 || true
