@@ -2354,6 +2354,23 @@ class GaiusEngine:
 
 def main():
     """Entry point for gaius-engine command."""
+    # Fork-safety net (2026-08-28): force this engine process's default
+    # multiprocessing start method to 'spawn'. A library that spawns a raw
+    # multiprocessing.Pool — GraphRicciCurvature did, defaulting to proc=64 with
+    # the FORK start method — would otherwise fork the whole engine, each worker
+    # inheriting the :50051 listen socket, live thinking connections, and locked
+    # threads; a deadlocked worker became a rogue duplicate engine that jammed
+    # thinking for hours. spawn re-imports rather than inheriting, so no engine
+    # state crosses the boundary. Safe here: engine __main__ is guarded, joblib is
+    # already pinned to the threading backend, and the known forker (Ricci) also
+    # carries proc=1 — this closes the class, not just the one door.
+    import multiprocessing
+
+    try:
+        multiprocessing.set_start_method("spawn", force=True)
+    except RuntimeError:
+        pass
+
     parser = argparse.ArgumentParser(
         description="Gaius Engine - Centralized inference and evolution daemon"
     )
