@@ -253,24 +253,26 @@ class VllmDriver:
 
     def __init__(self) -> None:
         self._prev: dict[str, tuple[float, float]] = {}
+        self._last: dict[str, float] = {}
 
     def channel_names(self) -> tuple[str, ...]:
-        return ("kv", "run", "gen-tps", "prefill", "wait", "preempt")
+        # 'run' (num_requests_running as a 0/1 flag) carried no dynamics; replaced
+        # by ttft (mean time-to-first-token) + pfx (prefix cache hit rate), both of
+        # which actually move under load. Spec-decode accept-rate would slot in here
+        # too, but its counters only exist when speculative decoding is enabled.
+        return ("kv", "pfx", "ttft", "gen-tps", "prefill", "wait", "preempt")
 
     def sample(self, ctx: dict[str, Any]) -> list[Sample]:
         text = _http_get(self._url())
         now = time.monotonic()
         if not text:
             return [Sample(n, 0.0, present=False) for n in self.channel_names()]
-        kv = run = None
-        gen = pre = None
-        wait = preempt = None
+        kv = gen = pre = wait = preempt = None
+        hits = queries = ttft_sum = ttft_count = None
         for metric, _labels, val in parse_prom_text(text):
             base = _metric_base(metric)
             if base in ("vllm:kv_cache_usage_perc", "vllm:gpu_cache_usage_perc"):
                 kv = val
-            elif base == "vllm:num_requests_running":
-                run = val
             elif base == "vllm:num_requests_waiting":
                 wait = val
             elif base == "vllm:generation_tokens_total":
@@ -279,14 +281,34 @@ class VllmDriver:
                 pre = val
             elif base == "vllm:num_preemptions_total":
                 preempt = val
+            elif base == "vllm:prefix_cache_hits_total":
+                hits = val
+            elif base == "vllm:prefix_cache_queries_total":
+                queries = val
+            elif base == "vllm:time_to_first_token_seconds_sum":
+                ttft_sum = val
+            elif base == "vllm:time_to_first_token_seconds_count":
+                ttft_count = val
         gen_tps = self._rate("gen", gen, now)
         pre_tps = self._rate("pre", pre, now)
         # Preemptions are a monotonic counter; the strip wants the event rate, so
         # a burst reads as a spike (rising -> red) rather than an ever-rising line.
         preempt_rate = self._rate("preempt", preempt, now)
+        # Prefix cache hit rate (Δhits/Δqueries) and mean TTFT (Δsum/Δcount) over the
+        # poll window, held across idle gaps so they read as the current serving
+        # regime rather than snapping to 0 between requests.
+        pfx = self._ratio("pfx", hits, queries)
+        ttft = self._ratio("ttft", ttft_sum, ttft_count)
         return [
             Sample("kv", _clip(kv if kv is not None else 0.0), kv is not None),
-            Sample("run", _clip(1.0 if (run or 0) > 0 else 0.0), run is not None),
+            Sample(
+                "pfx", _clip(pfx if pfx is not None else 0.0), queries is not None
+            ),
+            Sample(
+                "ttft",
+                _clip(math.log1p(ttft if ttft is not None else 0.0) / math.log1p(3.0)),
+                ttft_count is not None,
+            ),
             Sample(
                 "gen-tps",
                 _clip(math.log1p(gen_tps) / math.log1p(80.0)),
@@ -322,6 +344,19 @@ class VllmDriver:
         if dt <= 0:
             return 0.0
         return max(0.0, (counter - prev[0]) / dt)
+
+    def _ratio(self, key: str, num: float | None, den: float | None) -> float | None:
+        """Δnum/Δden across the poll window (prefix hit rate; mean TTFT). Held: an
+        unchanging counter (idle) reads as the last computed value, not 0/None."""
+        if num is None or den is None:
+            return self._last.get(key)
+        prev = self._prev.get(key)
+        self._prev[key] = (num, den)
+        if prev is not None:
+            dden = den - prev[1]
+            if dden > 0:
+                self._last[key] = (num - prev[0]) / dden
+        return self._last.get(key)
 
 
 class CltDriver:
