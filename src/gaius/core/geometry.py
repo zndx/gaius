@@ -206,7 +206,13 @@ class GeometryComputer:
 
                 # Compute Ollivier-Ricci curvature on graph
                 # alpha=0.5 is standard, method="OTD" is fastest
-                orc = OllivierRicci(graph, alpha=0.5, method="OTD", verbose="ERROR")
+                # proc=1: never spawn a multiprocessing.Pool (fork start method)
+                # from inside the long-running engine — a forked worker inherits
+                # the :50051 socket + open thinking connections + locked threads
+                # and can deadlock into a rogue duplicate engine (2026-08-28).
+                orc = OllivierRicci(
+                    graph, alpha=0.5, method="OTD", verbose="ERROR", proc=1
+                )
                 orc.compute_ricci_curvature()
 
                 # Extract node curvatures (average of incident edges)
