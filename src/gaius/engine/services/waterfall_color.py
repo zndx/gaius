@@ -176,6 +176,29 @@ def dsd_envelope(
     return out
 
 
+def auto_contrast(values: list[float], floor: float = 0.04) -> list[float]:
+    """Rolling min-max stretch (LCD line-graph-style auto-scale) over the window.
+
+    A real but compressed band — e.g. mem-N's memory-copy bandwidth sitting at
+    ~18% ±3%, which the fixed log reference squeezes into ~0.04 of the axis, below
+    the motion floor — is stretched to fill [0,1] so its dynamics read like the
+    LCD's auto-scaled power line graph. Ranges below ``floor`` are left untouched:
+    a genuinely-flat signal (idle bandwidth, or static VRAM) stays quiet instead
+    of being amplified into pure sensor noise. 0 is the absent sentinel and is
+    preserved. Only apply where the axis is known to compress (mem-N bandwidth) —
+    not to already well-ranged axes like gpu-N power.
+    """
+    present = [v for v in values if v > 1e-9]
+    if not present:
+        return values
+    lo = min(present)
+    hi = max(present)
+    rng = hi - lo
+    if rng < floor:
+        return values
+    return [((v - lo) / rng if v > 1e-9 else 0.0) for v in values]
+
+
 def _lerp_rgb(
     a: tuple[int, int, int], b: tuple[int, int, int], t: float
 ) -> tuple[int, int, int]:
@@ -282,6 +305,28 @@ def rgb_raster(
                 p_vis = _clip01(0.45 * _clip01(p) + 0.9 * abs(hp_p[i]))
                 u_vis = _clip01(0.45 * _clip01(u) + 0.9 * abs(hp_u[i]))
                 base = dkcyan2(p_vis, u_vis)
+                e = ep[i] if abs(ep[i]) >= abs(eu[i]) else eu[i]
+                colored.append(overlay_motion(base, e))
+        elif name.startswith("mem-"):
+            # Bivariate like gpu-N: membw (x) × VRAM occupancy (y). membw sits in a
+            # narrow band (~18% ±3%) that the fixed log reference compresses below
+            # the motion floor, so auto-contrast the bandwidth axis to the window
+            # (LCD-style) — VRAM (static once loaded) is left as-is and stays quiet.
+            mbw: list[float] = []
+            vram: list[float] = []
+            for val in row:
+                p, u, on = unpack_gpu(val)
+                mbw.append(p if on else 0.0)
+                vram.append(u if on else 0.0)
+            mbw = auto_contrast(mbw)
+            ep = dsd_envelope(onset_field(mbw))
+            eu = dsd_envelope(onset_field(vram))
+            for i, val in enumerate(row):
+                _, _, on = unpack_gpu(val)
+                if not on:
+                    colored.append(dkcyan2(0.0, 0.0))
+                    continue
+                base = dkcyan2(_clip01(mbw[i]), _clip01(vram[i]))
                 e = ep[i] if abs(ep[i]) >= abs(eu[i]) else eu[i]
                 colored.append(overlay_motion(base, e))
         else:

@@ -510,6 +510,31 @@
     return out;
   }
 
+  /* Rolling min-max stretch (LCD line-graph-style auto-scale). mem-N's memory-copy
+     bandwidth sits in a narrow band (~18% ±3%) that the fixed log reference squeezes
+     below the motion floor; stretch it to fill the axis so its dynamics read like the
+     LCD's auto-scaled power graph. Ranges below `floor` (idle/flat bandwidth, static
+     VRAM) stay put — no amplifying sensor noise. Keep in lockstep with
+     waterfall_color.py:auto_contrast. */
+  function autoContrast(values, floor) {
+    floor = floor === undefined ? 0.04 : floor;
+    var lo = Infinity, hi = -Infinity, any = false, i;
+    for (i = 0; i < values.length; i++) {
+      if (values[i] > 1e-9) {
+        any = true;
+        if (values[i] < lo) lo = values[i];
+        if (values[i] > hi) hi = values[i];
+      }
+    }
+    if (!any || hi - lo < floor) return values;
+    var rng = hi - lo;
+    var out = [];
+    for (i = 0; i < values.length; i++) {
+      out.push(values[i] > 1e-9 ? (values[i] - lo) / rng : 0);
+    }
+    return out;
+  }
+
   function highpass(values, alpha) {
     alpha = alpha === undefined ? 0.12 : alpha;
     var ema = values.length ? values[0] : 0;
@@ -624,6 +649,9 @@
           pw.push(un.on ? un.p : 0);
           ut.push(un.on ? un.u : 0);
         }
+        /* mem-N bandwidth (pw) is compressed into a narrow band; auto-scale it to
+           the window so its real dynamics surface. gpu-N power is already ranged. */
+        if (nm.indexOf("mem-") === 0) pw = autoContrast(pw);
         var ep = dsdEnvelope(onsetField(pw));
         var eu = dsdEnvelope(onsetField(ut));
         for (x = 0; x < T; x++) {
