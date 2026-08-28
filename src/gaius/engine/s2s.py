@@ -83,6 +83,156 @@ def advertised_head(root: Path | None = None) -> str:
     return (proc.stdout or "").strip()
 
 
+# ── Source posture (kind=SOURCE_POSTURE): what code this peer is running ──────
+# All best-effort and honest: a field we cannot read stays empty/zero ("not
+# reported"), so a light peer adopts incrementally and is skipped until it does.
+
+_RUNNING_SHA: str | None = None
+
+
+def stamp_running_sha(root: Path | None = None) -> str:
+    """Record the commit the live process is running, once at engine start.
+
+    HEAD is read live in the posture; this is stamped at boot so a long-lived
+    process reveals when the checkout moved under it (running_sha != head).
+    """
+    global _RUNNING_SHA
+    _RUNNING_SHA = advertised_head(root)
+    return _RUNNING_SHA
+
+
+def running_sha() -> str:
+    return _RUNNING_SHA or ""
+
+
+def _git(root: Path, *args: str) -> str:
+    """Best-effort `git -C root ...` → stdout stripped, or "" on any failure."""
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(root), *args],
+            check=False, capture_output=True, text=True,
+        )
+    except FileNotFoundError:
+        return ""
+    return (proc.stdout or "").strip() if proc.returncode == 0 else ""
+
+
+def working_tree_dirty(root: Path | None = None) -> bool:
+    """True if TRACKED files have uncommitted changes. Untracked (scratch notes,
+    IDE files) are excluded — they do not change what code is running."""
+    checkout = root or repo_root()
+    return bool(_git(Path(checkout), "status", "--porcelain", "--untracked-files=no"))
+
+
+def current_branch(root: Path | None = None) -> str:
+    b = _git(Path(root or repo_root()), "rev-parse", "--abbrev-ref", "HEAD")
+    return "" if b == "HEAD" else b  # empty == detached
+
+
+def upstream_ahead_behind(root: Path | None = None) -> tuple[str, int, int]:
+    checkout = Path(root or repo_root())
+    up = _git(checkout, "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}")
+    if not up:
+        return "", 0, 0
+    counts = _git(checkout, "rev-list", "--left-right", "--count", f"{up}...HEAD")
+    parts = counts.split()
+    if len(parts) == 2 and parts[0].isdigit() and parts[1].isdigit():
+        return up, int(parts[1]), int(parts[0])  # ahead, behind
+    return up, 0, 0
+
+
+def submodule_postures(root: Path | None = None) -> list[dict[str, object]]:
+    """Per-submodule pinned (superproject gitlink) vs checked-out sha + dirty."""
+    checkout = Path(root or repo_root())
+    out: list[dict[str, object]] = []
+    for raw in _git(checkout, "submodule", "status").splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        # ' '=in-sync '+'=moved '-'=uninit 'U'=conflict. The in-sync space prefix
+        # can be eaten by upstream whitespace-stripping, so detect it: a leading
+        # status char, else the sha (a hex digit) begins immediately (in-sync).
+        if line[0] in "+-U":
+            prefix, body = line[0], line[1:].strip()
+        else:
+            prefix, body = " ", line
+        parts = body.split()
+        if len(parts) < 2:
+            continue
+        checked_out, path = parts[0], parts[1]
+        pinned = ""
+        ls = _git(checkout, "ls-tree", "HEAD", path).split()
+        if len(ls) >= 3 and ls[1] == "commit":
+            pinned = ls[2]
+        dirty = False
+        if prefix != "-":  # initialized
+            dirty = bool(_git(checkout / path, "status", "--porcelain", "--untracked-files=no"))
+        out.append({
+            "path": path, "name": path,
+            "pinned_sha": pinned, "checked_out_sha": checked_out,
+            "dirty": dirty,
+        })
+    return out
+
+
+def migration_postures(root: Path | None = None) -> list[dict[str, object]]:
+    """Best-effort dbmate posture: migration ids present in db/migrations but not
+    recorded in schema_migrations. Honest — a broken/partial tracking table is
+    itself a posture signal; if the applied set can't be read, returns []."""
+    checkout = Path(root or repo_root())
+    mig_dir = checkout / "db" / "migrations"
+    if not mig_dir.is_dir():
+        return []
+    present = [f.name.split("_", 1)[0] for f in sorted(mig_dir.glob("*.sql"))]
+    present = [v for v in present if v.isdigit()]
+    if not present:
+        return []
+    try:
+        from gaius.core.config import get_database_url
+
+        url = get_database_url()
+        out = subprocess.run(
+            ["psql", url, "-tAc", "SELECT version FROM schema_migrations"],
+            check=False, capture_output=True, text=True, timeout=15,
+        )
+        if out.returncode != 0:
+            return []
+        applied = {v.strip() for v in out.stdout.splitlines() if v.strip()}
+    except Exception:
+        return []
+    unapplied = [v for v in present if v not in applied]
+    current = max(applied) if applied else ""
+    return [{"source": "dbmate", "current": current, "unapplied": unapplied}]
+
+
+def build_source_posture(root: Path | None = None, *, project: str = "gaius") -> zpb.SourcePosture:
+    checkout = Path(root or repo_root())
+    up, ahead, behind = upstream_ahead_behind(checkout)
+    posture = zpb.SourcePosture(
+        project=project,
+        checkout=str(checkout),
+        branch=current_branch(checkout),
+        head=advertised_head(checkout),
+        running_sha=running_sha(),
+        dirty=working_tree_dirty(checkout),
+        upstream=up,
+        ahead=ahead,
+        behind=behind,
+    )
+    for s in submodule_postures(checkout):
+        posture.submodules.add(
+            path=str(s["path"]), name=str(s["name"]),
+            pinned_sha=str(s["pinned_sha"]), checked_out_sha=str(s["checked_out_sha"]),
+            dirty=bool(s["dirty"]),
+        )
+    for m in migration_postures(checkout):
+        posture.migrations.add(
+            source=str(m["source"]), current=str(m["current"]),
+            unapplied=[str(x) for x in m["unapplied"]],  # type: ignore[union-attr]
+        )
+    return posture
+
+
 _LOOPBACK = frozenset({"localhost", "ip6-localhost", "::1", "0.0.0.0", "::"})
 
 
@@ -361,6 +511,19 @@ async def query_peer(
         await channel.close()
 
 
+async def fleet_source_posture(services: object) -> list[zpb.SourcePosture]:
+    """This engine's SourcePosture plus each configured peer's — a lattice-wide
+    view of what code every project is actually running. Peers that have not
+    adopted SOURCE_POSTURE return no posture (or UNIMPLEMENTED) and are skipped,
+    exactly like the REMOTES sweep; the list is honest about who answered."""
+    out: list[zpb.SourcePosture] = [build_source_posture(project="gaius")]
+    for pid, target in configured_peers(services):
+        resp = await query_peer(target, kind=zpb.SERVER_QUERY_KIND_SOURCE_POSTURE)
+        if resp is not None and resp.HasField("posture") and resp.posture.project:
+            out.append(resp.posture)
+    return out
+
+
 def local_response(
     kind: int,
     services: object,
@@ -390,6 +553,8 @@ def local_response(
         resp.queues.extend(declared_queues())
     if kind == zpb.SERVER_QUERY_KIND_WORKLOADS:
         resp.workloads.extend(declared_workloads(peer=resp.project))
+    if kind == zpb.SERVER_QUERY_KIND_SOURCE_POSTURE:
+        resp.posture.CopyFrom(build_source_posture(root, project=resp.project))
     # SCHEDULES: empty until the catalog lands (P3). Honest, not invented.
     return resp
 

@@ -232,6 +232,15 @@ class GaiusEngine:
         logger.info("Starting Gaius Engine...")
         self._start_time = datetime.now()
 
+        # Stamp the commit this process is running, once, before the checkout can
+        # move under us — surfaced as SourcePosture.running_sha over ServerQuery.
+        try:
+            from .s2s import stamp_running_sha
+
+            stamp_running_sha()
+        except Exception as e:
+            logger.debug("running-sha stamp skipped: %s", e)
+
         # 0. Validate ACP prerequisites FIRST (FAIL-FAST)
         # This ensures escalation paths are available before any daemons start
         await self._validate_acp_prerequisites()
