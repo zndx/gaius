@@ -26,15 +26,30 @@ MARKER="${GAIUS_DEFER_MARKER:-$STATE_DIR/defer-gpu}"
 
 mkdir -p "$STATE_DIR"
 
+# Authoritative clean/unclean detection via systemd's persistent journal: the
+# previous boot ended gracefully iff it reached a shutdown/reboot target. A crash
+# (power loss, hard hang) leaves the journal ending abruptly with no such line.
+# This replaces the clean-shutdown stamp, which did NOT survive reboots on this
+# box (a synced write to persistent ext4 was still gone at boot — mechanism
+# unclear, but empirically unreliable, 2026-08-28). The stamp is kept only as an
+# optional fast path. If the journal can't be read (first boot / no -b -1), assume
+# CLEAN — a real crash-loop is also caught by kernel.hung_task_panic + the
+# gaius-thinking-ready watchdog.
+_prev_boot_clean() {
+  local out
+  out="$(journalctl -b -1 -n 200 --no-pager -o cat 2>/dev/null)" || return 0
+  [[ -z "$out" ]] && return 0
+  grep -qiE "reached target (reboot|power-off|halt|kexec)|shutting down" <<<"$out"
+}
+
 case "${1:-boot}" in
   boot)
-    if [[ -e "$STAMP" ]]; then
-      ts="$(cat "$STAMP" 2>/dev/null || echo '?')"
+    if [[ -e "$STAMP" ]] || _prev_boot_clean; then
       rm -f "$STAMP" "$MARKER"
-      echo "crash-guard: clean boot (stamp $ts consumed) — GPU workloads start normally"
+      echo "crash-guard: clean boot (graceful prev shutdown) — GPU workloads start normally"
     else
       : > "$MARKER"
-      echo "crash-guard: UNCLEAN reboot detected (no clean-shutdown stamp)"
+      echo "crash-guard: UNCLEAN reboot detected (no graceful prev shutdown)"
       echo "crash-guard: dropped GPU-defer marker $MARKER"
       echo "crash-guard: GPU workloads will be HELD until 'just resume-gpu'"
     fi
