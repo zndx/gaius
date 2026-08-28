@@ -22,6 +22,17 @@ from gaius.engine.services.waterfall_drivers import (
 HZ = 10
 DEFAULT_WINDOW_S = 60
 LIVE_WINDOW_S = 60
+# The warehouse strip renders the hot window at the ingest cadence so the
+# sub-second GPU motion Kudu actually records survives to the display. DCGM
+# exports at 250 ms and the warehouse writer ingests at GAIUS_WAREHOUSE_INGEST_S
+# (0.25 s) -> ~4 samples/second land in signal_tier0. A 1 Hz strip (one column
+# per whole second) collapsed those ~4 samples into one (last-wins) and read as
+# "held/muddy" — the LCD's vertical-bar motion was aggregated away on read, not
+# missing from Kudu. Match the cadence for the hot window; longer (Kumo) windows
+# stay at 1 Hz so the column count stays bounded.
+_WAREHOUSE_HOT_HZ = max(
+    1, min(20, int(float(__import__("os").environ.get("GAIUS_WATERFALL_HOT_HZ", "4"))))
+)
 # The strip anchor sits a couple of seconds behind now (newest settled
 # second), so the oldest column reaches back window_s + backoff seconds. Fetch
 # that much plus slack: rows older than the oldest column map to col < 0 and
@@ -220,13 +231,18 @@ def tick_from_gpu_rows(
     window_s: int,
     cognition_rows: list[dict[str, Any]] | None = None,
 ) -> WaterfallState:
-    """Build a 1 Hz strip from signal_tier0 rows (Kudu via impala_fdw kudu_scan).
+    """Build the strip from signal_tier0 rows (Kudu via impala_fdw kudu_scan).
 
     ``rows`` are narrow series samples: ts_ns, series_id, gpu, val_i for the
     two DCGM series the strip paints (power_mw, gpu_util_pct). ``cognition_rows``
     are the same shape with val_d and the series name resolved to a channel.
     Every channel the strip advertises is sourced here — a channel with no rows
     in the window stays at zero honestly, it is not faked.
+
+    The hot window renders at ``_WAREHOUSE_HOT_HZ`` columns/second (~4 Hz, the
+    ingest cadence) so each column carries its own sub-second sample instead of
+    one whole-second bucket that discarded ~3 of every 4 Kudu rows. Longer (Kumo)
+    windows fall back to 1 Hz to bound the column count.
     """
     from gaius.engine.services.waterfall_color import pack_gpu
     from gaius.engine.services.waterfall_drivers import (
@@ -239,7 +255,11 @@ def tick_from_gpu_rows(
 
     names = all_channel_names()
     n_ch = len(names)
-    n_cols = max(1, int(window_s))
+    # Column cadence: match the ~4 Hz ingest for the hot window so sub-second
+    # motion survives; 1 Hz for the broad Kumo window to bound the column count.
+    strip_hz = _WAREHOUSE_HOT_HZ if window_s <= LIVE_WINDOW_S else 1
+    slot_ns = 1_000_000_000 // strip_hz
+    n_cols = max(1, int(window_s) * strip_hz)
     matrix = [[0.0] * n_cols for _ in range(n_ch)]
     # Whether each (channel, column) got a real sample. Used for sample-and-hold
     # below: a column with no sample is filled with the last known value rather
@@ -250,47 +270,56 @@ def tick_from_gpu_rows(
         raise ValueError(
             GURU_WAREHOUSE + "\n  warehouse query returned 0 rows for this window"
         )
-    # The rightmost column is a whole second that every channel's fetch already
-    # contains. Getting this exactly right was the whole battle:
+    # Fail-fast on a NULL ts before the anchor's max() would choke on int(None).
+    # fetch_gpu_metrics already rejects NULLs, but tick_from_gpu_rows is a public
+    # entry point and must surface the guru code, not a bare TypeError.
+    if any(r.get("ts_ns") is None for r in rows):
+        raise ValueError(GURU_WAREHOUSE + "\n  signal_tier0 row missing ts_ns")
+    # The rightmost column is a slot every channel's fetch already contains.
+    # Getting this exactly right was the whole battle:
     #
-    #  - A wall-clock anchor (now, or now-1) can name a second a fetch has not
+    #  - A wall-clock anchor (now, or now-1 slot) can name a slot a fetch has not
     #    returned yet: the GPU rows and cognition rows come from two separate
     #    queries with their own `now`. That column was then held at the previous
     #    value and corrected a frame later when the real (usually different)
     #    sample appeared — a transient wrong cell at the right edge that vanished
     #    instead of scrolling. Seen on the cognition channels (the later fetch).
-    #  - min(newest GPU second, newest cognition second) over-corrects the other
+    #  - min(newest GPU slot, newest cognition slot) over-corrects the other
     #    way: while a cognition source is stale (e.g. vLLM restarting) its old
     #    newest drags the whole anchor back, then the view jumps when it catches
     #    up.
     #
-    # Anchor the rightmost column to the newest *fully settled* second, so the
+    # Anchor the rightmost column to the newest *fully settled* slot, so the
     # edge value is final the instant it is painted and only ever scrolls left.
     #
-    # "Settled" is the crux. A second's samples do not all land at once: the six
+    # "Settled" is the crux. A slot's samples do not all land at once: the six
     # GPUs each INSERT their own row and the cognition metrics land in a separate
     # fetch, all with ~0.65 s of ingest lag and a little skew between them. So the
-    # newest second that has *any* row (max ts over the GPU rows) is often still
+    # newest slot that has *any* row (max ts over the GPU rows) is often still
     # filling — one GPU or one cognition channel has not written it yet. Anchor
-    # there and that channel's edge cell is carried forward from the prior second,
+    # there and that channel's edge cell is carried forward from the prior slot,
     # then corrected a frame later when its real sample arrives: a right-edge cell
     # that changes value instead of scrolling — the "disappearing" flicker.
     #
-    # Back off one whole second: min(now - 2, newest GPU second - 1). Once *any*
-    # row for second S exists, S-1 is complete for every channel — all sources
-    # sample at 1 Hz with sub-second lag, so none can still be mid-write on a
-    # second a newer one already exists for. Cognition is the later fetch with a
-    # newest >= GPU's, so it too has S-1 settled (its metrics land together per
-    # tick). Costs ~1 s more edge latency, invisible on a 60 s view; buys a
-    # right edge that is correct when it appears and identical as it slides left.
-    # Stragglers newer than the anchor map past the edge and are dropped. epoch
-    # below is this same second, so the client repaints once per second and
-    # shifts left one column a frame.
-    _gpu_newest = max(int(r["ts_ns"]) for r in rows) // 1_000_000_000
-    anchor_sec = min(int(time.time()) - 2, _gpu_newest - 1)
+    # Back off min(now - 2 s, newest GPU slot - 1). Once *any* row for slot S
+    # exists, S-1 is complete for every channel — the sub-second lag means no
+    # source can still be mid-write on a slot a newer one already exists for.
+    # Cognition is the later fetch with a newest >= GPU's, so it too has S-1
+    # settled (its metrics land together per tick). Costs a little more edge
+    # latency, invisible on a 60 s view; buys a right edge that is correct when it
+    # appears and identical as it slides left. Stragglers newer than the anchor
+    # map past the edge and are dropped. epoch below is this same slot, so the
+    # client repaints once per slot and shifts left one column a frame.
+    #
+    # Slots are 1/strip_hz-second buckets. Back off 2 wall-seconds (the old 1 Hz
+    # floor, now 2*strip_hz slots) and one slot behind the newest arrived sample.
+    # At strip_hz=1 this is exactly the old min(now-2, newest-1) whole-second
+    # anchor; at strip_hz=4 it scrolls the hot view a column every 250 ms.
+    _gpu_newest_slot = max(int(r["ts_ns"]) for r in rows) // slot_ns
+    anchor_slot = min(time.time_ns() // slot_ns - 2 * strip_hz, _gpu_newest_slot - 1)
 
     def _col_for(ts_ns: int) -> int:
-        return n_cols - 1 - (anchor_sec - int(ts_ns) // 1_000_000_000)
+        return n_cols - 1 - (anchor_slot - int(ts_ns) // slot_ns)
 
     sid_w = series_id_of("dcgm.power_mw")
     sid_u = series_id_of("dcgm.gpu_util_pct")
@@ -371,7 +400,7 @@ def tick_from_gpu_rows(
     # Bridge only short gaps (the current second, an occasional dropped
     # sample). A channel silent longer than this goes dark honestly rather
     # than freezing a stale value across the whole view.
-    max_hold = 3
+    max_hold = 3 * strip_hz  # ~3 wall-seconds of bridge, same policy at any hz
     for ri in range(n_ch):
         row = matrix[ri]
         pres = present[ri]
@@ -405,14 +434,15 @@ def tick_from_gpu_rows(
         pass
     return WaterfallState(
         window_s=window_s,
-        # The wall-clock second the columns are anchored to (the last complete
-        # second). Advances by 1 each wall second, so the client repaints once
-        # per second and every frame scrolls left by exactly one column.
-        epoch_unix_ms=anchor_sec * 1000,
+        # The wall-clock instant the rightmost column is anchored to (the last
+        # complete slot). Advances by one slot each 1/strip_hz second, so the
+        # client (which repaints only when epoch changes) scrolls left by exactly
+        # one column per slot — 1 Hz for Kumo, ~4 Hz for the hot window.
+        epoch_unix_ms=anchor_slot * slot_ns // 1_000_000,
         channel_names=tuple(names),
         matrix=matrix,
         driver="warehouse",
-        hz=1,
+        hz=strip_hz,
         salience=envelope,
     )
 

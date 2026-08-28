@@ -13,11 +13,15 @@ import pytest
 def test_channel_names_are_measures() -> None:
     assert "gpu-0" in CHANNEL_NAMES
     assert "gpu-5" in CHANNEL_NAMES
+    assert "mem-0" in CHANNEL_NAMES  # bivariate membw x VRAM
     assert "pwr-0" not in CHANNEL_NAMES
+    assert "util-0" not in CHANNEL_NAMES  # util is packed into gpu-N, not its own row
     assert "ricci-d" in CHANNEL_NAMES
     assert "z0" not in CHANNEL_NAMES
     assert "delta" not in CHANNEL_NAMES
-    assert len(CHANNEL_NAMES) == N_CHANNELS == 20
+    # 6 gpu-N + 6 mem-N + 11 cognition (kv,pfx,ttft,gen-tps,prefill,wait,preempt,
+    # clt,sae,ricci,ricci-d).
+    assert len(CHANNEL_NAMES) == N_CHANNELS == 23
 
 
 def test_tick_seeds_and_scrolls() -> None:
@@ -76,15 +80,20 @@ def test_warehouse_rows_fill_gpu_channels() -> None:
 
     from gaius.engine.services.warehouse_ingest import series_id_of
 
-    now_ns = int(time.time() * 1_000_000_000)
+    now = time.time()
     # signal_tier0 is narrow: one row per series. Power is INT mW, util INT %.
-    rows = [
-        {"ts_ns": now_ns, "gpu": 0, "series_id": series_id_of("dcgm.power_mw"), "val_i": 80_000},
-        {"ts_ns": now_ns, "gpu": 0, "series_id": series_id_of("dcgm.gpu_util_pct"), "val_i": 10},
-    ]
+    # Span several seconds so a row lands on the settled anchor (the newest ~2 s
+    # are held back as still-forming and dropped).
+    rows = []
+    for k in range(8):
+        ts = int((now - k) * 1_000_000_000)
+        rows += [
+            {"ts_ns": ts, "gpu": 0, "series_id": series_id_of("dcgm.power_mw"), "val_i": 80_000},
+            {"ts_ns": ts, "gpu": 0, "series_id": series_id_of("dcgm.gpu_util_pct"), "val_i": 10},
+        ]
     state = tick(120, warehouse_rows=rows)
     assert state.driver == "warehouse"
-    assert state.hz == 1
+    assert state.hz == 1  # the broad Kumo window stays 1 Hz
     assert len(state.matrix[0]) == 120
     assert "gpu-0" in state.channel_names
     gi = state.channel_names.index("gpu-0")
