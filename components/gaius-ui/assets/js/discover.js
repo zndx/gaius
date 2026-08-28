@@ -491,7 +491,7 @@
      above `reversal` SNAPS the accumulator so sharp turns (rise->red flipping to
      fall->blue) stay crisp. Keep in lockstep with waterfall_color.py:dsd_envelope. */
   function dsdEnvelope(e, attack, release, reversal) {
-    attack = attack === undefined ? 0.9 : attack;
+    attack = attack === undefined ? 0.95 : attack;
     release = release === undefined ? 0.28 : release;
     reversal = reversal === undefined ? 0.1 : reversal;
     var out = [];
@@ -560,8 +560,8 @@
   }
 
   function motionMix(energy) {
-    var a = Math.max(0, Math.abs(energy) - 0.025);
-    return clip01(1 - Math.exp(-1.65 * a));
+    var a = Math.max(0, Math.abs(energy) - 0.015);
+    return clip01(1 - Math.exp(-2.4 * a));
   }
 
   function overlayMotion(rgb, d) {

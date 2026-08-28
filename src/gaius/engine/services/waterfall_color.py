@@ -150,7 +150,7 @@ def onset_field(values: list[float]) -> list[float]:
 
 def dsd_envelope(
     e: list[float],
-    attack: float = 0.9,
+    attack: float = 0.95,
     release: float = 0.28,
     reversal: float = 0.1,
 ) -> list[float]:
@@ -239,9 +239,10 @@ def flash_rgb(energy: float) -> tuple[int, int, int]:
 
 
 def motion_mix(energy: float) -> float:
-    """How hard to mix flash over DkCyan2. Shoulders mid-ramp, peak deep."""
-    a = max(0.0, abs(float(energy)) - 0.025)
-    return _clip01(1.0 - math.exp(-1.65 * a))
+    """How hard to mix flash over DkCyan2. Lower shoulder (0.015) so faint motion
+    engages sooner; steeper curve (2.4) so it reaches full flash faster."""
+    a = max(0.0, abs(float(energy)) - 0.015)
+    return _clip01(1.0 - math.exp(-2.4 * a))
 
 
 def overlay_motion(
