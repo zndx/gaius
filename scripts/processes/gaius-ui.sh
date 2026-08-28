@@ -14,7 +14,10 @@ REPO="$(cd "$SCRIPT_DIR/../.." && pwd)"
 cd "$REPO"
 
 export GAIUS_UI_BIND="${GAIUS_UI_BIND:-0.0.0.0:9890}"
-export GAIUS_UI_ASSET_V="${GAIUS_UI_ASSET_V:-0.3.26-agenda-genre}"
+# Do NOT default GAIUS_UI_ASSET_V: unset lets the binary derive the ?v= cache-buster
+# from the newest asset mtime (auto-busts on any JS/CSS edit). Only a caller that
+# explicitly exports it overrides that.
+[[ -n "${GAIUS_UI_ASSET_V:-}" ]] && export GAIUS_UI_ASSET_V
 export GAIUS_UI_STATE="${GAIUS_UI_STATE:-$REPO/build/gaius-ui}"
 export GAIUS_BOARD_JSON="${GAIUS_BOARD_JSON:-$REPO/build/dev/.board.json}"
 export GAIUS_ENGINE_TARGET="${GAIUS_ENGINE_TARGET:-127.0.0.1:50051}"
