@@ -70,7 +70,7 @@ TaskHandler = Callable[[ScheduledTask], Awaitable[dict[str, Any]]]
 # 15m reset of publish_cards while LuxCore was still rendering left
 # the listen loop blocked and duplicate restore rows unclaimed.
 SINGLETON_TASK_TYPES = frozenset(
-    {"publish_cards", "article_curate", "gpu_metrics_settle"}
+    {"publish_cards", "article_curate", "tier_settle"}
 )
 
 
@@ -799,26 +799,35 @@ class ScheduledTaskProcessor(BaseDaemon):
         self.register_handler("weekly_signals_summary", handle_weekly_signals_summary)
         self.register_handler("knowledge_summary", handle_knowledge_summary)
 
-        async def handle_gpu_metrics_settle(task: ScheduledTask) -> dict[str, Any]:
+        # gpu_metrics settle retired 2026-08-28: superseded by the product-generic
+        # tier_settle (signal_tier0 carries the DCGM families now). gpu_metrics_tier1
+        # is kept as read-only history; gpu_metrics_settle.py stays for reference but
+        # is no longer scheduled or dispatched. See tier_settle below.
+
+        async def handle_tier_settle(task: ScheduledTask) -> dict[str, Any]:
+            # Product-generic Kudu->Iceberg/HDF5 settle (Transparent Hierarchical
+            # Storage). payload={'product': 'signal'|...}; the work is per-product.
             if not (os.environ.get("SIGNALS_ROOT") or "").strip():
                 raise RuntimeError(
-                    "#SL.00000026.SETTLE SIGNALS_ROOT required for gpu_metrics_settle"
+                    "#SL.00000026.SETTLE SIGNALS_ROOT required for tier_settle"
                 )
+            product = str(task.payload.get("product") or "signal")
             return await self._run_spawned_metaflow(
-                kind="gpu-metrics-settle",
+                kind=f"tier-settle-{product}",
                 task=task,
                 argv=[
                     "uv",
                     "run",
                     "python",
                     "-m",
-                    "gaius.engine.services.gpu_metrics_settle",
+                    "gaius.engine.services.tier_settle",
+                    product,
                 ],
-                log_prefix="GpuMetricsSettle",
+                log_prefix="TierSettle",
                 idle_timeout=1800,
             )
 
-        self.register_handler("gpu_metrics_settle", handle_gpu_metrics_settle)
+        self.register_handler("tier_settle", handle_tier_settle)
 
         async def handle_feature_probe(task: ScheduledTask) -> dict[str, Any]:
             from .feature_probe import run_probe_batch

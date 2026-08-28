@@ -308,8 +308,11 @@ _KIND_CLASS: dict[str, ResourceClass] = {
     # via zndx.engine.v1 only when none is healthy.
     "optillm": COMPUTE,
     "gaius-optillm": COMPUTE,
-    "gpu-metrics-settle": COMPUTE,
-    "gpu_metrics_settle": COMPUTE,
+    # Product-generic tier settle (Kudu -> Iceberg/HDF5). Per-product spawn kinds
+    # tier-settle-<product>; the bare kinds cover a defaulted product.
+    "tier-settle": COMPUTE,
+    "tier_settle": COMPUTE,
+    "tier-settle-signal": COMPUTE,
     # ColBERT-Zero MaxSim: 1 GPU model → light (same leaf as Ask 1.7B).
     # In-engine Aperture CUDA is undeclared Metaflow debt; admit light first.
     "embedding": LIGHT,
@@ -438,8 +441,9 @@ _KIND_PHASE: dict[str, str] = {
     "gaius-thinking": "think",
     "optillm": "proxy",
     "gaius-optillm": "proxy",
-    "gpu-metrics-settle": "settle",
-    "gpu_metrics_settle": "settle",
+    "tier-settle": "settle",
+    "tier_settle": "settle",
+    "tier-settle-signal": "settle",
     "embedding": "embed",
     "gaius-embedding": "embed",
     "colbert": "embed",

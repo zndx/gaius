@@ -1910,6 +1910,7 @@ dependencies = [
     { name = "google-api-python-client", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
     { name = "graphriccicurvature", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
     { name = "gunicorn", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
+    { name = "h5py", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
     { name = "hdbscan", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
     { name = "hf-mem", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
     { name = "holoviews", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
@@ -2144,6 +2145,7 @@ requires-dist = [
     { name = "grpcio-status", marker = "extra == 'grpc'", specifier = ">=1.59.0" },
     { name = "grpcio-tools", marker = "extra == 'grpc'", specifier = ">=1.59.0" },
     { name = "gunicorn", specifier = ">=21.0.0" },
+    { name = "h5py", specifier = ">=3.11" },
     { name = "hdbscan", specifier = ">=0.8.33" },
     { name = "hf-mem", specifier = ">=0.1.1" },
     { name = "holoviews", specifier = ">=1.23.1" },
@@ -2688,6 +2690,19 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/34/72/9614c465dc206155d93eff0ca20d42e1e35afc533971379482de953521a4/gunicorn-23.0.0.tar.gz", hash = "sha256:f014447a0101dc57e294f6c18ca6b40227a4c90e9bdb586042628030cba004ec", size = 375031, upload-time = "2024-08-10T20:25:27.378Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/cb/7d/6dac2a6e1eba33ee43f318edbed4ff29151a49b5d37f080aad1e6469bca4/gunicorn-23.0.0-py3-none-any.whl", hash = "sha256:ec400d38950de4dfd418cff8328b2c8faed0edb0d517d3394e457c317908ca4d", size = 85029, upload-time = "2024-08-10T20:25:24.996Z" },
+]
+
+[[package]]
+name = "h5py"
+version = "3.16.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "numpy", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/db/33/acd0ce6863b6c0d7735007df01815403f5589a21ff8c2e1ee2587a38f548/h5py-3.16.0.tar.gz", hash = "sha256:a0dbaad796840ccaa67a4c144a0d0c8080073c34c76d5a6941d6818678ef2738", size = 446526, upload-time = "2026-03-06T13:49:08.07Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/9e/e9/1a19e42cd43cc1365e127db6aae85e1c671da1d9a5d746f4d34a50edb577/h5py-3.16.0-cp312-cp312-manylinux_2_28_x86_64.whl", hash = "sha256:dfc21898ff025f1e8e67e194965a95a8d4754f452f83454538f98f8a3fcb207e", size = 5405250, upload-time = "2026-03-06T13:48:09.628Z" },
+    { url = "https://files.pythonhosted.org/packages/51/d7/ab693274f1bd7e8c5f9fdd6c7003a88d59bedeaf8752716a55f532924fbb/h5py-3.16.0-cp312-cp312-musllinux_1_2_x86_64.whl", hash = "sha256:2b2c02b0a160faed5fb33f1ba8a264a37ee240b22e049ecc827345d0d9043074", size = 5419216, upload-time = "2026-03-06T13:48:13.322Z" },
 ]
 
 [[package]]
