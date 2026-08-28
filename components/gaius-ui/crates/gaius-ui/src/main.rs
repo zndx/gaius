@@ -147,11 +147,37 @@ struct ChromeBits {
     logo_alt: String,
 }
 
+/// Cache-busting version for `/assets/js/*` + `/assets/css/*`, derived from the
+/// newest file mtime so any edit changes the `?v=` and browsers (notably iPad
+/// Safari) refetch instead of serving a stale copy. `GAIUS_UI_ASSET_V` overrides.
+fn assets_version(assets_dir: &std::path::Path) -> String {
+    if let Ok(v) = std::env::var("GAIUS_UI_ASSET_V") {
+        return v;
+    }
+    let mut newest: u64 = 0;
+    for sub in ["js", "css"] {
+        if let Ok(entries) = std::fs::read_dir(assets_dir.join(sub)) {
+            for e in entries.flatten() {
+                if let Ok(t) = e.metadata().and_then(|m| m.modified()) {
+                    if let Ok(d) = t.duration_since(std::time::UNIX_EPOCH) {
+                        newest = newest.max(d.as_secs());
+                    }
+                }
+            }
+        }
+    }
+    if newest > 0 {
+        format!("m{newest}")
+    } else {
+        "0.3.26-agenda-genre".into()
+    }
+}
+
 fn chrome_bits(state: &openai::AppState) -> ChromeBits {
     let b = state.brand.read().expect("brand lock");
     ChromeBits {
         mode: "dark".into(),
-        asset_v: std::env::var("GAIUS_UI_ASSET_V").unwrap_or_else(|_| "0.3.26-agenda-genre".into()),
+        asset_v: assets_version(&state.assets_dir),
         brand_id: b.id.clone(),
         logo_href: b.logo_href.clone(),
         logo_alt: b.logo_alt.clone(),
