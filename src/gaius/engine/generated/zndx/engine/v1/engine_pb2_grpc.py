@@ -5,7 +5,7 @@ import warnings
 
 from gaius.engine.generated.zndx.engine.v1 import engine_pb2 as zndx_dot_engine_dot_v1_dot_engine__pb2
 
-GRPC_GENERATED_VERSION = '1.81.1'
+GRPC_GENERATED_VERSION = '1.76.0'
 GRPC_VERSION = grpc.__version__
 _version_not_supported = False
 
@@ -25,7 +25,7 @@ if _version_not_supported:
     )
 
 
-class EngineStub:
+class EngineStub(object):
     """Missing associated documentation comment in .proto file."""
 
     def __init__(self, channel):
@@ -66,7 +66,7 @@ class EngineStub:
                 _registered_method=True)
 
 
-class EngineServicer:
+class EngineServicer(object):
     """Missing associated documentation comment in .proto file."""
 
     def Complete(self, request, context):
@@ -168,7 +168,7 @@ def add_EngineServicer_to_server(servicer, server):
 
 
  # This class is part of an EXPERIMENTAL API.
-class Engine:
+class Engine(object):
     """Missing associated documentation comment in .proto file."""
 
     @staticmethod

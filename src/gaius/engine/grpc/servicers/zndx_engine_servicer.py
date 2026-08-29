@@ -373,7 +373,7 @@ class GaiusZndxEngineServicer(zpb_grpc.EngineServicer):
                 "  Try: /health fix engine",
             )
 
-        return zpb.CompleteResponse(
+        resp = zpb.CompleteResponse(
             text=result.content or "",
             model=result.model or "",
             prompt_tokens=int(getattr(result, "input_tokens", 0) or 0),
@@ -382,6 +382,15 @@ class GaiusZndxEngineServicer(zpb_grpc.EngineServicer):
             reasoning_content=getattr(result, "reasoning_content", "") or "",
             finish_reason=getattr(result, "finish_reason", "") or "stop",
         )
+        # Engine-First: return the calls the engine parsed, structured. Clients
+        # consume these instead of parsing <tool_call> out of `text`.
+        for tc in getattr(result, "tool_calls", None) or []:
+            resp.tool_calls.add(
+                id=str(tc.get("id") or ""),
+                name=str(tc.get("name") or ""),
+                arguments_json=str(tc.get("arguments_json") or ""),
+            )
+        return resp
 
     async def Remediate(
         self,

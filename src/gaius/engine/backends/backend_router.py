@@ -13,7 +13,7 @@ All inference flows through this router, ensuring centralized:
 """
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Optional
 
 from ..config import AgentConfig, EngineConfig
@@ -80,6 +80,8 @@ class InferenceResponse:
     request_hash: Optional[str] = None
     reasoning_content: str = ""
     finish_reason: str = ""
+    # Structured tool calls the engine parsed (Engine-First; see VLLMResponse).
+    tool_calls: list[dict[str, Any]] = field(default_factory=list)
 
     @property
     def success(self) -> bool:
@@ -414,6 +416,7 @@ class BackendRouter:
             error=response.error,
             reasoning_content=response.reasoning_content,
             finish_reason=getattr(response, "finish_reason", ""),
+            tool_calls=getattr(response, "tool_calls", []) or [],
         )
 
     async def _route_to_dynamic_vllm(
@@ -457,6 +460,7 @@ class BackendRouter:
             error=response.error,
             reasoning_content=response.reasoning_content,
             finish_reason=getattr(response, "finish_reason", ""),
+            tool_calls=getattr(response, "tool_calls", []) or [],
         )
 
     async def complete(

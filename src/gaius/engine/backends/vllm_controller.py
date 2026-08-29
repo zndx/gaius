@@ -311,6 +311,10 @@ class VLLMResponse:
     error: Optional[str] = None
     reasoning_content: str = ""
     finish_reason: str = ""
+    # Structured tool calls the engine parsed: [{"id","name","arguments_json"}].
+    # Populated from the backend's native tool_calls or by parsing <tool_call>
+    # markup — so clients consume structure, not markup (Engine-First).
+    tool_calls: list[dict[str, Any]] = field(default_factory=list)
 
     @property
     def success(self) -> bool:
@@ -398,6 +402,41 @@ def parse_qwen_tool_call_markup(text: str) -> tuple[str, list[dict[str, Any]]]:
         rest = after[end + len(close_tag) :]
     out.append(rest)
     return "".join(out).strip(), calls
+
+
+def structured_tool_calls(native: Any, content: str) -> list[dict[str, Any]]:
+    """Structured calls for VLLMResponse.tool_calls, from either source.
+
+    Prefer the backend's native OpenAI tool_calls (a native parser routed
+    ``<tool_call>`` into them). With none — the parser is off, or the model
+    emitted raw markup — parse the ``<tool_call>`` blocks out of ``content``.
+    Result is ``[{"id","name","arguments_json"}]`` with JSON-string arguments,
+    so the engine returns structure and no client parses markup (Engine-First).
+    """
+    out: list[dict[str, Any]] = []
+    if isinstance(native, list) and native:
+        for tc in native:
+            if not isinstance(tc, dict):
+                continue
+            fn = tc.get("function") if isinstance(tc.get("function"), dict) else {}
+            name = (fn.get("name") or tc.get("name") or "").strip()
+            if not name:
+                continue
+            raw = fn.get("arguments", tc.get("arguments", {}))
+            args_json = raw if isinstance(raw, str) else json.dumps(raw, separators=(",", ":"))
+            out.append({"id": str(tc.get("id") or ""), "name": name, "arguments_json": args_json})
+        return out
+    _, parsed = parse_qwen_tool_call_markup(content)
+    for c in parsed:
+        name = str(c.get("name") or "").strip()
+        if not name:
+            continue
+        out.append({
+            "id": "",
+            "name": name,
+            "arguments_json": json.dumps(c.get("arguments") or {}, separators=(",", ":")),
+        })
+    return out
 
 
 class VLLMController:
@@ -1082,6 +1121,11 @@ class VLLMController:
             markup = qwen_tool_call_markup(message.get("tool_calls"))
             if markup and "<tool_call>" not in content:
                 content = f"{content}\n{markup}".strip() if content else markup
+            # Engine-First: carry the calls STRUCTURED. Prefer the backend's
+            # native tool_calls; else parse the <tool_call> markup out of content
+            # (also covers the parser-off future). Markup stays in content above
+            # for not-yet-migrated clients during the cutover.
+            tool_calls = structured_tool_calls(message.get("tool_calls"), content)
             finish_reason = choice.get("finish_reason") or ""
             logger.info(
                 f"VLLMController.complete: content_length={len(content)}, "
@@ -1102,6 +1146,7 @@ class VLLMController:
                 latency_ms=latency_ms,
                 reasoning_content=reasoning if isinstance(reasoning, str) else "",
                 finish_reason=finish_reason,
+                tool_calls=tool_calls,
             )
 
         except httpx.HTTPStatusError as e:
