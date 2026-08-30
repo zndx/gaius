@@ -151,6 +151,32 @@ def acp_agent_environ(agent: str) -> dict[str, str]:
     return {}
 
 
+def _parse_acp_conf() -> Any | None:
+    """Parse the first ACP HOCON config found on the standard search paths.
+
+    Env-var substitutions (`${?VAR}`) resolve against the current process
+    environment at parse time, so `.env` values (sourced into the engine by
+    gaius-engine.sh) are picked up here. Returns None if no config file exists or
+    pyhocon is unavailable.
+    """
+    candidates = [
+        Path.home() / ".config/gaius/acp.conf",
+        Path.home() / ".gaius/acp.conf",
+        Path.cwd() / "config/acp.conf",
+        Path.cwd() / ".gaius/acp.conf",
+    ]
+    for candidate in candidates:
+        if candidate.exists():
+            try:
+                from pyhocon import ConfigFactory
+
+                return ConfigFactory.parse_file(str(candidate))
+            except ImportError:
+                logger.warning("pyhocon not installed; ACP HOCON config ignored")
+            return None
+    return None
+
+
 def load_acp_agent_selection() -> str:
     """Load the configured ACP agent key.
 
@@ -169,22 +195,9 @@ def load_acp_agent_selection() -> str:
     agent = os.environ.get("GAIUS_ACP_AGENT", "").strip().lower()
 
     if not agent:
-        candidates = [
-            Path.home() / ".config/gaius/acp.conf",
-            Path.home() / ".gaius/acp.conf",
-            Path.cwd() / "config/acp.conf",
-            Path.cwd() / ".gaius/acp.conf",
-        ]
-        for candidate in candidates:
-            if candidate.exists():
-                try:
-                    from pyhocon import ConfigFactory
-
-                    hocon: Any = ConfigFactory.parse_file(str(candidate))
-                    agent = str(hocon.get("acp.agent", "")).strip().lower()
-                except ImportError:
-                    logger.warning("pyhocon not installed; using default ACP agent")
-                break
+        hocon = _parse_acp_conf()
+        if hocon is not None:
+            agent = str(hocon.get("acp.agent", "")).strip().lower()
 
     if not agent:
         agent = DEFAULT_ACP_AGENT
@@ -201,7 +214,31 @@ def load_acp_agent_selection() -> str:
 
 
 def _grok_bin() -> str:
+    """Resolve the grok-build CLI path.
+
+    The engine's systemd/process-compose PATH omits ~/.local/bin, so
+    `shutil.which("grok")` fails there — every ACP escalation then died with
+    #ACP.00000012.AGENTMISSING. Prefer an explicit path from `acp.grok_bin`
+    (HOCON `${?GAIUS_GROK_BIN}`, sourced from .env by gaius-engine.sh), then the
+    GAIUS_GROK_BIN env var directly, then PATH.
+    """
     import shutil
+
+    explicit = ""
+    hocon = _parse_acp_conf()
+    if hocon is not None:
+        explicit = str(hocon.get("acp.grok_bin", "") or "").strip()
+    if not explicit:
+        explicit = os.environ.get("GAIUS_GROK_BIN", "").strip()
+
+    if explicit:
+        if os.path.isfile(explicit) and os.access(explicit, os.X_OK):
+            return explicit
+        raise ACPConnectionError(
+            f"grok CLI configured but not an executable file: '{explicit}' "
+            f"(#ACP.00000012.AGENTMISSING)\n"
+            f"  Fix GAIUS_GROK_BIN (.env) / acp.grok_bin to point at the grok binary"
+        )
 
     grok_cmd = shutil.which("grok")
     if grok_cmd:
@@ -209,7 +246,7 @@ def _grok_bin() -> str:
     raise ACPConnectionError(
         "grok CLI not found in PATH (#ACP.00000012.AGENTMISSING)\n"
         "  Install: https://docs.x.ai/grok-cli\n"
-        "  Or: export GAIUS_GROK_BIN=$(command -v grok)"
+        "  Or set GAIUS_GROK_BIN=/path/to/grok in .env (surfaced via acp.grok_bin)"
     )
 
 
