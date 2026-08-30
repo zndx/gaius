@@ -455,6 +455,38 @@ Create a comprehensive research summary that will guide article development."""
             "cot_record_id": (getattr(self, "cot_record", None) or {}).get("id", ""),
         })
 
+        # Emit progress: article selected
+        emit_select(
+            self.progress_run_id,
+            self.selected_slug,
+            self.selected_candidate.title if self.selected_candidate else self.selected_slug,
+        )
+
+        # Ensure article is registered in database with 1:1 collection
+        if not self.dry_run and self.selected_candidate:
+            try:
+                article_id, collection_id = asyncio.get_event_loop().run_until_complete(
+                    self._ensure_article_in_db()
+                )
+            except RuntimeError:
+                article_id, collection_id = asyncio.new_event_loop().run_until_complete(
+                    self._ensure_article_in_db()
+                )
+            self.article_id = article_id
+            self.collection_id = collection_id
+            print(f"Registered article in DB: {article_id} with collection {collection_id}")
+        else:
+            self.article_id = None
+            self.collection_id = None
+
+        # Define source types for parallel fetching
+        # All sources are fetched in parallel
+        # Required: arxiv (academic preprints), brave (open web research)
+        # Optional: biorxiv (life sciences - may not be relevant for all topics)
+        self.source_types = ["arxiv", "biorxiv", "brave"]
+
+        self.next(self.acquire_external)
+
     def _retain_cot_reasoning(self, selection: dict) -> dict:
         """Land the select_article reasoning trace in HX; return the CotRecord as a dict."""
         import json as _json
@@ -502,38 +534,6 @@ Create a comprehensive research summary that will guide article development."""
             f"snapshot={rec.snapshot_id} ({selection.get('output_tokens') or '?'} tokens)"
         )
         return asdict(rec)
-
-        # Emit progress: article selected
-        emit_select(
-            self.progress_run_id,
-            self.selected_slug,
-            self.selected_candidate.title if self.selected_candidate else self.selected_slug,
-        )
-
-        # Ensure article is registered in database with 1:1 collection
-        if not self.dry_run and self.selected_candidate:
-            try:
-                article_id, collection_id = asyncio.get_event_loop().run_until_complete(
-                    self._ensure_article_in_db()
-                )
-            except RuntimeError:
-                article_id, collection_id = asyncio.new_event_loop().run_until_complete(
-                    self._ensure_article_in_db()
-                )
-            self.article_id = article_id
-            self.collection_id = collection_id
-            print(f"Registered article in DB: {article_id} with collection {collection_id}")
-        else:
-            self.article_id = None
-            self.collection_id = None
-
-        # Define source types for parallel fetching
-        # All sources are fetched in parallel
-        # Required: arxiv (academic preprints), brave (open web research)
-        # Optional: biorxiv (life sciences - may not be relevant for all topics)
-        self.source_types = ["arxiv", "biorxiv", "brave"]
-
-        self.next(self.acquire_external)
 
     async def _select_with_optillm(self) -> dict[str, Any]:
         """Select article using engine's capability-based scheduling.
