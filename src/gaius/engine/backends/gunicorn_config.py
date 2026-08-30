@@ -97,6 +97,10 @@ raw_env = [
     "OPENAI_API_KEY={optillm_api_key}",
     "OPTILLM_APPROACH={optillm_approach}",
     "OPTILLM_BASE_URL={optillm_base_url}",
+    # Deep reasoning is the product: keep cot_reflection's <thinking>/<reflection>
+    # scaffold in the response so callers (article-curate select_article → HX
+    # hx.cot_reasoning) retain the trace. Default optillm returns ONLY <output>.
+    "OPTILLM_RETURN_FULL_RESPONSE=true",
 ]
 
 
@@ -155,6 +159,13 @@ def post_fork(server, worker):
 
         if approach:
             optillm_server.server_config["approach"] = approach
+
+        # return_full_response is CLI/main()-only in optillm; patch it from env so
+        # cot_reflection keeps its <thinking>/<reflection> scaffold (the trace).
+        full = os.environ.get("OPTILLM_RETURN_FULL_RESPONSE", "").strip().lower()
+        if full in ("1", "true", "yes", "on"):
+            optillm_server.server_config["return_full_response"] = True
+            print(f"[optillm-gunicorn] Worker {{worker.pid}} return_full_response=True", file=sys.stderr)
 
         # Re-initialize the OpenAI client with the correct base_url
         if base_url:

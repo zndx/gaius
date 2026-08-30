@@ -686,7 +686,20 @@ Respond with JSON:
         if selection is not None:
             # Preserve the full reasoning trace — it is the deliverable, not scaffolding.
             selection["raw_response"] = content
-            selection["reasoning_trace"] = getattr(response, "reasoning_content", "") or ""
+            # The trace: vLLM's separated reasoning_content when the path surfaces it;
+            # otherwise the cot_reflection scaffold (<thinking>…</thinking>
+            # <reflection>…</reflection>) present in the content when optillm runs
+            # with --return-full-response (without it optillm returns ONLY <output>
+            # and the reasoning is lost before it reaches HX).
+            trace = getattr(response, "reasoning_content", "") or ""
+            if not trace:
+                import re as _re
+
+                parts = _re.findall(
+                    r"<(thinking|reflection)>(.*?)</\1>", content, flags=_re.DOTALL
+                )
+                trace = "\n\n".join(f"<{tag}>{body.strip()}</{tag}>" for tag, body in parts)
+            selection["reasoning_trace"] = trace
             selection["technique"] = response.technique or self.optillm_technique
             selection["latency_ms"] = getattr(response, "latency_ms", 0)
             # Context the HX product (hx.cot_reasoning) retains with the trace.

@@ -341,6 +341,10 @@ class OptillmController:
         env.pop("OPENAI_API_BASE", None)
         backend_url = self._bound_vllm_url
         env["OPTILLM_BASE_URL"] = backend_url
+        # Keep cot_reflection's <thinking>/<reflection> scaffold in the response —
+        # the reasoning trace is the product (HX hx.cot_reasoning), and optillm's
+        # default returns ONLY <output>.
+        env["OPTILLM_RETURN_FULL_RESPONSE"] = "true"
         # Clear PYTHONPATH to avoid Nix store conflicts
         env["PYTHONPATH"] = ""
 
@@ -420,6 +424,10 @@ class OptillmController:
         env.pop("OPENAI_API_BASE", None)
         backend_url = self._bound_vllm_url
         env["OPTILLM_BASE_URL"] = backend_url
+        # Keep cot_reflection's <thinking>/<reflection> scaffold in the response —
+        # the reasoning trace is the product (HX hx.cot_reasoning), and optillm's
+        # default returns ONLY <output>.
+        env["OPTILLM_RETURN_FULL_RESPONSE"] = "true"
         # Clear PYTHONPATH to avoid Nix store conflicts
         env["PYTHONPATH"] = ""
 
