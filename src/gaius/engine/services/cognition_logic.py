@@ -30,7 +30,7 @@ Usage:
 
 GAI:META
 layer: L3-engine
-depends_on: [gaius.inference, gaius.core]
+depends_on: [gaius.client, gaius.core]
 forbidden_imports: [gaius.agents, gaius.mcp_server, gaius.widgets]
 """
 
@@ -472,8 +472,6 @@ async def _generate_thoughts(
     Returns:
         Tuple of (list of thought dicts, output tokens used)
     """
-    from ...inference import Message
-
     # Build prompt from context
     entries_text = "\n".join(
         f"- {e.get('title', 'Untitled')} ({e.get('domain', 'general')})"

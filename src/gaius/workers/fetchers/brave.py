@@ -35,7 +35,7 @@ class BraveFetcher(BaseFetcher):
             if not api_key:
                 raise ValueError("BRAVE_API_KEY environment variable required")
 
-            from gaius.inference.search.brave import BraveSearch
+            from gaius.search.brave import BraveSearch
 
             self._search_client = BraveSearch(api_key)
         return self._search_client

@@ -130,7 +130,7 @@ class CurriculumAgent:
         EngineInferenceClient exposes the complete() this class calls.
         """
         if self._inference_client is None:
-            from gaius.inference.engine_client import get_engine_client
+            from gaius.client.engine_client import get_engine_client
             self._inference_client = await get_engine_client()
         return self._inference_client
 
@@ -332,7 +332,7 @@ class CurriculumAgent:
                 weak_areas=weak_areas,
             )
 
-            from ...inference import Message
+            from gaius.client.engine_client import Message
 
             result = await client.complete(
                 [Message(role="user", content=prompt)],

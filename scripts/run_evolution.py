@@ -19,7 +19,7 @@ from datetime import datetime
 
 async def main(endpoint: str = "fast"):
     """Run evolution daemon continuously."""
-    from gaius.inference.orchestrator import get_orchestrator
+    from gaius.client.engine_proxy import get_orchestrator_proxy
     from gaius.agents.evolution import get_evolution_daemon
 
     print(f"[{datetime.now().isoformat()}] Starting evolution runner...")
@@ -27,7 +27,7 @@ async def main(endpoint: str = "fast"):
 
     # Phase 1: Clean start GPU
     print(f"[{datetime.now().isoformat()}] Phase 1: Cleaning up and starting GPU...")
-    orchestrator = get_orchestrator()
+    orchestrator = await get_orchestrator_proxy()
     result = await orchestrator.clean_start([endpoint])
 
     if not result["success"]:

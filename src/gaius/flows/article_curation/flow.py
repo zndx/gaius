@@ -550,7 +550,7 @@ Create a comprehensive research summary that will guide article development."""
         Raises:
             RuntimeError: If engine is unavailable or selection fails (fail-fast)
         """
-        from gaius.inference.engine_client import get_engine_client
+        from gaius.client.engine_client import get_engine_client
 
         # Build candidate descriptions with card stats for fair selection
         candidates_text = []

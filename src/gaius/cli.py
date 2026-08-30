@@ -42,9 +42,6 @@ import sys
 from pathlib import Path
 from typing import TYPE_CHECKING, TextIO, cast
 
-if TYPE_CHECKING:
-    from gaius.inference.parallel_synthesis import ParallelResult
-
 logger = logging.getLogger(__name__)
 
 from .core.state import AppState, ViewMode, OverlayMode, IsoMode
@@ -2015,7 +2012,7 @@ Use UPPERCASE_WITH_UNDERSCORES for the variable name.
         # Engine-First, no bypass: local generation goes through Engine/Complete;
         # XAI is an explicit external fallback when the engine is unavailable.
         try:
-            from .inference.engine_client import get_engine_client
+            from .client.engine_client import get_engine_client
 
             engine = await get_engine_client()
             res = await engine.complete_simple(
@@ -2646,7 +2643,7 @@ When discussing technical topics, be precise and cite sources when possible."""
         if not kb_results and not web_results:
             # Fall back to web search only
             try:
-                from .inference import get_search
+                from .search import get_search
                 web_search = get_search()
                 web_hits = await web_search.search(query, count=5)
                 web_results = [
@@ -2830,7 +2827,7 @@ Answer:"""
 
         # Check KB status
         try:
-            from .inference.search import get_kb_search
+            from .search import get_kb_search
             kb_search = get_kb_search()
             kb_status = {
                 "component": "kb_search",
@@ -2869,7 +2866,7 @@ Answer:"""
 
         # Check vector search (Qdrant)
         try:
-            from .inference.search import get_vector_search
+            from .search import get_vector_search
             vector_search = get_vector_search()
             diagnostics.append({
                 "component": "vector_search",
@@ -2898,7 +2895,7 @@ Answer:"""
 
         # Check web search
         try:
-            from .inference import get_search
+            from .search import get_search
             web_search = get_search()
             from gaius.core.config import get_config as _get_cfg
 
@@ -3193,127 +3190,6 @@ Respond with:
 
         return result
 
-    def _format_search_output(
-        self,
-        query: str,
-        synthesis: "ParallelResult",
-        kb_results: list[dict],
-        web_results: list[dict],
-        errors: list[str],
-    ) -> dict:
-        """Format search results as Zettelkasten with dual synthesis.
-
-        Structure:
-        1. Grok Analysis (above the fold - frontier perspective)
-        2. Local Analysis (local model perspective)
-        3. KB Sources (wiki-links for Graph Panel navigation)
-        4. Web Sources (markdown links)
-        5. Actions (action-links for Graph Panel)
-        6. Warnings (if any errors occurred)
-        """
-        # Import here to avoid circular imports
-        from gaius.inference.parallel_synthesis import ParallelResult
-
-        lines = []
-
-        # Header
-        lines.append(f"# Search: {query}")
-        lines.append("")
-        lines.append("---")
-        lines.append("")
-
-        # Grok Analysis (above the fold)
-        if synthesis.has_grok:
-            lines.append("## Grok Analysis")
-            lines.append("")
-            lines.append(synthesis.grok_content)
-            lines.append("")
-            lines.append(f"*Model: {synthesis.grok_model} | {synthesis.grok_latency_ms}ms*")
-            lines.append("")
-        elif synthesis.grok_error and "Skipped" not in synthesis.grok_error:
-            lines.append("## Grok Analysis")
-            lines.append("")
-            lines.append(f"*Unavailable: {synthesis.grok_error}*")
-            lines.append("")
-
-        # Local Analysis
-        if synthesis.has_local:
-            lines.append("## Local Analysis")
-            lines.append("")
-            lines.append(synthesis.local_content)
-            lines.append("")
-            lines.append(f"*Model: {synthesis.local_model} | {synthesis.local_latency_ms}ms*")
-            lines.append("")
-        elif synthesis.local_error and "Skipped" not in synthesis.local_error:
-            lines.append("## Local Analysis")
-            lines.append("")
-            lines.append(f"*Unavailable: {synthesis.local_error}*")
-            lines.append("")
-
-        lines.append("---")
-        lines.append("")
-
-        # KB Sources with wiki-links for Graph Panel
-        if kb_results:
-            lines.append("## KB Sources")
-            lines.append("")
-            for r in kb_results[:5]:
-                path = r.get("path", "")
-                # Strip build/dev/ prefix for cleaner wiki-links
-                if path.startswith("build/dev/"):
-                    path = path[10:]
-                title = r.get("title", "Untitled")
-                snippet = r.get("snippet", "")[:80]
-                lines.append(f"- [[{path}]] - {title}")
-                if snippet:
-                    lines.append(f"  > {snippet}...")
-            lines.append("")
-
-        # Web Sources
-        if web_results:
-            lines.append("## Web Sources")
-            lines.append("")
-            for r in web_results[:3]:
-                url = r.get("url", "")
-                title = r.get("title", "Untitled")
-                lines.append(f"- [{title}]({url})")
-            lines.append("")
-
-        # Actions with action-links for Graph Panel
-        lines.append("## Actions")
-        lines.append("")
-        lines.append(f"[action:/research {query}]")
-        lines.append(f"[action:/search --local {query}]")
-        lines.append("")
-
-        # Errors/Warnings
-        all_errors = (errors or []) + synthesis.errors
-        if all_errors:
-            lines.append("## Warnings")
-            lines.append("")
-            for e in all_errors:
-                lines.append(f"- {e}")
-            lines.append("")
-            # Fallback action link
-            lines.append(f"Retry local only: [action:/search --local {query}]")
-            lines.append("")
-
-        content = "\n".join(lines)
-
-        return {
-            "query": query,
-            "content": content,
-            "kb_results": kb_results,
-            "web_results": web_results,
-            "has_grok": synthesis.has_grok,
-            "has_local": synthesis.has_local,
-            "grok_model": synthesis.grok_model,
-            "local_model": synthesis.local_model,
-            "grok_latency_ms": synthesis.grok_latency_ms,
-            "local_latency_ms": synthesis.local_latency_ms,
-            "errors": all_errors if all_errors else None,
-        }
-
     async def _cmd_research(self, args: str) -> dict:
         """Multi-pass deep research with MemRL via Metaflow ResearchFlow.
 
@@ -3460,10 +3336,7 @@ Respond with:
 
         # Now evaluate
         try:
-            from .inference import (
-                SynthesisEvaluator,
-                ZettelkastenSynthesizer,
-            )
+            from .engine.backends.external.evaluation import SynthesisEvaluator
 
             # Load the note we just created
             saved_path = research_result.get("saved_to")
@@ -3483,7 +3356,7 @@ Respond with:
             note_content = note_path.read_text()
 
             # Reconstruct minimal note for evaluation
-            from .inference import ZettelkastenNote
+            from .core.synthesis import ZettelkastenNote
             from datetime import datetime
 
             # Parse some metadata from content
@@ -3529,10 +3402,8 @@ Respond with:
 
         try:
             from pathlib import Path
-            from .inference import (
-                SynthesisEvaluator,
-                ZettelkastenNote,
-            )
+            from .engine.backends.external.evaluation import SynthesisEvaluator
+            from .core.synthesis import ZettelkastenNote
 
             kb_root = Path(os.getenv("GAIUS_KB_ROOT", "build/dev"))
             note_path = kb_root / args if not args.startswith("/") else Path(args)
@@ -3584,7 +3455,7 @@ Respond with:
     def _cmd_eval_stats(self) -> dict:
         """Show aggregate evaluation statistics."""
         try:
-            from .inference import load_evaluations, compute_aggregate_scores
+            from .engine.backends.external.evaluation import load_evaluations, compute_aggregate_scores
 
             results = load_evaluations()
 
@@ -3625,7 +3496,7 @@ Respond with:
         shows available techniques but cannot modify engine configuration.
         """
         try:
-            from .inference.config import OptillmTechnique
+            from .engine.backends.optillm_controller import OptillmTechnique
 
             if args:
                 # Can't modify engine config from CLI, just acknowledge
@@ -3650,38 +3521,43 @@ Respond with:
         parts = args.split(maxsplit=1) if args else ["status"]
         subcmd = parts[0].lower()
 
-        try:
-            from .inference.scheduler import get_scheduler_service
+        # Engine-First: the scheduler lives in the engine; consume via gRPC.
+        from .client import get_grpc_client
 
-            service = get_scheduler_service()
+        client = await get_grpc_client()
 
-            if subcmd == "status":
-                return service.get_status()
+        if subcmd == "status":
+            return await client.call("Scheduler", "status", {})
 
-            elif subcmd == "health":
-                health = await service.health_check()
-                return {
-                    "endpoints": health,
-                    "all_healthy": all(health.values()),
-                    "healthy_count": sum(1 for v in health.values() if v),
-                }
+        elif subcmd == "health":
+            status = await client.call("Orchestrator", "status", {})
+            endpoints = {
+                ep.get("name", ""): ep.get("status", "") == "healthy"
+                for ep in status.get("endpoints", [])
+            }
+            return {
+                "endpoints": endpoints,
+                "all_healthy": bool(endpoints) and all(endpoints.values()),
+                "healthy_count": sum(1 for v in endpoints.values() if v),
+            }
 
-            elif subcmd == "metrics":
-                return service.get_metrics()
+        elif subcmd == "metrics":
+            from .client.engine_proxy import get_scheduler_proxy
 
-            elif subcmd == "start":
-                await service.start()
-                return {"status": "started"}
+            scheduler = await get_scheduler_proxy()
+            return await scheduler._get_metrics_async()
 
-            elif subcmd == "stop":
-                await service.stop()
-                return {"status": "stopped"}
+        elif subcmd in ("start", "stop"):
+            return {
+                "status": "engine-managed",
+                "note": (
+                    "The scheduler runs inside the engine; lifecycle follows "
+                    "gaius.service (systemctl restart gaius.service)"
+                ),
+            }
 
-            else:
-                return {"error": f"Unknown scheduler command: {subcmd}"}
-
-        except ImportError as e:
-            raise RuntimeError(f"Scheduler not available: {e}")
+        else:
+            return {"error": f"Unknown scheduler command: {subcmd}"}
 
     async def _cmd_submit(self, args: str) -> dict:
         """Submit an inference job to the scheduler.
@@ -3691,60 +3567,45 @@ Respond with:
         if not args:
             raise ValueError("submit requires a prompt")
 
-        try:
-            from .inference.scheduler import (
-                get_scheduler_service,
-                Job,
-                JobPriority,
-            )
+        # Engine-First: submit to the ENGINE's scheduler queue via gRPC.
+        from .client.engine_proxy import get_scheduler_proxy
 
-            # Parse optional flags
-            priority = JobPriority.NORMAL
-            model = ""
-            prompt_parts = []
+        # Parse optional flags
+        priority = "normal"
+        model = ""
+        prompt_parts = []
 
-            for part in args.split():
-                if part.startswith("priority:"):
-                    p = part.split(":")[1].lower()
-                    priority_map = {
-                        "critical": JobPriority.CRITICAL,
-                        "high": JobPriority.HIGH,
-                        "normal": JobPriority.NORMAL,
-                        "low": JobPriority.LOW,
-                    }
-                    priority = priority_map.get(p, JobPriority.NORMAL)
-                elif part.startswith("model:"):
-                    model = part.split(":")[1]
-                else:
-                    prompt_parts.append(part)
+        for part in args.split():
+            if part.startswith("priority:"):
+                p = part.split(":")[1].lower()
+                if p in ("critical", "high", "normal", "low", "batch"):
+                    priority = p
+            elif part.startswith("model:"):
+                model = part.split(":")[1]
+            else:
+                prompt_parts.append(part)
 
-            prompt = " ".join(prompt_parts)
-            if not prompt:
-                raise ValueError("submit requires a prompt after flags")
+        prompt = " ".join(prompt_parts)
+        if not prompt:
+            raise ValueError("submit requires a prompt after flags")
 
-            service = get_scheduler_service()
+        scheduler = await get_scheduler_proxy()
+        record = await scheduler.submit_job(
+            prompt,
+            agent=model or "thinking",
+            priority=priority,
+        )
 
-            job = Job(
-                model=model,
-                messages=[{"role": "user", "content": prompt}],
-                priority=priority,
-            )
-
-            result = await service.submit(job)
-
-            return {
-                "job_id": result.job_id,
-                "status": result.status.value,
-                "content": result.content[:500] + "..." if len(result.content) > 500 else result.content,
-                "model": result.model,
-                "endpoint": result.endpoint,
-                "latency_ms": result.latency_ms,
-                "tokens": f"{result.input_tokens}+{result.output_tokens}",
-                "error": result.error,
-            }
-
-        except ImportError as e:
-            raise RuntimeError(f"Scheduler not available: {e}")
+        content = record.get("text", "")
+        return {
+            "job_id": record.get("job_id", ""),
+            "status": record.get("status", ""),
+            "content": content[:500] + "..." if len(content) > 500 else content,
+            "endpoint": "grpc_engine",
+            "latency_ms": record.get("latency_ms", 0),
+            "tokens": record.get("tokens_used", 0),
+            "error": record.get("error") or None,
+        }
 
     async def _cmd_swarm(self, args: str) -> dict:
         """Run a swarm analysis.
@@ -4183,7 +4044,7 @@ Respond with:
                     }
 
                 elif subcmd == "health":
-                    from .inference.health import get_health_monitor
+                    from .observability.gpu_health import get_health_monitor
                     monitor = get_health_monitor()
                     return monitor.get_summary()
 
@@ -4402,7 +4263,7 @@ Respond with:
         subargs = parts[1] if len(parts) > 1 else ""
 
         try:
-            from .inference.manager import get_inference_manager
+            from .client.inference_manager import get_inference_manager
 
             manager = get_inference_manager()
 
@@ -4650,7 +4511,7 @@ Respond with:
             print("Press Ctrl+C to stop", file=sys.stderr)
 
             # Use InferenceManager to check/discover endpoints (finds external processes)
-            from .inference.manager import get_inference_manager
+            from .client.inference_manager import get_inference_manager
             manager = get_inference_manager()
             status = await manager.get_status()
 

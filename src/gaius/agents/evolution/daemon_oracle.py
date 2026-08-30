@@ -311,7 +311,7 @@ class DaemonOracle:
         """
         try:
             # Use optillm for fast local assessment
-            from gaius.inference import ask_local
+            from gaius.client.engine_client import ask_local
 
             assessment_prompt = f"""Rate the quality of this verification assessment.
 
@@ -368,7 +368,7 @@ Respond with just a JSON object: {{"clarity": N, "accuracy": N, "completeness": 
             Score between 0.0 and 1.0
         """
         try:
-            from gaius.inference import ask_local
+            from gaius.client.engine_client import ask_local
 
             assessment_prompt = f"""Rate the quality of this task completion.
 

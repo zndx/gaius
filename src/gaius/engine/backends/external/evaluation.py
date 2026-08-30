@@ -19,7 +19,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from .synthesis import ZettelkastenNote
+from gaius.core.synthesis import ZettelkastenNote
 
 
 @dataclass

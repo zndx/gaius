@@ -105,7 +105,7 @@ class LLMInstructionGenerator:
     async def _get_client(self):
         """Lazy-load inference client."""
         if self._client is None:
-            from ...inference.client import InferenceClient
+            from gaius.client.engine_client import EngineInferenceClient as InferenceClient
             self._client = InferenceClient()
         return self._client
 
@@ -171,7 +171,7 @@ class LLMInstructionGenerator:
         target_mark: Optional[int],
     ) -> InstructionCandidate:
         """Generate a single instruction candidate."""
-        from ...inference.client import Message
+        from gaius.client.engine_client import Message
 
         # Get processor purpose from context or use default
         purpose = context.processor_purposes.get(
@@ -222,7 +222,7 @@ class LLMInstructionGenerator:
         n = n_candidates or min(self.n_candidates, 3)  # Fewer styles for connections
         client = await self._get_client()
 
-        from ...inference.client import Message
+        from gaius.client.engine_client import Message
 
         styles_to_use = ["technical", "conversational", "brief"][:n]
         candidates = []
@@ -271,7 +271,7 @@ class LLMInstructionGenerator:
         n = n_candidates or self.n_candidates
         client = await self._get_client()
 
-        from ...inference.client import Message
+        from gaius.client.engine_client import Message
 
         # Build step list
         step_names = []

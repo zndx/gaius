@@ -1212,7 +1212,7 @@ Return ONLY the title, no quotes or explanation."""
 
             # Check for semantic duplicates using KB VectorSearch
             try:
-                from ..inference.search.vector import get_vector_search
+                from ..search.vector import get_vector_search
 
                 vector_search = get_vector_search(self.config.kb.root)
                 is_dup, similar = vector_search.is_duplicate_thought(

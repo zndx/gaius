@@ -541,27 +541,21 @@ class DailyEvaluator:
         if not config:
             return ""
 
-        # Call inference
+        # Call inference through the ENGINE's scheduler queue (Engine-First)
         try:
-            from ...inference.scheduler import get_scheduler_service, Job, JobPriority
+            from gaius.client.engine_proxy import get_scheduler_proxy
 
-            scheduler = get_scheduler_service()
-
-            # Build message with system prompt
-            messages = []
-            system_prompt = config.get("system_prompt", "")
-            if system_prompt:
-                messages.append({"role": "system", "content": system_prompt})
-            messages.append({"role": "user", "content": query.input_prompt})
-
-            job = Job(
-                messages=messages,
-                model=config.get("model", ""),
-                estimated_tokens=config.get("max_tokens", 1024),
-                priority=JobPriority.LOW,  # Don't preempt interactive work
+            scheduler = await get_scheduler_proxy()
+            record = await scheduler.submit_job(
+                query.input_prompt,
+                agent=config.get("model", "") or "thinking",
+                system_prompt=config.get("system_prompt", "") or None,
+                max_tokens=config.get("max_tokens", 1024),
+                priority="low",  # Don't preempt interactive work
             )
-            result = await scheduler.submit(job)
-            return result.content
+            if record.get("error"):
+                raise RuntimeError(record["error"])
+            return record.get("text", "")
 
         except Exception as e:
             logger.warning(f"Inference failed: {e}")

@@ -352,7 +352,7 @@ async def generate_modelspec_code(
         code = resp.json()["choices"][0]["message"]["content"]
         model_used, endpoint_used = "grok-2-latest", "xai"
     else:
-        from gaius.inference.engine_client import get_engine_client
+        from gaius.client.engine_client import get_engine_client
 
         engine = await get_engine_client()
         res = await engine.complete_simple(

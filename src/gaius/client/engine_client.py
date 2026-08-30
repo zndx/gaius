@@ -9,7 +9,7 @@ Routes all inference through the Gaius Engine's gRPC scheduler for:
 This is the preferred client for federated engine operations.
 
 Usage:
-    from gaius.inference.engine_client import get_engine_client
+    from gaius.client.engine_client import get_engine_client
 
     client = await get_engine_client()
     result = await client.complete([Message(role="user", content="Hello")])
@@ -21,23 +21,15 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
-# Re-export common types for backwards compatibility
-from .client import Message
-from ..client.engine_proxy import CompletionResult
+from .engine_proxy import CompletionResult
 
 
 @dataclass
-class EngineCompletionResult:
-    """Result from engine completion."""
+class Message:
+    """Chat message (role: system | user | assistant)."""
 
+    role: str
     content: str
-    model: str
-    input_tokens: int
-    output_tokens: int
-    technique: Optional[str] = None
-    backend: str = "grpc_engine"
-    latency_ms: float = 0.0
-    raw_response: Optional[dict] = None
 
 
 class EngineInferenceClient:
@@ -63,7 +55,7 @@ class EngineInferenceClient:
             return True
 
         try:
-            from ..client.engine_proxy import get_scheduler_proxy
+            from .engine_proxy import get_scheduler_proxy
 
             self._scheduler = await get_scheduler_proxy()
             self._connected = True
@@ -270,7 +262,32 @@ def use_engine_client() -> bool:
 
     # Check if engine is reachable
     try:
-        from ..client.engine_proxy import use_engine_proxy
+        from .engine_proxy import use_engine_proxy
         return use_engine_proxy()
     except Exception:
         return False
+
+
+async def ask_local(
+    question: str,
+    technique: str = "",
+    max_tokens: int = 2048,
+) -> str:
+    """Query the local LLM via the gRPC engine (Engine-First).
+
+    Args:
+        question: The question or prompt
+        technique: optillm technique (cot_reflection, bon, ...) — empty for
+            passthrough
+        max_tokens: Maximum tokens to generate
+
+    Returns:
+        LLM response text
+    """
+    client = await get_engine_client()
+    result = await client.complete_simple(
+        prompt=question,
+        technique=technique or None,
+        max_tokens=max_tokens,
+    )
+    return result.content or ""

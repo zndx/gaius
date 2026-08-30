@@ -1,17 +1,11 @@
-"""LLM interface for explaining grid positions and topological features.
+"""Prompt builders for explaining grid positions and topological features.
 
-Provides high-level convenience functions that wrap InferenceClient
-for specific tasks like explaining curvature, topology, and semantic meaning.
+Engine-side: consumed by the gRPC Explain servicer, which sends the built
+prompt through the backend router. (Extracted from the eliminated
+``gaius.inference.llm`` module — prompt construction is engine logic.)
 """
 
-import logging
 from dataclasses import dataclass
-from typing import Any
-
-from .client import InferenceClient, Message, CompletionResult
-from .config import OptillmTechnique
-
-logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -51,58 +45,6 @@ class ExplanationContext:
     # Mini-grid data for visual analysis (9x9 float arrays)
     embed_grid: list[list[float]] | None = None
     iso_grid: list[list[float]] | None = None
-
-
-async def explain_position(
-    ctx: ExplanationContext,
-    client: InferenceClient | None = None,
-    max_tokens: int = 300,
-) -> str:
-    """Explain what the user is seeing at a grid position.
-
-    Uses the local LLM to provide natural language explanation of:
-    - Curvature and what it means semantically (turbulence metaphor)
-    - Topological features (cycles, voids, entropy)
-    - Document relationships and semantic neighborhoods
-    - Strategic significance (why tenuki might target this region)
-
-    Args:
-        ctx: Explanation context with position and feature data
-        client: InferenceClient instance (creates new one if None)
-        max_tokens: Maximum response length
-
-    Returns:
-        Natural language explanation string
-    """
-    # Create client if not provided
-    if client is None:
-        try:
-            client = InferenceClient()
-        except ImportError as e:
-            raise RuntimeError(
-                f"InferenceClient not available: {e}\n"
-                "Guru Meditation: #LLM.00000001.NOCLIENT\n"
-                "Check: /health endpoints"
-            ) from e
-
-    # Build contextual prompt
-    prompt = _build_explanation_prompt(ctx)
-
-    try:
-        result = await client.complete(
-            messages=[Message(role="user", content=prompt)],
-            technique=OptillmTechnique.NONE,  # Fast, no complex reasoning needed
-            max_tokens=max_tokens,
-            temperature=0.7,
-        )
-        return result.content.strip()
-
-    except Exception as e:
-        raise RuntimeError(
-            f"LLM explanation failed: {e}\n"
-            "Guru Meditation: #LLM.00000002.EXPLAIN\n"
-            "Check: /health endpoints"
-        ) from e
 
 
 def _describe_embed_view(embed_grid: list[list[float]]) -> str:
@@ -376,83 +318,3 @@ def _build_explanation_prompt(ctx: ExplanationContext) -> str:
     ])
 
     return "\n".join(parts)
-
-
-def _fallback_explanation(ctx: ExplanationContext) -> str:
-    """Fallback explanation when LLM is unavailable."""
-    parts = [f"Position ({ctx.cursor_x}, {ctx.cursor_y})"]
-
-    if ctx.document_title:
-        parts.append(f" - {ctx.document_title}")
-    else:
-        parts.append(" - Empty cell")
-
-    if ctx.curvature is not None:
-        κ = ctx.curvature
-        if abs(κ) > 0.3:
-            parts.append(
-                f" | Curvature κ={κ:.3f} ({'boundary' if κ < 0 else 'interior'}, high magnitude)"
-            )
-        elif abs(κ) > 0.05:
-            parts.append(
-                f" | Curvature κ={κ:.3f} ({'boundary' if κ < 0 else 'interior'})"
-            )
-        else:
-            parts.append(f" | Curvature κ≈0 (flat)")
-
-    if ctx.risk_score is not None and ctx.risk_score > 0.5:
-        parts.append(f" | Risk={ctx.risk_score:.2f} (topological bridge)")
-
-    return "".join(parts)
-
-
-def query_local_llm(
-    prompt: str,
-    max_tokens: int = 200,
-    temperature: float = 0.7,
-    technique: OptillmTechnique | str | None = None,
-) -> str:
-    """Simple synchronous wrapper for querying the local LLM.
-
-    This is a convenience function for simple queries. For async code
-    or more control, use InferenceClient directly.
-
-    Args:
-        prompt: User prompt
-        max_tokens: Maximum tokens to generate
-        temperature: Sampling temperature
-        technique: optillm technique (cot_reflection, bon, moa, etc.)
-
-    Returns:
-        LLM response as string
-
-    Raises:
-        RuntimeError: If LLM is unavailable or request fails
-    """
-    import asyncio
-
-    async def _async_query():
-        try:
-            client = InferenceClient()
-            result = await client.complete(
-                messages=[Message(role="user", content=prompt)],
-                technique=technique,
-                max_tokens=max_tokens,
-                temperature=temperature,
-            )
-            return result.content
-
-        except Exception as e:
-            raise RuntimeError(f"LLM query failed: {e}") from e
-
-    # Run async function in sync context
-    try:
-        return asyncio.run(_async_query())
-    except RuntimeError as e:
-        # If already in event loop, raise with helpful message
-        if "already running" in str(e):
-            raise RuntimeError(
-                "Cannot use query_local_llm() from async context. "
-                "Use InferenceClient.complete() directly instead."
-            ) from e
-        raise

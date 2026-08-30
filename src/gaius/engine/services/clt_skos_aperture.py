@@ -30,7 +30,7 @@ ZERO_MODEL = "lightonai/ColBERT-Zero"
 
 def _zero(device: str | None = None):
     """Process-wide ColBERT (light profile). Never construct a new load per window."""
-    from gaius.inference.search.colbert import get_colbert_embedder
+    from gaius.engine.embeddings.colbert import get_colbert_embedder
 
     return get_colbert_embedder(device=device)
 

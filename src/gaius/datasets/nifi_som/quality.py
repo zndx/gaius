@@ -92,7 +92,7 @@ class InstructionQualityScorer:
     async def _get_client(self):
         """Lazy-load inference client."""
         if self._client is None:
-            from ...inference.client import InferenceClient
+            from gaius.client.engine_client import EngineInferenceClient as InferenceClient
             self._client = InferenceClient()
         return self._client
 
@@ -113,7 +113,7 @@ class InstructionQualityScorer:
             QualityScore with dimension breakdown
         """
         client = await self._get_client()
-        from ...inference.client import Message
+        from gaius.client.engine_client import Message
 
         system_prompt, user_prompt = get_quality_prompt(
             instruction=instruction,
@@ -223,7 +223,7 @@ class XAICalibrator:
     async def _get_client(self):
         """Lazy-load inference client."""
         if self._client is None:
-            from ...inference.client import InferenceClient
+            from gaius.client.engine_client import EngineInferenceClient as InferenceClient
             self._client = InferenceClient()
         return self._client
 
@@ -254,7 +254,7 @@ class XAICalibrator:
             return None
 
         client = await self._get_client()
-        from ...inference.client import Message
+        from gaius.client.engine_client import Message
 
         system_prompt, user_prompt = get_calibration_prompt(
             instruction=instruction,
@@ -269,9 +269,10 @@ class XAICalibrator:
         ]
 
         try:
-            # Use XAI evaluation endpoint
-            result = await client.evaluate(
-                messages=messages,
+            # XAI judge via the engine's external backend lane (Engine-First)
+            result = await client.complete(
+                messages,
+                model="xai",
                 temperature=self.temperature,
             )
 

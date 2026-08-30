@@ -437,7 +437,7 @@ def get_colqwen_embedder(
     ColPali/ColNomic is retired. This name stays for callers; the
     implementation is ColBERT-Zero.
     """
-    from .colbert import DEFAULT_MODEL, get_colbert_embedder
+    from gaius.engine.embeddings.colbert import DEFAULT_MODEL, get_colbert_embedder
 
     if model_name and (
         "colnomic" in model_name.lower()

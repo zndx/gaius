@@ -282,17 +282,17 @@ async def score_paper(
     Returns:
         PaperScore with criteria scores and reasoning
     """
-    from gaius.inference.router import ModelRouter, WorkflowPhase
+    from gaius.client.engine_client import get_engine_client
 
     prompt = _build_scoring_prompt(abstract, rubric, arxiv_id)
 
-    router = ModelRouter()
+    engine = await get_engine_client()
     model_used = "unknown"
 
     if rubric.model_preference == "ensemble" and use_local and use_remote:
-        # Score with both and average
-        local_result = await router.explore(prompt)
-        remote_result = await router.evaluate(prompt)
+        # Score twice and average (both via Engine/Complete)
+        local_result = await engine.complete_simple(prompt, max_tokens=1024)
+        remote_result = await engine.complete_simple(prompt, max_tokens=2048, temperature=0.5)
 
         # Extract content from CompletionResult objects
         local_content = local_result.content if hasattr(local_result, 'content') else str(local_result)
@@ -313,7 +313,7 @@ async def score_paper(
         model_used = "ensemble"
 
     elif use_remote:
-        result = await router.evaluate(prompt)
+        result = await engine.complete_simple(prompt, max_tokens=2048, temperature=0.5)
         # Extract content from CompletionResult object
         content = result.content if hasattr(result, 'content') else str(result)
         parsed = _parse_scoring_response(content)
@@ -324,7 +324,7 @@ async def score_paper(
 
     else:
         # Default to local
-        result = await router.explore(prompt)
+        result = await engine.complete_simple(prompt, max_tokens=1024)
         # Extract content from CompletionResult object
         content = result.content if hasattr(result, 'content') else str(result)
         parsed = _parse_scoring_response(content)

@@ -276,7 +276,7 @@ class EvolutionDaemon:
         Returns:
             Dict of endpoint name -> success status
         """
-        from ...inference.parallel import get_parallel_client
+        from ...client.parallel import get_parallel_client
 
         client = get_parallel_client()
         self._parallel_client = client
@@ -510,7 +510,7 @@ class EvolutionDaemon:
         """
         try:
             # Try to use health monitor
-            from ...inference.health import get_health_monitor
+            from gaius.observability.gpu_health import get_health_monitor
 
             monitor = get_health_monitor()
             gpu_status = monitor.get_all_gpu_health()

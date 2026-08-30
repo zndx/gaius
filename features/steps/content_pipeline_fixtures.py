@@ -697,13 +697,12 @@ class ServiceLifecycleManager:
     async def get_orchestrator(self) -> Any:
         """Get or create local GPU orchestrator instance.
 
-        Uses the local GPUOrchestrator from gaius.inference.orchestrator,
-        which manages vLLM subprocesses directly. This is the same orchestrator
-        used by the MCP tools.
+        Uses the engine OrchestratorProxy over gRPC (Engine-First) — the
+        same surface the MCP tools use.
         """
         if self._orchestrator is None:
-            from gaius.inference.orchestrator import get_orchestrator
-            self._orchestrator = get_orchestrator()
+            from gaius.client.engine_proxy import get_orchestrator_proxy
+            self._orchestrator = await get_orchestrator_proxy()
         return self._orchestrator
 
     async def start_orchestrator(self) -> bool:

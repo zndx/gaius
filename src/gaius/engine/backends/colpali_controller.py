@@ -241,7 +241,7 @@ class ColPaliController:
                 f"#EM.00000003.RETIRED {model_name} is retired. "
                 "Use lightonai/ColBERT-Zero (open late-interaction)."
             )
-        from gaius.inference.search.colbert import ColBERTZeroEmbedder
+        from gaius.engine.embeddings.colbert import ColBERTZeroEmbedder
 
         logger.info("Loading ColBERT-Zero %s on %s", model_name, device_map)
         embedder = ColBERTZeroEmbedder(model_name=model_name, device=device_map)

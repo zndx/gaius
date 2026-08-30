@@ -6,7 +6,7 @@ LAZY PACKAGE (PEP 562). This package is the engine's import hub, and an eager
 services.base_daemon → services/__init__ → orchestrator_service → backends``
 (partially initialized → ImportError) for anything that imported
 ``gaius.engine.backends.*`` or ``gaius.engine.resources`` before ``services``
-(``gaius.inference.manager``, ``backends.external.xai_backend`` in the flows,
+(``gaius.client.inference_manager``, ``backends.external.xai_backend`` in the flows,
 ``backends.gunicorn_config``, …). The eager ``gaius.engine.__init__`` used to
 mask it by always importing ``.server`` first; now that that package is lazy
 (so the protobuf probes stay light), the hub must be lazy too. Every public

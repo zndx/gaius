@@ -468,7 +468,7 @@ class VectorSearchService:
             )
 
             try:
-                from gaius.inference.search.vector_multi import VectorSearchMulti
+                from gaius.search.vector_multi import VectorSearchMulti
 
                 self._vector_search_multi = VectorSearchMulti(device=device)
 
@@ -565,7 +565,7 @@ class VectorSearchService:
 
         # Load model
         try:
-            from gaius.inference.search.vector_multi import VectorSearchMulti
+            from gaius.search.vector_multi import VectorSearchMulti
 
             self._vector_search_multi = VectorSearchMulti(device=device)
             _ = self._vector_search_multi.embedder  # Force load

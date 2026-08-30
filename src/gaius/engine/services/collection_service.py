@@ -2420,7 +2420,7 @@ created_at: {now.isoformat()}
             model_label = "frontier model"
         elif summary_type == "open_weights":
             # open_weights — use local engine (Devstral-24B on tinybox GPUs)
-            from gaius.inference.engine_client import get_engine_client, Message as EngMsg
+            from gaius.client.engine_client import get_engine_client, Message as EngMsg
 
             engine = await get_engine_client()
             # TECH DEBT: Uses model="thinking" (direct vLLM). Should use model="leader"
@@ -2655,7 +2655,7 @@ created_at: {now.isoformat()}
         if summary_type == "frontier":
             # Use Brave Answers API for grounded, web-cited summaries
             # Retry with exponential backoff — Brave rate-limits sequential calls
-            from gaius.inference.search.brave import BraveSearch
+            from gaius.search.brave import BraveSearch
             max_attempts = 3
             result = None  # type: ignore[assignment]  # set in retry loop or raise
             last_error: Exception | None = None
@@ -2695,7 +2695,7 @@ created_at: {now.isoformat()}
                     brave_followups.append(cite.url)
         elif summary_type == "open_weights":
             # open_weights — use local engine (Devstral-24B on tinybox GPUs)
-            from gaius.inference.engine_client import get_engine_client, Message
+            from gaius.client.engine_client import get_engine_client, Message
 
             engine = await get_engine_client()
 

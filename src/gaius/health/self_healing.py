@@ -25,7 +25,6 @@ import logging
 if TYPE_CHECKING:
     from asyncpg import Pool
     from gaius.engine.services.orchestrator_service import OrchestratorService
-    from gaius.inference.recovery import RecoveryManager
     from gaius.client.engine_proxy import OrchestratorProxy
 
 logger = logging.getLogger(__name__)

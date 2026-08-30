@@ -71,7 +71,7 @@ def test_rewrite_link_not_found():
 
 def test_zettelkasten_note_with_origin():
     """Test ZettelkastenNote includes origin backlink in markdown."""
-    from gaius.inference.synthesis import ZettelkastenNote
+    from gaius.core.synthesis import ZettelkastenNote
 
     note = ZettelkastenNote(
         query="kudu compaction",
@@ -92,7 +92,7 @@ def test_zettelkasten_note_with_origin():
 
 def test_zettelkasten_note_save_path(tmp_path):
     """Test ZettelkastenNote saves to correct scratch path."""
-    from gaius.inference.synthesis import ZettelkastenNote
+    from gaius.core.synthesis import ZettelkastenNote
 
     note = ZettelkastenNote(
         query="test query",

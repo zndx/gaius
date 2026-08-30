@@ -443,11 +443,22 @@ Explain in 2-3 sentences:
 
 Be concise, spatial, and focused on helping the user understand the topology."""
 
-    # Call local LLM via optillm
+    # Call the local LLM through the engine gRPC (Engine-First, sync surface)
     try:
-        from ..inference.llm import query_local_llm
+        import asyncio
 
-        response = query_local_llm(prompt, max_tokens=200)
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            pass
+        else:
+            raise RuntimeError(
+                "sync LLM call skipped inside a running event loop"
+            )
+
+        from ..flows.lattice import complete as lattice_complete
+
+        response = lattice_complete(prompt, max_tokens=200, timeout_s=60.0).text
         return response.strip()
 
     except Exception as e:

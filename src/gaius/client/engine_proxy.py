@@ -38,11 +38,6 @@ class OrchestratorProxy:
     can use the engine without modification.
 
     Usage:
-        # Instead of:
-        from gaius.inference.orchestrator import get_orchestrator
-        orch = get_orchestrator()
-
-        # Use:
         from gaius.client.engine_proxy import get_orchestrator_proxy
         orch = await get_orchestrator_proxy()
 

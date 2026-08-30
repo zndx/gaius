@@ -40,7 +40,7 @@ budget = scheduler.get_xai_budget()
 The `ExternalInferenceRouter` dispatches to the appropriate provider:
 
 ```python
-from gaius.inference import ExternalInferenceRouter
+from gaius.engine.backends.external.router import ExternalInferenceRouter
 
 router = ExternalInferenceRouter()
 result = await router.complete(

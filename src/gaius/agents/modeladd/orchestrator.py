@@ -559,7 +559,7 @@ class ModelAddOrchestrator:
         result = {"gpus": [], "count": 0}
 
         try:
-            from ...inference.health import get_health_monitor
+            from gaius.observability.gpu_health import get_health_monitor
 
             monitor = get_health_monitor()
             gpus = []

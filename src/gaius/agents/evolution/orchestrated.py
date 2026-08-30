@@ -285,7 +285,7 @@ Be concise and decisive. The system should make steady progress without human in
         endpoints_running = {}
 
         try:
-            from ...inference.health import get_health_monitor
+            from gaius.observability.gpu_health import get_health_monitor
             monitor = get_health_monitor()
 
             for gpu in monitor.get_all_gpu_health():
@@ -318,19 +318,8 @@ Be concise and decisive. The system should make steady progress without human in
         except Exception as e:
             logger.debug(f"Failed to get endpoint status: {e}")
 
-        # Also probe endpoints via HTTP to detect externally running processes
-        import httpx
-        from ...inference.router import get_endpoint_router
-        try:
-            router = get_endpoint_router()
-            for name, endpoint in router.config.endpoints.items():
-                if name not in endpoints_running or not endpoints_running[name]:
-                    try:
-                        resp = httpx.get(f"{endpoint.url}/models", timeout=1.0)
-                        endpoints_running[name] = resp.status_code == 200
-                    except Exception:
-                        if name not in endpoints_running:
-                            endpoints_running[name] = False
+        # Engine-First: the orchestrator status above is authoritative for
+        # endpoint health; no client-side endpoint registry or HTTP probing.
         except Exception as e:
             logger.debug(f"Failed to probe endpoints via HTTP: {e}")
 
@@ -423,19 +412,13 @@ Be concise and decisive. The system should make steady progress without human in
         obs_text = self._format_observation(observation)
 
         try:
-            from ...inference.router import get_endpoint_router
+            from gaius.client.engine_client import get_engine_client
 
-            router = get_endpoint_router()
-
-            # Use chat completion format
-            messages = [
-                {"role": "system", "content": self.ORCHESTRATOR_SYSTEM_PROMPT},
-                {"role": "user", "content": obs_text},
-            ]
-
-            result = await router.complete(
-                messages=messages,
-                endpoint=self.orchestrator_endpoint,
+            engine = await get_engine_client()
+            result = await engine.complete_simple(
+                prompt=obs_text,
+                system_prompt=self.ORCHESTRATOR_SYSTEM_PROMPT,
+                model=self.orchestrator_endpoint,
                 max_tokens=1500,  # Enough for thinking + JSON response
                 temperature=0.3,  # More deterministic for operational decisions
             )
@@ -714,7 +697,7 @@ Be concise and decisive. The system should make steady progress without human in
 
         # Check GPU memory
         try:
-            from ...inference.health import get_health_monitor
+            from gaius.observability.gpu_health import get_health_monitor
             monitor = get_health_monitor()
 
             for gpu in monitor.get_all_gpu_health():

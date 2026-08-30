@@ -3058,7 +3058,7 @@ class GaiusServicer(GaiusServiceServicer):
             from ....core.tda import get_tda_manager
             from ....core.geometry import GeometryComputer
             from ....core.minigrids import get_embed_view, get_iso_view
-            from ....inference.llm import ExplanationContext
+            from ...services.explain_prompts import ExplanationContext
             from ....storage.grid_state import load_full_grid_data_for_minigrids
 
             # Get grid manager to check cache first
@@ -3215,7 +3215,7 @@ class GaiusServicer(GaiusServiceServicer):
                 )
 
             try:
-                from ....inference.llm import _build_explanation_prompt
+                from ...services.explain_prompts import _build_explanation_prompt
                 prompt = _build_explanation_prompt(ctx)
 
                 result = await self._services.backend_router.complete(

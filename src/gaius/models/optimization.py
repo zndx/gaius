@@ -1017,7 +1017,7 @@ Output ONLY the new system prompt."""
         - Empty outputs score 0.0 (not 0.5)
         - Uses heuristic scoring instead of LLM self-evaluation
         """
-        from ..inference.parallel import get_parallel_client
+        from ..client.parallel import get_parallel_client
 
         client = get_parallel_client()
         if client.num_endpoints == 0:

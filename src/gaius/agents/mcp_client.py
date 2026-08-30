@@ -215,7 +215,7 @@ async def _search_kb(params: dict) -> dict:
 async def _web_search(params: dict) -> dict:
     """Search the web via Brave API."""
     try:
-        from ..inference import get_search
+        from ..search import get_search
 
         query = params.get("query", "")
         count = params.get("count", 5)

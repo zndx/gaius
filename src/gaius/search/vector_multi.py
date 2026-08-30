@@ -30,7 +30,7 @@ import numpy as np
 from PIL import Image
 from qdrant_client import QdrantClient, models
 
-from .colqwen import ColQwenEmbedder, get_colqwen_embedder
+from gaius.engine.embeddings.colqwen import ColQwenEmbedder, get_colqwen_embedder
 
 logger = logging.getLogger(__name__)
 
@@ -136,9 +136,9 @@ class VectorSearchMulti:
             import torch
             from opentelemetry import trace
 
-            from .colbert import get_colbert_embedder
+            from gaius.engine.embeddings.colbert import get_colbert_embedder
 
-            tracer = trace.get_tracer("gaius.inference.search")
+            tracer = trace.get_tracer("gaius.search")
 
             if not torch.cuda.is_available():
                 raise RuntimeError(
@@ -316,7 +316,7 @@ class VectorSearchMulti:
         from opentelemetry import trace
         from opentelemetry.trace import StatusCode
 
-        tracer = trace.get_tracer("gaius.inference.search")
+        tracer = trace.get_tracer("gaius.search")
 
         with tracer.start_as_current_span("vector_search.search") as span:
             span.set_attribute("query", query[:100])  # Truncate for safety

@@ -31,7 +31,7 @@ import numpy as np
 logger = logging.getLogger(__name__)
 
 # Import multi-vector search (ColNomic)
-from ..inference.search.vector import VectorSearchMulti, get_vector_search
+from ..search.vector import VectorSearchMulti, get_vector_search
 
 if TYPE_CHECKING:
     from .iso_features import IsoFeatures

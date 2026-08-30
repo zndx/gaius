@@ -506,7 +506,7 @@ class CalibrationOrchestrator:
         """Lazy-load XAI client."""
         if self._client is None:
             try:
-                from ...inference.client import InferenceClient
+                from gaius.client.engine_client import EngineInferenceClient as InferenceClient
                 self._client = InferenceClient()
             except ImportError:
                 logger.warning("InferenceClient not available")
@@ -677,16 +677,17 @@ class CalibrationOrchestrator:
         )
 
         try:
-            from ...inference.client import Message
+            from gaius.client.engine_client import Message
 
             messages = [
                 Message(role="system", content=system_prompt),
                 Message(role="user", content=user_prompt),
             ]
 
-            # Use XAI evaluation endpoint
-            result = await client.evaluate(
-                messages=messages,
+            # XAI judge via the engine's external backend lane (Engine-First)
+            result = await client.complete(
+                messages,
+                model="xai",
                 temperature=0.3,  # Low temp for consistent eval
             )
 

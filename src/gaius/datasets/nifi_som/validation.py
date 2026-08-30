@@ -71,7 +71,7 @@ class InstructionValidator:
     async def _get_client(self):
         """Lazy-load inference client."""
         if self._client is None:
-            from ...inference.client import InferenceClient
+            from gaius.client.engine_client import EngineInferenceClient as InferenceClient
             self._client = InferenceClient()
         return self._client
 
@@ -92,7 +92,7 @@ class InstructionValidator:
             AlignmentResult with alignment status and reasoning
         """
         client = await self._get_client()
-        from ...inference.client import Message
+        from gaius.client.engine_client import Message
 
         system_prompt, user_prompt = get_alignment_prompt(instruction, elements)
 
@@ -156,7 +156,7 @@ class InstructionValidator:
             AlignmentResult with alignment status
         """
         client = await self._get_client()
-        from ...inference.client import Message
+        from gaius.client.engine_client import Message
 
         system_prompt, user_prompt = get_trajectory_alignment_prompt(
             instruction, expected_marks, elements

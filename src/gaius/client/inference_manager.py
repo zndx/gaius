@@ -61,7 +61,7 @@ class InferenceManager:
 
         # Engine Federation Architecture: all orchestration goes through engine gRPC
         try:
-            from ..client.engine_proxy import use_engine_proxy
+            from .engine_proxy import use_engine_proxy
             self._use_engine = use_engine_proxy()
             if self._use_engine:
                 logger.info("InferenceManager using engine client (agent-first mode)")
@@ -93,7 +93,7 @@ class InferenceManager:
     async def _get_engine_proxy(self):
         """Get or create engine orchestrator proxy."""
         if self._engine_proxy is None:
-            from ..client.engine_proxy import get_orchestrator_proxy
+            from .engine_proxy import get_orchestrator_proxy
             self._engine_proxy = await get_orchestrator_proxy()
         return self._engine_proxy
 

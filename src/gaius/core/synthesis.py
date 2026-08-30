@@ -242,7 +242,8 @@ class ZettelkastenSynthesizer:
                 "technique": "cot_reflection",
             },
         )
-        result_content = result.get("content", "")
+        # gRPC CompleteResponse uses the 'text' field
+        result_content = result.get("text", result.get("content", ""))
 
         # Extract and normalize wiki links from generated content
         wiki_links = self._extract_wiki_links(result_content)
@@ -277,7 +278,7 @@ class ZettelkastenSynthesizer:
             metadata={
                 "model": result.get("model", ""),
                 "technique": "cot_reflection",
-                "tokens": f"{result.get('input_tokens', 0)}+{result.get('output_tokens', 0)}",
+                "tokens": f"{result.get('input_tokens', 0)}+{result.get('tokens_used', result.get('output_tokens', 0))}",
                 "domain": domain,
             },
         )

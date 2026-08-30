@@ -8,7 +8,7 @@ Uses nvidia-ml-py (which provides the pynvml module) for GPU metrics:
 - Health threshold checks
 
 Usage:
-    from gaius.inference.health import GPUHealthMonitor, get_health_monitor
+    from gaius.observability.gpu_health import GPUHealthMonitor, get_health_monitor
 
     monitor = get_health_monitor()
     health = monitor.get_gpu_health(0)

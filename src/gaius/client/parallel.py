@@ -62,10 +62,10 @@ class ParallelInferenceClient:
             Dict of endpoint -> success status
         """
         from ..core.config import get_config
-        from .orchestrator import get_orchestrator
+        from .engine_proxy import get_orchestrator_proxy
 
         config = get_config()
-        orchestrator = get_orchestrator()
+        orchestrator = await get_orchestrator_proxy()
 
         # Get endpoint configs
         if config._raw is None:
@@ -112,9 +112,9 @@ class ParallelInferenceClient:
 
     async def stop(self) -> None:
         """Stop all evolution endpoints."""
-        from .orchestrator import get_orchestrator
+        from .engine_proxy import get_orchestrator_proxy
 
-        orchestrator = get_orchestrator()
+        orchestrator = await get_orchestrator_proxy()
 
         for name in list(self._endpoints.keys()):
             try:

@@ -898,7 +898,7 @@ class GaiusApp(App):
             True if initialization succeeded
         """
         try:
-            from .inference.search import get_vector_search
+            from .search import get_vector_search
             from .core.cache import save_cached_state
             import numpy as np
 
@@ -1749,7 +1749,7 @@ class GaiusApp(App):
         """
         from datetime import datetime
         from .core.links import rewrite_link
-        from .inference.synthesis import ZettelkastenSynthesizer, ZettelkastenNote
+        from .core.synthesis import ZettelkastenSynthesizer, ZettelkastenNote
 
         content = self.query_one("#info-panel", InfoPanel)
         editor = self.query_one("#note-editor", NoteEditor)
@@ -1771,7 +1771,7 @@ class GaiusApp(App):
 
             # BM25 lexical search
             try:
-                from .inference.search import get_kb_search
+                from .search import get_kb_search
                 kb_search = get_kb_search()
                 if kb_search.index_size == 0:
                     kb_search.build_index()
@@ -1793,7 +1793,7 @@ class GaiusApp(App):
 
             # Web search
             try:
-                from .inference import get_search
+                from .search import get_search
                 search = get_search()
                 web_hits = await search.search(link_text, count=5)
                 web_results = [
@@ -2248,7 +2248,7 @@ class GaiusApp(App):
             /inference ensure              - Ensure default model (nvidia/Orchestrator-8B) running
         """
         import asyncio
-        from .inference.manager import get_inference_manager
+        from .client.inference_manager import get_inference_manager
         from .engine.backends.vllm_controller import ProcessStatus
 
         content = self.query_one("#info-panel", InfoPanel)
@@ -2632,7 +2632,7 @@ Phase 1: Starting orchestration endpoint...
 
             async def start_orchestrated():
                 try:
-                    from .inference.manager import get_inference_manager
+                    from .client.inference_manager import get_inference_manager
                     from .agents.evolution.orchestrated import get_orchestrated_evolution
 
                     # Use InferenceManager to check/ensure endpoint is available
@@ -8738,7 +8738,7 @@ The general-purpose agentic query interface.
         async def start_with_progress():
             """Start inference stack with progress updates."""
             # Defer heavy import to async context (get_inference_manager() takes ~500ms)
-            from .inference.manager import get_inference_manager
+            from .client.inference_manager import get_inference_manager
             manager = get_inference_manager()
 
             def update_progress(task_name: str, progress: float, message: str):
@@ -8775,22 +8775,11 @@ The general-purpose agentic query interface.
         asyncio.create_task(start_with_progress())
 
     def _start_scheduler(self) -> None:
-        """Start the scheduler service for background inference.
+        """No-op: the scheduler runs inside the engine (Engine-First).
 
-        IMPORTANT: Defers heavy imports to async context for instant startup.
+        The TUI consumes it via gRPC (Scheduler/complete, SubmitJob) — there
+        is no client-side queue to start.
         """
-        import asyncio
-
-        async def start_scheduler():
-            try:
-                # Defer heavy import to async context (get_scheduler_service() takes ~500ms)
-                from .inference.scheduler import get_scheduler_service
-                service = get_scheduler_service()
-                await service.start()
-            except ImportError:
-                pass  # Scheduler not available
-
-        asyncio.create_task(start_scheduler())
 
     def _apply_center_panel_mode(self) -> None:
         """Apply center panel mode visibility from state.

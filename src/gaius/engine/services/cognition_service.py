@@ -1602,7 +1602,7 @@ class CognitionService(BaseDaemon):
         # Import inference components
         try:
             from gaius.client import get_grpc_client
-            from ...inference import get_search
+            from gaius.search import get_search
         except ImportError:
             # Fallback for minimal functionality
             logger.warning("Inference module not available, skipping synthesis")

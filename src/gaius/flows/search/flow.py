@@ -133,7 +133,7 @@ class SearchFlow(TracedFlow, GaiusFlow):
         start = time.time()
 
         try:
-            from gaius.inference.search import get_kb_search
+            from gaius.search import get_kb_search
 
             kb_search = get_kb_search()
             if kb_search.index_size == 0:
@@ -252,7 +252,7 @@ class SearchFlow(TracedFlow, GaiusFlow):
 
         async def do_web_search():
             try:
-                from gaius.inference import get_search
+                from gaius.search import get_search
 
                 search = get_search()
                 results = await search.search(self.query, count=self.web_limit)

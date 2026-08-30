@@ -1352,7 +1352,7 @@ def create_server() -> "FastMCP":
             count: Number of results (max 20)
         """
         try:
-            from .inference import get_search
+            from .search import get_search
 
             search = get_search()
             results = await search.search(query, count=count)
@@ -1390,7 +1390,7 @@ def create_server() -> "FastMCP":
         """
         try:
             from .client import get_grpc_client
-            from .inference import get_search
+            from .search import get_search
 
             # Search for information
             search = get_search()
@@ -2589,43 +2589,26 @@ Domain: {domain or 'general'}
             max_tokens: Maximum tokens to generate
         """
         try:
-            from .inference.scheduler import (
-                get_scheduler_service,
-                Job,
-                JobPriority,
+            # Engine-First: submit to the ENGINE's scheduler queue via gRPC.
+            from .client.engine_proxy import get_scheduler_proxy
+
+            scheduler = await get_scheduler_proxy()
+            record = await scheduler.submit_job(
+                prompt,
+                agent=model or "thinking",
+                priority=priority.lower(),
+                max_tokens=max_tokens,
             )
-
-            # Parse priority
-            priority_map = {
-                "critical": JobPriority.CRITICAL,
-                "high": JobPriority.HIGH,
-                "normal": JobPriority.NORMAL,
-                "low": JobPriority.LOW,
-            }
-            job_priority = priority_map.get(priority.lower(), JobPriority.NORMAL)
-
-            service = get_scheduler_service()
-
-            job = Job(
-                model=model,
-                messages=[{"role": "user", "content": prompt}],
-                priority=job_priority,
-                estimated_tokens=max_tokens,
-            )
-
-            result = await service.submit(job)
 
             return json.dumps(
                 {
-                    "job_id": result.job_id,
-                    "status": result.status.value,
-                    "content": result.content,
-                    "model": result.model,
-                    "endpoint": result.endpoint,
-                    "latency_ms": result.latency_ms,
-                    "input_tokens": result.input_tokens,
-                    "output_tokens": result.output_tokens,
-                    "error": result.error,
+                    "job_id": record.get("job_id", ""),
+                    "status": record.get("status", ""),
+                    "content": record.get("text", ""),
+                    "endpoint": "grpc_engine",
+                    "latency_ms": record.get("latency_ms", 0),
+                    "output_tokens": record.get("tokens_used", 0),
+                    "error": record.get("error") or None,
                 },
                 indent=2,
             )
@@ -2651,36 +2634,23 @@ Domain: {domain or 'general'}
             Job ID for tracking
         """
         try:
-            from .inference.scheduler import (
-                get_scheduler_service,
-                Job,
-                JobPriority,
+            # Engine-First: enqueue in the ENGINE's scheduler; poll scheduler_get_result.
+            from .client.engine_proxy import get_scheduler_proxy
+
+            scheduler = await get_scheduler_proxy()
+            record = await scheduler.submit_job(
+                prompt,
+                agent=model or "thinking",
+                priority=priority.lower(),
+                max_tokens=max_tokens,
+                wait=False,
             )
-
-            priority_map = {
-                "critical": JobPriority.CRITICAL,
-                "high": JobPriority.HIGH,
-                "normal": JobPriority.NORMAL,
-                "low": JobPriority.LOW,
-            }
-            job_priority = priority_map.get(priority.lower(), JobPriority.NORMAL)
-
-            service = get_scheduler_service()
-
-            job = Job(
-                model=model,
-                messages=[{"role": "user", "content": prompt}],
-                priority=job_priority,
-                estimated_tokens=max_tokens,
-            )
-
-            job_id = await service.submit_async(job)
 
             return json.dumps(
                 {
-                    "job_id": job_id,
-                    "status": "submitted",
-                    "message": "Job submitted for background execution",
+                    "job_id": record.get("job_id", ""),
+                    "status": record.get("status", "queued"),
+                    "message": "Job submitted to the engine scheduler",
                 },
                 indent=2,
             )
@@ -2695,31 +2665,12 @@ Domain: {domain or 'general'}
             job_id: Job ID to retrieve
         """
         try:
-            from .inference.scheduler import get_scheduler_service
+            client = await _get_engine_client()
+            if not client:
+                return json.dumps({"error": "Engine not available"}, indent=2)
 
-            service = get_scheduler_service()
-            result = service.get_result(job_id)
-
-            if result is None:
-                return json.dumps(
-                    {"job_id": job_id, "status": "pending", "message": "Job still running"},
-                    indent=2,
-                )
-
-            return json.dumps(
-                {
-                    "job_id": result.job_id,
-                    "status": result.status.value,
-                    "content": result.content,
-                    "model": result.model,
-                    "endpoint": result.endpoint,
-                    "latency_ms": result.latency_ms,
-                    "input_tokens": result.input_tokens,
-                    "output_tokens": result.output_tokens,
-                    "error": result.error,
-                },
-                indent=2,
-            )
+            record = await client.call("Scheduler", "get_result", {"job_id": job_id})
+            return json.dumps(record, indent=2, default=str)
         except Exception as e:
             return json.dumps({"error": str(e)}, indent=2)
 
@@ -2789,15 +2740,19 @@ Domain: {domain or 'general'}
     async def scheduler_health_check() -> str:
         """Check health of all GPU endpoints."""
         try:
-            from .inference.scheduler import get_scheduler_service
+            client = await _get_engine_client()
+            if not client:
+                return json.dumps({"error": "Engine not available"}, indent=2)
 
-            service = get_scheduler_service()
-            health = await service.health_check()
-
+            status = await client.call("Orchestrator", "status", {})
+            health = {
+                ep.get("name", ""): ep.get("status", "") == "healthy"
+                for ep in status.get("endpoints", [])
+            }
             return json.dumps(
                 {
                     "endpoints": health,
-                    "all_healthy": all(health.values()),
+                    "all_healthy": bool(health) and all(health.values()),
                     "healthy_count": sum(1 for v in health.values() if v),
                     "total_count": len(health),
                 },
@@ -2810,12 +2765,11 @@ Domain: {domain or 'general'}
     async def scheduler_metrics() -> str:
         """Get scheduler performance metrics."""
         try:
-            from .inference.scheduler import get_scheduler_service
+            from .client.engine_proxy import get_scheduler_proxy
 
-            service = get_scheduler_service()
-            metrics = service.get_metrics()
-
-            return json.dumps(metrics, indent=2)
+            scheduler = await get_scheduler_proxy()
+            metrics = await scheduler._get_metrics_async()
+            return json.dumps(metrics, indent=2, default=str)
         except Exception as e:
             return json.dumps({"error": str(e)}, indent=2)
 

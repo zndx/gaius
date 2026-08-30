@@ -247,7 +247,7 @@ Respond with JSON only:
         Returns:
             Dict with scores and assessment
         """
-        from gaius.inference.engine_client import get_engine_client
+        from gaius.client.engine_client import get_engine_client
 
         prompt = self.ASSESSMENT_PROMPT.format(
             title=item.title or "No title",

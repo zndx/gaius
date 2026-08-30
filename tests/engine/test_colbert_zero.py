@@ -6,12 +6,12 @@ import numpy as np
 import pytest
 
 from gaius.engine.config import load_config
-from gaius.inference.search.colbert import (
+from gaius.engine.embeddings.colbert import (
     ColBERTVisionError,
     GURU_NOVISION,
     _as_token_matrix,
 )
-from gaius.inference.search.colqwen import get_colqwen_embedder
+from gaius.engine.embeddings.colqwen import get_colqwen_embedder
 
 
 def test_token_matrix_shape() -> None:
@@ -21,7 +21,7 @@ def test_token_matrix_shape() -> None:
 
 
 def test_image_fail_fast() -> None:
-    from gaius.inference.search.colbert import ColBERTZeroEmbedder
+    from gaius.engine.embeddings.colbert import ColBERTZeroEmbedder
 
     emb = ColBERTZeroEmbedder.__new__(ColBERTZeroEmbedder)
     with pytest.raises(ColBERTVisionError, match=GURU_NOVISION):
@@ -42,7 +42,7 @@ def test_agents_conf_embedding_is_colbert_zero() -> None:
 
 
 def test_maxsim_identity() -> None:
-    from gaius.inference.search.colbert import ColBERTZeroEmbedder
+    from gaius.engine.embeddings.colbert import ColBERTZeroEmbedder
 
     e = ColBERTZeroEmbedder.__new__(ColBERTZeroEmbedder)
     q = np.array([[1.0, 0.0], [0.0, 1.0]], dtype=np.float32)
@@ -52,7 +52,7 @@ def test_maxsim_identity() -> None:
 def test_colbert_singleton_pins_first_light_gpu(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from gaius.inference.search.colbert import (
+    from gaius.engine.embeddings.colbert import (
         get_colbert_embedder,
         reset_colbert_embedder,
     )
@@ -76,7 +76,7 @@ def test_colbert_singleton_pins_first_light_gpu(
 
 
 def test_offset_mapping_uses_infer_lock() -> None:
-    from gaius.inference.search.colbert import ColBERTZeroEmbedder, _infer_lock
+    from gaius.engine.embeddings.colbert import ColBERTZeroEmbedder, _infer_lock
 
     assert _infer_lock is not None
     assert hasattr(ColBERTZeroEmbedder, "offset_mapping")
