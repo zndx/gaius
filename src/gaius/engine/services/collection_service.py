@@ -2214,7 +2214,7 @@ created_at: {now.isoformat()}
                         "article-curate", f"article-curate-{int(time.time())}"
                     )
                     try:
-                        apply_and_admit(wid, "article-curate")
+                        await asyncio.to_thread(apply_and_admit, wid, "article-curate")  # off-loop
                     except YkAdmitError as e:
                         logger.error("article curate YK admit failed: %s", e)
                         raise
@@ -2293,7 +2293,7 @@ created_at: {now.isoformat()}
                         )
                     elif wid:
                         flow_processes().unregister(wid)
-                        delete_flow_sentinel(wid)
+                        await asyncio.to_thread(delete_flow_sentinel, wid)
                     await event_queue.put(None)
 
             flow_task = asyncio.create_task(run_flow())

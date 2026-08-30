@@ -731,7 +731,7 @@ class ProspectsService:
             return await self._run_check_body(profile, domain, force)
         finally:
             if wid:
-                delete_flow_sentinel(wid)
+                await asyncio.to_thread(delete_flow_sentinel, wid)
 
     async def _run_check_body(
         self,
@@ -926,7 +926,7 @@ class ProspectsService:
         proposed = f"prospects-update-{int(time.time())}"
         try:
             wid = bind_workload_id("prospects-update", proposed)
-            apply_and_admit(wid, "prospects-update")
+            await asyncio.to_thread(apply_and_admit, wid, "prospects-update")  # off-loop
         except YkAdmitError as e:
             yield {
                 "type": 10,
@@ -1017,7 +1017,7 @@ class ProspectsService:
         finally:
             # STZ: this host process's sentinel, never a borrowed claim.
             if minted:
-                delete_flow_sentinel(wid)
+                await asyncio.to_thread(delete_flow_sentinel, wid)
 
     def _parse_flow_output(self, line: str, current_progress: float) -> dict[str, Any] | None:
         """Parse Metaflow output line and return progress event if recognized.

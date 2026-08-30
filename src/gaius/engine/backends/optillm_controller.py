@@ -287,7 +287,7 @@ class OptillmController:
         )
 
         self._reap_foreign_listeners()
-        self._admit_sentinel()
+        await asyncio.to_thread(self._admit_sentinel)  # off-loop: admit wait must not block the engine
 
         if self._ensure_vllm is not None:
             try:
@@ -657,7 +657,7 @@ class OptillmController:
 
         self._healthy = False
         if retire_sentinel:
-            self._stz_sentinel()
+            await asyncio.to_thread(self._stz_sentinel)  # off-loop (kubectl delete)
         logger.info("OptillmController stopped")
 
     async def restart(self, *, retire_sentinel: bool = False) -> bool:
@@ -675,7 +675,7 @@ class OptillmController:
 
         await self.stop(retire_sentinel=retire_sentinel)
         self._reap_foreign_listeners()
-        self._admit_sentinel()
+        await asyncio.to_thread(self._admit_sentinel)  # off-loop
         self._client = httpx.AsyncClient(
             base_url=self._base_url,
             timeout=self._timeout,

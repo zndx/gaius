@@ -58,7 +58,9 @@ async def run_probe_batch(pool: Any, *, gpu_index: int = 4) -> dict[str, Any]:
         raise RuntimeError(GURU_NOLIGHT)
     # Standing CLT worker process ↔ gaius-clt. Not a per-batch extract claim.
     wid = capability_workload_id("clt")
-    apply_and_admit(wid, KIND)
+    import asyncio as _aio
+
+    await _aio.to_thread(apply_and_admit, wid, KIND)  # off-loop: never block the engine
     if not gpu_start_allowed(wid):
         raise RuntimeError(GURU_NOSTART)
 

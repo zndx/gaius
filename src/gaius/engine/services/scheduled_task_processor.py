@@ -189,10 +189,12 @@ class ScheduledTaskProcessor(BaseDaemon):
         cwd = os.environ.get("GAIUS_ROOT", "/home/rch/local/src/zndx/gaius")
         table = flow_processes()
         try:
-            apply_and_admit(wid, kind)
+            # Off-loop: the admit wait (up to GPU_ADMIT_TIMEOUT_S) must never
+            # block the engine's event loop.
+            await asyncio.to_thread(apply_and_admit, wid, kind)
         except YkAdmitError as e:
             logger.error(f"{log_prefix} YK admit failed: {e}")
-            delete_flow_sentinel(wid)
+            await asyncio.to_thread(delete_flow_sentinel, wid)
             return {"status": "error", "error": str(e), "workload_id": wid}
         try:
             proc = await asyncio.create_subprocess_exec(
@@ -274,7 +276,7 @@ class ScheduledTaskProcessor(BaseDaemon):
             if table.get(wid) is not None:
                 table.unregister(wid)
                 if minted:
-                    delete_flow_sentinel(wid)
+                    await asyncio.to_thread(delete_flow_sentinel, wid)
 
     def register_handler(self, task_type: str, handler: TaskHandler) -> None:
         """Register a handler for a task type.

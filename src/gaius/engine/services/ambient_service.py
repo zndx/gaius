@@ -304,7 +304,7 @@ class AmbientWorkloadService:
 
         try:
             wid = bind_workload_id("ambient", AMBIENT_WORKLOAD_ID)
-            apply_and_admit(wid, "ambient")
+            await asyncio.to_thread(apply_and_admit, wid, "ambient")  # off-loop
         except YkAdmitError as e:
             return {
                 "success": False,

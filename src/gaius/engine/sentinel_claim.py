@@ -1048,6 +1048,29 @@ def gpu_free_mib() -> dict[int, int]:
     return out
 
 
+async def apply_and_admit_async(workload_id: str, kind: str, **kw) -> AdmittedApplication:
+    """``apply_and_admit`` off the event loop.
+
+    The admit path is synchronous by design (kubectl + RequestQueueShare +
+    ``time.sleep`` polls) and can legitimately wait GPU_ADMIT_TIMEOUT_S (600s)
+    for a token. Called directly from an async handler it BLOCKS the engine's
+    event loop for that long — Status hits DEADLINE, WatchWorkload drops, the
+    httpx client stops reading and back-pressures optillm and vLLM's single
+    uvicorn worker until thinking's /health "hangs" (observed 2026-08-30 16:15,
+    a 10-minute engine freeze). Every async caller must use this wrapper.
+    """
+    import asyncio
+
+    return await asyncio.to_thread(apply_and_admit, workload_id, kind, **kw)
+
+
+async def delete_flow_sentinel_async(workload_id: str) -> None:
+    """``delete_flow_sentinel`` (kubectl delete) off the event loop."""
+    import asyncio
+
+    await asyncio.to_thread(delete_flow_sentinel, workload_id)
+
+
 def ensure_embedding_claim() -> None:
     """Admit ``gaius-embedding`` before any ColBERT CUDA load."""
     if federation_required():

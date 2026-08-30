@@ -398,7 +398,7 @@ class OrchestratorService:
         backend = agent_config.backend.lower()
 
         if backend == "clt":
-            self._admit_capability_sentinel("clt")
+            await asyncio.to_thread(self._admit_capability_sentinel, "clt")  # off-loop
             return await self._ensure_clt_endpoint(agent_alias)
 
         # optillm agents use shared optillm, no dedicated endpoint
@@ -419,7 +419,8 @@ class OrchestratorService:
         # Use backend = "vllm" with endpoint.task = "embed" instead.
 
         # Sentinel **is** the Application: admit before host CUDA starts.
-        self._admit_capability_sentinel(agent_alias)
+        # Off-loop: the admit wait must never block the engine's event loop.
+        await asyncio.to_thread(self._admit_capability_sentinel, agent_alias)
 
         # Start vLLM endpoint
         proc = await self._vllm.start_endpoint(agent_alias, agent_config)
