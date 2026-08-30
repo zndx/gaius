@@ -151,6 +151,32 @@ proto-generate:
 resume-gpu:
     bash scripts/gpu-resume.sh
 
+# Install + enable the reboot/liveness hardening systemd units (idempotent).
+# crash-guard (unclean-boot GPU defer) + thinking-ready (baseline GPU workload
+# watchdog) + engine-ready (out-of-band :50051 liveness → complete recycle).
+# Does NOT arm the kernel-panic sysctl (60-crash-recovery.conf) — that reboots the
+# box on a hard hang and is a separate, deliberate step (see echo below).
+reboot-hardening-install:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    UNITS="crash-guard.service gaius-thinking-ready.service gaius-engine-ready.service"
+    echo "Installing hardening units: $UNITS"
+    for u in $UNITS; do
+      sudo install -m 0644 "$(pwd)/scripts/systemd/$u" "/etc/systemd/system/$u"
+    done
+    sudo systemctl daemon-reload
+    # crash-guard is a boot/shutdown oneshot (WantedBy=multi-user.target).
+    # engine-ready + thinking-ready are continuous watchdogs WantedBy=gaius.service
+    # (run whenever the engine unit runs). --now starts the continuous ones against
+    # the currently-running engine immediately.
+    sudo systemctl enable crash-guard.service >/dev/null
+    sudo systemctl enable --now gaius-engine-ready.service gaius-thinking-ready.service
+    echo "✓ Installed + enabled. Verify:"
+    echo "    systemctl status gaius-engine-ready.service --no-pager"
+    echo "    journalctl -u gaius-engine-ready.service -n 20 --no-pager"
+    echo "Kernel-panic-on-hang backstop is NOT armed. To arm (reboots on hard hang):"
+    echo "    sudo install -m 0644 scripts/systemd/60-crash-recovery.conf /etc/sysctl.d/ && sudo sysctl --system"
+
 # Kill stale vLLM processes, reclaim unheld /dev/shm offload maps, show GPU memory
 gpu-cleanup:
     #!/usr/bin/env bash

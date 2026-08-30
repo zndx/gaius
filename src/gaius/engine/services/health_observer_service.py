@@ -37,6 +37,7 @@ BDD Alignment:
 
 import asyncio
 import logging
+import re
 from dataclasses import dataclass, field
 from datetime import datetime, date, timezone
 from typing import TYPE_CHECKING, Any, Callable, Awaitable
@@ -607,7 +608,56 @@ class HealthObserverService(BaseDaemon):
         # Check pipeline backlog (new - direct DB query)
         await self._check_pipeline_backlog(report)
 
+        # Check out-of-band engine serving-desync (breaker tripped by the watchdog)
+        await self._check_engine_serving(report)
+
         return report
+
+    async def _check_engine_serving(self, report: dict[str, Any]) -> None:
+        """Surface an out-of-band engine serving-desync (breaker tripped) → ACP.
+
+        The `gaius-engine-ready` watchdog (scripts/engine-ready.sh) does the
+        deterministic L0 recovery of a dead/wedged :50051. THIS in-engine observer
+        cannot detect that class itself — it runs inside the engine and dies with
+        it — so it reacts only once the watchdog's recycle budget is EXHAUSTED
+        (breaker tripped), i.e. deterministic recovery has already failed. That is
+        the honest L2 trigger: escalate to ACP for root-cause. Reading a marker
+        file has no circular gRPC dependency. #EN.00000017.SERVEDESYNC
+
+        Args:
+            report: Health report to append results to
+        """
+        try:
+            from ...health.engine_liveness import (
+                ENGINE_SERVING_FMEA_ID,
+                GURU_SERVEDESYNC,
+                read_engine_breaker,
+            )
+
+            breaker = read_engine_breaker()
+            if breaker is None:
+                return
+
+            report["healthy"] = False
+            report["checks"].append({
+                "name": "engine_serving",
+                "status": "FAIL",
+                "message": (
+                    f"{GURU_SERVEDESYNC} engine :50051 serving-desync; out-of-band "
+                    f"recycle budget exhausted "
+                    f"({breaker.get('recycles_in_window')} recycles) — "
+                    f"deterministic recovery did not hold"
+                ),
+                "details": {
+                    "endpoint": "engine",
+                    "recovery_exhausted": True,
+                    "breaker": breaker,
+                },
+                # heuristic_id carries the FMEA failure_mode_id here (see peers).
+                "heuristic_id": ENGINE_SERVING_FMEA_ID,
+            })
+        except Exception as e:
+            logger.debug(f"Engine serving check failed: {e}")
 
     async def _check_gpu_health(self, report: dict[str, Any]) -> None:
         """Check GPU health via HealthService.
@@ -917,6 +967,16 @@ class HealthObserverService(BaseDaemon):
         incident.attempts += 1
         incident.status = "healing"
 
+        # Engine serving-desync (INFRA_005) reaches this in-engine observer ONLY
+        # after the out-of-band watchdog's deterministic recycle budget is
+        # exhausted (breaker tripped) — deterministic recovery is, by definition,
+        # already spent. Route straight to ACP root-cause: the runtime escalation
+        # is driven by "deterministic recovery exhausted", NOT by the RPN tier
+        # (FMEA scores risk honestly; it does not gate this SRE decision). This is
+        # the L0→L2 hand-off. #EN.00000017.SERVEDESYNC
+        if incident.failure_mode_id == "INFRA_005":
+            incident.current_tier = max(incident.current_tier, 2)
+
         tier = incident.current_tier
         remediation_result = {"action": None, "outcome": None}
 
@@ -1149,8 +1209,15 @@ class HealthObserverService(BaseDaemon):
                 endpoints = status.get("endpoints", {})
                 for alias, info in endpoints.items():
                     gpu_ids = info.get("gpu_ids", [])
-                    # Extract GPU ID from incident endpoint (e.g., "gpu_0" -> 0)
-                    incident_gpu = int(incident.endpoint.split("_")[-1])
+                    # Extract GPU ID from incident endpoint (e.g., "gpu_4_health" -> 4)
+                    m = re.search(r"gpu_(\d+)", incident.endpoint)
+                    if not m:
+                        logger.warning(
+                            f"Cannot extract GPU ID from endpoint {incident.endpoint!r}, "
+                            "cannot remediate"
+                        )
+                        return False
+                    incident_gpu = int(m.group(1))
                     if incident_gpu in gpu_ids:
                         if self._skip_restart_if_loading(alias):
                             continue
@@ -1256,6 +1323,9 @@ class HealthObserverService(BaseDaemon):
         Returns:
             Prompt string for ACP agent
         """
+        if incident.failure_mode_id == "INFRA_005":
+            return self._build_engine_serving_acp_prompt(incident)
+
         display_endpoint = friendly_endpoint_name(incident.endpoint)
         return f"""## Health Incident Requiring Diagnosis
 
@@ -1280,6 +1350,62 @@ class HealthObserverService(BaseDaemon):
    - Use appropriate fix commands for other issues
 
 4. Report your findings and whether remediation succeeded
+
+Begin your investigation now."""
+
+    def _build_engine_serving_acp_prompt(self, incident: HealthIncident) -> str:
+        """ACP prompt for engine serving-desync (INFRA_005 / #EN.00000017).
+
+        This incident reaches ACP ONLY after the out-of-band watchdog's
+        deterministic recycle budget is exhausted — deterministic recovery has
+        already failed, so the agent's job is root-cause + meta-maintenance, not a
+        first-line restart. Carries the live breaker context + the known-cause
+        hypotheses so the agent starts from evidence, not a blank slate.
+        """
+        try:
+            from ...health.engine_liveness import read_engine_breaker
+
+            breaker = read_engine_breaker() or {}
+        except Exception:
+            breaker = {}
+        recycles = breaker.get("recycles_in_window", "?")
+        window_s = breaker.get("window_s", "?")
+        return f"""## Engine Serving-Desync — Deterministic Recovery Exhausted
+
+**Guru**: `#EN.00000017.SERVEDESYNC`  **Failure Mode**: `INFRA_005` (PFMEA)
+**Fingerprint**: `{incident.fingerprint}`  **RPN**: {incident.rpn_score} \
+(S:{incident.rpn_severity} x O:{incident.rpn_occurrence} x D:{incident.rpn_detection})
+
+The engine gRPC `:50051` was dead or wedged while devenv process-compose still
+reported `gaius-engine` "ready". The out-of-band `gaius-engine-ready` watchdog
+(`scripts/engine-ready.sh`) already did the deterministic L0 recovery and
+**exhausted its recycle budget** ({recycles} complete recycles in {window_s}s), so
+serving did not hold. You are engaged for ROOT-CAUSE + META-MAINTENANCE, not a
+first-line restart (that path is spent).
+
+### Known-cause hypotheses (start here, in order of prior likelihood)
+1. **`uv run` churning the live venv** — repeated `uv run` re-syncs
+   `.devenv/state/venv` under the running engine and can pull a module out from
+   under it. Check for recent `uv run` activity / venv resyncs. Heuristic:
+   `uv-run-churns-live-engine-venv`.
+2. **GPU / thinking-load** — the 27B thinking baseline failing to (re)load after a
+   recycle (GPUs 0-3, ~21 GB TP=4). Check `orchestrator_status`, `gpu_health`,
+   and whether `:8081` serves.
+3. **process-compose daemon desync** — the native manager reporting "ready" while
+   `:50051` is dark (daemon state diverged). Check `devenv processes list` vs a
+   real `Engine/Status` probe (`scripts/zndx_status_ok.py`).
+
+### Do
+1. Investigate with the Gaius MCP tools (`health_check`, `orchestrator_status`,
+   `orchestrator_logs`, `gpu_health`) and the hypotheses above. Confirm which one
+   fits the evidence — do not guess.
+2. If serving is still down, the proven recovery is the complete unit recycle:
+   `/health fix engine` (EngineFixStrategy → `systemctl restart gaius.service`).
+3. **Meta-maintenance (the point):** on the `acp/health-fix` branch, enrich the KB
+   heuristic `engine/serving_desync` with what you found, and improve
+   `EngineFixStrategy` (`src/gaius/health/service_fixes.py`) or the watchdog
+   (`scripts/engine-ready.sh`) so this class is caught earlier / stops recurring.
+4. Report the confirmed root cause and whether serving was restored.
 
 Begin your investigation now."""
 

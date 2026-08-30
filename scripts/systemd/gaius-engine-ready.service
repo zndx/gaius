@@ -1,0 +1,27 @@
+[Unit]
+Description=Gaius engine-ready watchdog (out-of-band :50051 liveness; complete-recycle a dead/wedged engine)
+Documentation=file:///home/rch/local/src/zndx/gaius/docs/scratch/2026-08-26/170000_crash-recovery-hardening.md
+# Start after the engine unit is up (systemd_start.sh has already confirmed :50051),
+# so we begin polling into a healthy engine — no false early trip.
+After=gaius.service
+# PartOf (not BindsTo): an explicit `systemctl stop/restart gaius.service` propagates
+# to this watchdog, so an operator stop is NOT fought and a recycle brings the
+# watchdog back fresh. An engine *crash* does NOT change gaius.service (oneshot +
+# RemainAfterExit=yes), so the watchdog keeps running exactly when it must.
+PartOf=gaius.service
+# Guard the WATCHDOG SCRIPT itself from crash-looping (a bug that exits fast). The
+# gaius-recycle budget is separate and lives in the script's on-disk ledger. Tuned
+# to tolerate legitimate PartOf-propagated restarts while still catching a tight
+# script crash-loop (RestartSec=30 → a fast-exiting script trips ~10 in 5 min).
+StartLimitIntervalSec=600
+StartLimitBurst=10
+
+[Service]
+Type=simple
+ExecStart=/home/rch/local/src/zndx/gaius/scripts/engine-ready.sh
+Restart=on-failure
+RestartSec=30
+
+[Install]
+# Pulled up whenever gaius.service starts; stopped/restarted with it (PartOf).
+WantedBy=gaius.service

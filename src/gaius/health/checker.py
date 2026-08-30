@@ -290,6 +290,15 @@ class HealthChecker:
                 heuristic_id="inference/endpoint_unhealthy",
                 fix_service="endpoints",
             ),
+            HealthCheck(
+                id="engine_serving",
+                name="Engine Serving",
+                category="engine",
+                description="Out-of-band :50051 liveness — surfaces a watchdog-tripped serving desync (#EN.00000017)",
+                check_fn="_check_engine_serving",
+                heuristic_id="engine/serving_desync",
+                fix_service="engine",
+            ),
             # Inference service checks (direct HTTP paths)
             HealthCheck(
                 id="optillm_service",
@@ -870,6 +879,39 @@ class HealthChecker:
                 status=CheckStatus.FAIL,
                 message=f"Connection failed: {str(e)[:80]}",
             )
+
+    async def _check_engine_serving(self) -> CheckResult:
+        """Surface an engine serving-desync flagged by the out-of-band watchdog.
+
+        The `gaius-engine-ready` watchdog (scripts/engine-ready.sh) is the L0
+        detector for a dead/wedged :50051 that process-compose still reports
+        "ready" — a class an in-engine observer cannot see (it dies with the
+        engine). When the watchdog's deterministic recycle budget is exhausted it
+        drops a breaker marker; we surface that here as an actionable incident,
+        rather than let a silently-unrecovered engine masquerade as healthy.
+        #EN.00000017.SERVEDESYNC
+        """
+        from .engine_liveness import GURU_SERVEDESYNC, read_engine_breaker
+
+        breaker = read_engine_breaker()
+        if breaker is None:
+            return CheckResult(
+                name="Engine Serving",
+                status=CheckStatus.PASS,
+                message="No engine serving-desync breaker tripped",
+            )
+        n = breaker.get("recycles_in_window")
+        return CheckResult(
+            name="Engine Serving",
+            status=CheckStatus.FAIL,
+            message=(
+                f"{GURU_SERVEDESYNC} engine :50051 desync — out-of-band watchdog "
+                f"exhausted its recycle budget ({n} recycles); deterministic "
+                f"recovery did not hold"
+            ),
+            details={"endpoint": "engine", "breaker": breaker},
+            suggestion="Complete-recycle + root-cause: /health fix engine (auto-escalates to ACP)",
+        )
 
     async def _endpoint_serving(self, port: int) -> bool:
         """True iff the endpoint's HTTP frontend actually answers /health.

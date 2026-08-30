@@ -7161,13 +7161,66 @@ Respond with:
                     ],
                 }
 
+            elif service in ("engine", "grpc"):
+                # Engine unit recycle via the service_fixes framework. Fixes the
+                # advertised-but-unwired /health fix engine route (the else branch
+                # used to return "Unknown service: engine" even though
+                # EngineFixStrategy is registered and _health_diagnose points here).
+                # EngineFixStrategy recycles via `systemctl restart gaius.service`
+                # (a complete recycle, no pid-kill) — the proven L0 recovery.
+                from .health.remediation import (
+                    RemediationExecutor,
+                    RemediationPlan,
+                )
+                from .health.service_fixes import get_strategy
+
+                strategy = get_strategy(service)
+                if not strategy:
+                    return {"error": f"No fix strategy for: {service}"}
+
+                actions = strategy.create_fix_actions()
+                plan = RemediationPlan(
+                    service="engine",
+                    actions=actions,
+                    heuristic_id="engine/serving_desync",
+                )
+
+                if dry_run:
+                    return {
+                        "dry_run": True,
+                        "service": "engine",
+                        "steps": [
+                            {"name": a.name, "description": a.description}
+                            for a in actions
+                        ],
+                        "note": "Run without --dry-run to execute",
+                    }
+
+                executor = RemediationExecutor()
+                result = await executor.execute(plan)
+                return {
+                    "service": "engine",
+                    "success": result.success,
+                    "steps_completed": sum(1 for r in result.action_results if r.success),
+                    "steps_total": len(result.action_results),
+                    "results": [
+                        {
+                            "name": r.action.name,
+                            "success": r.success,
+                            "output": r.output[:500] if r.output else None,
+                            "error": r.error[:200] if r.error else None,
+                        }
+                        for r in result.action_results
+                    ],
+                }
+
             else:
                 from .health.service_fixes import list_services
 
                 return {
                     "error": f"Unknown service: {service}",
                     "available_services": list_services(),
-                    "usage": "/health fix [endpoints|evolution|pipeline|site|metaflow|<issue#>] [--dry-run]",
+                    "usage": "/health fix [engine|endpoints|evolution|pipeline|site|metaflow|<issue#>] [--dry-run]",
                     "note": "Use '/health fix' without args for full HealthObserver remediation, or '/health fix 42' for ACP investigation of GitHub issue #42",
                 }
 

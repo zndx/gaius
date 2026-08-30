@@ -417,6 +417,20 @@
     '';
     process-compose = {
       depends_on.aeron-driver.condition = "process_started";
+      # L0 (in-supervisor) fast relaunch: on a clean crash (non-zero exit) the
+      # native manager relaunches the engine in place — faster than the
+      # out-of-band watchdog's full recycle. `on_failure` (not `always`) so a
+      # deliberate `devenv processes stop gaius-engine` is not fought. Bounded by
+      # max_restarts: after the in-place budget is spent, :50051 stays dark and
+      # the out-of-band gaius-engine-ready watchdog takes over with a complete
+      # recycle. (Wedge / process-compose-daemon desync is NOT covered here —
+      # devenv 2.1's native manager has no liveness probe — that is the
+      # watchdog's job. See scripts/engine-ready.sh.)
+      availability = {
+        restart = "on_failure";
+        backoff_seconds = 15;
+        max_restarts = 5;
+      };
       # Without a probe process-compose reports the engine as "starting"
       # indefinitely after a restart, which reads as a failure in
       # `devenv processes list` and in systemd verify. Ready means

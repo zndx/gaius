@@ -99,6 +99,11 @@ FMEA_REGISTRY: tuple[FMEAMapping, ...] = (
         check_names=("minio",),
     ),
     FMEAMapping(
+        fmea_id="INFRA_005",
+        heuristic_path="engine/serving_desync",
+        check_names=("engine_serving",),
+    ),
+    FMEAMapping(
         fmea_id="MF_003",
         heuristic_path="infrastructure/metaflow_stack_down",
         check_names=("metaflow_stack",),

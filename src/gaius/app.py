@@ -3548,6 +3548,8 @@ Use `/evolve stop` to stop orchestrated evolution.
                     lines.extend(await self._fix_endpoints(client, dry_run))
                 elif target == "evolution":
                     lines.extend(await self._fix_evolution(client, dry_run))
+                elif target in ("engine", "grpc"):
+                    lines.extend(await self._fix_engine(dry_run))
                 elif target.isdigit():
                     # Specific GitHub issue - investigate via ACP
                     lines.extend(await self._fix_via_acp_issue(client, int(target), dry_run))
@@ -3604,6 +3606,45 @@ Use `/evolve stop` to stop orchestrated evolution.
                 except Exception as e:
                     lines.append(f"  → Failed to restart: {e}")
 
+        return lines
+
+    async def _fix_engine(self, dry_run: bool) -> list[str]:
+        """Complete-recycle the engine unit via the service_fixes framework.
+
+        Fixes the advertised-but-unwired `/health fix engine` route (the TUI used
+        to fall into the ACP-all-incidents path). EngineFixStrategy recycles via
+        `systemctl restart gaius.service` (a complete recycle, no pid-kill) — the
+        proven L0 recovery for a dead/wedged :50051. #EN.00000017.SERVEDESYNC
+        """
+        from .health.remediation import RemediationExecutor, RemediationPlan
+        from .health.service_fixes import get_strategy
+
+        lines = ["", "## Engine Fix", ""]
+        strategy = get_strategy("engine")
+        if not strategy:
+            lines.append("✗ No fix strategy for: engine")
+            return lines
+
+        actions = strategy.create_fix_actions()
+        if dry_run:
+            for a in actions:
+                lines.append(f"- {a.name}: {a.description}")
+            lines.append("")
+            lines.append("*Run without --dry-run to execute*")
+            return lines
+
+        plan = RemediationPlan(
+            service="engine", actions=actions, heuristic_id="engine/serving_desync"
+        )
+        result = await RemediationExecutor().execute(plan)
+        for r in result.action_results:
+            mark = "✓" if r.success else "✗"
+            lines.append(f"- {mark} {r.action.name}")
+            if r.error:
+                lines.append(f"  → {r.error[:200]}")
+        lines.append("")
+        lines.append(f"{'✓' if result.success else '✗'} Engine fix "
+                     f"{'succeeded' if result.success else 'failed'}")
         return lines
 
     async def _fix_evolution(self, client, dry_run: bool) -> list[str]:

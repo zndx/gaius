@@ -24,6 +24,7 @@ HEALTH_CHECK_TO_FMEA: dict[str, str] = {
     "postgresql": "INFRA_002",
     "qdrant": "INFRA_003",
     "minio": "INFRA_004",
+    "engine_serving": "INFRA_005",
 
     # GPU
     "gpu_memory": "GPU_001",
