@@ -2563,7 +2563,9 @@ Be concise - each summary should be 1-2 sentences max."""
         # (gaius.curation.cot_reasoning: tx + details + hx_reasoning), so the
         # complete product with history is surfaced federation-wide.
         if cot.get("id"):
-            from .publish import publish_from_flow
+            # Absolute: Metaflow re-executes this file BY PATH per step task (no
+            # parent package), so a relative import here raises ImportError at `end`.
+            from gaius.flows.article_curation.publish import publish_from_flow
 
             published = publish_from_flow(self)
             if published.get("skipped"):
