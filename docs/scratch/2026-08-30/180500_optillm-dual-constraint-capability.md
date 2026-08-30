@@ -34,14 +34,19 @@ capability together, and the engine fulfils the pair (or fails fast).
   Signals deployment neither shortcut exists — a federated engine has only
   `Engine/Complete`.
 
-Known go-around surface to retire (surveyed 2026-08-30; folded into Phase 4):
+Go-around surface — **ELIMINATED 2026-08-30** (commits `9e034d7`, `303cc0b`; only
+health PROBES remain, and probing is not consuming):
 
-| Path | Nature |
-|------|--------|
-| `workers/triage.py:58,68` | worker defaults to `http://localhost:8000` (`OPTILLM_URL`) — direct optillm consumption |
-| `inference/scheduler.py:645`, `inference/config.py:203` | legacy client scheduler with `GAIUS_OPTILLM_URL` — direct consumption |
-| `cli.py` / `inference/*` `technique="cot_reflection"` call sites | route via the legacy client, not `Engine/Complete` |
-| `health/checker.py` `_check_optillm` / port-audit probes | **observability, keep** — probing is not consuming (the checks themselves say "DEV FALLBACK … use gRPC for production") |
+| Path | Resolution |
+|------|------------|
+| `workers/triage.py` optillm HTTP (shared by gaius-worker AND the engine's cognition llm_triage) | rewired → engine gRPC; 3 silent score fallbacks removed |
+| `inference/scheduler.py` per-endpoint + optillm client pool (7 MCP tools, `/submit`, TUI) | rewired → engine gRPC (verified live: `/submit` → `endpoint=grpc_engine`) |
+| `inference/router.py` EndpointRouter pool (`/evolve orchestrated`) | rewired → engine gRPC; client-pool failover deleted (on-demand start stays engine-mediated) |
+| `inference/parallel.py` round-robin pool (evolution daemon) | rewired → engine gRPC |
+| `agents/modeladd` + `cli.py --legacy` direct vLLM dial (asked the engine WHERE, then dialed) | rewired → engine capability "coding"/"thinking"; XAI stays an explicit external branch |
+| `inference/client.py` `stream()` + optillm/vllm pool; `_get_coding_model`; 3 standalone ontology scripts | dead — deleted |
+| Bugs in the sanctioned path fixed en route | `technique` silently dropped in `_complete_via_grpc`; curriculum called a nonexistent `.complete` on the raw gRPC client (masked by a silent default-task fallback) |
+| `health/checker.py` / router / manager / modeladd port probes | **kept** — observability |
 
 ## Proposal
 

@@ -3,9 +3,9 @@
 Distributes LLM calls across multiple vLLM endpoints for maximum throughput.
 Used by the evolution daemon for overnight optimization runs.
 
-TECH DEBT: ParallelInferenceClient creates direct AsyncOpenAI clients to
-evolution endpoints. Should route through gRPC engine's scheduler for
-GPU-aware workload management.
+Engine-First, no bypass: ParallelInferenceClient completes exclusively through
+Engine/Complete (the engine owns GPU-aware routing across the evolution
+endpoints it starts); this class keeps only the endpoint lifecycle bookkeeping.
 
 Usage:
     client = ParallelInferenceClient()
@@ -107,7 +107,7 @@ class ParallelInferenceClient:
                 logger.error(f"Failed to start endpoint {name}: {e}")
                 results[name] = False
 
-        logger.info(f"Parallel inference ready with {len(self._clients)} endpoints")
+        logger.info(f"Parallel inference ready with {len(self._endpoints)} endpoints")
         return results
 
     async def stop(self) -> None:
@@ -213,7 +213,7 @@ class ParallelInferenceClient:
     @property
     def num_endpoints(self) -> int:
         """Number of active endpoints."""
-        return len(self._clients)
+        return len(self._endpoints)
 
     @property
     def endpoint_urls(self) -> list[str]:

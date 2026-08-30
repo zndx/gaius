@@ -1995,44 +1995,6 @@ Use UPPERCASE_WITH_UNDERSCORES for the variable name.
 
         return data
 
-    async def _get_coding_model(self) -> tuple[str, str]:
-        """Get best available coding model endpoint.
-
-        Tries engine-managed coding endpoint first, then falls back to Grok API.
-
-        Returns:
-            Tuple of (model_id, endpoint_url)
-
-        Raises:
-            RuntimeError: If no coding model is available
-        """
-        import httpx
-        import os
-
-        # Try engine-managed instruct endpoint (agent-first)
-        try:
-            from .client.engine_proxy import get_orchestrator_proxy, use_engine_proxy
-
-            if use_engine_proxy():
-                orch = await get_orchestrator_proxy()
-                result = await orch.ensure_endpoint("thinking")
-                if result.get("healthy"):
-                    port = result.get("port", 8082)
-                    model_id = result.get("model", "thinking")
-                    return (model_id, f"http://localhost:{port}/v1")
-        except Exception:
-            pass
-
-        # Fallback to Grok via XAI API
-        if os.getenv("XAI_API_KEY"):
-            return ("grok-2-latest", "https://api.x.ai/v1")
-
-        raise RuntimeError(
-            "No coding model available. Either:\n"
-            "  - Start the Gaius engine (gaius-engine start)\n"
-            "  - Set XAI_API_KEY environment variable"
-        )
-
     async def _generate_modelspec(self, hf_data: dict) -> str:
         """Generate ModelSpec code via AI.
 
