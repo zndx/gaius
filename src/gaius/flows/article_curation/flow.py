@@ -597,25 +597,42 @@ Respond with JSON:
                 "  Or specify single article with --article to bypass selection"
             )
 
-        # Parse JSON from response
+        # Parse the SELECTION JSON. cot_reflection is deep by design — its long
+        # reasoning trace (a primary deliverable, accumulated to HX/Iceberg) itself
+        # contains JSON-like structures (criteria_scores, nested braces, worked
+        # examples), so a naive first-{ to last-} grab captures an invalid span and
+        # fails #ACF.00000006.BADJSON even when the selection is correct. Instead
+        # scan for every balanced JSON object and take the LAST one carrying
+        # "selected_slug" — robust to arbitrarily rich reasoning ahead of the answer.
         content = response.content
-        try:
-            start = content.find("{")
-            end = content.rfind("}") + 1
-            if start >= 0 and end > start:
-                result = json.loads(content[start:end])
-                result["raw_response"] = content
-                result["technique"] = response.technique or self.optillm_technique
-                result["latency_ms"] = getattr(response, "latency_ms", 0)
-                return result
-        except json.JSONDecodeError:
-            pass
+        decoder = json.JSONDecoder()
+        selection = None
+        scan = 0
+        while True:
+            brace = content.find("{", scan)
+            if brace < 0:
+                break
+            try:
+                obj, obj_end = decoder.raw_decode(content, brace)
+                scan = obj_end
+                if isinstance(obj, dict) and "selected_slug" in obj:
+                    selection = obj  # keep the last valid selection object
+            except json.JSONDecodeError:
+                scan = brace + 1
 
-        # JSON parse failed - this is an error, not a fallback
+        if selection is not None:
+            # Preserve the full reasoning trace — it is the deliverable, not scaffolding.
+            selection["raw_response"] = content
+            selection["reasoning_trace"] = getattr(response, "reasoning_content", "") or ""
+            selection["technique"] = response.technique or self.optillm_technique
+            selection["latency_ms"] = getattr(response, "latency_ms", 0)
+            return selection
+
+        # No parseable selection object anywhere in the response — a real error.
         raise RuntimeError(
-            f"optillm returned non-JSON response.\n"
+            "optillm returned no parseable selection JSON.\n"
             "  Guru Meditation: #ACF.00000006.BADJSON\n"
-            f"  Response: {content[:200]}..."
+            f"  Response tail: ...{content[-300:]}"
         )
 
     async def _ensure_article_in_db(self) -> tuple[str, str]:
