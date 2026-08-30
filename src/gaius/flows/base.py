@@ -89,34 +89,47 @@ def _record_lineage_ol(event: object) -> None:
 
     payload = event.to_ol_dict() if hasattr(event, "to_ol_dict") else event.to_dict()
     addr = engine_target()
-    channel = grpc.insecure_channel(addr)
+    req = zpb.LineageRequest(
+        event_json=json.dumps(payload, default=str),
+        event_type=str(payload.get("eventType") or ""),
+    )
+    # Transient transport codes are retried on a FRESH channel (a CANCELLED /
+    # UNAVAILABLE can be sticky on the channel that saw it). A 15-minute reasoning
+    # run must not die on one transient gRPC hiccup at :50051 — observed 2026-08-30
+    # as `CANCELLED` on the very first call after an engine restart while a direct
+    # call succeeded instantly. Persistent failure still fails fast (#GR.NOLATTICE).
+    transient = {
+        grpc.StatusCode.DEADLINE_EXCEEDED,
+        grpc.StatusCode.UNAVAILABLE,
+        grpc.StatusCode.CANCELLED,
+    }
+    resp = None
     last: grpc.RpcError | None = None
-    try:
-        stub = zpb_grpc.EngineStub(channel)
-        req = zpb.LineageRequest(
-            event_json=json.dumps(payload, default=str),
-            event_type=str(payload.get("eventType") or ""),
-        )
-        resp = None
-        for attempt in range(3):
-            try:
-                resp = stub.RecordLineage(req, timeout=45.0)
-                break
-            except grpc.RpcError as e:
-                last = e
-                if e.code() != grpc.StatusCode.DEADLINE_EXCEEDED:
-                    raise
-                time.sleep(0.4 * (attempt + 1))
-        if resp is None:
-            raise last  # type: ignore[misc]
-    except grpc.RpcError as e:
+    for attempt in range(5):
+        channel = grpc.insecure_channel(addr)
+        try:
+            resp = zpb_grpc.EngineStub(channel).RecordLineage(req, timeout=45.0)
+            break
+        except grpc.RpcError as e:
+            last = e
+            if e.code() not in transient:
+                raise RuntimeError(
+                    f"{GURU_NOLATTICE} Engine/RecordLineage failed at {addr}: "
+                    f"{e.code().name} {e.details()}\n"
+                    "  Lineage SoR is Signals Atlas OpenLineage (/api/v1/lineage)."
+                ) from e
+            logger.warning(
+                "RecordLineage transient %s (attempt %d/5) — retrying", e.code().name, attempt + 1
+            )
+            time.sleep(1.5 * (attempt + 1))
+        finally:
+            channel.close()
+    if resp is None:
         raise RuntimeError(
-            f"{GURU_NOLATTICE} Engine/RecordLineage failed at {addr}: "
-            f"{e.code().name} {e.details()}\n"
+            f"{GURU_NOLATTICE} Engine/RecordLineage failed at {addr} after 5 attempts: "
+            f"{last.code().name if last else '?'} {last.details() if last else ''}\n"
             "  Lineage SoR is Signals Atlas OpenLineage (/api/v1/lineage)."
-        ) from e
-    finally:
-        channel.close()
+        ) from last
     if not resp.accepted:
         raise RuntimeError(
             f"#LN.00000001.NOATLAS RecordLineage rejected: {resp.error}\n"
