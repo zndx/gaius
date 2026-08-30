@@ -25,6 +25,24 @@ So the fix is not a bypass. optillm must be provided **through the gRPC engine a
 dual-constraint capability**: a request names a *method* capability and a *model*
 capability together, and the engine fulfils the pair (or fails fast).
 
+### The rule, both directions (Engine-First)
+
+- **Never go around optillm to reach a model** (e.g. calling thinking directly to
+  recover `reasoning_content`): the method layer is part of the capability.
+- **Never go around gRPC or the engine to reach optillm**: optillm's HTTP `:8000`
+  is engine-internal plumbing, not a service surface. In a real distributed
+  Signals deployment neither shortcut exists — a federated engine has only
+  `Engine/Complete`.
+
+Known go-around surface to retire (surveyed 2026-08-30; folded into Phase 4):
+
+| Path | Nature |
+|------|--------|
+| `workers/triage.py:58,68` | worker defaults to `http://localhost:8000` (`OPTILLM_URL`) — direct optillm consumption |
+| `inference/scheduler.py:645`, `inference/config.py:203` | legacy client scheduler with `GAIUS_OPTILLM_URL` — direct consumption |
+| `cli.py` / `inference/*` `technique="cot_reflection"` call sites | route via the legacy client, not `Engine/Complete` |
+| `health/checker.py` `_check_optillm` / port-audit probes | **observability, keep** — probing is not consuming (the checks themselves say "DEV FALLBACK … use gRPC for production") |
+
 ## Proposal
 
 ### 1. Protocol: multi-capability Complete (additive v1)
@@ -98,6 +116,9 @@ deployable models satisfy `[cot_reasoning, sae]`?" becomes answerable before rou
    that resolves to `["cot_reasoning","thinking"]` for back-compat.
 3. Trace capture: forward/collect `reasoning_content` alongside the scaffold.
 4. Cut article-curate over; then Ask/Terminal consumers as they need methods.
+   Retire the go-around surface: `workers/triage.py` direct `:8000`, the legacy
+   `gaius.inference` scheduler/config `GAIUS_OPTILLM_URL` consumption paths — all
+   optillm consumption moves behind `Engine/Complete` (health probes stay).
 5. Signals federated planner: satisfy multi-capability requests across peers.
 
 ## Related
