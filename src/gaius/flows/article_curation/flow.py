@@ -631,7 +631,14 @@ Respond with JSON:
                     model="leader",  # Route through optillm for cot_reflection
                     system_prompt="You are an editorial curator selecting articles for publication.",
                     temperature=0.7,  # Higher for exploration
-                    max_tokens=4096,  # cot_reflection needs room for <thinking>+<output>
+                    # Deep reasoning IS the product: Qwen3.8's native <think> block on
+                    # this ranking prompt routinely runs 10-15k tokens BEFORE the
+                    # cot_reflection <thinking>/<output> answer. A 4096 cap cut the
+                    # generation inside the think block (finish_reason=length), vLLM
+                    # returned content=None, and optillm's regex died with HTTP 500
+                    # "expected string or bytes-like object, got 'NoneType'" — a
+                    # deterministic failure, not a transient. 262k context: give it room.
+                    max_tokens=32768,
                 )
                 if response.content:
                     break
