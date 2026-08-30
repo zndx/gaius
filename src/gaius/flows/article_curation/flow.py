@@ -441,11 +441,67 @@ Create a comprehensive research summary that will guide article development."""
             print(f"Selected article: {self.selected_candidate.title}")
             print(f"Confidence: {self.selection_confidence:.2f}")
 
+            # Retain the reasoning — a primary deliverable — as the HX data product
+            # hx.cot_reasoning (Signals Polaris/Iceberg on RustFS) with this run's
+            # flow/step/subject context, so the corpus accumulates with history and
+            # any signals-protocol federated engine can surface it. FAIL-FAST: a lost
+            # trace is a failed run (the selection is the crucible, the trace the ore).
+            self.cot_record = self._retain_cot_reasoning(selection)
+
         self.emit_event("article_curation.article.selected", {
             "slug": self.selected_slug,
             "confidence": self.selection_confidence,
             "technique": self.optillm_technique if len(self.candidates) > 1 else "explicit",
+            "cot_record_id": (getattr(self, "cot_record", None) or {}).get("id", ""),
         })
+
+    def _retain_cot_reasoning(self, selection: dict) -> dict:
+        """Land the select_article reasoning trace in HX; return the CotRecord as a dict."""
+        import json as _json
+        import os as _os
+        from dataclasses import asdict
+
+        from gaius.engine.sentinel_claim import EXTRACT
+        from gaius.hx.cot_reasoning import store_cot_reasoning
+
+        flow_name, run_id, pathspec = type(self).__name__, "", ""
+        try:
+            from metaflow import current
+
+            flow_name = str(getattr(current, "flow_name", "") or flow_name)
+            run_id = str(getattr(current, "run_id", "") or "")
+            pathspec = str(getattr(current, "pathspec", "") or "")
+        except Exception:
+            pass
+        decision_only = {
+            k: v for k, v in selection.items()
+            if k not in ("raw_response", "reasoning_trace", "prompt")
+        }
+        rec = store_cot_reasoning(
+            flow_name=flow_name,
+            step_name="select_article",
+            run_id=run_id or "unknown",
+            pathspec=pathspec,
+            subject=str(selection.get("selected_slug") or ""),
+            technique=str(selection.get("technique") or self.optillm_technique),
+            model_name=str(selection.get("model") or "thinking"),
+            prompt=str(selection.get("prompt") or ""),
+            reasoning_trace=str(selection.get("reasoning_trace") or ""),
+            raw_response=str(selection.get("raw_response") or ""),
+            output=_json.dumps(decision_only, default=str),
+            decision=str(selection.get("selected_slug") or ""),
+            confidence=float(selection.get("confidence") or 0.0),
+            input_tokens=int(selection.get("input_tokens") or 0) or None,
+            output_tokens=int(selection.get("output_tokens") or 0) or None,
+            latency_ms=int(selection.get("latency_ms") or 0) or None,
+            yk_app_id=_os.environ.get("GAIUS_YK_APPLICATION_ID", ""),
+            yk_queue=EXTRACT.queue,
+        )
+        print(
+            f"Retained reasoning in HX {rec.table_identifier}: id={rec.id} "
+            f"snapshot={rec.snapshot_id} ({selection.get('output_tokens') or '?'} tokens)"
+        )
+        return asdict(rec)
 
         # Emit progress: article selected
         emit_select(
@@ -626,6 +682,15 @@ Respond with JSON:
             selection["reasoning_trace"] = getattr(response, "reasoning_content", "") or ""
             selection["technique"] = response.technique or self.optillm_technique
             selection["latency_ms"] = getattr(response, "latency_ms", 0)
+            # Context the HX product (hx.cot_reasoning) retains with the trace.
+            selection["model"] = str(getattr(response, "model", "") or "thinking")
+            selection["prompt"] = prompt
+            selection["input_tokens"] = int(
+                getattr(response, "prompt_tokens", None) or getattr(response, "input_tokens", 0) or 0
+            )
+            selection["output_tokens"] = int(
+                getattr(response, "completion_tokens", None) or getattr(response, "output_tokens", 0) or 0
+            )
             return selection
 
         # No parseable selection object anywhere in the response — a real error.
@@ -2467,8 +2532,29 @@ Be concise - each summary should be 1-2 sentences max."""
             outputs.append(Dataset.from_kb(self.selected_candidate.kb_path))
         if self.base_path:
             outputs.append(Dataset.from_kb(self.base_path))
+        cot = getattr(self, "cot_record", None) or {}
+        if cot.get("id"):
+            # The retained reasoning trace is an output dataset of this run.
+            outputs.append(Dataset.from_hx(cot["id"], table=cot.get("table_identifier", "hx.cot_reasoning")))
 
         self.emit_lineage_complete(outputs=outputs)
+
+        # Publish the run to the Signals data-product inventory
+        # (gaius.curation.cot_reasoning: tx + details + hx_reasoning), so the
+        # complete product with history is surfaced federation-wide.
+        if cot.get("id"):
+            from .publish import publish_from_flow
+
+            published = publish_from_flow(self)
+            if published.get("skipped"):
+                print("Product publish skipped (Signals warehouse not required)")
+            elif published.get("warehouse_error"):
+                print(f"Product publish: History JSONL only — {published['warehouse_error']}")
+            else:
+                print(
+                    f"Published {published.get('product_id')} tx={published.get('tx_id')} "
+                    f"({published.get('assessment') or 'recorded'})"
+                )
 
         # Summary
         print("\n" + "=" * 60)

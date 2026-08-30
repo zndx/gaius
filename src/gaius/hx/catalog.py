@@ -111,7 +111,8 @@ def _create_rest_catalog(config: HxConfig) -> Catalog:
             f"  Cause: {e}"
         ) from e
 
-    for ns in (config.namespace, "llm"):
+    # "hx": chain-of-thought reasoning data products (hx.cot_reasoning).
+    for ns in (config.namespace, "llm", "hx"):
         _ensure_namespace(catalog, ns)
     return catalog
 

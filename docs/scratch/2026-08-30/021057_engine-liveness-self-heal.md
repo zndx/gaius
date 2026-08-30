@@ -152,9 +152,59 @@ kill-thinking → detect miss → **recycle → thinking restored** (the full ch
 a stale-`settled_at` grace bug found + fixed to per-intent `bad_since`). grok
 resolves in-engine.
 
-## Final state
+## Final state (evening)
 `:8081` thinking `Qwen3.8-27B` serving · `:50051` ~0.15 s · WatchWorkload streaming ·
 engine-ready + workload watchdog (gaius-thinking-ready) + crash-guard active · ACP
-grok resolvable. One benign in-memory INFRA_005 test incident (persistence
-terminated; clears on next restart). All code uncommitted, awaiting review;
-signals-protocol proto change is additive v1.
+grok resolvable. All committed on trunk; signals-protocol proto change is additive v1.
+
+## Morning: article-curate → reasoning corpus as a federated data product
+
+**Overnight failures root-caused (not a YK fault):** a controlled extract sentinel
+binds in <1 s. `clt-skos-admit` (`*/15`) holds the ONE spare GPU token (thinking
+pins heavy's 4-GPU floor) for ~195 s, and the GPU admit wait was 180 s — so any
+extract flow on a `:00/:15/:30/:45` boundary was a guaranteed `#YK.NOTADMITTED`;
+the daily 09:00 article-curate collided every night. Fix (`1c69b13`): GPU admit
+wait → 600 s (`GAIUS_YK_GPU_ADMIT_TIMEOUT_S`), `article-curate-daily` → 09:07 UTC.
+
+**Reframe (user):** deep CoT+reflection is the PRODUCT, not overhead. Article
+selection is the crucible refining an accumulating thinking corpus; sustained
+reasoning = sustained GPU utilization, encouraged. The earlier "lighter
+technique" suggestion is retracted. Also fixed (`0f1f0e1`): the flow's naive
+`first-{…last-}` JSON grab choked on rich reasoning (12k-token trace, correct
+selection, `#ACF.BADJSON`) — now scans for the selection object and preserves
+the full trace.
+
+**The data product — structure (reviewed against the nascent surface):** the
+signals-protocol data-product surface is a *warehouse contract*
+(`specification/protocol/data_products.md`): `product_id = {peer}.{domain}.{name}`,
+Signals-owned `tx/details/hx_reasoning` inventory (UUIDv7), one shared Polaris
+catalog (`signals` @ :8181, `s3://signals-dataproducts/iceberg`) that gaius HX
+writes and Signals Impala reads. So:
+- Iceberg table **`hx.cot_reasoning`** (`src/gaius/hx/cot_reasoning.py`): one
+  physical table for every flow's reasoning, partitioned `flow_name` + month;
+  `step_name`, `subject` (article slug), `run_id`, technique, model, prompt,
+  `reasoning_trace`, raw_response, output/decision, tokens, YK provenance. The
+  path `gaius-content-curation/select_article/hx/cot_reasoning` is a PROJECTION
+  (subject/step/table), never a namespace — one product carries every article and
+  every run, with Iceberg snapshot history.
+- Federated product **`gaius.curation.cot_reasoning`**
+  (`flows/article_curation/publish.py`, shared helpers `flows/dataproduct.py`):
+  published at flow `end` via `signals.ops.history.review` (mirrors
+  `gaius.prospects.corpus`), run-qualified `run.{flow}/{run_id}.*` facts +
+  OpenLineage `gaius.hx/hx.cot_reasoning:{id}`.
+- `select_article` retains the trace FAIL-FAST (`#HX.00000003.COTWRITE`) — a lost
+  trace is a failed run.
+- **Discovery over the wire (additive v1):** `ServerQuery(kind=PRODUCTS=9)` →
+  `repeated ProductHint products=11` (`s2s.declared_products`); warehouse stays
+  the inventory of record.
+- **Proven:** table created in Polaris; row written/read/deleted with the engine's
+  env; **Signals Impala `SHOW TABLES IN hx → cot_reasoning` + full DESCRIBE with
+  zero registration** — the federation path works.
+
+**Incident (self-inflicted, fixed, `3079711`):** the root-run watchdog units wrote
+root-owned `__pycache__` into rch's venv → the next flow spawn's `uv run` sync
+failed mid-way (31 uninstalled, 67 never reinstalled): torch/protobuf/pyarrow/
+pyluxcore missing, thinking down, every flow spawn failing. Repaired via
+`uv sync --inexact` + pyluxcore + chown; units now `PYTHONDONTWRITEBYTECODE=1`.
+Root cause of the chronic 67-pkg churn found: a leaked `UV_PROJECT_ENVIRONMENT`
+makes signals-tree `uv run` sync into the gaius venv (memory updated).

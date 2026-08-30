@@ -555,8 +555,53 @@ def local_response(
         resp.workloads.extend(declared_workloads(peer=resp.project))
     if kind == zpb.SERVER_QUERY_KIND_SOURCE_POSTURE:
         resp.posture.CopyFrom(build_source_posture(root, project=resp.project))
+    if kind == zpb.SERVER_QUERY_KIND_PRODUCTS:
+        resp.products.extend(declared_products(peer=resp.project))
     # SCHEDULES: empty until the catalog lands (P3). Honest, not invented.
     return resp
+
+
+def declared_products(peer: str = "gaius") -> list:
+    """This peer's federated data products (ServerQuery kind=PRODUCTS).
+
+    Discovery hints only — the Signals warehouse (details / tx / hx_reasoning)
+    is the inventory of record. Each product's identity + facts live with its
+    flow (the publish module); this just projects them onto ProductHint so any
+    engine can find the product and its Iceberg table in the shared Polaris
+    catalog without first reading Signals.
+    """
+    from gaius.flows.article_curation import publish as curation
+    from gaius.flows.prospects import publish as prospects
+    from gaius.hx.cot_reasoning import TABLE_IDENTIFIER as COT_TABLE
+
+    return [
+        zpb.ProductHint(
+            product_id=prospects.PRODUCT_ID,
+            peer=peer,
+            title=prospects.CATALOG["title"],
+            kind=prospects.CATALOG["kind"],
+            leaf=prospects.CATALOG["leaf"],
+            table_identifier="",
+            data_uri="s3://signals-dataproducts/gaius/prospects/",
+            flow="ProspectsUpdateFlow",
+            step="",
+            agent_focus=prospects.CATALOG["agent_focus"],
+            history="run-qualified-details (run.{flow}/{run_id}.*)",
+        ),
+        zpb.ProductHint(
+            product_id=curation.PRODUCT_ID,
+            peer=peer,
+            title=curation.CATALOG["title"],
+            kind=curation.CATALOG["kind"],
+            leaf=curation.CATALOG["leaf"],
+            table_identifier=COT_TABLE,
+            data_uri="s3://signals-dataproducts/iceberg/hx/cot_reasoning",
+            flow="ArticleCurationFlow",
+            step=curation.STEP_NAME,
+            agent_focus=curation.CATALOG["agent_focus"],
+            history="iceberg-snapshots+run-qualified-details (one row per run; partition flow_name/month)",
+        ),
+    ]
 
 
 def declared_queues() -> list[zpb.QueueHint]:
