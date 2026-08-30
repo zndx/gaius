@@ -208,3 +208,61 @@ pyluxcore missing, thinking down, every flow spawn failing. Repaired via
 `uv sync --inexact` + pyluxcore + chown; units now `PYTHONDONTWRITEBYTECODE=1`.
 Root cause of the chronic 67-pkg churn found: a leaked `UV_PROJECT_ENVIRONMENT`
 makes signals-tree `uv run` sync into the gaius venv (memory updated).
+
+## Afternoon: the engine event loop was being BLOCKED (fixed) + the trace was empty (fixed)
+
+- **Loop blocking (`71fc18b`, `ad42bf0`):** `apply_and_admit` / `delete_flow_sentinel`
+  / `notify_admit` are sync (kubectl + RequestQueueShare + `time.sleep` polls) and
+  were called directly from async handlers everywhere (STP spawn, feature_probe,
+  ambient, optillm start/stop/restart, prospects, collection curate, orchestrator
+  capability admit, Yield). Each call blocked the engine loop for the whole admit
+  wait — the chronic 20–30 s Status spikes — and with the 600 s wait it became a
+  10-minute freeze (16:15–16:25): Status DEADLINE, WatchWorkload dropped, the
+  httpx client stopped reading and back-pressured optillm → vLLM's single uvicorn
+  worker → thinking's /health "hung" → the engine force-killed it. Now every async
+  call site uses `asyncio.to_thread`; Status held 0.15 s flat through a full run
+  including a clt-skos-admit collision. Also: `_get_vllm_heartbeat` reads the
+  vLLM-WIDE `generation_tokens_total` (not per-request) — fine for progress, not a
+  per-request count.
+- **Reasoning trace empty (`37b4882`):** first retained `hx.cot_reasoning` row had
+  trace_chars=0 / raw_chars=1739 after a 10k+-token generation: optillm's
+  cot_reflection returns ONLY `<output>` unless `--return-full-response`
+  (server_config, main()-only — gunicorn never runs main()); vLLM's separated
+  `reasoning_content` never passes through optillm. Fix: `OPTILLM_RETURN_FULL_RESPONSE=true`
+  in the launch env + patched into server_config in gunicorn `post_fork`; the flow
+  derives `reasoning_trace` from the `<thinking>/<reflection>` scaffold. Deployed
+  by the post-run watcher (see below). **Design gap to decide:** through optillm the
+  NATIVE Qwen `<think>` block (the richest trace, 10k+ tokens) is still lost; a
+  direct Engine/Complete (capability=thinking, cot_reflection prompt) would return
+  `reasoning_content` + content and capture everything — Engine-First, but drops
+  optillm for selection.
+- **max_tokens (`ad0f007`):** 4096 → 32768. Qwen3.8's native think block on the
+  ranking prompt runs 10–15k tokens; the cap cut it inside `<think>`
+  (`finish_reason=length`) → `content=None` → optillm HTTP 500 "expected string or
+  bytes-like object, got 'NoneType'" — deterministic (twice), not transient.
+- **Lineage retry (`dd890d2`):** RecordLineage transient CANCELLED/UNAVAILABLE retried
+  on a fresh channel (a run died in `start` on one transient CANCELLED).
+- **Import cycle (`aa9b774`):** the lazy `gaius.engine.__init__` exposed a latent
+  backends↔services cycle for anything importing backends/resources first
+  (`gaius.inference.manager`, `backends.external.xai_backend` used by the flow,
+  `gunicorn_config`). `gaius.engine.services` is now a lazy PEP 562 hub; 11-entry
+  import matrix + flow graph check pass.
+- **select_article tail (`b0db9ec`):** my helper insertion had displaced the step's
+  tail (progress emit, DB registration, `self.next`) — Metaflow's validity checker
+  caught it.
+- **Proven E2E (run 21398 / Metaflow 1689):** YK admit 48 s (extract), lineage OK,
+  cot_reflection 16,999 tokens / 589 s, `Retained reasoning in HX` → row visible
+  from gaius (pyiceberg), from **Signals Impala** (shared Polaris, zero
+  registration), and via `ServerQuery(PRODUCTS)`; cards rendering (LuxCore → R2 →
+  KV). Status 0.15 s throughout.
+- **Signals-side defects found (action for Signals):** the data-product inventory
+  schema (`config/platform/data-products-{kudu,iceberg,views}.sql`) cannot be
+  applied on this Impala — `role STRING` uses a reserved word (needs backticks), and
+  the Iceberg tier1 tables (`tx_tier1`, `details_tier1`) fail metadata load
+  ("Every MetaProvider failed … Table not found") so the views can't be created.
+  Until fixed, `signals.ops.history.review` (prospects + curation publishes)
+  soft-fails to the History JSONL. tx_tier0/details_tier0 (Kudu) were created.
+- **Post-run watcher:** `scratchpad/deploy_after_run.sh` waits for task 21398, then
+  `systemctl restart gaius.service` (deploys optillm full-response + lazy services
+  + Yield off-loop), waits for thinking, triggers one `validate-full-trace` run.
+  Log: `scratchpad/deploy_after_run.log`.
