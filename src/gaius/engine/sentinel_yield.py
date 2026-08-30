@@ -86,7 +86,9 @@ async def yield_workload(services: Any, request: zpb.YieldRequest) -> zpb.YieldR
         opt = getattr(orch, "_optillm", None) if orch is not None else None
         if opt is not None:
             await opt.stop()
-        delete_flow_sentinel(OPTILLM_WORKLOAD_ID)
+        import asyncio as _aio
+
+        await _aio.to_thread(delete_flow_sentinel, OPTILLM_WORKLOAD_ID)  # off-loop
         return zpb.YieldResponse(
             ok=True,
             process_ended=True,
@@ -98,8 +100,10 @@ async def yield_workload(services: Any, request: zpb.YieldRequest) -> zpb.YieldR
     orch = getattr(services, "orchestrator_service", None)
     if alias and orch is not None:
         stopped = await orch.stop_endpoint(alias)
-        delete_flow_sentinel(wid)
-        delete_flow_sentinel(capability_workload_id(alias))
+        import asyncio as _aio
+
+        await _aio.to_thread(delete_flow_sentinel, wid)  # off-loop (kubectl delete)
+        await _aio.to_thread(delete_flow_sentinel, capability_workload_id(alias))
         restore_started = False
         if request.reason == zpb.YIELD_REASON_COMPLETED:
             try:

@@ -66,7 +66,7 @@ class FlowProcessTable:
         # Application teardown is Yield — not host-flow start.
         from gaius.engine.sentinel_claim import delete_flow_sentinel
 
-        delete_flow_sentinel(workload_id)
+        await asyncio.to_thread(delete_flow_sentinel, workload_id)  # off-loop (kubectl delete)
         msg = (
             f"ended {row.kind} pid={row.pid} workload_id={workload_id}"
             if ended
