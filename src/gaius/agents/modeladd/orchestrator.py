@@ -1017,19 +1017,15 @@ model_id: {state.model_id}
         if not state.hf_data:
             return {"error": "No HuggingFace data available. Call model_fetch_hf first."}
 
-        # Get coding endpoint
-        # TECH DEBT: Hardcoded localhost:8082/v1. Should use engine gRPC client
-        # for endpoint discovery and health-aware routing.
+        # Engine-First, no bypass: local coding goes through Engine/Complete
+        # (the engine discovers/ensures the endpoint); XAI is an explicit
+        # external fallback when the engine cannot serve "coding".
+        use_xai = False
         check = await check_coding_endpoint(8082)
-        if check.get("healthy"):
-            endpoint_url = "http://localhost:8082/v1"
-            coding_model = check.get("model_id", "unknown")
-        else:
-            # Try XAI fallback
+        if not check.get("healthy"):
             import os
             if os.getenv("XAI_API_KEY"):
-                endpoint_url = "https://api.x.ai/v1"
-                coding_model = "grok-2-latest"
+                use_xai = True
             else:
                 return {"error": "No coding endpoint available and XAI_API_KEY not set"}
 
@@ -1037,8 +1033,7 @@ model_id: {state.model_id}
 
         result = await generate_modelspec_code(
             hf_data=state.hf_data,
-            endpoint_url=endpoint_url,
-            model_id=coding_model,
+            use_xai=use_xai,
             system_prompt=MODELSPEC_SYSTEM_PROMPT,
             critic_feedback=critic_feedback or None,
         )

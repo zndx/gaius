@@ -22,7 +22,8 @@ import logging
 from dataclasses import dataclass
 from typing import Any
 
-from openai import AsyncOpenAI
+# Engine-First, no bypass: completions go through Engine/Complete (see
+# complete()); this client keeps only the endpoint lifecycle bookkeeping.
 
 logger = logging.getLogger(__name__)
 
@@ -47,8 +48,6 @@ class ParallelInferenceClient:
 
     def __init__(self):
         self._endpoints: dict[str, str] = {}  # name -> url
-        self._clients: dict[str, AsyncOpenAI] = {}
-        self._endpoint_index = 0
         self._lock = asyncio.Lock()
         self._model = "mistralai/Mistral-7B-Instruct-v0.3"
 
@@ -96,15 +95,11 @@ class ParallelInferenceClient:
             url = ep_config.get("url", "")
 
             try:
-                # Start the endpoint via orchestrator
+                # Start the endpoint via orchestrator (the engine serves it;
+                # completions go through Engine/Complete, never this URL).
                 success = await orchestrator.start_endpoint(name)
                 if success:
                     self._endpoints[name] = url
-                    self._clients[name] = AsyncOpenAI(
-                        api_key="sk-vllm",
-                        base_url=url,
-                        timeout=120.0,
-                    )
                     logger.info(f"Started evolution endpoint: {name} at {url}")
                 results[name] = success
 
@@ -129,17 +124,6 @@ class ParallelInferenceClient:
                 logger.warning(f"Error stopping {name}: {e}")
 
         self._endpoints.clear()
-        self._clients.clear()
-
-    def _get_next_endpoint(self) -> tuple[str, AsyncOpenAI] | None:
-        """Get next endpoint in round-robin order."""
-        if not self._clients:
-            return None
-
-        names = list(self._clients.keys())
-        name = names[self._endpoint_index % len(names)]
-        self._endpoint_index = (self._endpoint_index + 1) % len(names)
-        return name, self._clients[name]
 
     async def complete(
         self,
@@ -148,32 +132,35 @@ class ParallelInferenceClient:
         max_tokens: int = 1024,
     ) -> ParallelResult:
         """Complete a single request using next available endpoint."""
-        endpoint = self._get_next_endpoint()
-        if not endpoint:
-            return ParallelResult(
-                content="",
-                endpoint="none",
-                success=False,
-                error="No endpoints available",
-            )
+        # Engine-First, no bypass: the completion goes through Engine/Complete;
+        # the engine routes/load-balances across the evolution endpoints it
+        # started (round-robin client pools are its job, not ours).
+        from .engine_client import get_engine_client
 
-        name, client = endpoint
+        system_prompt = None
+        user_parts: list[str] = []
+        for m in messages:
+            if m.get("role") == "system" and system_prompt is None:
+                system_prompt = m.get("content") or ""
+            else:
+                user_parts.append(str(m.get("content") or ""))
 
         try:
-            response = await client.chat.completions.create(
-                model=self._model,
-                messages=messages,
+            engine = await get_engine_client()
+            res = await engine.complete_simple(
+                prompt="\n\n".join(p for p in user_parts if p),
+                system_prompt=system_prompt,
                 temperature=temperature,
                 max_tokens=max_tokens,
             )
-            content = response.choices[0].message.content or ""
-            return ParallelResult(content=content, endpoint=name, success=True)
-
+            return ParallelResult(
+                content=res.content or "", endpoint=res.backend or "engine", success=True
+            )
         except Exception as e:
-            logger.warning(f"Endpoint {name} failed: {e}")
+            logger.warning(f"Engine completion failed: {e}")
             return ParallelResult(
                 content="",
-                endpoint=name,
+                endpoint="engine",
                 success=False,
                 error=str(e),
             )
@@ -194,7 +181,7 @@ class ParallelInferenceClient:
         Returns:
             List of results in same order as input
         """
-        if not self._clients:
+        if not self._endpoints:
             return [
                 ParallelResult(content="", endpoint="none", success=False, error="No endpoints")
                 for _ in messages_list

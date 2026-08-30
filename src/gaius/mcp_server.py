@@ -1684,37 +1684,29 @@ Domain: {domain or 'general'}
             else:
                 hf_data = await fetch_hf_model_data(model_id)
 
-            # Get coding endpoint via engine (agent-first)
+            # Engine-First, no bypass: local coding goes through Engine/Complete
+            # (the engine ensures the endpoint itself); XAI is an explicit
+            # external fallback when the engine cannot serve "coding".
             from .client.engine_proxy import get_orchestrator_proxy, use_engine_proxy
 
+            use_xai = False
+            coding_healthy = False
             if use_engine_proxy():
                 orch = await get_orchestrator_proxy()
                 result = await orch.ensure_endpoint("coding")
-                if result.get("healthy"):
-                    port = result.get("port", 8082)
-                    endpoint_url = f"http://localhost:{port}/v1"
-                    coding_model = result.get("model", "coding")
-                elif os.getenv("XAI_API_KEY"):
-                    endpoint_url = "https://api.x.ai/v1"
-                    coding_model = "grok-2-latest"
+                coding_healthy = bool(result.get("healthy"))
+            if not coding_healthy:
+                if os.getenv("XAI_API_KEY"):
+                    use_xai = True
                 else:
                     return json.dumps(
                         {"error": "Coding endpoint not healthy and XAI_API_KEY not set"},
                         indent=2,
                     )
-            elif os.getenv("XAI_API_KEY"):
-                endpoint_url = "https://api.x.ai/v1"
-                coding_model = "grok-2-latest"
-            else:
-                return json.dumps(
-                    {"error": "No coding endpoint available and XAI_API_KEY not set"},
-                    indent=2,
-                )
 
             result = await generate_modelspec_code(
                 hf_data=hf_data,
-                endpoint_url=endpoint_url,
-                model_id=coding_model,
+                use_xai=use_xai,
                 system_prompt=MODELSPEC_SYSTEM_PROMPT,
                 critic_feedback=critic_feedback or None,
             )

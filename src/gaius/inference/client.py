@@ -87,22 +87,12 @@ class InferenceClient:
         self._init_clients()
 
     def _init_clients(self) -> None:
-        """Initialize OpenAI-compatible clients for all available backends."""
-        # optillm (local proxy with optimization)
-        # Uses API key from config (which loads from env var or HOCON)
-        self._clients["optillm"] = AsyncOpenAI(
-            api_key=self.config.optillm_api_key,
-            base_url=self.config.optillm_url,
-            timeout=self.config.timeout,
-        )
+        """Initialize clients for EXTERNAL providers only.
 
-        # vLLM direct (local fallback)
-        self._clients["vllm"] = AsyncOpenAI(
-            api_key="sk-vllm",
-            base_url=self.config.vllm_url,
-            timeout=self.config.timeout,
-        )
-
+        Engine-First, no bypass: no direct optillm/vLLM clients — local
+        inference is consumed solely through the engine gRPC (complete()).
+        External APIs (XAI, OpenAI) are a different provider lane.
+        """
         # XAI Grok (outsider evaluation model)
         if self.config.xai_api_key:
             self._clients["xai"] = AsyncOpenAI(
@@ -132,6 +122,7 @@ class InferenceClient:
         max_tokens: int,
         temperature: float,
         model: str | None = None,
+        technique: str | None = None,
     ) -> CompletionResult | None:
         """Complete via gRPC Scheduler. Returns None if unavailable.
 
@@ -157,6 +148,7 @@ class InferenceClient:
                 system_prompt=system_prompt,
                 temperature=temperature,
                 max_tokens=max_tokens,
+                technique=technique,
             )
 
             # scheduler.complete() returns CompletionResult directly
@@ -170,32 +162,6 @@ class InferenceClient:
         except Exception as e:
             logger.debug(f"gRPC completion failed: {e}")
             return None
-
-    def _get_primary_client(self) -> tuple[AsyncOpenAI | None, str]:
-        """Get the primary client based on configured backend."""
-        backend = self.config.backend.value
-        return self._clients.get(backend), backend
-
-    def _get_fallback_chain(self) -> list[tuple[str, AsyncOpenAI]]:
-        """Get fallback chain: local first, then remote.
-
-        Order: vLLM → XAI → OpenAI
-        """
-        chain = []
-
-        # Local fallback first
-        if "vllm" in self._clients:
-            chain.append(("vllm", self._clients["vllm"]))
-
-        # XAI for outsider evaluation
-        if "xai" in self._clients:
-            chain.append(("xai", self._clients["xai"]))
-
-        # OpenAI last resort
-        if "openai" in self._clients:
-            chain.append(("openai", self._clients["openai"]))
-
-        return chain
 
     def _get_model_name(self, technique: OptillmTechnique | str | None = None) -> str:
         """Build model name with optional technique prefix.
@@ -261,8 +227,16 @@ class InferenceClient:
                 "  See: /health fix engine"
             )
 
+        # Thread the optillm technique through the engine (it was silently
+        # dropped before — cot_reflection/bon requests ran as plain completes).
+        technique_str: str | None
+        if isinstance(technique, OptillmTechnique):
+            technique_str = technique.value if technique != OptillmTechnique.NONE else None
+        else:
+            technique_str = technique or None
+
         result = await self._complete_via_grpc(
-            messages, max_tokens, temperature, model
+            messages, max_tokens, temperature, model, technique=technique_str
         )
         if result:
             return result
@@ -353,38 +327,6 @@ class InferenceClient:
         # Last resort: use local model
         return await self.complete(messages, max_tokens=max_tokens, temperature=temperature)
 
-    async def stream(
-        self,
-        messages: list[Message],
-        technique: OptillmTechnique | str | None = None,
-        max_tokens: int | None = None,
-        temperature: float = 0.7,
-    ) -> AsyncIterator[str]:
-        """Stream a completion response.
-
-        Yields chunks of text as they arrive.
-        """
-        model = self._get_model_name(technique)
-        max_tokens = max_tokens or self.config.max_tokens
-
-        openai_messages = [{"role": m.role, "content": m.content} for m in messages]
-
-        primary_client, _ = self._get_primary_client()
-        if not primary_client:
-            raise RuntimeError("No inference client available")
-
-        stream = await primary_client.chat.completions.create(
-            model=model,
-            messages=openai_messages,
-            max_tokens=max_tokens,
-            temperature=temperature,
-            stream=True,
-        )
-
-        async for chunk in stream:
-            if chunk.choices and chunk.choices[0].delta.content:
-                yield chunk.choices[0].delta.content
-
     def _parse_response(
         self,
         response,
@@ -411,18 +353,8 @@ class InferenceClient:
         )
 
     async def is_available(self) -> bool:
-        """Check if the primary backend is available."""
-        primary_client, _ = self._get_primary_client()
-        if not primary_client:
-            return False
-
-        try:
-            base_url = str(primary_client.base_url).rstrip("/v1")
-            async with httpx.AsyncClient() as client:
-                r = await client.get(f"{base_url}/v1/models", timeout=5)
-                return r.status_code == 200
-        except Exception:
-            return False
+        """Check if inference is available — i.e. the engine gRPC gateway."""
+        return self._is_grpc_available()
 
     async def check_backends(self) -> dict[str, bool]:
         """Check availability of all configured backends."""

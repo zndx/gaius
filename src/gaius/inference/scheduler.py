@@ -67,11 +67,8 @@ try:
 except ImportError:
     ORTOOLS_AVAILABLE = False
 
-try:
-    from openai import AsyncOpenAI
-    OPENAI_AVAILABLE = True
-except ImportError:
-    OPENAI_AVAILABLE = False
+# Engine-First, no bypass: this scheduler consumes inference ONLY through the
+# engine's gRPC (see _execute_job) — no direct OpenAI-compatible clients.
 
 logger = logging.getLogger(__name__)
 
@@ -583,7 +580,6 @@ class SchedulerService:
 
     def __init__(self):
         self._scheduler = InferenceScheduler()
-        self._clients: dict[str, AsyncOpenAI] = {}
         self._job_results: dict[str, JobResult] = {}
         self._job_futures: dict[str, asyncio.Future] = {}
         self._event_handlers: dict[JobEvent, list[EventCallback]] = defaultdict(list)
@@ -606,53 +602,6 @@ class SchedulerService:
         self._health_monitor = None
         self._recovery_manager = None
         self._persistence = None
-
-        self._init_clients()
-
-    def _init_clients(self) -> None:
-        """Initialize OpenAI clients for each endpoint."""
-        if not OPENAI_AVAILABLE:
-            return
-
-        for name, endpoint in self._scheduler._endpoints.items():
-            try:
-                self._clients[name] = AsyncOpenAI(
-                    api_key="sk-vllm",
-                    base_url=endpoint.url,
-                    timeout=60,
-                )
-            except Exception as e:
-                logger.warning(f"Failed to init client for {name}: {e}")
-
-        # Add optillm as fallback client
-        try:
-            # Try HOCON config first, fall back to env/defaults
-            api_key = "sk-optillm"
-            optillm_url = "http://localhost:8088/v1"  # optillm proxy when running
-            model = "mistralai/Devstral-Small-2-24B-Instruct-2512"  # Devstral-24B default
-
-            try:
-                from ..core.config import get_config
-                app_config = get_config()
-                optillm_cfg = app_config.inference.optillm
-                api_key = optillm_cfg.api_key or api_key
-                optillm_url = optillm_cfg.url or optillm_url
-                model = app_config.inference.model or model
-            except Exception:
-                # Fall back to env vars
-                import os
-                api_key = os.getenv("OPTILLM_API_KEY", api_key)
-                optillm_url = os.getenv("GAIUS_OPTILLM_URL", optillm_url)
-
-            self._clients["optillm"] = AsyncOpenAI(
-                api_key=api_key,
-                base_url=optillm_url,
-                timeout=120,
-            )
-            self._optillm_model = model
-            logger.info(f"Optillm fallback configured: {optillm_url}")
-        except Exception as e:
-            logger.warning(f"Failed to init optillm fallback: {e}")
 
     # ─────────────────────────────────────────────────────────────────────────
     # Event System
@@ -825,53 +774,35 @@ class SchedulerService:
                 elif hasattr(m, "role"):
                     messages.append({"role": m.role, "content": m.content})
 
-            # Try primary endpoint, fall back to optillm
-            response = None
-            used_endpoint = assignment.endpoint
-            model = job.model or "default"
+            # Engine-First, no bypass: the completion is consumed ONLY through
+            # the engine's gRPC — never a vLLM :808x or optillm dialed directly
+            # from this client-side scheduler. The engine owns endpoint routing
+            # and any internal fallback.
+            from .engine_client import get_engine_client
 
-            # Try assigned endpoint first
-            client = self._clients.get(assignment.endpoint)
-            if client is not None:
-                try:
-                    response = await client.chat.completions.create(
-                        model=model,
-                        messages=messages,
-                        temperature=0.7,
-                        max_tokens=job.estimated_tokens or 1024,
-                    )
-                except Exception as primary_error:
-                    logger.warning(f"Primary endpoint {assignment.endpoint} failed: {primary_error}")
-                    # Mark endpoint unhealthy
-                    self._scheduler.update_endpoint_state(assignment.endpoint, healthy=False)
+            system_prompt = None
+            user_parts: list[str] = []
+            for m in messages:
+                if m.get("role") == "system" and system_prompt is None:
+                    system_prompt = m.get("content") or ""
+                else:
+                    user_parts.append(str(m.get("content") or ""))
 
-            # Fallback to optillm if primary failed
-            if response is None and "optillm" in self._clients:
-                logger.info(f"Falling back to optillm for job {job.id}")
-                client = self._clients["optillm"]
-                used_endpoint = "optillm"
-                # Use configured model for optillm
-                fallback_model = getattr(self, "_optillm_model", "default")
-                response = await client.chat.completions.create(
-                    model=fallback_model,
-                    messages=messages,
-                    temperature=0.7,
-                    max_tokens=job.estimated_tokens or 1024,
-                )
-
-            if response is None:
-                raise RuntimeError(f"No available endpoints for job {job.id}")
-
-            # Extract result
-            choice = response.choices[0]
-            usage = response.usage
+            engine = await get_engine_client()
+            res = await engine.complete_simple(
+                prompt="\n\n".join(p for p in user_parts if p),
+                system_prompt=system_prompt,
+                model=job.model or None,
+                temperature=0.7,
+                max_tokens=job.estimated_tokens or 1024,
+            )
 
             result.status = JobStatus.COMPLETED
-            result.content = choice.message.content or ""
-            result.model = response.model
-            result.endpoint = used_endpoint
-            result.input_tokens = usage.prompt_tokens if usage else 0
-            result.output_tokens = usage.completion_tokens if usage else 0
+            result.content = res.content or ""
+            result.model = res.model or (job.model or "engine")
+            result.endpoint = res.backend or "engine"
+            result.input_tokens = res.input_tokens or 0
+            result.output_tokens = res.output_tokens or 0
 
             job.status = JobStatus.COMPLETED
             job.completed_at = datetime.now()

@@ -297,19 +297,22 @@ def estimate_params(api_info: dict, name: str) -> float:
 
 async def generate_modelspec_code(
     hf_data: HFModelData,
-    endpoint_url: str,
-    model_id: str,
     system_prompt: str,
     critic_feedback: str | None = None,
+    *,
+    use_xai: bool = False,
 ) -> GenerationResult:
     """Generate ModelSpec code via AI.
 
+    Engine-First, no bypass: local generation is consumed through the engine's
+    gRPC (capability "coding") — never a vLLM :808x dialed directly. XAI is an
+    explicit EXTERNAL branch (a different provider, not a local bypass).
+
     Args:
         hf_data: HuggingFace data
-        endpoint_url: OpenAI-compatible API endpoint
-        model_id: Model to use for generation
         system_prompt: System prompt for code generation
         critic_feedback: Optional feedback from previous attempt for retry
+        use_xai: Use the external XAI API instead of the engine
 
     Returns:
         GenerationResult with code and model info
@@ -317,36 +320,50 @@ async def generate_modelspec_code(
     Raises:
         RuntimeError: If generation fails
     """
-    import httpx
-
     prompt = build_ai_prompt(hf_data)
 
     if critic_feedback:
         prompt += f"\n\n## IMPORTANT: Previous attempt had issues:\n{critic_feedback}\n\nPlease fix these issues in your new generation."
 
-    # Prepare headers
-    headers = {"Content-Type": "application/json"}
-    api_key = os.getenv("XAI_API_KEY", "")
-    if api_key and "x.ai" in endpoint_url:
-        headers["Authorization"] = f"Bearer {api_key}"
+    if use_xai:
+        import httpx
 
-    async with httpx.AsyncClient(timeout=120) as client:
-        resp = await client.post(
-            f"{endpoint_url}/chat/completions",
-            headers=headers,
-            json={
-                "model": model_id,
-                "messages": [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": prompt},
-                ],
-                "temperature": 0.3,
-                "max_tokens": 2000,
-            },
+        api_key = os.getenv("XAI_API_KEY", "")
+        if not api_key:
+            raise RuntimeError("XAI generation requested but XAI_API_KEY is not set")
+        async with httpx.AsyncClient(timeout=120) as client:
+            resp = await client.post(
+                "https://api.x.ai/v1/chat/completions",
+                headers={
+                    "Content-Type": "application/json",
+                    "Authorization": f"Bearer {api_key}",
+                },
+                json={
+                    "model": "grok-2-latest",
+                    "messages": [
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": prompt},
+                    ],
+                    "temperature": 0.3,
+                    "max_tokens": 2000,
+                },
+            )
+            resp.raise_for_status()
+        code = resp.json()["choices"][0]["message"]["content"]
+        model_used, endpoint_used = "grok-2-latest", "xai"
+    else:
+        from gaius.inference.engine_client import get_engine_client
+
+        engine = await get_engine_client()
+        res = await engine.complete_simple(
+            prompt=prompt,
+            system_prompt=system_prompt,
+            model="coding",
+            temperature=0.3,
+            max_tokens=2000,
         )
-        resp.raise_for_status()
-
-    code = resp.json()["choices"][0]["message"]["content"]
+        code = res.content or ""
+        model_used, endpoint_used = res.model or "coding", "engine"
 
     # Strip markdown fences if present
     if "```python" in code:
@@ -356,8 +373,8 @@ async def generate_modelspec_code(
 
     return GenerationResult(
         code=code.strip(),
-        model_used=model_id,
-        endpoint_used=endpoint_url,
+        model_used=model_used,
+        endpoint_used=endpoint_used,
     )
 
 

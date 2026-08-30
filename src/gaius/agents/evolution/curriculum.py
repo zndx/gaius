@@ -123,10 +123,15 @@ class CurriculumAgent:
         self._inference_client = None
 
     async def _get_inference_client(self):
-        """Get or create inference client."""
+        """Get or create the engine inference client (gRPC).
+
+        Was the raw GrpcEngineClient, which has no .complete(messages) — every
+        LLM task generation silently fell back to a default task. The
+        EngineInferenceClient exposes the complete() this class calls.
+        """
         if self._inference_client is None:
-            from gaius.client import get_grpc_client
-            self._inference_client = await get_grpc_client()
+            from gaius.inference.engine_client import get_engine_client
+            self._inference_client = await get_engine_client()
         return self._inference_client
 
     async def propose_task(
@@ -317,7 +322,7 @@ class CurriculumAgent:
             Generated EvolutionTask
         """
         try:
-            client = self._get_inference_client()
+            client = await self._get_inference_client()
 
             # Build generation prompt
             prompt = self._build_generation_prompt(

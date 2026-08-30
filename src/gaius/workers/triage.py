@@ -2,7 +2,7 @@
 
 Implements two-stage content triage:
 1. Heuristic scoring - Fast, no LLM required
-2. LLM quality assessment - Uses fast model via optillm
+2. LLM quality assessment - via the Engine (gRPC Complete)
 
 Triage scores are stored in:
 - content_items.heuristic_score (0-100)

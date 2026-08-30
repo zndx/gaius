@@ -2046,35 +2046,52 @@ Use UPPERCASE_WITH_UNDERSCORES for the variable name.
             RuntimeError: If no coding model available
             httpx.HTTPError: If API request fails
         """
-        import httpx
         import os
 
-        model_id, endpoint = await self._get_coding_model()
         prompt = self._build_ai_prompt(hf_data)
 
-        # Prepare headers
-        headers = {"Content-Type": "application/json"}
-        api_key = os.getenv("XAI_API_KEY", "")
-        if api_key and "x.ai" in endpoint:
-            headers["Authorization"] = f"Bearer {api_key}"
+        # Engine-First, no bypass: local generation goes through Engine/Complete;
+        # XAI is an explicit external fallback when the engine is unavailable.
+        try:
+            from .inference.engine_client import get_engine_client
 
-        async with httpx.AsyncClient(timeout=120) as client:
-            resp = await client.post(
-                f"{endpoint}/chat/completions",
-                headers=headers,
-                json={
-                    "model": model_id,
-                    "messages": [
-                        {"role": "system", "content": self._MODELSPEC_SYSTEM_PROMPT},
-                        {"role": "user", "content": prompt},
-                    ],
-                    "temperature": 0.3,
-                    "max_tokens": 2000,
-                },
+            engine = await get_engine_client()
+            res = await engine.complete_simple(
+                prompt=prompt,
+                system_prompt=self._MODELSPEC_SYSTEM_PROMPT,
+                model="thinking",
+                temperature=0.3,
+                max_tokens=2000,
             )
-            resp.raise_for_status()
+            code = res.content or ""
+        except Exception as engine_err:
+            if not os.getenv("XAI_API_KEY"):
+                raise RuntimeError(
+                    "No coding model available. Either:\n"
+                    "  - Start the Gaius engine (gaius-engine start)\n"
+                    "  - Set XAI_API_KEY environment variable"
+                ) from engine_err
+            import httpx
 
-        code = resp.json()["choices"][0]["message"]["content"]
+            async with httpx.AsyncClient(timeout=120) as client:
+                resp = await client.post(
+                    "https://api.x.ai/v1/chat/completions",
+                    headers={
+                        "Content-Type": "application/json",
+                        "Authorization": f"Bearer {os.environ['XAI_API_KEY']}",
+                    },
+                    json={
+                        "model": "grok-2-latest",
+                        "messages": [
+                            {"role": "system", "content": self._MODELSPEC_SYSTEM_PROMPT},
+                            {"role": "user", "content": prompt},
+                        ],
+                        "temperature": 0.3,
+                        "max_tokens": 2000,
+                    },
+                )
+                resp.raise_for_status()
+            code = resp.json()["choices"][0]["message"]["content"]
 
         # Strip markdown fences if present
         if "```python" in code:

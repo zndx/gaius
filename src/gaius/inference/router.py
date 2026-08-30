@@ -5,7 +5,7 @@ Routes inference requests to appropriate models based on workflow phase:
 - synthesis: optillm with COT for deep reasoning
 - evaluation: Frontier model (Claude) for critical assessment
 
-TECH DEBT: EndpointRouter maintains a pool of direct AsyncOpenAI clients.
+Engine-First: EndpointRouter completes exclusively through Engine/Complete.
 All inference routing should go through the gRPC engine's BackendRouter
 for centralized observability and resource management.
 
@@ -309,11 +309,9 @@ def get_model_router() -> ModelRouter:
 
 from dataclasses import field
 
-try:
-    from openai import AsyncOpenAI
-    OPENAI_AVAILABLE = True
-except ImportError:
-    OPENAI_AVAILABLE = False
+# Engine-First, no bypass: no direct OpenAI-compatible clients here — the
+# EndpointRouter routes/starts endpoints via the engine and completes through
+# Engine/Complete only.
 
 
 @dataclass
@@ -364,14 +362,9 @@ class EndpointRouter:
     """
 
     def __init__(self, config: EndpointRouterConfig | None = None):
-        if not OPENAI_AVAILABLE:
-            raise ImportError(
-                "openai package required. Install with: uv sync --extra inference"
-            )
-
         self.config = config or self._load_config()
-        self._clients: dict[str, AsyncOpenAI] = {}
-        self._init_clients()
+        # Engine-First, no bypass: no direct endpoint clients — completions go
+        # through Engine/Complete (see complete()).
 
     def _load_config(self) -> EndpointRouterConfig:
         """Load router config from application config."""
@@ -490,15 +483,6 @@ class EndpointRouter:
             default_endpoint=default_endpoint or "default",
         )
 
-    def _init_clients(self) -> None:
-        """Initialize OpenAI clients for each endpoint."""
-        for name, endpoint in self.config.endpoints.items():
-            self._clients[name] = AsyncOpenAI(
-                api_key=endpoint.api_key,
-                base_url=endpoint.url,
-                timeout=60,
-            )
-
     def get_endpoint_for_model(self, model: str) -> str:
         """Get the endpoint name that serves a model."""
         # Check explicit routing
@@ -600,54 +584,47 @@ class EndpointRouter:
             else:
                 endpoint = self.config.default_endpoint
 
-        # Get client
-        client = self._clients.get(endpoint)
-        if client is None:
-            # Fallback to default
-            client = list(self._clients.values())[0] if self._clients else None
-            if client is None:
-                raise ValueError(f"No endpoints available")
+        # Engine-First, no bypass: the completion is consumed through
+        # Engine/Complete; `endpoint` survives only as an agent/capability hint.
+        from .engine_client import get_engine_client
 
-        # Get model for endpoint if not specified
-        if model is None:
-            ep_config = self.config.endpoints.get(endpoint)
-            if ep_config and ep_config.models:
-                model = ep_config.models[0]
-            else:
-                model = "default"
-
-        # Convert messages
-        openai_messages = []
+        system_prompt = None
+        user_parts: list[str] = []
         for m in messages:
-            if hasattr(m, "role"):
-                openai_messages.append({"role": m.role, "content": m.content})
+            role = m.role if hasattr(m, "role") else m.get("role")
+            content = m.content if hasattr(m, "content") else m.get("content", "")
+            if role == "system" and system_prompt is None:
+                system_prompt = content
             else:
-                openai_messages.append(m)
+                user_parts.append(str(content or ""))
+        prompt = "\n\n".join(p for p in user_parts if p)
 
-        try:
-            response = await client.chat.completions.create(
-                model=model,
-                messages=openai_messages,
+        async def _via_engine() -> CompletionResult:
+            engine = await get_engine_client()
+            res = await engine.complete_simple(
+                prompt=prompt,
+                system_prompt=system_prompt,
+                model=model or endpoint,
                 temperature=temperature,
                 max_tokens=max_tokens,
             )
-
-            choice = response.choices[0]
-            usage = response.usage
-
             return CompletionResult(
-                content=choice.message.content or "",
-                model=response.model,
-                input_tokens=usage.prompt_tokens if usage else 0,
-                output_tokens=usage.completion_tokens if usage else 0,
+                content=res.content or "",
+                model=res.model or (model or endpoint or "engine"),
+                input_tokens=res.input_tokens or 0,
+                output_tokens=res.output_tokens or 0,
             )
 
-        except Exception as e:
-            # Try failover if enabled
-            if self.config.failover_enabled:
-                return await self._failover_complete(
-                    messages, model, endpoint, temperature, max_tokens, e
-                )
+        try:
+            return await _via_engine()
+        except Exception:
+            # On-demand start via the engine, then ONE retry — still gRPC-only.
+            if (
+                self.config.failover_enabled
+                and endpoint
+                and await self._try_start_endpoint_on_demand(endpoint)
+            ):
+                return await _via_engine()
             raise
 
     async def _try_start_endpoint_on_demand(self, endpoint: str) -> bool:
@@ -683,11 +660,6 @@ class EndpointRouter:
                             tensor_parallel=len(result.get("gpu_ids", [1])),
                         )
                         self.config.endpoints[endpoint] = new_endpoint
-                        self._clients[endpoint] = AsyncOpenAI(
-                            api_key=new_endpoint.api_key,
-                            base_url=new_endpoint.url,
-                            timeout=60,
-                        )
                     logger.info(f"Successfully started {endpoint} via engine")
                     return True
                 else:
@@ -713,60 +685,6 @@ class EndpointRouter:
                 "Check engine health: /health"
             )
             return False
-
-    async def _failover_complete(
-        self,
-        messages: list,
-        model: str,
-        failed_endpoint: str,
-        temperature: float,
-        max_tokens: int,
-        original_error: Exception,
-    ):
-        """Attempt completion on alternate endpoints."""
-        from .client import CompletionResult
-
-        # Mark endpoint unhealthy
-        if failed_endpoint in self.config.endpoints:
-            self.config.endpoints[failed_endpoint].healthy = False
-
-        # First, try to start the failed endpoint on-demand if it's a known endpoint
-        if failed_endpoint in ("orchestrator", "thinking", "reasoning"):
-            if await self._try_start_endpoint_on_demand(failed_endpoint):
-                # Endpoint started - retry the original request
-                try:
-                    return await self.complete(
-                        messages=messages,
-                        model=model,
-                        endpoint=failed_endpoint,
-                        temperature=temperature,
-                        max_tokens=max_tokens,
-                    )
-                except Exception:
-                    pass  # Fall through to other endpoints
-
-        # Try other endpoints
-        for name, ep in self.config.endpoints.items():
-            if name != failed_endpoint and ep.healthy:
-                try:
-                    return await self.complete(
-                        messages=messages,
-                        model=None,  # Use endpoint's default
-                        endpoint=name,
-                        temperature=temperature,
-                        max_tokens=max_tokens,
-                    )
-                except Exception:
-                    continue
-
-        # All endpoints failed - return error result
-        return CompletionResult(
-            content="",
-            model=model or "unknown",
-            input_tokens=0,
-            output_tokens=0,
-            raw_response={"error": str(original_error)},
-        )
 
     async def complete_for_role(
         self,
