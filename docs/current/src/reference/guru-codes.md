@@ -28,6 +28,7 @@ Complete catalog of error codes used across the Gaius platform.
 | `#EN.00000014.DUALBIND` | Second gaius-engine dual-bound `:50051` (SO_REUSEPORT / extra devenv daemon) | `/health fix engine`; `ss -ltnp \| grep 50051` and stop the extra stack |
 | `#EN.00000015.NOREFLECT` | grpcio-reflection import failed (protobuf gencode/runtime mismatch) | `uv sync --extra grpc` (lock pins `grpcio-reflection<1.82`) |
 | `#EN.00000016.NOTUNIT` | `:50051` is `gaius.engine` but not this checkout's process-compose (setsid leftover) | `sudo systemctl restart gaius.service` or `devenv processes restart gaius-engine` — setsid only while devenv is down (tests) |
+| `#EN.00000017.SERVEDESYNC` | `:50051` dead or wedged while process-compose reports "ready" (in-engine observer dies with it). Out-of-band `gaius-engine-ready` watchdog exhausted its recycle budget (recurrence) → ACP root-cause | `/health fix engine`; `just reboot-hardening-install` to arm the watchdog; check `[[uv-run-churns-live-engine-venv]]` |
 | `#EN.00002.VLLM_START` | vLLM startup failure | `/health fix endpoints` |
 | `#EN.00003.GPU_OOM` | GPU out of memory | `just gpu-cleanup` |
 | `#EN.00004.ORPHAN_PROC` | Orphan vLLM process | `just gpu-cleanup` |
@@ -45,6 +46,7 @@ Complete catalog of error codes used across the Gaius platform.
 | `#EP.00000007.SHMFULL` | `/dev/shm` full — leftover `vllm_offload_*.mmap` / `psm_*` after unclean vLLM stop | `/health fix endpoints` (reclaims unheld segments); `just gpu-cleanup` |
 | `#EP.00000016.NOTREADY` | Complete hit a vLLM that is absent/STARTING | Wait for `/gpu status` HEALTHY; Settings starts light or medium Ask. Charts do not wait. |
 | `#EP.00000017.NOTELEMETRY` | Signals `kind=telemetry` surface missing or :9410 returned 503 | Confirm `SIGNALS_ENGINE_TARGET` Status.surfaces; dcgm-exporter on :9400; no DCGM dep in Gaius |
+| `#EP.00000018.THINKNOLOAD` | An intent the engine DECLARES it's serving (via `Engine/WatchWorkload`) stays not-SERVING past its warmup while SETTLED — the engine couldn't self-restore it (e.g. venv clobber / yunikorn admit race). NOT an eviction (evicted intents drop out of the profile). The continuous `gaius-thinking-ready` workload watchdog complete-recycles the unit (budget-bounded); a recycle-can't-fix cause (e.g. [[gaius-venv-cuda13-clobber-repair]]) trips the budget and needs a manual fix | `/health fix endpoints`; check GPU VRAM + `journalctl -u gaius-thinking-ready` |
 
 ### OPT — optillm proxy
 
@@ -146,6 +148,7 @@ Complete catalog of error codes used across the Gaius platform.
 | `#GR.00000001.CONNFAIL` | gRPC connection failed | Check engine status |
 | `#GR.00000002.NOLATTICE` | Metaflow step cannot reach `zndx.engine.v1.Engine` | Set `GAIUS_ENGINE_GRPC`; apply `infra/k8s/gaius-engine-host-bridge.yaml` |
 | `#GR.00000003.NOCAP` | Lattice Complete capability missing | Use `capability=thinking` |
+| `#GR.00000014.NOWORKLOADPROFILE` | `Engine/WatchWorkload` opened but the orchestrator/workload-profile publisher isn't up (engine still starting) | Retry after `Engine/Status` is healthy; the workload watchdog reconnects on its own |
 
 ### ACP — Agent Client Protocol
 

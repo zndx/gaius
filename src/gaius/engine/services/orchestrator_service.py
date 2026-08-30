@@ -26,6 +26,7 @@ from typing import TYPE_CHECKING, Any, Optional
 from ..backends import BackendRouter, OptillmController, ProcessStatus, VLLMController
 from ..config import EngineConfig, UnknownAgentError, require_agent
 from ..resources import ResourceManager
+from .workload_profile import _publishes_transition
 
 if TYPE_CHECKING:
     from gaius.models.registry import ModelSpec, TaskType
@@ -207,6 +208,14 @@ class OrchestratorService:
         # The reconciliation loop must skip these to avoid
         # conflicting with workload-managed restore.
         self._evicted_endpoints: set[str] = set()
+
+        # Intended workload-profile publisher — the live desired-vs-actual serving
+        # set streamed over Engine/WatchWorkload for the out-of-band watchdog. The
+        # @_publishes_transition-decorated begin_workload/complete_workload bracket
+        # each changeover as TRANSITIONING→SETTLED.
+        from .workload_profile import WorkloadProfilePublisher
+
+        self._workload_profile = WorkloadProfilePublisher(self)
 
         logger.info("OrchestratorService initialized")
 
@@ -1724,6 +1733,7 @@ class OrchestratorService:
     # Workload Management (Yunikorn-Style Makespan)
     # ─────────────────────────────────────────────────────────────────────────
 
+    @_publishes_transition
     async def begin_workload(
         self,
         request: "WorkloadRequest",
@@ -1890,6 +1900,7 @@ class OrchestratorService:
 
         return result
 
+    @_publishes_transition
     async def complete_workload(self, workload_id: str) -> None:
         """Mark workload complete and restore evicted endpoints.
 

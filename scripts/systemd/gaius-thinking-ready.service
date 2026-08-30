@@ -1,23 +1,26 @@
 [Unit]
-Description=Gaius thinking-ready watchdog (complete-recycle the unit if baseline GPU workload never admits)
+Description=Gaius workload watchdog (continuous; recycle the unit if the engine's intended serving set stays unmet)
 Documentation=file:///home/rch/local/src/zndx/gaius/docs/scratch/2026-08-26/170000_crash-recovery-hardening.md
-# Run after the engine is up and the foundation is ready; the boot preload has
-# already had its first shot by the time we start polling.
-After=gaius.service signals-ready.service
-Wants=gaius.service
-# Bounded: at most 3 complete-recycles per hour, then stop trying (a genuinely
-# broken thinking should not recycle the unit forever).
-StartLimitIntervalSec=3600
-StartLimitBurst=3
+# Consumes the engine's Engine/WatchWorkload stream: verifies desired-vs-actual only
+# while SETTLED (past each intent's warmup), holds during a changeover, and honors
+# GPU eviction (an evicted capability drops out of the intent set). Engine death /
+# :50051 dark is gaius-engine-ready's job, not this one.
+After=gaius.service
+# PartOf so an explicit stop/restart of gaius.service propagates here (operator stop
+# is not fought; a recycle brings the watchdog back fresh). An engine/thinking crash
+# does NOT change the oneshot gaius.service, so the watchdog keeps running.
+PartOf=gaius.service
+# Guard the WATCHDOG PROCESS itself from crash-looping; the recycle budget is
+# separate and lives in the script's on-disk ledger.
+StartLimitIntervalSec=600
+StartLimitBurst=10
 
 [Service]
-Type=oneshot
-ExecStart=/home/rch/local/src/zndx/gaius/scripts/thinking-ready.sh
-# The script polls up to GAIUS_THINKING_READY_DEADLINE_S (default 360s) before it
-# recycles, so the start timeout must exceed that.
-TimeoutStartSec=600
+Type=simple
+ExecStart=/home/rch/local/src/zndx/gaius/.devenv/state/venv/bin/python /home/rch/local/src/zndx/gaius/scripts/workload_watchdog.py
 Restart=on-failure
 RestartSec=30
 
 [Install]
-WantedBy=multi-user.target
+# Pulled up whenever gaius.service starts; stopped/restarted with it (PartOf).
+WantedBy=gaius.service

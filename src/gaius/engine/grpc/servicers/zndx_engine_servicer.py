@@ -8,6 +8,7 @@ engine does not get UNIMPLEMENTED against a wire-identical peer.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import TYPE_CHECKING
 
@@ -237,14 +238,93 @@ def build_status_response(services: "ServiceRegistry") -> zpb.StatusResponse:
     )
 
 
+_WORKLOAD_PHASE_MAP = {
+    "settled": zpb.WORKLOAD_PHASE_SETTLED,
+    "transitioning": zpb.WORKLOAD_PHASE_TRANSITIONING,
+}
+_WORKLOAD_STATUS_MAP = {
+    "serving": zpb.WORKLOAD_STATUS_SERVING,
+    "starting": zpb.WORKLOAD_STATUS_STARTING,
+    "degraded": zpb.WORKLOAD_STATUS_DEGRADED,
+    "failed": zpb.WORKLOAD_STATUS_FAILED,
+    "absent": zpb.WORKLOAD_STATUS_ABSENT,
+}
+_WORKLOAD_BACKEND_MAP = {
+    "vllm_local": zpb.SERVING_BACKEND_VLLM_LOCAL,
+    "cpu_proxy": zpb.SERVING_BACKEND_CPU_PROXY,
+    "kserve_remote": zpb.SERVING_BACKEND_KSERVE_REMOTE,
+}
+
+
+def _workload_profile_to_proto(snap: dict) -> zpb.WorkloadProfile:
+    """Convert an orchestrator profile snapshot dict → zpb.WorkloadProfile."""
+    intents: list[zpb.WorkloadIntent] = []
+    for it in snap.get("intents") or []:
+        intents.append(
+            zpb.WorkloadIntent(
+                capability=str(it.get("capability") or ""),
+                alias=str(it.get("alias") or ""),
+                model=str(it.get("model") or ""),
+                port=int(it.get("port") or 0),
+                gpu_ids=[int(g) for g in (it.get("gpu_ids") or [])],
+                backend=_WORKLOAD_BACKEND_MAP.get(
+                    str(it.get("backend") or ""), zpb.SERVING_BACKEND_UNSPECIFIED
+                ),
+                warmup_seconds=int(it.get("warmup_seconds") or 0),
+                actual=_WORKLOAD_STATUS_MAP.get(
+                    str(it.get("actual") or ""), zpb.WORKLOAD_STATUS_UNSPECIFIED
+                ),
+            )
+        )
+    return zpb.WorkloadProfile(
+        phase=_WORKLOAD_PHASE_MAP.get(
+            str(snap.get("phase") or ""), zpb.WORKLOAD_PHASE_UNSPECIFIED
+        ),
+        generation=int(snap.get("generation") or 0),
+        intents=intents,
+        settled_at_unix_ms=int(snap.get("settled_at_ms") or 0),
+        detail=str(snap.get("detail") or ""),
+    )
+
+
 class GaiusZndxEngineServicer(zpb_grpc.EngineServicer):
-    """Shared federation face: Status + Complete + Yield + ServerQuery.
+    """Shared federation face: Status + Complete + Yield + ServerQuery + WatchWorkload.
 
     Remediate is Aegir-owned.
     """
 
     def __init__(self, services: "ServiceRegistry") -> None:
         self._services = services
+
+    async def WatchWorkload(
+        self,
+        request: zpb.WatchWorkloadRequest,
+        context: aio.ServicerContext,
+    ):
+        """Held-open stream of the engine's intended workload profile.
+
+        Seeds each subscriber with the current SETTLED profile, streams every
+        TRANSITIONING/SETTLED change, and heartbeats the current profile every
+        ~15s so the out-of-band watchdog always has a fresh settled view.
+        """
+        orch = getattr(self._services, "orchestrator_service", None)
+        publisher = getattr(orch, "_workload_profile", None) if orch is not None else None
+        if publisher is None:
+            await context.abort(
+                grpc.StatusCode.UNAVAILABLE,
+                "workload profile unavailable (#GR.00000014.NOWORKLOADPROFILE)",
+            )
+            return
+        queue = publisher.subscribe()
+        try:
+            while not context.cancelled():
+                try:
+                    snap = await asyncio.wait_for(queue.get(), timeout=15.0)
+                except asyncio.TimeoutError:
+                    snap = publisher.current()  # heartbeat re-send
+                yield _workload_profile_to_proto(snap)
+        finally:
+            publisher.unsubscribe(queue)
 
     async def Status(
         self,
