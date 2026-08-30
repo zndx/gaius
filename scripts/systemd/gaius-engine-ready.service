@@ -18,6 +18,10 @@ StartLimitBurst=10
 
 [Service]
 Type=simple
+# Runs as root (needs `systemctl restart`) but imports from rch's venv: never write
+# root-owned bytecode there — it breaks `uv sync`/`uv run` for every flow spawn
+# ("failed to remove directory .../__pycache__: Permission denied").
+Environment=PYTHONDONTWRITEBYTECODE=1
 ExecStart=/home/rch/local/src/zndx/gaius/scripts/engine-ready.sh
 Restart=on-failure
 RestartSec=30
