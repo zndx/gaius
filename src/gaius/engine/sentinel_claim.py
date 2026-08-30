@@ -71,8 +71,15 @@ GURU_GPUCOLLIDE = "#YK.00000008.GPUCOLLIDE"
 
 # CPU sentinels place immediately. GPU extract waits for YK to preempt
 # medium (ask-sae) after extract's guaranteed floor is promoted.
+#
+# GPU admit wait: with thinking holding heavy's 4-GPU floor, ONE spare token is
+# shared by extract + light. A light claimant (clt-skos-admit, every 15 min) holds
+# it ~195s, so a 180s wait was a guaranteed #YK.00000002.NOTADMITTED for any
+# extract flow landing on a :00/:15/:30/:45 boundary (the daily 09:00
+# article-curate collided every night). YK Blocked IS the queue — a reasoning
+# flow can afford to wait behind a light hold; 600s spans two of them.
 CPU_ADMIT_TIMEOUT_S = 60.0
-GPU_ADMIT_TIMEOUT_S = 180.0
+GPU_ADMIT_TIMEOUT_S = float(os.environ.get("GAIUS_YK_GPU_ADMIT_TIMEOUT_S", "600"))
 
 # Tinybox: 6× RTX 4090 24Gi, ~128Gi RAM. Queues are light (1 GPU), medium
 # (2 consecutive), heavy (4 consecutive). Compute has no GPU — many CPU
