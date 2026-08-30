@@ -363,33 +363,98 @@ class SchedulerProxy:
             raw_response=result,
         )
 
+    async def submit_job(
+        self,
+        prompt: str,
+        *,
+        agent: str = "thinking",
+        system_prompt: Optional[str] = None,
+        max_tokens: int = 1024,
+        temperature: float = 0.7,
+        priority: str = "normal",
+        wait: bool = True,
+        poll_interval: float = 1.0,
+        timeout: float = 600.0,
+    ) -> dict[str, Any]:
+        """Submit a job to the ENGINE's scheduler queue (Engine-First).
+
+        The queue lives in the engine (SchedulerService behind SubmitJob /
+        GetJobResult). With wait=True, polls GetJobResult until the job
+        completes, fails, or the timeout elapses.
+
+        Returns:
+            The GetJobResult record (keys: job_id, status, text, tokens_used,
+            latency_ms, error) — or the SubmitJob response when wait=False.
+        """
+        submitted = await self._client.call(
+            "Scheduler",
+            "submit",
+            {
+                "prompt": prompt,
+                "agent": agent,
+                "system_prompt": system_prompt or "",
+                "max_tokens": max_tokens,
+                "temperature": temperature,
+                "priority": priority,
+            },
+        )
+        job_id = submitted.get("job_id", "")
+        if not wait or not job_id:
+            return submitted
+
+        loop = asyncio.get_event_loop()
+        deadline = loop.time() + timeout
+        while True:
+            record = await self._client.call(
+                "Scheduler", "get_result", {"job_id": job_id}
+            )
+            status = record.get("status", "")
+            if status in ("completed", "failed", "not_found"):
+                return record
+            if loop.time() > deadline:
+                record["status"] = "timeout"
+                record.setdefault(
+                    "error",
+                    f"job {job_id} did not complete within {timeout:.0f}s",
+                )
+                return record
+            await asyncio.sleep(poll_interval)
+
     async def evaluate(
         self,
         prompt: str,
         force_xai: bool = False,
     ) -> CompletionResult:
-        """Evaluate using tiered strategy.
+        """Evaluate through Engine/Complete.
+
+        Engine-First: the XAI judge is the engine's external backend lane
+        (agent="xai" routes to ExternalInferenceRouter inside the engine) —
+        never a client-side SDK call.
 
         Args:
             prompt: Prompt to evaluate
-            force_xai: Force XAI if budget allows
+            force_xai: Route to the XAI external lane (else local thinking)
 
         Returns:
             CompletionResult
         """
         result = await self._client.call(
             "Scheduler",
-            "evaluate",
+            "complete",
             {
                 "prompt": prompt,
-                "force_xai": force_xai,
+                "agent": "xai" if force_xai else "thinking",
+                "max_tokens": 2048,
+                "temperature": 0.5,
             },
-            timeout=120.0,
+            timeout=180.0,
         )
 
         return CompletionResult(
-            content=result.get("content", ""),
+            content=result.get("text", result.get("content", "")),
             model=result.get("model", ""),
+            input_tokens=result.get("input_tokens", 0),
+            output_tokens=result.get("tokens_used", result.get("output_tokens", 0)),
             raw_response=result,
         )
 
@@ -591,8 +656,17 @@ class SchedulerProxy:
         )
 
     async def _get_metrics_async(self) -> dict[str, Any]:
-        """Get inference metrics."""
-        return await self._client.call("Scheduler", "metrics", {})
+        """Get inference metrics via SchedulerStatus (metrics_json field)."""
+        import json as _json
+
+        status = await self._client.call("Scheduler", "status", {})
+        metrics_json = status.get("metrics_json")
+        if metrics_json:
+            try:
+                return _json.loads(metrics_json)
+            except (ValueError, TypeError):
+                pass
+        return status
 
     def get_xai_budget(self) -> dict[str, Any]:
         """Get XAI budget status."""

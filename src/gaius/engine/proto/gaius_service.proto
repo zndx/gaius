@@ -277,6 +277,7 @@ message SchedulerStatusResponse {
   int32 active_jobs = 2;
   float avg_latency_ms = 3;
   map<string, int32> jobs_by_priority = 4;
+  string metrics_json = 5;  // Full engine scheduler metrics (per-agent, totals, XAI budget) as JSON
 }
 
 // XAI API budget status

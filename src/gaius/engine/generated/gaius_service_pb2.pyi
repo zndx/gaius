@@ -450,7 +450,7 @@ class GetJobResultResponse(_message.Message):
     def __init__(self, job_id: _Optional[str] = ..., status: _Optional[str] = ..., text: _Optional[str] = ..., tokens_used: _Optional[int] = ..., latency_ms: _Optional[float] = ..., error: _Optional[str] = ...) -> None: ...
 
 class SchedulerStatusResponse(_message.Message):
-    __slots__ = ("queue_depth", "active_jobs", "avg_latency_ms", "jobs_by_priority")
+    __slots__ = ("queue_depth", "active_jobs", "avg_latency_ms", "jobs_by_priority", "metrics_json")
     class JobsByPriorityEntry(_message.Message):
         __slots__ = ("key", "value")
         KEY_FIELD_NUMBER: _ClassVar[int]
@@ -462,11 +462,13 @@ class SchedulerStatusResponse(_message.Message):
     ACTIVE_JOBS_FIELD_NUMBER: _ClassVar[int]
     AVG_LATENCY_MS_FIELD_NUMBER: _ClassVar[int]
     JOBS_BY_PRIORITY_FIELD_NUMBER: _ClassVar[int]
+    METRICS_JSON_FIELD_NUMBER: _ClassVar[int]
     queue_depth: int
     active_jobs: int
     avg_latency_ms: float
     jobs_by_priority: _containers.ScalarMap[str, int]
-    def __init__(self, queue_depth: _Optional[int] = ..., active_jobs: _Optional[int] = ..., avg_latency_ms: _Optional[float] = ..., jobs_by_priority: _Optional[_Mapping[str, int]] = ...) -> None: ...
+    metrics_json: str
+    def __init__(self, queue_depth: _Optional[int] = ..., active_jobs: _Optional[int] = ..., avg_latency_ms: _Optional[float] = ..., jobs_by_priority: _Optional[_Mapping[str, int]] = ..., metrics_json: _Optional[str] = ...) -> None: ...
 
 class XAIBudgetResponse(_message.Message):
     __slots__ = ("daily_used", "daily_limit", "weekly_used", "weekly_limit", "reset_at")

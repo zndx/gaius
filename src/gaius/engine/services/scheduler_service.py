@@ -267,6 +267,7 @@ class SchedulerService:
         # Job tracking
         self._job_counter = 0
         self._completed_jobs: deque[InferenceJob] = deque(maxlen=1000)
+        self._active_jobs: dict[str, InferenceJob] = {}
 
         # Processing state
         self._running = False
@@ -392,7 +393,11 @@ class SchedulerService:
                     job = self._queue.pop(0)
 
             if job:
-                await self._process_job(job)
+                self._active_jobs[job.id] = job
+                try:
+                    await self._process_job(job)
+                finally:
+                    self._active_jobs.pop(job.id, None)
             else:
                 await asyncio.sleep(0.01)
 
@@ -776,6 +781,7 @@ class SchedulerService:
         return {
             "running": self._running,
             "queue_depth": len(self._queue),
+            "active_jobs": len(self._active_jobs),
             "total_jobs_completed": len(self._completed_jobs),
             "xai_budget": self.get_xai_budget(),
             "metrics": self.get_total_metrics(),
@@ -803,6 +809,47 @@ class SchedulerService:
                     "wait_time_ms": job.wait_time_ms,
                     "processing_time_ms": job.processing_time_ms,
                     "error": job.result.error if job.result else None,
+                }
+
+        return None
+
+    def get_job_result(self, job_id: str) -> Optional[dict[str, Any]]:
+        """Full result record for a job: queued → running → completed/failed.
+
+        Unlike get_job_status, includes the completion content and token
+        metrics so the gRPC GetJobResult surface can return the full result.
+        """
+        for job in self._queue:
+            if job.id == job_id:
+                return {
+                    "job_id": job.id,
+                    "status": "queued",
+                    "wait_time_ms": job.wait_time_ms,
+                }
+
+        active = self._active_jobs.get(job_id)
+        if active is not None:
+            return {
+                "job_id": job_id,
+                "status": "running",
+                "wait_time_ms": active.wait_time_ms,
+            }
+
+        for job in self._completed_jobs:
+            if job.id == job_id:
+                res = job.result
+                if res is None:
+                    return {"job_id": job_id, "status": "failed", "error": "no result recorded"}
+                return {
+                    "job_id": job_id,
+                    "status": "failed" if res.error else "completed",
+                    "content": res.content,
+                    "model": res.model,
+                    "backend": res.backend,
+                    "input_tokens": res.input_tokens,
+                    "output_tokens": res.output_tokens,
+                    "latency_ms": res.latency_ms,
+                    "error": res.error,
                 }
 
         return None

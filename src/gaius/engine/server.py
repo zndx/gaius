@@ -290,6 +290,21 @@ class GaiusEngine:
         if self._grpc_server:
             self._grpc_server.update_service("backend_router", self._backend_router)
 
+        # 4.5 Engine scheduler service: priority job queue over the backend
+        # router. Backs the gRPC SubmitJob/GetJobResult/SchedulerStatus surface
+        # (Engine-First: the job queue lives in the engine, never client-side).
+        from .services.scheduler_service import SchedulerService
+
+        if self._backend_router is None:
+            raise RuntimeError(
+                "Backend router not initialized before scheduler service.\n"
+                "  Guru Meditation: #ENGINE.00000001.INIT_ORDER"
+            )
+        self._scheduler_service = SchedulerService(self.config, self._backend_router)
+        await self._scheduler_service.start()
+        if self._grpc_server:
+            self._grpc_server.update_service("scheduler_service", self._scheduler_service)
+
         # 5. Initialize orchestrator service for endpoint management
         await self._init_controller.start_phase(InitPhase.ORCHESTRATOR, "Initializing orchestrator")
         await self._init_orchestrator()
@@ -1615,6 +1630,14 @@ class GaiusEngine:
                 await self._dataset_service.stop()
             except Exception as e:
                 logger.warning(f"Error stopping dataset service: {e}")
+
+        # Stop engine scheduler service
+        scheduler_service = getattr(self, "_scheduler_service", None)
+        if scheduler_service:
+            try:
+                await scheduler_service.stop()
+            except Exception as e:
+                logger.warning(f"Error stopping scheduler service: {e}")
 
         # Stop orchestrator service
         if self._orchestrator_service:

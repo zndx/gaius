@@ -62,6 +62,9 @@ class ServiceRegistry:
     # Backend router for inference
     backend_router: Any = None
 
+    # Engine scheduler service (priority job queue over the backend router)
+    scheduler_service: Any = None
+
     # Orchestrator service for endpoint management
     orchestrator_service: Any = None
 

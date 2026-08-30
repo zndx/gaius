@@ -834,18 +834,35 @@ class GaiusServicer(GaiusServiceServicer):
         request: empty_pb2.Empty,
         context: aio.ServicerContext,
     ) -> SchedulerStatusResponse:
-        """Get scheduler status."""
+        """Get scheduler status (engine scheduler queue + backend router)."""
+        import json as _json
+
         response = SchedulerStatusResponse(
             queue_depth=0,
             active_jobs=0,
             avg_latency_ms=0.0,
         )
 
+        metrics: dict = {}
+        sched = getattr(self._services, "scheduler_service", None)
+        if sched:
+            status = sched.get_status()
+            response.queue_depth = int(status.get("queue_depth", 0) or 0)
+            response.active_jobs = int(status.get("active_jobs", 0) or 0)
+            totals = status.get("metrics") or {}
+            response.avg_latency_ms = float(totals.get("avg_latency_ms", 0.0) or 0.0)
+            metrics["engine_scheduler"] = status
+
         if self._services.backend_router:
-            status = self._services.backend_router.get_status()
-            response.queue_depth = status.get("queue_depth", 0)
-            response.active_jobs = status.get("active_jobs", 0)
-            response.avg_latency_ms = status.get("avg_latency_ms", 0.0)
+            br_status = self._services.backend_router.get_status()
+            metrics["backend_router"] = br_status
+            if not sched:
+                response.queue_depth = br_status.get("queue_depth", 0)
+                response.active_jobs = br_status.get("active_jobs", 0)
+                response.avg_latency_ms = br_status.get("avg_latency_ms", 0.0)
+
+        if metrics:
+            response.metrics_json = _json.dumps(metrics, default=str)
 
         return response
 
@@ -897,29 +914,79 @@ class GaiusServicer(GaiusServiceServicer):
         request: SubmitJobRequest,
         context: aio.ServicerContext,
     ) -> SubmitJobResponse:
-        """Submit an async job for processing."""
-        import uuid
+        """Submit an async job to the engine scheduler queue.
 
-        job_id = f"job-{uuid.uuid4().hex[:8]}"
+        Engine-First: the job queue lives in the engine (SchedulerService),
+        never client-side. Poll GetJobResult with the returned job_id.
+        """
+        sched = getattr(self._services, "scheduler_service", None)
+        if not sched:
+            context.set_code(grpc.StatusCode.UNAVAILABLE)
+            context.set_details(
+                "#EN.00000021.NOSCHED: engine SchedulerService not initialized.\n"
+                "  Try: /health fix engine"
+            )
+            return SubmitJobResponse()
 
-        # TODO: Implement job queue
-        return SubmitJobResponse(
-            job_id=job_id,
-            status="queued",
+        from ...backends import InferenceRequest
+        from ...services.scheduler_service import JobPriority
+
+        priority_map = {
+            "critical": JobPriority.CRITICAL,
+            "high": JobPriority.HIGH,
+            "normal": JobPriority.NORMAL,
+            "low": JobPriority.LOW,
+            "batch": JobPriority.BATCH,
+        }
+
+        messages = []
+        if request.system_prompt:
+            messages.append({"role": "system", "content": request.system_prompt})
+        messages.append({"role": "user", "content": request.prompt})
+
+        inference_request = InferenceRequest(
+            messages=messages,
+            agent_alias=request.agent_alias or "thinking",
+            temperature=request.temperature or 0.7,
+            max_tokens=request.max_tokens or 2048,
         )
+
+        job_id = await sched.submit_async(
+            inference_request,
+            priority_map.get((request.priority or "normal").lower(), JobPriority.NORMAL),
+        )
+        return SubmitJobResponse(job_id=job_id, status="queued")
 
     async def GetJobResult(
         self,
         request: GetJobResultRequest,
         context: aio.ServicerContext,
     ) -> GetJobResultResponse:
-        """Get the result of a submitted job."""
-        job_id = request.job_id
+        """Get the result of a submitted job from the engine scheduler."""
+        sched = getattr(self._services, "scheduler_service", None)
+        if not sched:
+            context.set_code(grpc.StatusCode.UNAVAILABLE)
+            context.set_details(
+                "#EN.00000021.NOSCHED: engine SchedulerService not initialized.\n"
+                "  Try: /health fix engine"
+            )
+            return GetJobResultResponse(job_id=request.job_id)
 
-        # TODO: Implement job result lookup
+        record = sched.get_job_result(request.job_id)
+        if record is None:
+            return GetJobResultResponse(
+                job_id=request.job_id,
+                status="not_found",
+                error="unknown job id (completed-job ring may have recycled it)",
+            )
+
         return GetJobResultResponse(
-            job_id=job_id,
-            status="pending",
+            job_id=request.job_id,
+            status=record.get("status", "unknown"),
+            text=record.get("content", "") or "",
+            tokens_used=int(record.get("output_tokens", 0) or 0),
+            latency_ms=float(record.get("latency_ms", 0) or 0),
+            error=record.get("error") or "",
         )
 
     async def XAIBudget(
@@ -929,11 +996,8 @@ class GaiusServicer(GaiusServiceServicer):
     ) -> XAIBudgetResponse:
         """Get XAI API budget status.
 
-        Returns daily and weekly request usage against configured limits.
-        Used by health checks and evolution cost management.
-
-        TODO: Track actual XAI API usage through backend_router when
-        integrated with XAI/Grok API. Currently returns static limits.
+        Returns daily and weekly request usage against configured limits
+        from the engine SchedulerService's XAIBudget tracker.
         """
         from datetime import datetime, timezone, timedelta
 
@@ -943,8 +1007,18 @@ class GaiusServicer(GaiusServiceServicer):
             hour=0, minute=0, second=0, microsecond=0
         )
 
-        # TODO: Track actual usage when XAI API integration is complete
-        # For now, return static limits - budget tracking not yet implemented
+        sched = getattr(self._services, "scheduler_service", None)
+        if sched:
+            budget = sched.get_xai_budget()
+            return XAIBudgetResponse(
+                daily_used=int(budget.get("daily_used", 0)),
+                daily_limit=int(budget.get("daily_limit", 0)),
+                weekly_used=int(budget.get("weekly_used", 0)),
+                weekly_limit=int(budget.get("weekly_limit", 0)),
+                reset_at=tomorrow.isoformat(),
+            )
+
+        # Scheduler not yet initialized: report configured limits, zero usage
         return XAIBudgetResponse(
             daily_used=0,
             daily_limit=50,
