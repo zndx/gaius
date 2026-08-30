@@ -56,6 +56,8 @@ Complete catalog of error codes used across the Gaius platform.
 | `#OPT.00000002.NOTSTARTED` | OptillmController never started | `/health fix optillm` |
 | `#OPT.00000003.UNHEALTHY` | optillm HTTP not 200 | `/health fix optillm` (reaps foreign `:8000`) |
 | `#OPT.00000004.NOVLLM` | No healthy generate vLLM provided and thinking demand failed | `/health fix endpoints`; optillm binds any provided vLLM |
+| `#OPT.00000010.STALLED` | optillm's vLLM heartbeat saw no forward progress (no running requests AND no new tokens) for `idle_timeout` | `/health fix optillm`; check thinking VRAM/health during the request |
+| `#OPT.00000011.VLLMRESTART` | The bound vLLM (thinking) restarted or became unreachable MID-request (cumulative `generation_tokens_total` went backward) — optillm fails fast instead of mislabeling it STALLED. Callers should re-ensure thinking and retry | Keep thinking healthy (workload watchdog); `/health fix endpoints`. article-curate now retries `select_article` |
 
 ### DI — Discover landing
 

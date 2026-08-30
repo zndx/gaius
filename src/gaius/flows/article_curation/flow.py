@@ -556,28 +556,45 @@ Respond with JSON:
         # Use engine's capability-based scheduling:
         # - "leader" agent routes through optillm with cot_reflection technique
         # - Provides better article selection via chain-of-thought reasoning
-        try:
-            client = await get_engine_client()
-            response = await client.complete_simple(
-                prompt=prompt,
-                model="leader",  # Route through optillm for cot_reflection
-                system_prompt="You are an editorial curator selecting articles for publication.",
-                temperature=0.7,  # Higher for exploration
-                max_tokens=4096,  # cot_reflection needs room for <thinking>+<output>
-            )
-        except Exception as e:
-            raise RuntimeError(
-                f"Engine connection failed: {e}\n"
-                "  Guru Meditation: #ACF.00000005.ENGINEFAIL\n"
-                "  Ensure engine is running: /health fix engine\n"
-                "  Or specify single article with --article to bypass selection"
-            ) from e
+        #
+        # Retry on a transient engine/vLLM blip: optillm binds thinking as its vLLM,
+        # and thinking can restart mid-request under GPU churn (reported as
+        # #OPT.00000011.VLLMRESTART / #OPT.00000004.NOVLLM). The workload watchdog +
+        # the engine's auto-restart bring thinking back, so a backoff + retry
+        # usually succeeds. cot_reflection is expensive, so cap the attempts.
+        import asyncio as _asyncio
 
-        if not response.content:
+        response = None
+        last_err = "unknown"
+        attempts = 3
+        for attempt in range(1, attempts + 1):
+            try:
+                client = await get_engine_client()
+                response = await client.complete_simple(
+                    prompt=prompt,
+                    model="leader",  # Route through optillm for cot_reflection
+                    system_prompt="You are an editorial curator selecting articles for publication.",
+                    temperature=0.7,  # Higher for exploration
+                    max_tokens=4096,  # cot_reflection needs room for <thinking>+<output>
+                )
+                if response.content:
+                    break
+                last_err = "empty response (#ACF.00000022.EMPTYRESPONSE)"
+            except Exception as e:  # noqa: BLE001 — transient engine/vLLM failures
+                last_err = str(e)
+            if attempt < attempts:
+                print(
+                    f"[select_article] attempt {attempt}/{attempts} failed: {last_err}; "
+                    f"waiting 60s for thinking to recover, then retrying",
+                    flush=True,
+                )
+                await _asyncio.sleep(60)
+        else:
             raise RuntimeError(
-                f"Article selection failed: empty response\n"
-                "  Guru Meditation: #ACF.00000022.EMPTYRESPONSE\n"
-                "  Check engine health: /health fix optillm"
+                f"Article selection failed after {attempts} attempts: {last_err}\n"
+                "  Guru Meditation: #ACF.00000005.ENGINEFAIL\n"
+                "  Ensure engine + thinking are healthy: /health fix engine\n"
+                "  Or specify single article with --article to bypass selection"
             )
 
         # Parse JSON from response

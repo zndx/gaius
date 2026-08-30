@@ -928,6 +928,39 @@ class OptillmController:
                 elapsed = now - start_mono
                 running, current_tokens = await self._get_vllm_heartbeat()
 
+                # vLLM RESTARTED / became unreachable mid-request: the cumulative
+                # generation_tokens_total went BACKWARD (a reset), or metrics went
+                # unavailable — _get_vllm_heartbeat then returns 0. This is NOT a
+                # stall; the backend (thinking) died under us. Fail FAST and
+                # accurately so the caller can re-ensure the vLLM and retry, instead
+                # of waiting out idle_timeout and mislabeling it #OPT.STALLED with a
+                # negative "tokens generated" (the -99289 artifact).
+                if last_token_count > 0 and current_tokens < last_token_count:
+                    logger.error(
+                        f"optillm: vLLM restarted/unreachable mid-request "
+                        f"(#OPT.00000011.VLLMRESTART): tokens "
+                        f"{last_token_count:.0f} -> {current_tokens:.0f} after "
+                        f"{elapsed:.0f}s"
+                    )
+                    post_task.cancel()
+                    try:
+                        await post_task
+                    except asyncio.CancelledError:
+                        pass
+                    latency_ms = int((datetime.now() - start_time).total_seconds() * 1000)
+                    return OptillmResponse(
+                        content="",
+                        model=model_name,
+                        technique=request.technique.value,
+                        latency_ms=latency_ms,
+                        error=(
+                            "Guru Meditation: #OPT.00000011.VLLMRESTART — the vLLM "
+                            "(thinking) restarted or became unreachable mid-request "
+                            f"after {elapsed:.0f}s. Retry once it is HEALTHY.\n"
+                            "  Try: /health fix endpoints"
+                        ),
+                    )
+
                 if current_tokens > last_token_count:
                     # Token generation progressing
                     tokens_delta = current_tokens - last_token_count
