@@ -76,7 +76,9 @@ class OptillmTechnique(Enum):
     COT_REFLECTION = "cot_reflection"  # Chain-of-thought with reflection
     BON = "bon"  # Best-of-N sampling
     MOA = "moa"  # Mixture of Agents
-    PV = "pv"  # Parallel voting
+    PV = "pvg"  # Prover-Verifier Game (upstream name; the old "pv" value was
+    # unservable — optillm's known_approaches has only "pvg", and the unknown
+    # prefix silently degraded to a plain pass-through)
     RE2 = "re2"  # Re-reading
     SELF_CONSISTENCY = "self_consistency"
     RSTAR = "rstar"  # R* search
@@ -117,6 +119,10 @@ class OptillmResponse:
         output_tokens: Number of output tokens
         latency_ms: Request latency in milliseconds
         error: Error message if request failed
+        reasoning_content: Separated model chain-of-thought when the backend
+            forwards it (upstream optillm currently drops it — honest empty)
+        finish_reason: "stop" | "length" from the underlying completion —
+            forwarded so truncation stays visible through the proxy hop
     """
 
     content: str
@@ -126,6 +132,8 @@ class OptillmResponse:
     output_tokens: int = 0
     latency_ms: int = 0
     error: Optional[str] = None
+    reasoning_content: str = ""
+    finish_reason: str = ""
 
     @property
     def success(self) -> bool:
@@ -1047,6 +1055,11 @@ class OptillmController:
                 input_tokens=usage.get("prompt_tokens", 0),
                 output_tokens=usage.get("completion_tokens", 0),
                 latency_ms=latency_ms,
+                # Forward what the backend gives (upstream optillm drops
+                # reasoning_content today — empty is honest, never fabricated);
+                # finish_reason keeps truncation visible through the proxy.
+                reasoning_content=message.get("reasoning_content") or "",
+                finish_reason=choice.get("finish_reason") or "",
             )
 
         except httpx.HTTPStatusError as e:

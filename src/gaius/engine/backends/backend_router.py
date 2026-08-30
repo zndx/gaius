@@ -44,6 +44,9 @@ class InferenceRequest:
     temperature: float = 0.7
     max_tokens: int = 2048
     technique: Optional[str] = None
+    # Dual-constraint fulfilment plan (a gaius.engine.capabilities
+    # CapabilityPlan from a capabilities[] request); None = legacy routing.
+    plan: Optional[Any] = None
     source_context: Optional[dict[str, Any]] = None
     enable_thinking: bool = True
     reasoning_effort: str = "xhigh"
@@ -82,6 +85,12 @@ class InferenceResponse:
     finish_reason: str = ""
     # Structured tool calls the engine parsed (Engine-First; see VLLMResponse).
     tool_calls: list[dict[str, Any]] = field(default_factory=list)
+    # Reasoning layers a dual-constraint fulfilment produced, in order (model
+    # layer first): {"layer": "model"|"method", "producer", "text", "tokens"}.
+    reasoning_layers: list[dict[str, Any]] = field(default_factory=list)
+    # How the engine fulfilled a capabilities[] request, e.g.
+    # "cot_reflection@engine/Qwen3.8-27B@vllm:8081". Empty on the legacy path.
+    fulfilled_by: str = ""
 
     @property
     def success(self) -> bool:
@@ -200,9 +209,21 @@ class BackendRouter:
             # Determine backend
             backend = agent_config.backend.lower()
 
+            plan = getattr(request, "plan", None)
+            # Dual-constraint fulfilment (capabilities[] conjunction): a planned
+            # method runs engine-natively (single-call scaffold over vLLM — BOTH
+            # reasoning layers captured) or through optillm (method layer only).
+            if plan is not None and getattr(plan, "method", None):
+                if getattr(plan, "engine_native", False):
+                    response = await self._fulfil_engine_native(request, agent_config)
+                else:
+                    request.technique = plan.method
+                    response = await self._route_to_optillm(
+                        request, agent_config, planned=True
+                    )
             # If technique is specified, route through optillm for optimization
             # optillm acts as a proxy that applies the technique then forwards to vLLM
-            if request.technique and backend == "vllm":
+            elif request.technique and backend == "vllm":
                 logger.info(
                     f"Routing {request.agent_alias} through optillm "
                     f"(technique={request.technique})"
@@ -243,7 +264,10 @@ class BackendRouter:
         return response
 
     async def _route_to_optillm(
-        self, request: InferenceRequest, agent_config: AgentConfig
+        self,
+        request: InferenceRequest,
+        agent_config: AgentConfig,
+        planned: bool = False,
     ) -> InferenceResponse:
         """Route request to optillm backend.
 
@@ -256,6 +280,10 @@ class BackendRouter:
         Args:
             request: The inference request
             agent_config: Agent configuration
+            planned: True when the technique came from a dual-constraint
+                capabilities[] plan — unknown techniques then fail fast
+                (#EP.00000020.NOMIX) instead of degrading to pass-through,
+                and the method reasoning layer is built from the scaffold.
 
         Returns:
             InferenceResponse from optillm (error set if unhealthy)
@@ -265,6 +293,22 @@ class BackendRouter:
         try:
             technique = OptillmTechnique(technique_str) if technique_str else OptillmTechnique.COT_REFLECTION
         except ValueError:
+            if planned:
+                from ..capabilities import GURU_NOMIX, offered_methods
+
+                return InferenceResponse(
+                    content="",
+                    model=agent_config.model,
+                    backend="optillm",
+                    error=(
+                        f"{GURU_NOMIX} technique {technique_str!r} is not servable; "
+                        f"offered: {', '.join(offered_methods())}"
+                    ),
+                )
+            logger.warning(
+                "unknown optillm technique %r; passing through as NONE (legacy caller)",
+                technique_str,
+            )
             technique = OptillmTechnique.NONE
 
         # Create optillm request
@@ -280,7 +324,7 @@ class BackendRouter:
         # Execute request
         response = await self.optillm.complete(optillm_request)
 
-        return InferenceResponse(
+        result = InferenceResponse(
             content=response.content,
             model=response.model,
             backend="optillm",
@@ -289,7 +333,107 @@ class BackendRouter:
             latency_ms=response.latency_ms,
             technique=response.technique,
             error=response.error,
+            # Forward what optillm gives; truncation stays visible through
+            # the proxy hop (finish_reason was silently dropped before).
+            reasoning_content=getattr(response, "reasoning_content", "") or "",
+            finish_reason=getattr(response, "finish_reason", "") or "",
         )
+
+        if planned and result.error is None:
+            # Method layer from the technique scaffold (OPTILLM_RETURN_FULL_RESPONSE
+            # keeps it in content). Tolerant when absent — never fabricate.
+            # The model layer is dropped by the optillm hop; the servicer logs
+            # #EP.00000021.METHODTRACE.
+            from ..capabilities import split_cot_reflection
+
+            method_trace, output = split_cot_reflection(result.content)
+            if method_trace:
+                result.content = output
+                result.reasoning_layers.append(
+                    {
+                        "layer": "method",
+                        "producer": f"{technique.value}@optillm",
+                        "text": method_trace,
+                        "tokens": 0,
+                    }
+                )
+            result.fulfilled_by = f"{technique.value}@optillm/{result.model}"
+
+        return result
+
+    async def _fulfil_engine_native(
+        self, request: InferenceRequest, agent_config: AgentConfig
+    ) -> InferenceResponse:
+        """Single-call technique (cot_reflection) applied by the ENGINE over vLLM.
+
+        Captures BOTH reasoning layers — the model's native reasoning_content
+        and the <thinking>/<reflection> scaffold — which the optillm proxy hop
+        drops (that hop yields the method layer only). One vLLM call; metrics
+        are recorded once by route() (never call self.route() from here).
+        """
+        from dataclasses import replace as _replace
+
+        from ..capabilities import (
+            compose_cot_reflection_messages,
+            split_cot_reflection,
+        )
+
+        system_prompt: Optional[str] = None
+        user_parts: list[str] = []
+        for message in request.messages or []:
+            role = message.get("role")
+            content = str(message.get("content") or "")
+            if role == "system" and system_prompt is None:
+                system_prompt = content
+            elif content:
+                user_parts.append(content)
+        prompt = "\n\n".join(user_parts)
+
+        inner = _replace(
+            request,
+            messages=compose_cot_reflection_messages(system_prompt, prompt),
+            technique=None,
+            plan=None,
+            enable_thinking=True,
+            preserve_thinking=True,
+        )
+        response = await self._route_to_vllm(inner, agent_config)
+        if response.error is not None:
+            return response
+
+        method_trace, output = split_cot_reflection(response.content)
+        # vLLM usage does not surface a reasoning-token split yet — 0 is the
+        # honest "unknown" per the proto contract.
+        model_tokens = 0
+        layers: list[dict[str, Any]] = []
+        if response.reasoning_content:
+            layers.append(
+                {
+                    "layer": "model",
+                    "producer": response.model,
+                    "text": response.reasoning_content,
+                    "tokens": model_tokens,
+                }
+            )
+        if method_trace:
+            layers.append(
+                {
+                    "layer": "method",
+                    "producer": "cot_reflection@engine",
+                    "text": method_trace,
+                    "tokens": max(0, int(response.output_tokens or 0) - model_tokens),
+                }
+            )
+        response.content = output
+        response.reasoning_layers = layers
+        response.technique = "cot_reflection"  # metrics label parity with optillm path
+        port = 0
+        get_process = getattr(getattr(self, "vllm", None), "get_process", None)
+        if callable(get_process):
+            proc = get_process(request.agent_alias)
+            port = int(getattr(proc, "port", 0) or 0)
+        response.fulfilled_by = f"cot_reflection@engine/{response.model}@vllm:{port}"
+        return response
 
     async def _route_to_external(
         self, request: InferenceRequest, agent_config: AgentConfig, backend: str
@@ -471,6 +615,7 @@ class BackendRouter:
         temperature: float = 0.7,
         max_tokens: int = 2048,
         technique: Optional[str] = None,
+        plan: Optional[Any] = None,
         source_context: Optional[dict[str, Any]] = None,
         task_type: Optional[str] = None,
         enable_thinking: bool = True,
@@ -517,6 +662,7 @@ class BackendRouter:
             temperature=temperature,
             max_tokens=max_tokens,
             technique=technique,
+            plan=plan,
             source_context=source_context,
             enable_thinking=enable_thinking,
             reasoning_effort=reasoning_effort,

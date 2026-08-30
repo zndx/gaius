@@ -690,24 +690,31 @@ def declared_workloads(peer: str = "gaius") -> list:
             zpb.SERVING_BACKEND_CPU_PROXY if gpu <= 0
             else zpb.SERVING_BACKEND_VLLM_LOCAL
         )
-        out.append(
-            zpb.WorkloadOffer(
-                peer=peer,
-                model=p.model,
-                capabilities=list(p.capabilities),
-                requirements=zpb.WorkloadRequirements(
-                    backend=backend,
-                    parallelism=zpb.ModelParallelism(
-                        tensor_parallel=p.tensor_parallel,
-                        pipeline_parallel=p.pipeline_parallel,
-                        data_parallel=1,
-                    ),
-                    footprint=zpb.ResourceFootprint(gpu=gpu),
+        offer = zpb.WorkloadOffer(
+            peer=peer,
+            model=p.model,
+            capabilities=list(p.capabilities),
+            requirements=zpb.WorkloadRequirements(
+                backend=backend,
+                parallelism=zpb.ModelParallelism(
+                    tensor_parallel=p.tensor_parallel,
+                    pipeline_parallel=p.pipeline_parallel,
+                    data_parallel=1,
                 ),
-                resource_class=_resource_class_enum(gpu),
-                queue=getattr(p, "queue", ""),
-            )
+                footprint=zpb.ResourceFootprint(gpu=gpu),
+            ),
+            resource_class=_resource_class_enum(gpu),
+            queue=getattr(p, "queue", ""),
         )
+        if str(getattr(p, "model", "") or "") == "proxy":
+            # The optillm proxy profile: advertise the METHOD capabilities
+            # (technique classes) this peer can serve in a Complete
+            # capabilities[] conjunction. Servable intersection only — never
+            # the raw enum. (added 2026-08-30)
+            from gaius.engine.capabilities import offered_methods
+
+            offer.methods.extend(offered_methods())
+        out.append(offer)
     return out
 
 

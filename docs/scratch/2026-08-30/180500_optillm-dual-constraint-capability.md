@@ -1,7 +1,16 @@
 # optillm as a dual-constraint capability over the signals-protocol
 
-Design note, 2026-08-30. Status: **proposal** (not implemented). Owner: gaius engine +
-signals-protocol.
+Design note, 2026-08-30. Status: **IMPLEMENTED same day** (phases 1–4; phase 5,
+the Signals-side federated planner, remains). Owner: gaius engine +
+signals-protocol. Guru codes shifted in implementation: NOMIX =
+`#EP.00000020` (19 was already WEDGED), METHODTRACE = `#EP.00000021`.
+Delivered: proto `capabilities[12]`/`ReasoningLayer`/`reasoning[9]`/
+`fulfilled_by[10]`/`WorkloadOffer.methods[7]` (+ capabilities.md spec);
+`gaius.engine.capabilities` planner (SERVABLE intersection — the enum's
+`pv`→`pvg` fixed en route, `cot` unservable); engine-native cot_reflection
+fulfilment capturing BOTH layers; optillm passthrough honesty
+(`reasoning_content`/`finish_reason` were silently dropped); lattice
+`capabilities=[...]`; article-curate cutover + `hx.cot_reasoning.reasoning_layers`.
 
 ## The finding that motivates it
 

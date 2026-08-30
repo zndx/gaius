@@ -507,7 +507,7 @@ Create a comprehensive research summary that will guide article development."""
             pass
         decision_only = {
             k: v for k, v in selection.items()
-            if k not in ("raw_response", "reasoning_trace", "prompt")
+            if k not in ("raw_response", "reasoning_trace", "reasoning_layers", "prompt")
         }
         rec = store_cot_reasoning(
             flow_name=flow_name,
@@ -520,6 +520,7 @@ Create a comprehensive research summary that will guide article development."""
             prompt=str(selection.get("prompt") or ""),
             reasoning_trace=str(selection.get("reasoning_trace") or ""),
             raw_response=str(selection.get("raw_response") or ""),
+            reasoning_layers=str(selection.get("reasoning_layers") or ""),
             output=_json.dumps(decision_only, default=str),
             decision=str(selection.get("selected_slug") or ""),
             confidence=float(selection.get("confidence") or 0.0),
@@ -625,10 +626,16 @@ Respond with JSON:
         attempts = 3
         for attempt in range(1, attempts + 1):
             try:
-                client = await get_engine_client()
-                response = await client.complete_simple(
-                    prompt=prompt,
-                    model="leader",  # Route through optillm for cot_reflection
+                # Dual-constraint Complete over the signals-protocol: the
+                # method (cot_reasoning → cot_reflection) + model (thinking)
+                # pair is fulfilled ENGINE-NATIVELY, so BOTH reasoning layers
+                # come back — the model's native trace AND the scaffold.
+                from gaius.flows.lattice import complete as lattice_complete
+
+                response = await _asyncio.to_thread(
+                    lattice_complete,
+                    prompt,
+                    capabilities=["cot_reasoning", "thinking"],
                     system_prompt="You are an editorial curator selecting articles for publication.",
                     temperature=0.7,  # Higher for exploration
                     # Deep reasoning IS the product: Qwen3.8's native <think> block on
@@ -639,8 +646,9 @@ Respond with JSON:
                     # "expected string or bytes-like object, got 'NoneType'" — a
                     # deterministic failure, not a transient. 262k context: give it room.
                     max_tokens=32768,
+                    timeout_s=900.0,
                 )
-                if response.content:
+                if response.text:
                     break
                 last_err = "empty response (#ACF.00000022.EMPTYRESPONSE)"
             except Exception as e:  # noqa: BLE001 — transient engine/vLLM failures
@@ -667,7 +675,7 @@ Respond with JSON:
         # fails #ACF.00000006.BADJSON even when the selection is correct. Instead
         # scan for every balanced JSON object and take the LAST one carrying
         # "selected_slug" — robust to arbitrarily rich reasoning ahead of the answer.
-        content = response.content
+        content = response.text
         decoder = json.JSONDecoder()
         selection = None
         scan = 0
@@ -686,12 +694,20 @@ Respond with JSON:
         if selection is not None:
             # Preserve the full reasoning trace — it is the deliverable, not scaffolding.
             selection["raw_response"] = content
-            # The trace: vLLM's separated reasoning_content when the path surfaces it;
-            # otherwise the cot_reflection scaffold (<thinking>…</thinking>
-            # <reflection>…</reflection>) present in the content when optillm runs
-            # with --return-full-response (without it optillm returns ONLY <output>
-            # and the reasoning is lost before it reaches HX).
-            trace = getattr(response, "reasoning_content", "") or ""
+            # The trace, richest first: the dual-constraint reasoning layers
+            # (model-native trace + method scaffold, tagged), else the
+            # separated reasoning_content, else the scaffold regex fallback.
+            layers = [
+                dict(layer)
+                for layer in (getattr(response, "reasoning", ()) or ())
+                if layer.get("text")
+            ]
+            trace = "\n\n".join(
+                f"[{layer.get('layer', '?')}:{layer.get('producer', '')}]\n{layer['text']}"
+                for layer in layers
+            )
+            if not trace:
+                trace = getattr(response, "reasoning_content", "") or ""
             if not trace:
                 import re as _re
 
@@ -700,7 +716,12 @@ Respond with JSON:
                 )
                 trace = "\n\n".join(f"<{tag}>{body.strip()}</{tag}>" for tag, body in parts)
             selection["reasoning_trace"] = trace
-            selection["technique"] = response.technique or self.optillm_technique
+            selection["reasoning_layers"] = json.dumps(layers) if layers else ""
+            fulfilled = getattr(response, "fulfilled_by", "") or ""
+            selection["fulfilled_by"] = fulfilled
+            selection["technique"] = (
+                fulfilled.split("@", 1)[0] if fulfilled else self.optillm_technique
+            )
             selection["latency_ms"] = getattr(response, "latency_ms", 0)
             # Context the HX product (hx.cot_reasoning) retains with the trace.
             selection["model"] = str(getattr(response, "model", "") or "thinking")

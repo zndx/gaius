@@ -198,13 +198,19 @@ def test_declared_queues_light_medium_heavy() -> None:
     assert light.gpu_guarantee == 1
     med = next(q for q in declared_queues() if q.role == "medium")
     assert med.gpu_max == 2
-    wrks = {h.wrk: h for h in declared_workloads()}
-    assert wrks["embedding"].gpu_tokens == 1
-    assert wrks["embedding"].model == "lightonai/ColBERT-Zero"
-    assert wrks["thinking"].gpu_tokens == 4
+    offers = {o.model: o for o in declared_workloads()}
+    emb = offers["lightonai/ColBERT-Zero"]
+    assert emb.requirements.footprint.gpu == 1
+    assert offers["Qwen/Qwen3.8-27B"].requirements.footprint.gpu == 4
     from gaius.engine.sentinel_claim import class_for_gpu_tokens
 
-    assert class_for_gpu_tokens(wrks["embedding"].gpu_tokens).name.endswith("light")
+    assert class_for_gpu_tokens(emb.requirements.footprint.gpu).name.endswith("light")
+    # The optillm proxy offer advertises the servable METHOD capabilities
+    # (dual-constraint Complete); model offers carry none.
+    proxy = offers["proxy"]
+    assert "cot_reflection" in proxy.methods and "bon" in proxy.methods
+    assert "pv" not in proxy.methods and "cot" not in proxy.methods
+    assert all(not o.methods for m, o in offers.items() if m != "proxy")
 
 
 def test_local_response_peers_empty_is_honest() -> None:

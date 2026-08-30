@@ -347,7 +347,24 @@ class GaiusZndxEngineServicer(zpb_grpc.EngineServicer):
                 "  Or:  just restart-clean",
             )
 
-        agent_alias = resolve_complete_alias(request.capability, self._services)
+        # Dual-constraint fulfilment: a capabilities[] conjunction is planned
+        # (method → optillm technique, model → served alias) or fails fast.
+        plan = None
+        caps = [
+            str(c).strip()
+            for c in (getattr(request, "capabilities", None) or [])
+            if str(c or "").strip()
+        ]
+        if caps:
+            from ...capabilities import CapabilityMixError, resolve_capabilities
+
+            try:
+                plan = resolve_capabilities(caps, self._services)
+            except CapabilityMixError as e:
+                await context.abort(grpc.StatusCode.FAILED_PRECONDITION, str(e))
+            agent_alias = plan.model_alias
+        else:
+            agent_alias = resolve_complete_alias(request.capability, self._services)
         tz = (getattr(request, "timezone", "") or "").strip()
         if tz or (getattr(request, "clock_json", "") or "").strip():
             logger.info(
@@ -365,6 +382,22 @@ class GaiusZndxEngineServicer(zpb_grpc.EngineServicer):
                 "tools_json and json_schema are mutually exclusive: guided_json "
                 "disables thinking and suppresses tool_calls.\n"
                 "  Guru: #GR.00000010.TOOLSCHEMA",
+            )
+
+        if (
+            plan is not None
+            and plan.method
+            and (
+                request.json_schema
+                or raw_tools
+                or (getattr(request, "messages_json", "") or "").strip()
+            )
+        ):
+            await context.abort(
+                grpc.StatusCode.INVALID_ARGUMENT,
+                "a method capability is one-shot text: tools_json / json_schema / "
+                "messages_json cannot combine with it (v1).\n"
+                "  Guru: #EP.00000020.NOMIX",
             )
 
         extra_body: dict | None = None
@@ -425,14 +458,29 @@ class GaiusZndxEngineServicer(zpb_grpc.EngineServicer):
                 ",".join(m.get("role", "?") for m in messages[-4:]),
             )
 
+        # Method-capability requests inherit optillm's own defaults when the
+        # caller left temperature/max_tokens unset (parity with the proxied
+        # technique).
+        default_temperature = 0.7
+        default_max_tokens = 2048
+        if plan is not None and plan.method:
+            from ...capabilities import (
+                METHOD_DEFAULT_MAX_TOKENS,
+                METHOD_DEFAULT_TEMPERATURE,
+            )
+
+            default_temperature = METHOD_DEFAULT_TEMPERATURE
+            default_max_tokens = METHOD_DEFAULT_MAX_TOKENS
+
         try:
             result = await router.complete(
                 prompt=request.prompt,
                 agent_alias=agent_alias,
                 system_prompt=request.system_prompt or None,
                 messages=messages,
-                temperature=request.temperature or 0.7,
-                max_tokens=request.max_tokens or 2048,
+                temperature=request.temperature or default_temperature,
+                max_tokens=request.max_tokens or default_max_tokens,
+                plan=plan,
                 task_type="zndx_complete",
                 enable_thinking=not bool(request.json_schema),
                 preserve_thinking=not bool(request.json_schema),
@@ -469,6 +517,24 @@ class GaiusZndxEngineServicer(zpb_grpc.EngineServicer):
                 id=str(tc.get("id") or ""),
                 name=str(tc.get("name") or ""),
                 arguments_json=str(tc.get("arguments_json") or ""),
+            )
+        # Dual-constraint: every reasoning layer the fulfilment produced
+        # (model layer first when present) + how it was fulfilled.
+        resp.fulfilled_by = getattr(result, "fulfilled_by", "") or ""
+        for layer in getattr(result, "reasoning_layers", None) or []:
+            resp.reasoning.add(
+                layer=str(layer.get("layer") or ""),
+                producer=str(layer.get("producer") or ""),
+                text=str(layer.get("text") or ""),
+                tokens=int(layer.get("tokens") or 0),
+            )
+        if plan is not None and plan.method and not plan.engine_native:
+            from ...capabilities import GURU_METHODTRACE
+
+            logger.warning(
+                "%s method=%s dropped the model reasoning layer (optillm proxy hop)",
+                GURU_METHODTRACE,
+                plan.method,
             )
         return resp
 

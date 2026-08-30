@@ -47,12 +47,18 @@ class LatticeComplete:
     latency_ms: float
     reasoning_content: str
     finish_reason: str
+    # Dual-constraint (capabilities[]) extras: every reasoning layer the
+    # fulfilment produced ({"layer","producer","text","tokens"}, model layer
+    # first) and how it was fulfilled.
+    reasoning: tuple[dict[str, Any], ...] = ()
+    fulfilled_by: str = ""
 
 
 def complete(
     prompt: str,
     *,
     capability: str = DEFAULT_CAPABILITY,
+    capabilities: list[str] | None = None,
     system_prompt: str = "",
     max_tokens: int = 2048,
     temperature: float = 0.7,
@@ -89,8 +95,21 @@ def complete(
             "guided_json disables thinking and suppresses tool_calls."
         )
     cap = (capability or DEFAULT_CAPABILITY).strip() or DEFAULT_CAPABILITY
+    caps_list = [str(c).strip() for c in (capabilities or []) if str(c or "").strip()]
+    if caps_list:
+        # Dual-constraint request (e.g. ["cot_reasoning", "thinking"]): the
+        # pre-flight guard checks the MODEL capability only — the method
+        # constraint is the engine planner's to enforce (#EP.00000020.NOMIX).
+        from gaius.engine.capabilities import METHOD_SYNONYMS, SERVABLE_METHODS
+
+        model_caps = [
+            c
+            for c in caps_list
+            if METHOD_SYNONYMS.get(c.lower(), c.lower()) not in SERVABLE_METHODS
+        ]
+        cap = model_caps[0] if model_caps else DEFAULT_CAPABILITY
     req = zpb.CompleteRequest(
-        capability=cap,
+        capability="" if caps_list else cap,
         prompt=prompt,
         system_prompt=system_prompt or "",
         max_tokens=int(max_tokens),
@@ -98,6 +117,7 @@ def complete(
         json_schema=schema,
         tools_json=tools_json,
         tool_choice=(tool_choice or "").strip(),
+        capabilities=caps_list,
     )
     channel = grpc.insecure_channel(addr)
     try:
@@ -119,7 +139,9 @@ def complete(
             f"{GURU_NOCAP} Complete returned no model for capability={cap!r}.\n"
             "  Try: /gpu status"
         )
-    if expected_model and served != expected_model:
+    # Substring tolerance: a method fulfilment may report a technique-prefixed
+    # serving name (e.g. "cot_reflection-Qwen/…") for the same model.
+    if expected_model and served != expected_model and expected_model not in served:
         raise RuntimeError(
             f"{GURU_WRONGMODEL} Complete served {served!r} for capability={cap!r}; "
             f"Status advertised {expected_model!r}.\n"
@@ -145,6 +167,16 @@ def complete(
         latency_ms=float(resp.latency_ms or 0.0),
         reasoning_content=resp.reasoning_content or "",
         finish_reason=resp.finish_reason or "",
+        reasoning=tuple(
+            {
+                "layer": layer.layer,
+                "producer": layer.producer,
+                "text": layer.text,
+                "tokens": int(layer.tokens or 0),
+            }
+            for layer in getattr(resp, "reasoning", ())
+        ),
+        fulfilled_by=getattr(resp, "fulfilled_by", "") or "",
     )
 
 

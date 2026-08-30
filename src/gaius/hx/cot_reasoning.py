@@ -77,6 +77,8 @@ def get_cot_reasoning_schema():
         # YuniKorn admission provenance
         NestedField(20, "yk_app_id", StringType(), required=False, doc="YuniKorn application id of the admitted flow"),
         NestedField(21, "yk_queue", StringType(), required=False, doc="YuniKorn leaf the flow ran on"),
+        # Dual-constraint fulfilment layers (added 2026-08-30; additive evolve)
+        NestedField(22, "reasoning_layers", StringType(), required=False, doc="JSON array of tagged reasoning layers [{layer: model|method, producer, text, tokens}] from a capabilities[] fulfilment"),
     )
 
 
@@ -181,6 +183,7 @@ def store_cot_reasoning(
     output: str,
     pathspec: str = "",
     raw_response: str = "",
+    reasoning_layers: str = "",
     decision: str = "",
     confidence: float | None = None,
     input_tokens: int | None = None,
@@ -226,6 +229,7 @@ def store_cot_reasoning(
                 pa.field("generated_at", pa.timestamp("us", tz="UTC"), nullable=False),
                 pa.field("yk_app_id", pa.string(), nullable=True),
                 pa.field("yk_queue", pa.string(), nullable=True),
+                pa.field("reasoning_layers", pa.string(), nullable=True),
             ]
         )
         record = pa.table(
@@ -251,6 +255,7 @@ def store_cot_reasoning(
                 "generated_at": [now],
                 "yk_app_id": [yk_app_id or None],
                 "yk_queue": [yk_queue or None],
+                "reasoning_layers": [reasoning_layers or None],
             },
             schema=arrow_schema,
         )

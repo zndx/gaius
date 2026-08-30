@@ -47,6 +47,8 @@ Complete catalog of error codes used across the Gaius platform.
 | `#EP.00000016.NOTREADY` | Complete hit a vLLM that is absent/STARTING | Wait for `/gpu status` HEALTHY; Settings starts light or medium Ask. Charts do not wait. |
 | `#EP.00000017.NOTELEMETRY` | Signals `kind=telemetry` surface missing or :9410 returned 503 | Confirm `SIGNALS_ENGINE_TARGET` Status.surfaces; dcgm-exporter on :9400; no DCGM dep in Gaius |
 | `#EP.00000018.THINKNOLOAD` | An intent the engine DECLARES it's serving (via `Engine/WatchWorkload`) stays not-SERVING past its warmup while SETTLED — the engine couldn't self-restore it (e.g. venv clobber / yunikorn admit race). NOT an eviction (evicted intents drop out of the profile). The continuous `gaius-thinking-ready` workload watchdog complete-recycles the unit (budget-bounded); a recycle-can't-fix cause (e.g. [[gaius-venv-cuda13-clobber-repair]]) trips the budget and needs a manual fix | `/health fix endpoints`; check GPU VRAM + `journalctl -u gaius-thinking-ready` |
+| `#EP.00000020.NOMIX` | A dual-constraint `Complete(capabilities=[...])` conjunction is unsatisfiable: ≥2 method caps, ≥2 model caps, or an unknown/unservable token (the message lists the offered models × methods) | Use ≤1 method + ≤1 model capability from the offered sets, e.g. `["cot_reasoning","thinking"]`; check `ServerQuery(WORKLOADS)` methods |
+| `#EP.00000021.METHODTRACE` | A planned method fulfilled through the optillm proxy dropped the MODEL reasoning layer (only the method scaffold survived the hop) — warning, not a failure | Engine-native techniques (cot_reflection) keep both layers; multi-call methods lose the model layer until upstream optillm forwards `reasoning_content` |
 
 ### OPT — optillm proxy
 
