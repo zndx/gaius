@@ -2746,7 +2746,8 @@ Domain: {domain or 'general'}
 
             status = await client.call("Orchestrator", "status", {})
             health = {
-                ep.get("name", ""): ep.get("status", "") == "healthy"
+                ep.get("name", ""): ep.get("status", "")
+                in ("healthy", "PROCESS_STATUS_HEALTHY")
                 for ep in status.get("endpoints", [])
             }
             return json.dumps(

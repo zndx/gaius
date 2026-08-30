@@ -3532,7 +3532,8 @@ Respond with:
         elif subcmd == "health":
             status = await client.call("Orchestrator", "status", {})
             endpoints = {
-                ep.get("name", ""): ep.get("status", "") == "healthy"
+                ep.get("name", ""): ep.get("status", "")
+                in ("healthy", "PROCESS_STATUS_HEALTHY")
                 for ep in status.get("endpoints", [])
             }
             return {

@@ -35,7 +35,13 @@ capability together, and the engine fulfils the pair (or fails fast).
   `Engine/Complete`.
 
 Go-around surface — **ELIMINATED 2026-08-30** (commits `9e034d7`, `303cc0b`; only
-health PROBES remain, and probing is not consuming):
+health PROBES remain, and probing is not consuming). Later the same day the
+**entire `gaius.inference` package was eliminated** (engine scheduler wiring
+`f445abe` + the elimination commit): the engine's `SchedulerService` now backs
+real `SubmitJob`/`GetJobResult`, search/embedders/thin clients moved to
+`gaius.search` / `gaius.engine.embeddings` / `gaius.client.*`, and XAI judging
+consumes `Engine/Complete` with `agent="xai"` — zero in-process inference
+outside the engine:
 
 | Path | Resolution |
 |------|------------|
