@@ -752,18 +752,14 @@ class CognitionService(BaseDaemon):
         self._notify_progress(f"LLM triage: assessing up to {limit} items...")
 
         try:
-            # Import LLM assessor from workers module
-            try:
-                from ...workers.models import ContentItem
-                from ...workers.triage import LLMTriageAssessor, TriageConfig
-                config = TriageConfig.from_env()
-                assessor = LLMTriageAssessor(config)
-                ContentItemCls = ContentItem
-            except (ImportError, Exception) as e:
-                # Fallback: skip LLM assessment, pass through
-                assessor = None
-                ContentItemCls = None
-                logger.warning(f"LLMTriageAssessor not available ({e}), using passthrough")
+            # LLM assessor (routes through Engine/Complete — Engine-First, no
+            # bypass). FAIL-FAST: it is in-repo; an import failure is a bug, not
+            # a condition to silently "pass through".
+            from ...workers.models import ContentItem
+            from ...workers.triage import LLMTriageAssessor, TriageConfig
+
+            assessor = LLMTriageAssessor(TriageConfig.from_env())
+            ContentItemCls = ContentItem
 
             import hashlib
 
@@ -818,26 +814,24 @@ class CognitionService(BaseDaemon):
                         scored += 1
                         continue
 
-                    # LLM assessment
-                    if assessor and ContentItemCls:
-                        try:
-                            # Convert db row to ContentItem for the assessor
-                            # Note: metadata is stored as TEXT, need to parse as JSON
-                            row_dict = dict(item)
-                            if isinstance(row_dict.get("metadata"), str):
-                                try:
-                                    row_dict["metadata"] = json.loads(row_dict["metadata"])
-                                except (json.JSONDecodeError, TypeError):
-                                    row_dict["metadata"] = {}
-                            content_item = ContentItemCls.from_row(row_dict)
-                            result = await assessor.assess(content_item)
-                            score = result.get("total", 50)
-                        except Exception as e:
-                            logger.warning(f"LLM assessment failed for {item['id']}: {e}")
-                            score = 50  # Default pass on error
-                    else:
-                        # Fallback: use heuristic score adjusted slightly
-                        score = min(100, item.get("heuristic_score", 50) + 10)
+                    # LLM assessment. FAIL-FAST per item: on error the item stays
+                    # honestly UNSCORED (llm_quality_score NULL → retried next
+                    # pass); never an invented "default pass" or heuristic+10.
+                    try:
+                        # Convert db row to ContentItem for the assessor
+                        # Note: metadata is stored as TEXT, need to parse as JSON
+                        row_dict = dict(item)
+                        if isinstance(row_dict.get("metadata"), str):
+                            try:
+                                row_dict["metadata"] = json.loads(row_dict["metadata"])
+                            except (json.JSONDecodeError, TypeError):
+                                row_dict["metadata"] = {}
+                        content_item = ContentItemCls.from_row(row_dict)
+                        result = await assessor.assess(content_item)
+                        score = result["total"]
+                    except Exception as e:
+                        logger.error(f"LLM assessment failed for {item['id']}: {e} — left unscored")
+                        continue
 
                     # Clamp score
                     score = max(0, min(100, score))

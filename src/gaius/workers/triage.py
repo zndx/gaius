@@ -26,8 +26,6 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Optional
 
-import httpx
-
 from gaius.workers.config import WorkerConfig
 from gaius.workers.db import Database
 from gaius.workers.models import ContentItem
@@ -54,10 +52,6 @@ class TriageConfig:
     heuristic_threshold: int = 30  # Minimum to proceed to LLM triage
     combined_threshold: int = 50   # Minimum for KB inclusion
 
-    # LLM settings
-    optillm_endpoint: str = "http://localhost:8000"
-    optillm_model: str = "default"  # Uses configured fast model
-
     # Processing limits
     batch_size: int = 50
 
@@ -65,7 +59,6 @@ class TriageConfig:
     def from_env(cls) -> "TriageConfig":
         """Create config from environment variables."""
         return cls(
-            optillm_endpoint=os.getenv("OPTILLM_URL", "http://localhost:8000"),
             batch_size=int(os.getenv("TRIAGE_BATCH_SIZE", "50")),
         )
 
@@ -235,69 +228,62 @@ Respond with JSON only:
 
     def __init__(self, config: TriageConfig):
         self.config = config
-        self._client = httpx.AsyncClient(timeout=60.0)
 
     async def close(self):
-        """Close HTTP client."""
-        await self._client.aclose()
+        """Kept for API compatibility (no owned transport since the gRPC rewire)."""
 
     async def assess(self, item: ContentItem) -> dict:
-        """Assess content quality using LLM.
+        """Assess content quality using the Engine (gRPC Complete).
+
+        Engine-First, no bypass: inference is consumed ONLY through the engine's
+        gRPC — never optillm's HTTP :8000 or a vLLM directly (this class used to
+        POST to optillm and was shared by the gaius-worker AND the engine's
+        cognition_service; both now route through Engine/Complete).
+
+        FAIL-FAST: raises on engine failure or an unparseable assessment — the
+        caller records the error and leaves the item honestly unscored (retried
+        next pass). Never invents a neutral score.
 
         Returns:
             Dict with scores and assessment
         """
+        from gaius.inference.engine_client import get_engine_client
+
         prompt = self.ASSESSMENT_PROMPT.format(
             title=item.title or "No title",
             summary=item.summary or "No summary",
             content_preview=(item.content or "")[:2000],
         )
 
-        try:
-            response = await self._client.post(
-                f"{self.config.optillm_endpoint}/v1/chat/completions",
-                json={
-                    "model": self.config.optillm_model,
-                    "messages": [
-                        {"role": "user", "content": prompt}
-                    ],
-                    "temperature": 0.1,
-                    "max_tokens": 500,
-                },
-            )
-            response.raise_for_status()
-
-            result = response.json()
-            content = result["choices"][0]["message"]["content"]
-
-            # Parse JSON response
-            scores = self._parse_assessment(content)
-            return {
-                "scores": scores,
-                "total": scores.get("overall", 50),
-                "reasoning": scores.get("reasoning", ""),
-            }
-
-        except Exception as e:
-            logger.error(f"LLM triage failed for {item.id}: {e}")
-            return {
-                "scores": {},
-                "total": 50,  # Default to neutral
-                "error": str(e),
-            }
+        client = await get_engine_client()
+        result = await client.complete_simple(
+            prompt=prompt,
+            temperature=0.1,
+            max_tokens=500,
+        )
+        content = result.content or ""
+        scores = self._parse_assessment(content)
+        return {
+            "scores": scores,
+            "total": scores["overall"],
+            "reasoning": scores.get("reasoning", ""),
+        }
 
     def _parse_assessment(self, content: str) -> dict:
-        """Parse LLM response to extract scores."""
+        """Parse the LLM response into scores. FAIL-FAST on unparseable output."""
         try:
-            # Extract JSON from response
             json_match = re.search(r'\{[^{}]*\}', content, re.DOTALL)
             if json_match:
-                return json.loads(json_match.group())
+                scores = json.loads(json_match.group())
+                if "overall" in scores:
+                    return scores
         except json.JSONDecodeError:
             pass
-
-        # Fallback: try to extract numbers
-        return {"overall": 50}
+        raise RuntimeError(
+            "LLM triage assessment unparseable (no JSON with 'overall').\n"
+            "  Guru Meditation: #TR.00000001.BADASSESS\n"
+            f"  Response head: {content[:200]!r}"
+        )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -435,8 +421,19 @@ class TriagePipeline:
                 })
                 continue
 
-            # LLM assessment
-            result = await self.llm_assessor.assess(item)
+            # LLM assessment. FAIL-FAST per item: on error the item stays
+            # honestly UNSCORED (llm_quality_score NULL → retried next pass);
+            # we never write an invented neutral score.
+            try:
+                result = await self.llm_assessor.assess(item)
+            except Exception as e:  # noqa: BLE001 — surfaced, counted, not faked
+                logger.error(f"LLM triage failed for {item.id}: {e}")
+                results.append({
+                    "item_id": item.id,
+                    "title": item.title,
+                    "error": str(e),
+                })
+                continue
             result["item_id"] = item.id
             result["title"] = item.title
 
@@ -615,23 +612,19 @@ async def run_heuristic_triage(
 
 async def run_llm_triage(
     scenario_id: Optional[str] = None,
-    endpoint: Optional[str] = None,
     limit: int = 20,
 ) -> list[dict]:
-    """Run LLM triage on content items.
+    """Run LLM triage on content items (assessment via Engine/Complete — no
+    optillm endpoint parameter: Engine-First, no bypass).
 
     Args:
         scenario_id: Optional filter for test isolation
-        endpoint: optillm endpoint URL
         limit: Maximum items to process
 
     Returns:
         List of triage results
     """
     config = TriageConfig.from_env()
-    if endpoint:
-        config.optillm_endpoint = endpoint
-
     worker_config = WorkerConfig.from_env()
 
     db = await Database.connect(
