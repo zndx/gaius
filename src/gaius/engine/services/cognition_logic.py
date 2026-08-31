@@ -450,7 +450,14 @@ async def _gather_kb_context(db_pool) -> dict:
             context["recent_thoughts"] = [dict(row) for row in thoughts]
 
     except Exception as e:
-        logger.warning(f"Failed to gather KB context: {e}")
+        # FAIL-FAST: a context-gather failure is a DB problem, not an empty
+        # KB — degrading to "no recent entries" made DB faults look like
+        # honest quiet and short-circuited the cycle as success.
+        raise RuntimeError(
+            f"Failed to gather KB context: {e}\n"
+            "  Guru: #COG.00000036.CTXGATHER\n"
+            "  Try: /health fix postgres"
+        ) from e
 
     return context
 
@@ -521,7 +528,10 @@ Trigger reason: {trigger_reason}"""
                 "system_prompt": "You are a knowledge analyst examining a personal knowledge base. "
                     "Find patterns, connections, and generate curiosity about the content.",
                 "agent": "thinking",
-                "max_tokens": 2048,
+                # xhigh thinking at ~8 tok/s regularly ate a 2048 budget
+                # entirely inside <think> (no answer text, 2026-08-31);
+                # 4096 gives the answer room; the client deadline scales.
+                "max_tokens": 4096,
             },
         )
 
@@ -534,7 +544,15 @@ Trigger reason: {trigger_reason}"""
             # Log first 500 chars to help debug parsing issues
             logger.info(f"LLM response preview:\n{response_content[:500]}...")
         else:
-            logger.warning("LLM returned empty response!")
+            # FAIL-FAST: an empty answer after real token spend means the
+            # thinking budget swallowed the completion — parsing "" into
+            # zero thoughts would be another silent success-with-nothing.
+            raise RuntimeError(
+                f"Thinking consumed the budget with no answer text "
+                f"(tokens_out={tokens_out}).\n"
+                "  Guru: #COG.00000037.THINKBURN\n"
+                "  Raise max_tokens for this call — xhigh reasoning needs headroom."
+            )
 
         # Parse response into thought dicts
         thoughts = _parse_thoughts(response_content)
@@ -543,11 +561,11 @@ Trigger reason: {trigger_reason}"""
         return thoughts, tokens_out
 
     except Exception as e:
-        # Fail-open: Log error with OTel span, return empty results
-        # The error is visible in observability but cognition cycle continues
+        # FAIL-FAST: generation is the cycle's entire purpose — a failure
+        # here must surface as a failed cycle, never as success-with-zero.
+        # (The old fail-open `return [], 0` masked a 30s-deadline timeout
+        # as 16 days of "successful" empty cycles, 2026-08-15..31.)
         logger.error(f"Thought generation failed (#COG.00000010.LLMPATTERN): {e}")
-        import traceback
-        logger.error(f"Traceback:\n{traceback.format_exc()}")
 
         # Record error in OTel span if available
         tracer = _get_tracer()
@@ -565,7 +583,7 @@ Trigger reason: {trigger_reason}"""
             except Exception as otel_err:
                 logger.debug(f"Failed to record error in OTel span: {otel_err}")
 
-        return [], 0
+        raise
 
 
 def _parse_thoughts(response_text: str) -> list[dict]:
@@ -1661,7 +1679,10 @@ EVALUATION: How to measure success"""
                 "system_prompt": "You are designing reasoning tasks for AI capability development. "
                     "Focus on novel, challenging tasks that test different skills.",
                 "agent": "thinking",
-                "max_tokens": 2048,
+                # xhigh thinking at ~8 tok/s regularly ate a 2048 budget
+                # entirely inside <think> (no answer text, 2026-08-31);
+                # 4096 gives the answer room; the client deadline scales.
+                "max_tokens": 4096,
             },
         )
 

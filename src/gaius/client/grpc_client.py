@@ -150,6 +150,7 @@ class GrpcClientConfig:
         host: Server hostname
         port: Server port
         timeout: Request timeout in seconds
+        inference_timeout: Timeout for Scheduler complete/evaluate (LLM latency)
         connect_timeout: Connection timeout in seconds
         max_retries: Max connection retries (-1 = infinite, for TUI)
         retry_interval: Seconds between retry attempts
@@ -158,6 +159,10 @@ class GrpcClientConfig:
     host: str = "localhost"
     port: int = 50051
     timeout: float = 30.0
+    # Floor for Scheduler complete/evaluate. Mirrors the engine's own
+    # cognition_buffer.thinking_read_timeout_s budget (~8 tok/s worst case
+    # + slack): xhigh-effort thinking completions legitimately run minutes.
+    inference_timeout: float = 480.0
     connect_timeout: float = 5.0
     max_retries: int = 3  # Default for CLI/MCP (finite)
     retry_interval: float = 5.0  # Poll every 5 seconds
@@ -169,6 +174,7 @@ class GrpcClientConfig:
             host=os.environ.get("GAIUS_GRPC_HOST", "localhost"),
             port=int(os.environ.get("GAIUS_GRPC_PORT", "50051")),
             timeout=float(os.environ.get("GAIUS_ENGINE_TIMEOUT", "30")),
+            inference_timeout=float(os.environ.get("GAIUS_INFERENCE_TIMEOUT", "480")),
             connect_timeout=float(os.environ.get("GAIUS_CONNECT_TIMEOUT", "5")),
             max_retries=int(os.environ.get("GAIUS_MAX_RETRIES", "3")),
             retry_interval=float(os.environ.get("GAIUS_RETRY_INTERVAL", "5")),
@@ -378,6 +384,34 @@ class GrpcEngineClient:
         """Close the client connection (alias for disconnect)."""
         await self.disconnect()
 
+    def resolve_timeout(
+        self,
+        service: str,
+        action: str,
+        timeout: Optional[float],
+        params: Optional[dict[str, Any]] = None,
+    ) -> float:
+        """Explicit per-call timeout wins; inference actions get an
+        inference deadline scaled to max_tokens; everything else the base.
+
+        LLM completions routinely exceed the 30s base deadline — a 30s
+        default on Scheduler.complete silently zeroed 16 days of cognition
+        cycles (#COG.00000010.LLMPATTERN, 2026-08-15..31). The floor
+        mirrors the engine's cognition_buffer.thinking_read_timeout_s
+        budget (~8 tok/s worst case + slack; reasoning is the product —
+        xhigh-effort thinking completions legitimately run minutes).
+        """
+        if timeout:
+            return timeout
+        if service == "Scheduler" and action in ("complete", "evaluate"):
+            # OUTER SAFETY NET ONLY. The real supervision is engine-side
+            # token-progress stall detection (#VLLM.00000005.STALLED) — a
+            # generation that keeps producing is never killed. This deadline
+            # exists solely for a dead/unreachable engine, so it is generous.
+            max_tokens = int((params or {}).get("max_tokens") or 2048)
+            return max(self.config.inference_timeout, max_tokens / 4 + 240)
+        return self.config.timeout
+
     async def call(
         self,
         service: str,
@@ -404,8 +438,8 @@ class GrpcEngineClient:
             ConnectionError: If not connected after max retries
             RuntimeError: If request fails
         """
-        timeout = timeout or self.config.timeout
         params = params or {}
+        timeout = self.resolve_timeout(service, action, timeout, params)
 
         attempt = 0
         last_error: Optional[Exception] = None

@@ -129,6 +129,9 @@ Complete catalog of error codes used across the Gaius platform.
 | `#COG.00000031.NOWHFDW` | Waterfall window_s > 60 but devenv Postgres `impala_fdw` `gpu_metrics` is unreachable | `kinit`; `psql :5455` `SELECT` from `gpu_metrics` |
 | `#COG.00000032.SYNTHFAIL` | Cognition synthesis via thinking failed | `/gpu status thinking`; check HX `llm.generations` |
 | `#COG.00000034.NOTOKENIZER` | Qwen3.8-27B tokenizer missing; cannot size thinking Completes | `HF_HOME=/raid/cache/huggingface`; snapshot `Qwen/Qwen3.8-27B` |
+| `#COG.00000036.CTXGATHER` | Cognition cycle could not gather KB context (DB fault, not an empty KB) | `/health fix postgres` |
+| `#COG.00000037.THINKBURN` | Thinking consumed the whole token budget; no answer text produced | Raise `max_tokens` for the call (xhigh effort ≈ ~8 tok/s; deadline auto-scales) |
+| `#VLLM.00000005.STALLED` | Streamed generation produced no tokens for `GAIUS_INFERENCE_STALL_S` (default 120s) — progress stall, not a wall-clock kill | `/health fix endpoints`; check thinking VRAM/health |
 
 ### THETA — ThetaService / sitrep
 

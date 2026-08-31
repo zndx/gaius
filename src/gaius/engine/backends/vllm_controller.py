@@ -992,6 +992,110 @@ class VLLMController:
         logger.info(f"Endpoint {agent_alias} stopped")
         return True
 
+    @staticmethod
+    def _merge_stream_tool_calls(
+        acc: list[dict[str, Any]], deltas: list[dict[str, Any]]
+    ) -> None:
+        """Accumulate OpenAI-style streamed tool_call deltas by index."""
+        for d in deltas:
+            idx = int(d.get("index") or 0)
+            while len(acc) <= idx:
+                acc.append(
+                    {
+                        "id": "",
+                        "type": "function",
+                        "function": {"name": "", "arguments": ""},
+                    }
+                )
+            slot = acc[idx]
+            if d.get("id"):
+                slot["id"] = d["id"]
+            if d.get("type"):
+                slot["type"] = d["type"]
+            fn = d.get("function") or {}
+            if fn.get("name"):
+                slot["function"]["name"] = fn["name"]
+            if fn.get("arguments"):
+                slot["function"]["arguments"] += fn["arguments"]
+
+    async def _stream_chat_completion(
+        self, port: int, payload: dict[str, Any], stall_s: float
+    ) -> dict[str, Any]:
+        """Stream a chat completion, supervising PROGRESS instead of wall clock.
+
+        On a streaming response the httpx `read` timeout applies to each
+        chunk read, so it acts as a token-stall detector: generation may run
+        arbitrarily long while tokens keep arriving. Returns a dict shaped
+        like the non-streaming response (choices/message/usage) so the
+        existing parse is shared. Raises on stall — never a silent empty.
+        """
+        import json as _json
+
+        content_parts: list[str] = []
+        reasoning_parts: list[str] = []
+        tool_calls_acc: list[dict[str, Any]] = []
+        finish_reason = ""
+        usage: dict[str, Any] = {}
+        model = str(payload.get("model") or "")
+        chunks = 0
+        try:
+            async with self._client.stream(
+                "POST",
+                f"http://localhost:{port}/v1/chat/completions",
+                json=payload,
+                timeout=httpx.Timeout(
+                    connect=10.0, read=stall_s, write=30.0, pool=30.0
+                ),
+            ) as response:
+                if response.status_code >= 400:
+                    await response.aread()
+                response.raise_for_status()
+                async for line in response.aiter_lines():
+                    if not line.startswith("data:"):
+                        continue
+                    body = line[len("data:"):].strip()
+                    if not body or body == "[DONE]":
+                        continue
+                    chunk = _json.loads(body)
+                    chunks += 1
+                    if chunk.get("model"):
+                        model = chunk["model"]
+                    if chunk.get("usage"):
+                        usage = chunk["usage"]
+                    for ch in chunk.get("choices", []):
+                        delta = ch.get("delta") or {}
+                        if delta.get("content"):
+                            content_parts.append(delta["content"])
+                        if delta.get("reasoning_content"):
+                            reasoning_parts.append(delta["reasoning_content"])
+                        if delta.get("tool_calls"):
+                            self._merge_stream_tool_calls(
+                                tool_calls_acc, delta["tool_calls"]
+                            )
+                        if ch.get("finish_reason"):
+                            finish_reason = ch["finish_reason"]
+        except httpx.ReadTimeout as e:
+            produced = sum(map(len, content_parts)) + sum(map(len, reasoning_parts))
+            raise RuntimeError(
+                f"Generation STALLED: no tokens for {stall_s:.0f}s "
+                f"(after {chunks} chunks, {produced} chars).\n"
+                "  Guru: #VLLM.00000005.STALLED\n"
+                "  Progress doctrine: stall detection, not wall-clock kills.\n"
+                "  Try: /health fix endpoints"
+            ) from e
+
+        message: dict[str, Any] = {
+            "content": "".join(content_parts),
+            "reasoning_content": "".join(reasoning_parts),
+        }
+        if tool_calls_acc:
+            message["tool_calls"] = tool_calls_acc
+        return {
+            "model": model,
+            "usage": usage,
+            "choices": [{"message": message, "finish_reason": finish_reason}],
+        }
+
     async def complete(self, request: VLLMRequest) -> VLLMResponse:
         """Complete a request through vLLM.
 
@@ -1080,19 +1184,19 @@ class VLLMController:
         start_time = datetime.now()
 
         try:
-            from gaius.engine.services.cognition_buffer import thinking_read_timeout_s
+            import os
 
-            read_s = thinking_read_timeout_s(int(request.max_tokens or 0))
-            response = await self._client.post(
-                f"http://localhost:{proc.port}/v1/chat/completions",
-                json=payload,
-                timeout=httpx.Timeout(
-                    connect=10.0, read=read_s, write=30.0, pool=30.0
-                ),
-            )
-            response.raise_for_status()
+            # PROGRESS DOCTRINE: supervise token ARRIVAL, not wall clock.
+            # The completion is streamed, so the httpx `read` timeout applies
+            # per chunk and becomes a stall threshold ("no token for N
+            # seconds") — a slow-but-progressing generation is never killed.
+            # (Naive 30s wall-clock deadlines silently zeroed 16 days of
+            # cognition cycles, 2026-08-15..31.)
+            stall_s = float(os.environ.get("GAIUS_INFERENCE_STALL_S", "120"))
+            payload["stream"] = True
+            payload["stream_options"] = {"include_usage": True}
 
-            data = response.json()
+            data = await self._stream_chat_completion(proc.port, payload, stall_s)
             latency_ms = int((datetime.now() - start_time).total_seconds() * 1000)
 
             # Debug log raw response structure
