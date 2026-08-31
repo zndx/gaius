@@ -2416,8 +2416,12 @@ Your summary note content"""
         window_days: int = 365,
         thought_limit: int = 80,
         stream: str = "",
+        window: str = "",
+        bucket: str = "",
+        from_ms: int = 0,
+        to_ms: int = 0,
     ) -> Any:
-        """Federation cognition snapshot for gaius-ui / CLI."""
+        """Federation cognition snapshot for gaius-ui / CLI (scale-aware)."""
         from .cognition_surface import build_cognition_surface
 
         return await build_cognition_surface(
@@ -2426,6 +2430,10 @@ Your summary note content"""
             thought_limit=thought_limit,
             stream=stream,
             status=self.get_status(),
+            window=window,
+            bucket=bucket,
+            from_ms=from_ms,
+            to_ms=to_ms,
         )
 
     async def get_pending_tasks(self, limit: int = 10) -> list[dict]:

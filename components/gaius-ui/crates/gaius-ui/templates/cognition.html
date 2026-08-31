@@ -15,11 +15,23 @@
     <div id="cog-error" class="cog-error" hidden></div>
     <div class="cog-toolbar">
       <label class="cog-toolbar-label">Window
-        <select id="cog-window" class="cog-select" aria-label="Window">
-          <option value="7">Last 7 days</option>
-          <option value="30">Last 30 days</option>
-          <option value="90">Last 90 days</option>
-          <option value="365" selected>Last year</option>
+        <select id="cog-win" class="cog-select" aria-label="Window">
+          <option value="24h">Last 24 hours</option>
+          <option value="7d">Last 7 days</option>
+          <option value="30d">Last 30 days</option>
+          <option value="90d">Last 90 days</option>
+          <option value="365d" selected>Last year</option>
+          <option value="all">All history</option>
+        </select>
+      </label>
+      <label class="cog-toolbar-label">Buckets
+        <select id="cog-bucket" class="cog-select" aria-label="Bucket granularity">
+          <option value="" selected>Auto</option>
+          <option value="hour">Hour</option>
+          <option value="6h">6 hours</option>
+          <option value="day">Day</option>
+          <option value="week">Week</option>
+          <option value="month">Month</option>
         </select>
       </label>
       <button type="button" id="cog-refresh" class="btn">Refresh</button>
@@ -30,19 +42,22 @@
     <div class="cog-panel">
       <div class="cog-panel-head">
         <h2>Activity</h2>
+        <span class="muted mono" id="cog-activity-meta">— · UTC</span>
+      </div>
+      <div id="cog-activity" class="cog-activity" role="img" aria-label="Thought activity over the window"></div>
+    </div>
+    <div class="cog-panel" id="cog-calendar-panel">
+      <div class="cog-panel-head">
+        <h2>Calendar</h2>
         <span class="muted">thoughts · UTC</span>
       </div>
-      <div id="cog-year" class="cog-year" role="img" aria-label="Year heatmap"></div>
+      <div id="cog-year" class="cog-year" role="img" aria-label="Calendar heatmap"></div>
     </div>
     <div class="cog-split">
       <div class="cog-panel">
         <div class="cog-panel-head">
-          <h2>Activity by day</h2>
-        </div>
-        <div id="cog-bars" class="cog-bars" aria-label="Daily bars"></div>
-        <div class="cog-panel-head" style="margin-top:1rem">
           <h3>Hour of week</h3>
-          <span class="muted">UTC</span>
+          <span class="muted">per-week rate · UTC</span>
         </div>
         <div id="cog-how" class="cog-how" aria-label="Hour of week"></div>
       </div>
@@ -56,5 +71,6 @@
     </div>
   </section>
 </div>
+<script src="/assets/js/cogchart.js?v={{ asset_v }}" defer></script>
 <script src="/assets/js/cognition.js?v={{ asset_v }}" defer></script>
 {% include "footer.html" %}

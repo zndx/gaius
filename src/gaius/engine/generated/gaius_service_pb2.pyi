@@ -728,14 +728,22 @@ class CognitionActivityResponse(_message.Message):
     def __init__(self, cognition_running: bool = ..., cycles_completed: _Optional[int] = ..., last_cycle_timestamp_ms: _Optional[int] = ..., current_task: _Optional[str] = ..., thoughts_today: _Optional[int] = ..., active_thoughts: _Optional[int] = ...) -> None: ...
 
 class CognitionSurfaceRequest(_message.Message):
-    __slots__ = ("window_days", "thought_limit", "stream")
+    __slots__ = ("window_days", "thought_limit", "stream", "window", "bucket", "from_ms", "to_ms")
     WINDOW_DAYS_FIELD_NUMBER: _ClassVar[int]
     THOUGHT_LIMIT_FIELD_NUMBER: _ClassVar[int]
     STREAM_FIELD_NUMBER: _ClassVar[int]
+    WINDOW_FIELD_NUMBER: _ClassVar[int]
+    BUCKET_FIELD_NUMBER: _ClassVar[int]
+    FROM_MS_FIELD_NUMBER: _ClassVar[int]
+    TO_MS_FIELD_NUMBER: _ClassVar[int]
     window_days: int
     thought_limit: int
     stream: str
-    def __init__(self, window_days: _Optional[int] = ..., thought_limit: _Optional[int] = ..., stream: _Optional[str] = ...) -> None: ...
+    window: str
+    bucket: str
+    from_ms: int
+    to_ms: int
+    def __init__(self, window_days: _Optional[int] = ..., thought_limit: _Optional[int] = ..., stream: _Optional[str] = ..., window: _Optional[str] = ..., bucket: _Optional[str] = ..., from_ms: _Optional[int] = ..., to_ms: _Optional[int] = ...) -> None: ...
 
 class CognitionDayBucket(_message.Message):
     __slots__ = ("date", "thoughts", "cycles")
@@ -746,6 +754,22 @@ class CognitionDayBucket(_message.Message):
     thoughts: int
     cycles: int
     def __init__(self, date: _Optional[str] = ..., thoughts: _Optional[int] = ..., cycles: _Optional[int] = ...) -> None: ...
+
+class CognitionBucket(_message.Message):
+    __slots__ = ("start_ms", "end_ms", "thoughts", "cycles", "tokens", "salience_max")
+    START_MS_FIELD_NUMBER: _ClassVar[int]
+    END_MS_FIELD_NUMBER: _ClassVar[int]
+    THOUGHTS_FIELD_NUMBER: _ClassVar[int]
+    CYCLES_FIELD_NUMBER: _ClassVar[int]
+    TOKENS_FIELD_NUMBER: _ClassVar[int]
+    SALIENCE_MAX_FIELD_NUMBER: _ClassVar[int]
+    start_ms: int
+    end_ms: int
+    thoughts: int
+    cycles: int
+    tokens: int
+    salience_max: float
+    def __init__(self, start_ms: _Optional[int] = ..., end_ms: _Optional[int] = ..., thoughts: _Optional[int] = ..., cycles: _Optional[int] = ..., tokens: _Optional[int] = ..., salience_max: _Optional[float] = ...) -> None: ...
 
 class CognitionHourCell(_message.Message):
     __slots__ = ("weekday", "hour", "thoughts")
@@ -766,7 +790,7 @@ class CognitionStreamCount(_message.Message):
     def __init__(self, id: _Optional[str] = ..., thoughts: _Optional[int] = ...) -> None: ...
 
 class CognitionSurfaceResponse(_message.Message):
-    __slots__ = ("running", "cycles_completed", "cycles_in_window", "last_cycle_timestamp_ms", "current_task", "thoughts", "streams", "active_days", "thoughts_per_cycle", "concentration_stream", "concentration_pct", "reserve_tokens", "project", "unit", "recent", "top", "days", "hours", "stream_counts", "error")
+    __slots__ = ("running", "cycles_completed", "cycles_in_window", "last_cycle_timestamp_ms", "current_task", "thoughts", "streams", "active_days", "thoughts_per_cycle", "concentration_stream", "concentration_pct", "reserve_tokens", "project", "unit", "recent", "top", "days", "hours", "stream_counts", "error", "buckets", "interval", "range_start_ms", "range_end_ms", "effective_end_ms", "bucket_seconds")
     RUNNING_FIELD_NUMBER: _ClassVar[int]
     CYCLES_COMPLETED_FIELD_NUMBER: _ClassVar[int]
     CYCLES_IN_WINDOW_FIELD_NUMBER: _ClassVar[int]
@@ -787,6 +811,12 @@ class CognitionSurfaceResponse(_message.Message):
     HOURS_FIELD_NUMBER: _ClassVar[int]
     STREAM_COUNTS_FIELD_NUMBER: _ClassVar[int]
     ERROR_FIELD_NUMBER: _ClassVar[int]
+    BUCKETS_FIELD_NUMBER: _ClassVar[int]
+    INTERVAL_FIELD_NUMBER: _ClassVar[int]
+    RANGE_START_MS_FIELD_NUMBER: _ClassVar[int]
+    RANGE_END_MS_FIELD_NUMBER: _ClassVar[int]
+    EFFECTIVE_END_MS_FIELD_NUMBER: _ClassVar[int]
+    BUCKET_SECONDS_FIELD_NUMBER: _ClassVar[int]
     running: bool
     cycles_completed: int
     cycles_in_window: int
@@ -807,7 +837,13 @@ class CognitionSurfaceResponse(_message.Message):
     hours: _containers.RepeatedCompositeFieldContainer[CognitionHourCell]
     stream_counts: _containers.RepeatedCompositeFieldContainer[CognitionStreamCount]
     error: str
-    def __init__(self, running: bool = ..., cycles_completed: _Optional[int] = ..., cycles_in_window: _Optional[int] = ..., last_cycle_timestamp_ms: _Optional[int] = ..., current_task: _Optional[str] = ..., thoughts: _Optional[int] = ..., streams: _Optional[int] = ..., active_days: _Optional[int] = ..., thoughts_per_cycle: _Optional[float] = ..., concentration_stream: _Optional[str] = ..., concentration_pct: _Optional[float] = ..., reserve_tokens: _Optional[int] = ..., project: _Optional[str] = ..., unit: _Optional[str] = ..., recent: _Optional[_Iterable[_Union[ThoughtMessage, _Mapping]]] = ..., top: _Optional[_Iterable[_Union[ThoughtMessage, _Mapping]]] = ..., days: _Optional[_Iterable[_Union[CognitionDayBucket, _Mapping]]] = ..., hours: _Optional[_Iterable[_Union[CognitionHourCell, _Mapping]]] = ..., stream_counts: _Optional[_Iterable[_Union[CognitionStreamCount, _Mapping]]] = ..., error: _Optional[str] = ...) -> None: ...
+    buckets: _containers.RepeatedCompositeFieldContainer[CognitionBucket]
+    interval: str
+    range_start_ms: int
+    range_end_ms: int
+    effective_end_ms: int
+    bucket_seconds: int
+    def __init__(self, running: bool = ..., cycles_completed: _Optional[int] = ..., cycles_in_window: _Optional[int] = ..., last_cycle_timestamp_ms: _Optional[int] = ..., current_task: _Optional[str] = ..., thoughts: _Optional[int] = ..., streams: _Optional[int] = ..., active_days: _Optional[int] = ..., thoughts_per_cycle: _Optional[float] = ..., concentration_stream: _Optional[str] = ..., concentration_pct: _Optional[float] = ..., reserve_tokens: _Optional[int] = ..., project: _Optional[str] = ..., unit: _Optional[str] = ..., recent: _Optional[_Iterable[_Union[ThoughtMessage, _Mapping]]] = ..., top: _Optional[_Iterable[_Union[ThoughtMessage, _Mapping]]] = ..., days: _Optional[_Iterable[_Union[CognitionDayBucket, _Mapping]]] = ..., hours: _Optional[_Iterable[_Union[CognitionHourCell, _Mapping]]] = ..., stream_counts: _Optional[_Iterable[_Union[CognitionStreamCount, _Mapping]]] = ..., error: _Optional[str] = ..., buckets: _Optional[_Iterable[_Union[CognitionBucket, _Mapping]]] = ..., interval: _Optional[str] = ..., range_start_ms: _Optional[int] = ..., range_end_ms: _Optional[int] = ..., effective_end_ms: _Optional[int] = ..., bucket_seconds: _Optional[int] = ...) -> None: ...
 
 class CognitionWaterfallRequest(_message.Message):
     __slots__ = ("window_s",)

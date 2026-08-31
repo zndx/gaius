@@ -5,6 +5,11 @@ dashboard. Streams are thought types (pattern, connection, …),
 not Claude/Codex coding sessions. Empty windows are zeros, not
 invented warehouses.
 
+Scale-aware (2026-08-30): the server resolves the bucket unit from the
+range duration (``cognition_buckets``), returns REAL half-open bucket
+bounds zero-filled across the range, and echoes the interval — the
+client renders whatever resolution it is handed instead of truncating.
+
 SQL lives here so the servicer stays a thin gRPC map.
 """
 
@@ -15,6 +20,13 @@ from datetime import datetime, timezone
 from typing import Any
 
 from gaius.engine.services.cognition_buffer import NEXT_QUESTION_RESERVE_TOKENS
+from gaius.engine.services.cognition_buckets import (
+    BUCKET_SECONDS,
+    build_buckets,
+    fold_rows,
+    resolve_bucket,
+    resolve_range,
+)
 
 SURFACE_GURU_NODB = (
     "Cognition surface needs the engine database pool.\n"
@@ -51,6 +63,18 @@ class SurfaceDay:
 
 
 @dataclass
+class SurfaceBucket:
+    """Half-open [start_ms, end_ms) activity bucket (zero-filled)."""
+
+    start_ms: int
+    end_ms: int
+    thoughts: int
+    cycles: int
+    tokens: int
+    salience_max: float
+
+
+@dataclass
 class SurfaceHour:
     weekday: int
     hour: int
@@ -81,10 +105,17 @@ class CognitionSurface:
     unit: str
     recent: list[SurfaceThought] = field(default_factory=list)
     top: list[SurfaceThought] = field(default_factory=list)
-    days: list[SurfaceDay] = field(default_factory=list)
+    days: list[SurfaceDay] = field(default_factory=list)  # legacy; empty
     hours: list[SurfaceHour] = field(default_factory=list)
     stream_counts: list[SurfaceStream] = field(default_factory=list)
     error: str = ""
+    # Scale-aware series
+    buckets: list[SurfaceBucket] = field(default_factory=list)
+    interval: str = ""
+    range_start_ms: int = 0
+    range_end_ms: int = 0
+    effective_end_ms: int = 0
+    bucket_seconds: int = 0
 
 
 def normalize_window(window_days: int) -> int:
@@ -149,13 +180,20 @@ async def build_cognition_surface(
     thought_limit: int,
     stream: str,
     status: dict[str, Any],
+    window: str = "",
+    bucket: str = "",
+    from_ms: int = 0,
+    to_ms: int = 0,
 ) -> CognitionSurface:
     """Query the window. Fail-fast if the pool is missing."""
     if db_pool is None:
         raise RuntimeError(SURFACE_GURU_NODB)
-    days = normalize_window(window_days)
+    if not window and not from_ms and not to_ms:
+        # Legacy path keeps its guru for out-of-range window_days.
+        normalize_window(window_days)
     limit = normalize_limit(thought_limit)
     stream_id = (stream or "").strip()
+    now = datetime.now(timezone.utc)
 
     last_cycle_ms = 0
     last_cycle_at = status.get("last_cycle_at")
@@ -170,6 +208,32 @@ async def build_cognition_surface(
                 last_cycle_ms = 0
 
     async with db_pool.acquire() as conn:
+        oldest = None
+        if (window or "").strip().lower() == "all":
+            oldest_row = await conn.fetchrow(
+                "SELECT MIN(created_at) AS oldest FROM cognition_thoughts"
+            )
+            oldest = oldest_row["oldest"] if oldest_row else None
+
+        start, end = resolve_range(
+            now,
+            window_days=window_days,
+            window=window,
+            from_ms=from_ms,
+            to_ms=to_ms,
+            oldest=oldest,
+        )
+        unit = resolve_bucket(start, end, bucket)
+        # Align the range start to the SQL truncation grain so every
+        # date_trunc'd row lands at or after its bucket's start.
+        if unit in ("hour", "6h"):
+            start = start.replace(minute=0, second=0, microsecond=0)
+        else:
+            start = start.replace(hour=0, minute=0, second=0, microsecond=0)
+        unit = resolve_bucket(start, end, bucket)  # stable across the floor
+        grain = "hour" if unit in ("hour", "6h") else "day"
+        windows = build_buckets(start, end, unit)
+
         totals = await conn.fetchrow(
             """
             SELECT
@@ -177,51 +241,60 @@ async def build_cognition_surface(
               COUNT(DISTINCT thought_type)::int AS streams,
               COUNT(DISTINCT (created_at AT TIME ZONE 'UTC')::date)::int AS active_days
             FROM cognition_thoughts
-            WHERE created_at >= NOW() - ($1::int * INTERVAL '1 day')
-              AND ($2 = '' OR thought_type = $2)
+            WHERE created_at >= $1 AND created_at < $2
+              AND ($3 = '' OR thought_type = $3)
             """,
-            days,
+            start,
+            end,
             stream_id,
         )
         cycle_row = await conn.fetchrow(
             """
             SELECT COUNT(*)::int AS cycles
             FROM cognition_cycles
-            WHERE started_at >= NOW() - ($1::int * INTERVAL '1 day')
+            WHERE started_at >= $1 AND started_at < $2
             """,
-            days,
+            start,
+            end,
         )
         type_rows = await conn.fetch(
             """
             SELECT thought_type, COUNT(*)::int AS n
             FROM cognition_thoughts
-            WHERE created_at >= NOW() - ($1::int * INTERVAL '1 day')
+            WHERE created_at >= $1 AND created_at < $2
             GROUP BY thought_type
             ORDER BY n DESC, thought_type
             """,
-            days,
+            start,
+            end,
         )
-        day_thought_rows = await conn.fetch(
-            """
-            SELECT (created_at AT TIME ZONE 'UTC')::date AS d, COUNT(*)::int AS n
+        thought_bucket_rows = await conn.fetch(
+            f"""
+            SELECT date_trunc('{grain}', created_at AT TIME ZONE 'UTC') AS t,
+                   COUNT(*)::int AS n,
+                   COALESCE(SUM(tokens_used), 0)::bigint AS tokens,
+                   COALESCE(MAX(salience), 0)::float AS salience_max
             FROM cognition_thoughts
-            WHERE created_at >= NOW() - ($1::int * INTERVAL '1 day')
-              AND ($2 = '' OR thought_type = $2)
+            WHERE created_at >= $1 AND created_at < $2
+              AND ($3 = '' OR thought_type = $3)
             GROUP BY 1
             ORDER BY 1
             """,
-            days,
+            start,
+            end,
             stream_id,
         )
-        day_cycle_rows = await conn.fetch(
-            """
-            SELECT (started_at AT TIME ZONE 'UTC')::date AS d, COUNT(*)::int AS n
+        cycle_bucket_rows = await conn.fetch(
+            f"""
+            SELECT date_trunc('{grain}', started_at AT TIME ZONE 'UTC') AS t,
+                   COUNT(*)::int AS n
             FROM cognition_cycles
-            WHERE started_at >= NOW() - ($1::int * INTERVAL '1 day')
+            WHERE started_at >= $1 AND started_at < $2
             GROUP BY 1
             ORDER BY 1
             """,
-            days,
+            start,
+            end,
         )
         hour_rows = await conn.fetch(
             """
@@ -230,11 +303,12 @@ async def build_cognition_surface(
               EXTRACT(HOUR FROM created_at AT TIME ZONE 'UTC')::int AS hour,
               COUNT(*)::int AS n
             FROM cognition_thoughts
-            WHERE created_at >= NOW() - ($1::int * INTERVAL '1 day')
-              AND ($2 = '' OR thought_type = $2)
+            WHERE created_at >= $1 AND created_at < $2
+              AND ($3 = '' OR thought_type = $3)
             GROUP BY 1, 2
             """,
-            days,
+            start,
+            end,
             stream_id,
         )
         recent_rows = await conn.fetch(
@@ -242,12 +316,13 @@ async def build_cognition_surface(
             SELECT id, thought_type, title, summary, content,
                    salience, generation, note_path, created_at
             FROM cognition_thoughts
-            WHERE created_at >= NOW() - ($1::int * INTERVAL '1 day')
-              AND ($2 = '' OR thought_type = $2)
+            WHERE created_at >= $1 AND created_at < $2
+              AND ($3 = '' OR thought_type = $3)
             ORDER BY created_at DESC
-            LIMIT $3
+            LIMIT $4
             """,
-            days,
+            start,
+            end,
             stream_id,
             limit,
         )
@@ -256,12 +331,13 @@ async def build_cognition_surface(
             SELECT id, thought_type, title, summary, content,
                    salience, generation, note_path, created_at
             FROM cognition_thoughts
-            WHERE created_at >= NOW() - ($1::int * INTERVAL '1 day')
-              AND ($2 = '' OR thought_type = $2)
+            WHERE created_at >= $1 AND created_at < $2
+              AND ($3 = '' OR thought_type = $3)
             ORDER BY salience DESC, created_at DESC
             LIMIT 10
             """,
-            days,
+            start,
+            end,
             stream_id,
         )
 
@@ -274,16 +350,35 @@ async def build_cognition_surface(
     ]
     conc_id, conc_pct = concentration(stream_pairs)
 
-    cycle_by_day = {str(r["d"]): int(r["n"]) for r in day_cycle_rows}
-    day_map: dict[str, SurfaceDay] = {}
-    for r in day_thought_rows:
-        key = str(r["d"])
-        day_map[key] = SurfaceDay(
-            date=key, thoughts=int(r["n"]), cycles=cycle_by_day.get(key, 0)
+    folded = fold_rows(
+        windows,
+        [
+            (
+                r["t"],
+                {
+                    "thoughts": float(r["n"]),
+                    "tokens": float(r["tokens"] or 0),
+                    "salience_max": float(r["salience_max"] or 0.0),
+                },
+            )
+            for r in thought_bucket_rows
+        ],
+    )
+    cycles_folded = fold_rows(
+        windows,
+        [(r["t"], {"cycles": float(r["n"])}) for r in cycle_bucket_rows],
+    )
+    buckets = [
+        SurfaceBucket(
+            start_ms=_ts_ms(w.start),
+            end_ms=_ts_ms(w.end),
+            thoughts=int(f.get("thoughts", 0)),
+            cycles=int(c.get("cycles", 0)),
+            tokens=int(f.get("tokens", 0)),
+            salience_max=float(f.get("salience_max", 0.0)),
         )
-    for key, n in cycle_by_day.items():
-        if key not in day_map:
-            day_map[key] = SurfaceDay(date=key, thoughts=0, cycles=n)
+        for w, f, c in zip(windows, folded, cycles_folded)
+    ]
 
     return CognitionSurface(
         running=bool(status.get("running", False)),
@@ -302,7 +397,7 @@ async def build_cognition_surface(
         unit="cognition",
         recent=[_row_thought(r) for r in recent_rows],
         top=[_row_thought(r) for r in top_rows],
-        days=sorted(day_map.values(), key=lambda d: d.date),
+        days=[],  # legacy field; superseded by buckets
         hours=[
             SurfaceHour(
                 weekday=int(r["weekday"]),
@@ -312,4 +407,10 @@ async def build_cognition_surface(
             for r in hour_rows
         ],
         stream_counts=[SurfaceStream(id=i, thoughts=n) for i, n in stream_pairs],
+        buckets=buckets,
+        interval=unit,
+        range_start_ms=_ts_ms(start),
+        range_end_ms=_ts_ms(end),
+        effective_end_ms=_ts_ms(min(now, end)),
+        bucket_seconds=int(BUCKET_SECONDS[unit]),
     )

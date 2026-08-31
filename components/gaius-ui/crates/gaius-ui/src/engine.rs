@@ -82,6 +82,7 @@ impl Lattice {
         let mut c = EngineClient::new(ch);
         let r = c
             .complete(CompleteRequest {
+                capabilities: Vec::new(),
                 capability,
                 prompt,
                 system_prompt,

@@ -444,15 +444,36 @@ message CognitionActivityResponse {
 // Federation cognition surface (gaius-ui /cognition). Honest window
 // aggregates from cognition_thoughts + cognition_cycles — not a coding-agent session store.
 message CognitionSurfaceRequest {
-  int32 window_days = 1;     // rolling window; default 365; must be >= 1
+  int32 window_days = 1;     // legacy rolling window; default 365; must be >= 1
   int32 thought_limit = 2;   // sidebar recency list; default 80
   string stream = 3;         // optional thought_type filter
+  // Scale-aware range (wins over window_days): "24h"|"7d"|"30d"|"365d"|"all".
+  string window = 4;
+  // Bucket override: hour|6h|day|week|month; empty = auto policy from the
+  // range duration. Over-budget ranges DEGRADE to a coarser unit (the
+  // response's interval is the truth).
+  string bucket = 5;
+  // Custom range in ms since epoch (both required together; wins over window).
+  int64 from_ms = 6;
+  int64 to_ms = 7;
 }
 
 message CognitionDayBucket {
   string date = 1;           // YYYY-MM-DD (UTC)
   int32 thoughts = 2;
   int32 cycles = 3;
+}
+
+// Scale-aware activity bucket: REAL half-open [start_ms, end_ms) bounds —
+// the client positions each bucket by its actual bounds (calendar day/week/
+// month buckets vary in width; the trailing bucket may be clipped).
+message CognitionBucket {
+  int64 start_ms = 1;
+  int64 end_ms = 2;
+  int32 thoughts = 3;
+  int32 cycles = 4;
+  int64 tokens = 5;          // SUM(cognition_thoughts.tokens_used) in bucket
+  float salience_max = 6;
 }
 
 message CognitionHourCell {
@@ -483,10 +504,17 @@ message CognitionSurfaceResponse {
   string unit = 14;                    // this peer's cognition unit
   repeated ThoughtMessage recent = 15;
   repeated ThoughtMessage top = 16;
-  repeated CognitionDayBucket days = 17;
+  repeated CognitionDayBucket days = 17;   // legacy; superseded by buckets
   repeated CognitionHourCell hours = 18;
   repeated CognitionStreamCount stream_counts = 19;
   string error = 20;
+  // Scale-aware activity series (zero-filled; real half-open bounds).
+  repeated CognitionBucket buckets = 21;
+  string interval = 22;           // hour|6h|day|week|month — what was served
+  int64 range_start_ms = 23;
+  int64 range_end_ms = 24;
+  int64 effective_end_ms = 25;    // min(now, range_end): shade beyond this
+  int32 bucket_seconds = 26;      // nominal seconds per bucket
 }
 
 // EEG-style cognition waterfall (1 Hz epochs). Matrix is row-major

@@ -576,6 +576,11 @@ async fn cognition(State(state): State<openai::AppState>) -> impl IntoResponse {
 struct CognitionQuery {
     window_days: Option<i32>,
     stream: Option<String>,
+    window: Option<String>,
+    bucket: Option<String>,
+    thought_limit: Option<i32>,
+    from_ms: Option<i64>,
+    to_ms: Option<i64>,
 }
 
 #[derive(Deserialize)]
@@ -601,8 +606,21 @@ async fn cognition_waterfall_api(Query(q): Query<WaterfallQuery>) -> impl IntoRe
 async fn cognition_api(Query(q): Query<CognitionQuery>) -> impl IntoResponse {
     let window_days = q.window_days.unwrap_or(365);
     let stream = q.stream.unwrap_or_default();
+    let window = q.window.unwrap_or_default();
+    let bucket = q.bucket.unwrap_or_default();
+    let thought_limit = q.thought_limit.unwrap_or(80).clamp(1, 200);
+    let from_ms = q.from_ms.unwrap_or(0);
+    let to_ms = q.to_ms.unwrap_or(0);
     match gaius::Gaius::from_env()
-        .cognition_surface(window_days, 80, stream)
+        .cognition_surface(
+            window_days,
+            thought_limit,
+            stream,
+            window,
+            bucket,
+            from_ms,
+            to_ms,
+        )
         .await
     {
         Ok(snap) => Json(snap).into_response(),

@@ -97,6 +97,7 @@ from ...generated import (
     CognitionSurfaceResponse,
     CognitionWaterfallRequest,
     CognitionWaterfallResponse,
+    CognitionBucket,
     CognitionDayBucket,
     CognitionHourCell,
     CognitionStreamCount,
@@ -2291,6 +2292,10 @@ class GaiusServicer(GaiusServiceServicer):
                 window_days=request.window_days or 365,
                 thought_limit=request.thought_limit or 80,
                 stream=request.stream or "",
+                window=getattr(request, "window", "") or "",
+                bucket=getattr(request, "bucket", "") or "",
+                from_ms=int(getattr(request, "from_ms", 0) or 0),
+                to_ms=int(getattr(request, "to_ms", 0) or 0),
             )
         except ValueError as e:
             return CognitionSurfaceResponse(error=str(e))
@@ -2344,6 +2349,22 @@ class GaiusServicer(GaiusServiceServicer):
                 CognitionStreamCount(id=s.id, thoughts=s.thoughts)
                 for s in snap.stream_counts
             ],
+            buckets=[
+                CognitionBucket(
+                    start_ms=b.start_ms,
+                    end_ms=b.end_ms,
+                    thoughts=b.thoughts,
+                    cycles=b.cycles,
+                    tokens=b.tokens,
+                    salience_max=b.salience_max,
+                )
+                for b in getattr(snap, "buckets", []) or []
+            ],
+            interval=getattr(snap, "interval", "") or "",
+            range_start_ms=int(getattr(snap, "range_start_ms", 0) or 0),
+            range_end_ms=int(getattr(snap, "range_end_ms", 0) or 0),
+            effective_end_ms=int(getattr(snap, "effective_end_ms", 0) or 0),
+            bucket_seconds=int(getattr(snap, "bucket_seconds", 0) or 0),
         )
 
     async def CognitionWaterfall(

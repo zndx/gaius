@@ -102,13 +102,16 @@ def _thought_row(title: str, kind: str, salience: float) -> dict:
 
 @pytest.mark.asyncio
 async def test_surface_maps_window_rows() -> None:
-    created = datetime(2026, 8, 16, tzinfo=timezone.utc)
+    from datetime import timedelta
+
+    created = datetime.now(timezone.utc) - timedelta(days=14)
+    created = created.replace(hour=0, minute=0, second=0, microsecond=0)
     script = [
         {"thoughts": 4, "streams": 2, "active_days": 1},
         {"cycles": 2},
         [{"thought_type": "pattern", "n": 3}, {"thought_type": "curiosity", "n": 1}],
-        [{"d": created.date(), "n": 4}],
-        [{"d": created.date(), "n": 2}],
+        [{"t": created, "n": 4, "tokens": 120, "salience_max": 0.9}],
+        [{"t": created, "n": 2}],
         [{"weekday": 0, "hour": 15, "n": 4}],
         [_thought_row("recent one", "pattern", 0.4)],
         [_thought_row("top one", "pattern", 0.9)],
@@ -132,9 +135,48 @@ async def test_surface_maps_window_rows() -> None:
     assert snap.unit == "cognition"
     assert snap.recent[0].title == "recent one"
     assert snap.top[0].salience == 0.9
-    assert snap.days[0].thoughts == 4
-    assert snap.days[0].cycles == 2
     assert snap.hours[0].hour == 15
+    # Scale-aware series: 365d resolves to week buckets, zero-filled,
+    # with the scripted rows folded into their containing bucket.
+    assert snap.interval == "week"
+    assert snap.days == []  # legacy field superseded
+    assert 50 <= len(snap.buckets) <= 55
+    assert sum(b.thoughts for b in snap.buckets) == 4
+    hit = next(b for b in snap.buckets if b.thoughts == 4)
+    assert hit.cycles == 2
+    assert hit.tokens == 120
+    assert hit.salience_max == 0.9
+    assert snap.range_end_ms > snap.range_start_ms
+    assert snap.effective_end_ms == snap.range_end_ms
+    assert snap.bucket_seconds == 604800
+    # Half-open tiling: buckets abut exactly
+    for prev, cur in zip(snap.buckets, snap.buckets[1:]):
+        assert prev.end_ms == cur.start_ms
+
+
+@pytest.mark.asyncio
+async def test_surface_hour_window_via_grammar() -> None:
+    script = [
+        {"thoughts": 0, "streams": 0, "active_days": 0},
+        {"cycles": 0},
+        [],
+        [],
+        [],
+        [],
+        [],
+        [],
+    ]
+    snap = await build_cognition_surface(
+        _Pool(script),
+        window_days=0,
+        thought_limit=80,
+        stream="",
+        status={},
+        window="24h",
+    )
+    assert snap.interval == "hour"
+    assert 24 <= len(snap.buckets) <= 25
+    assert all(b.thoughts == 0 for b in snap.buckets)  # zero-filled, honest
 
 
 @pytest.mark.asyncio

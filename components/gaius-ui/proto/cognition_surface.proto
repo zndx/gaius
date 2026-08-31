@@ -18,12 +18,25 @@ message CognitionSurfaceRequest {
   int32 window_days = 1;
   int32 thought_limit = 2;
   string stream = 3;
+  string window = 4;
+  string bucket = 5;
+  int64 from_ms = 6;
+  int64 to_ms = 7;
 }
 
 message CognitionDayBucket {
   string date = 1;
   int32 thoughts = 2;
   int32 cycles = 3;
+}
+
+message CognitionBucket {
+  int64 start_ms = 1;
+  int64 end_ms = 2;
+  int32 thoughts = 3;
+  int32 cycles = 4;
+  int64 tokens = 5;
+  float salience_max = 6;
 }
 
 message CognitionHourCell {
@@ -58,6 +71,12 @@ message CognitionSurfaceResponse {
   repeated CognitionHourCell hours = 18;
   repeated CognitionStreamCount stream_counts = 19;
   string error = 20;
+  repeated CognitionBucket buckets = 21;
+  string interval = 22;
+  int64 range_start_ms = 23;
+  int64 range_end_ms = 24;
+  int64 effective_end_ms = 25;
+  int32 bucket_seconds = 26;
 }
 
 message CognitionWaterfallRequest {

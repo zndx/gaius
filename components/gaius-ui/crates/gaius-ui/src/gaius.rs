@@ -249,11 +249,16 @@ impl Gaius {
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn cognition_surface(
         &self,
         window_days: i32,
         thought_limit: i32,
         stream: String,
+        window: String,
+        bucket: String,
+        from_ms: i64,
+        to_ms: i64,
     ) -> Result<CognitionSurfaceJson, GaiusError> {
         let endpoint = format!("http://{}", self.target.trim());
         let ch = Channel::from_shared(endpoint)
@@ -266,6 +271,10 @@ impl Gaius {
                 window_days,
                 thought_limit,
                 stream,
+                window,
+                bucket,
+                from_ms,
+                to_ms,
             })
             .await?
             .into_inner();
@@ -683,6 +692,22 @@ pub struct CognitionSurfaceJson {
     pub days: Vec<DayJson>,
     pub hours: Vec<HourJson>,
     pub stream_counts: Vec<StreamJson>,
+    pub buckets: Vec<BucketJson>,
+    pub interval: String,
+    pub range_start_ms: i64,
+    pub range_end_ms: i64,
+    pub effective_end_ms: i64,
+    pub bucket_seconds: i32,
+}
+
+#[derive(Serialize)]
+pub struct BucketJson {
+    pub start_ms: i64,
+    pub end_ms: i64,
+    pub thoughts: i32,
+    pub cycles: i32,
+    pub tokens: i64,
+    pub salience_max: f32,
 }
 
 #[derive(Serialize)]
@@ -775,6 +800,23 @@ impl From<pb::CognitionSurfaceResponse> for CognitionSurfaceJson {
                     thoughts: s.thoughts,
                 })
                 .collect(),
+            buckets: r
+                .buckets
+                .into_iter()
+                .map(|b| BucketJson {
+                    start_ms: b.start_ms,
+                    end_ms: b.end_ms,
+                    thoughts: b.thoughts,
+                    cycles: b.cycles,
+                    tokens: b.tokens,
+                    salience_max: b.salience_max,
+                })
+                .collect(),
+            interval: r.interval,
+            range_start_ms: r.range_start_ms,
+            range_end_ms: r.range_end_ms,
+            effective_end_ms: r.effective_end_ms,
+            bucket_seconds: r.bucket_seconds,
         }
     }
 }
