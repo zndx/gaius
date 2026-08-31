@@ -18,6 +18,7 @@ use pb::{
     SummaryScheduleTriggerRequest, SummarySchedulesRequest,
     FederationSurfacesRequest, FederationCognitionRequest, AskPresentRequest,
     CognitionCorpusRequest, CognitionCorpusItem, CognitionTraceRequest,
+    FederationContributionsRequest,
     EnsureEndpointResponse, StartEndpointRequest, StopEndpointRequest,
     SignalsTelemetryRequest, DiscoverSurfaceRequest,
 };
@@ -584,6 +585,55 @@ impl Gaius {
         }))
     }
 
+    pub async fn federation_contributions(&self) -> Result<serde_json::Value, GaiusError> {
+        let mut c = self.client().await?;
+        let r = c
+            .federation_contributions(FederationContributionsRequest {})
+            .await?
+            .into_inner();
+        if !r.error.is_empty() {
+            return Err(GaiusError::Message(r.error));
+        }
+        Ok(serde_json::json!({
+            "items": r
+                .items
+                .into_iter()
+                .map(|i| {
+                    serde_json::json!({
+                        "project": i.project,
+                        "interval": i.interval,
+                        "range_start_ms": i.range_start_ms,
+                        "range_end_ms": i.range_end_ms,
+                        "buckets": i
+                            .buckets
+                            .into_iter()
+                            .map(|b| {
+                                serde_json::json!({
+                                    "start_ms": b.start_ms,
+                                    "end_ms": b.end_ms,
+                                })
+                            })
+                            .collect::<Vec<_>>(),
+                        "items": i
+                            .items
+                            .into_iter()
+                            .map(|it| {
+                                serde_json::json!({
+                                    "group": it.group,
+                                    "id": it.id,
+                                    "system": it.system,
+                                    "total": it.total,
+                                    "series": it.series,
+                                    "peer": it.peer,
+                                })
+                            })
+                            .collect::<Vec<_>>(),
+                    })
+                })
+                .collect::<Vec<_>>(),
+        }))
+    }
+
     pub async fn federation_cognition(&self) -> Result<serde_json::Value, GaiusError> {
         let mut c = self.client().await?;
         let r = c
@@ -858,6 +908,17 @@ pub struct CognitionSurfaceJson {
     pub range_end_ms: i64,
     pub effective_end_ms: i64,
     pub bucket_seconds: i32,
+    pub contributions: Vec<ContributionJson>,
+}
+
+#[derive(Serialize)]
+pub struct ContributionJson {
+    pub group: String,
+    pub id: String,
+    pub system: String,
+    pub total: i32,
+    pub series: Vec<i32>,
+    pub peer: String,
 }
 
 #[derive(Serialize)]
@@ -977,6 +1038,18 @@ impl From<pb::CognitionSurfaceResponse> for CognitionSurfaceJson {
             range_end_ms: r.range_end_ms,
             effective_end_ms: r.effective_end_ms,
             bucket_seconds: r.bucket_seconds,
+            contributions: r
+                .contributions
+                .into_iter()
+                .map(|c| ContributionJson {
+                    group: c.group,
+                    id: c.id,
+                    system: c.system,
+                    total: c.total,
+                    series: c.series,
+                    peer: c.peer,
+                })
+                .collect(),
         }
     }
 }

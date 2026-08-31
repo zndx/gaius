@@ -415,6 +415,11 @@ class GaiusServiceStub(object):
                 request_serializer=gaius__service__pb2.CognitionTraceRequest.SerializeToString,
                 response_deserializer=gaius__service__pb2.CognitionTraceResponse.FromString,
                 _registered_method=True)
+        self.FederationContributions = channel.unary_unary(
+                '/gaius.engine.GaiusService/FederationContributions',
+                request_serializer=gaius__service__pb2.FederationContributionsRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.FederationContributionsResponse.FromString,
+                _registered_method=True)
         self.AskPresent = channel.unary_unary(
                 '/gaius.engine.GaiusService/AskPresent',
                 request_serializer=gaius__service__pb2.AskPresentRequest.SerializeToString,
@@ -1320,6 +1325,12 @@ class GaiusServiceServicer(object):
         raise NotImplementedError('Method not implemented!')
 
     def CognitionTrace(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def FederationContributions(self, request, context):
         """Missing associated documentation comment in .proto file."""
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -2244,6 +2255,11 @@ def add_GaiusServiceServicer_to_server(servicer, server):
                     servicer.CognitionTrace,
                     request_deserializer=gaius__service__pb2.CognitionTraceRequest.FromString,
                     response_serializer=gaius__service__pb2.CognitionTraceResponse.SerializeToString,
+            ),
+            'FederationContributions': grpc.unary_unary_rpc_method_handler(
+                    servicer.FederationContributions,
+                    request_deserializer=gaius__service__pb2.FederationContributionsRequest.FromString,
+                    response_serializer=gaius__service__pb2.FederationContributionsResponse.SerializeToString,
             ),
             'AskPresent': grpc.unary_unary_rpc_method_handler(
                     servicer.AskPresent,
@@ -4683,6 +4699,33 @@ class GaiusService(object):
             '/gaius.engine.GaiusService/CognitionTrace',
             gaius__service__pb2.CognitionTraceRequest.SerializeToString,
             gaius__service__pb2.CognitionTraceResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def FederationContributions(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/gaius.engine.GaiusService/FederationContributions',
+            gaius__service__pb2.FederationContributionsRequest.SerializeToString,
+            gaius__service__pb2.FederationContributionsResponse.FromString,
             options,
             channel_credentials,
             insecure,

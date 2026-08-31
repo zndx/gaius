@@ -484,6 +484,13 @@ async fn federation_cognition_api() -> impl IntoResponse {
     }
 }
 
+async fn federation_contributions_api() -> impl IntoResponse {
+    match gaius::Gaius::from_env().federation_contributions().await {
+        Ok(v) => Json(v).into_response(),
+        Err(e) => summary_err(e),
+    }
+}
+
 #[derive(serde::Deserialize)]
 struct CorpusQuery {
     limit: Option<i32>,
@@ -1136,6 +1143,10 @@ async fn main() -> anyhow::Result<()> {
         .route(
             "/api/gaius/v1/federation/cognition",
             get(federation_cognition_api),
+        )
+        .route(
+            "/api/gaius/v1/federation/contributions",
+            get(federation_contributions_api),
         )
         .route("/api/gaius/v1/cognition/corpus", get(cognition_corpus_api))
         .route("/api/gaius/v1/cognition/trace", get(cognition_trace_api))

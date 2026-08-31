@@ -174,3 +174,40 @@ class TestUpstreamParity:
             assert prev.end == cur.start
         assert buckets[0].start == start
         assert buckets[-1].end == NOW
+
+
+def test_fold_named_series_alignment() -> None:
+    from datetime import datetime, timezone
+
+    from gaius.engine.services.cognition_buckets import (
+        build_buckets,
+        fold_named_series,
+    )
+
+    start = datetime(2026, 8, 1, tzinfo=timezone.utc)
+    end = datetime(2026, 8, 5, tzinfo=timezone.utc)
+    windows = build_buckets(start, end, "day")
+    rows = [
+        (datetime(2026, 8, 2, tzinfo=timezone.utc), "arxiv_cs_dc", 3),
+        (datetime(2026, 8, 2, 5, tzinfo=timezone.utc), "arxiv_cs_dc", 2),
+        (datetime(2026, 8, 4, tzinfo=timezone.utc), "docling", 1),
+        (datetime(2026, 9, 9, tzinfo=timezone.utc), "dropped", 7),
+    ]
+    folded = fold_named_series(windows, rows)
+    assert set(folded) == {"arxiv_cs_dc", "docling"}
+    assert all(len(s) == len(windows) for s in folded.values())
+    assert folded["arxiv_cs_dc"] == [0, 5, 0, 0]
+    assert folded["docling"] == [0, 0, 0, 1]
+
+
+def test_fold_named_series_empty() -> None:
+    from datetime import datetime, timezone
+
+    from gaius.engine.services.cognition_buckets import (
+        build_buckets,
+        fold_named_series,
+    )
+
+    start = datetime(2026, 8, 1, tzinfo=timezone.utc)
+    end = datetime(2026, 8, 3, tzinfo=timezone.utc)
+    assert fold_named_series(build_buckets(start, end, "day"), []) == {}

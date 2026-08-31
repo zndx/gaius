@@ -50,6 +50,15 @@ message CognitionStreamCount {
   int32 thoughts = 2;
 }
 
+message CognitionContribution {
+  string group = 1;
+  string id = 2;
+  string system = 3;
+  int32 total = 4;
+  repeated int32 series = 5;
+  string peer = 6;
+}
+
 message CognitionSurfaceResponse {
   bool running = 1;
   int32 cycles_completed = 2;
@@ -77,6 +86,7 @@ message CognitionSurfaceResponse {
   int64 range_end_ms = 24;
   int64 effective_end_ms = 25;
   int32 bucket_seconds = 26;
+  repeated CognitionContribution contributions = 27;
 }
 
 message CognitionThoughtRequest {
@@ -372,6 +382,22 @@ message FederationCognitionResponse {
   string error = 2;
 }
 
+message FederationContributionsRequest {}
+
+message FederationContributionsItem {
+  string project = 1;
+  string interval = 2;
+  int64 range_start_ms = 3;
+  int64 range_end_ms = 4;
+  repeated CognitionBucket buckets = 5;
+  repeated CognitionContribution items = 6;
+}
+
+message FederationContributionsResponse {
+  repeated FederationContributionsItem items = 1;
+  string error = 2;
+}
+
 message CognitionCorpusRequest {
   int32 limit = 1;
   int32 window_days = 2;
@@ -586,6 +612,7 @@ service GaiusService {
   rpc FederationCognition(FederationCognitionRequest) returns (FederationCognitionResponse);
   rpc CognitionCorpus(CognitionCorpusRequest) returns (CognitionCorpusResponse);
   rpc CognitionTrace(CognitionTraceRequest) returns (CognitionTraceResponse);
+  rpc FederationContributions(FederationContributionsRequest) returns (FederationContributionsResponse);
   rpc AskPresent(AskPresentRequest) returns (AskPresentResponse);
   rpc EnsureEndpoint(StartEndpointRequest) returns (EnsureEndpointResponse);
   rpc StopEndpoint(StopEndpointRequest) returns (EndpointResponse);

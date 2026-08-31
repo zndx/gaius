@@ -487,6 +487,20 @@ message CognitionStreamCount {
   int32 thoughts = 2;
 }
 
+// One named contributor's aligned activity series — federated contract:
+// rows are stamped with their system of record and peer. Local bootstrap
+// systems today are gaius.activity (sources) and gaius.openlineage
+// (workflows); federated systems (Atlas+OpenLineage, Metaflow, Airflow
+// over signals-protocol kind=CONTRIBUTIONS) are PENDING.
+message CognitionContribution {
+  string group = 1;          // "source" | "workflow"
+  string id = 2;             // e.g. arxiv_cs_dc | article_curation
+  string system = 3;         // system of record, e.g. gaius.openlineage
+  int32 total = 4;
+  repeated int32 series = 5; // series[i] aligns with buckets[i], zero-filled
+  string peer = 6;           // federation.project ("gaius" locally)
+}
+
 message CognitionSurfaceResponse {
   bool running = 1;
   int32 cycles_completed = 2;          // daemon lifetime
@@ -505,7 +519,7 @@ message CognitionSurfaceResponse {
   repeated ThoughtMessage recent = 15;
   repeated ThoughtMessage top = 16;
   repeated CognitionDayBucket days = 17;   // legacy; superseded by buckets
-  repeated CognitionHourCell hours = 18;
+  repeated CognitionHourCell hours = 18;   // legacy; superseded by contributions
   repeated CognitionStreamCount stream_counts = 19;
   string error = 20;
   // Scale-aware activity series (zero-filled; real half-open bounds).
@@ -515,6 +529,7 @@ message CognitionSurfaceResponse {
   int64 range_end_ms = 24;
   int64 effective_end_ms = 25;    // min(now, range_end): shade beyond this
   int32 bucket_seconds = 26;      // nominal seconds per bucket
+  repeated CognitionContribution contributions = 27; // by source + workflow
 }
 
 // One thought, in full — the drawer view (everything the DB knows).
@@ -1823,6 +1838,25 @@ message FederationCognitionItem {
 
 message FederationCognitionResponse {
   repeated FederationCognitionItem items = 1;
+  string error = 2;
+}
+
+// Federated contributions: self + every peer answering ServerQuery
+// kind=CONTRIBUTIONS. Systems of record beyond gaius (Atlas+OpenLineage,
+// Metaflow, Airflow via core Signals) are PENDING — absent is honest.
+message FederationContributionsRequest {}
+
+message FederationContributionsItem {
+  string project = 1;
+  string interval = 2;
+  int64 range_start_ms = 3;
+  int64 range_end_ms = 4;
+  repeated CognitionBucket buckets = 5;      // bounds (counts unused)
+  repeated CognitionContribution items = 6;  // peer-stamped
+}
+
+message FederationContributionsResponse {
+  repeated FederationContributionsItem items = 1;
   string error = 2;
 }
 
@@ -3579,6 +3613,7 @@ service GaiusService {
   rpc FederationCognition(FederationCognitionRequest) returns (FederationCognitionResponse);
   rpc CognitionCorpus(CognitionCorpusRequest) returns (CognitionCorpusResponse);
   rpc CognitionTrace(CognitionTraceRequest) returns (CognitionTraceResponse);
+  rpc FederationContributions(FederationContributionsRequest) returns (FederationContributionsResponse);
   rpc AskPresent(AskPresentRequest) returns (AskPresentResponse);
   rpc FmpNews(FmpNewsRequest) returns (FmpNewsResponse);
   rpc FmpSearch(FmpSearchRequest) returns (FmpSearchResponse);

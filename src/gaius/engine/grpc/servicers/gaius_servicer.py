@@ -108,6 +108,9 @@ from ...generated import (
     CognitionTraceRequest,
     CognitionReasoningLayer,
     CognitionTraceResponse,
+    CognitionContribution,
+    FederationContributionsRequest,
+    FederationContributionsResponse,
     CognitionCorpusItem,
     CognitionDayBucket,
     CognitionHourCell,
@@ -2356,6 +2359,17 @@ class GaiusServicer(GaiusServiceServicer):
                 CognitionHourCell(weekday=h.weekday, hour=h.hour, thoughts=h.thoughts)
                 for h in snap.hours
             ],
+            contributions=[
+                CognitionContribution(
+                    group=c.group,
+                    id=c.id,
+                    system=c.system,
+                    total=int(c.total),
+                    series=[int(v) for v in c.series],
+                    peer=c.peer,
+                )
+                for c in getattr(snap, "contributions", []) or []
+            ],
             stream_counts=[
                 CognitionStreamCount(id=s.id, thoughts=s.thoughts)
                 for s in snap.stream_counts
@@ -2471,6 +2485,45 @@ class GaiusServicer(GaiusServiceServicer):
                 )
             for s in r["streams"]:
                 item.stream_counts.add(id=s["id"], thoughts=s["thoughts"])
+        return resp
+
+    async def FederationContributions(
+        self,
+        request: FederationContributionsRequest,
+        context: aio.ServicerContext,
+    ) -> FederationContributionsResponse:
+        """Federated contributions (self + peers; PENDING systems absent)."""
+        from ...s2s import collect_peer_contributions
+
+        try:
+            rows = await collect_peer_contributions(self._services)
+        except Exception as e:
+            logger.exception("FederationContributions failed")
+            return FederationContributionsResponse(error=str(e))
+        resp = FederationContributionsResponse()
+        for r in rows:
+            item = resp.items.add(
+                project=r["project"],
+                interval=r["interval"],
+                range_start_ms=r["range_start_ms"],
+                range_end_ms=r["range_end_ms"],
+            )
+            for b in r["buckets"]:
+                item.buckets.add(
+                    start_ms=b["start_ms"],
+                    end_ms=b["end_ms"],
+                    thoughts=b.get("thoughts", 0),
+                    cycles=b.get("cycles", 0),
+                )
+            for c in r["items"]:
+                item.items.add(
+                    group=c["group"],
+                    id=c["id"],
+                    system=c["system"],
+                    total=c["total"],
+                    series=c["series"],
+                    peer=c["peer"],
+                )
         return resp
 
     @staticmethod

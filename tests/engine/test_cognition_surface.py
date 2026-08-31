@@ -112,7 +112,11 @@ async def test_surface_maps_window_rows() -> None:
         [{"thought_type": "pattern", "n": 3}, {"thought_type": "curiosity", "n": 1}],
         [{"t": created, "n": 4, "tokens": 120, "salience_max": 0.9}],
         [{"t": created, "n": 2}],
-        [{"weekday": 0, "hour": 15, "n": 4}],
+        [
+            {"t": created, "id": "arxiv_cs_dc", "n": 3},
+            {"t": created, "id": "cloudera_docs", "n": 1},
+        ],
+        [{"t": created, "id": "article_curation", "n": 2}],
         [_thought_row("recent one", "pattern", 0.4)],
         [_thought_row("top one", "pattern", 0.9)],
     ]
@@ -135,7 +139,16 @@ async def test_surface_maps_window_rows() -> None:
     assert snap.unit == "cognition"
     assert snap.recent[0].title == "recent one"
     assert snap.top[0].salience == 0.9
-    assert snap.hours[0].hour == 15
+    assert snap.hours == []  # legacy field superseded by contributions
+    srcs = [c for c in snap.contributions if c.group == "source"]
+    wfs = [c for c in snap.contributions if c.group == "workflow"]
+    assert [c.id for c in srcs] == ["arxiv_cs_dc", "cloudera_docs"]
+    assert srcs[0].total == 3 and wfs[0].total == 2
+    assert srcs[0].system == "gaius.activity"
+    assert wfs[0].system == "gaius.openlineage"
+    assert all(c.peer == "gaius" for c in snap.contributions)
+    assert all(len(c.series) == len(snap.buckets) for c in snap.contributions)
+    assert sum(srcs[0].series) == 3  # zero-filled, aligned fold
     # Scale-aware series: 365d resolves to week buckets, zero-filled,
     # with the scripted rows folded into their containing bucket.
     assert snap.interval == "week"
@@ -159,6 +172,7 @@ async def test_surface_hour_window_via_grammar() -> None:
     script = [
         {"thoughts": 0, "streams": 0, "active_days": 0},
         {"cycles": 0},
+        [],
         [],
         [],
         [],

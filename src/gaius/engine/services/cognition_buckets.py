@@ -251,3 +251,21 @@ def fold_rows(
             else:
                 slot[key] = slot.get(key, 0.0) + val
     return acc
+
+
+def fold_named_series(
+    buckets: list[BucketWindow],
+    rows: list[tuple[datetime, str, int]],
+) -> dict[str, list[int]]:
+    """Fold (timestamp, name, count) rows into per-name zero-filled int
+    series positionally aligned with ``buckets``. Out-of-range rows drop."""
+    starts = [b.start for b in buckets]
+    out: dict[str, list[int]] = {}
+    for ts, name, n in rows:
+        ts = _utc(ts)
+        i = bisect_right(starts, ts) - 1
+        if i < 0 or ts >= buckets[i].end:
+            continue
+        series = out.setdefault(name, [0] * len(buckets))
+        series[i] += int(n)
+    return out

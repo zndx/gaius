@@ -527,6 +527,111 @@ async def collect_peer_cognition(services: object) -> list[dict]:
     return sorted(rows, key=lambda r: r["project"])
 
 
+async def collect_peer_contributions(services: object) -> list[dict]:
+    """S2S: self + PEERS contribution overviews (kind=CONTRIBUTIONS).
+
+    Federated systems of record beyond gaius (Atlas+OpenLineage, Metaflow,
+    Airflow via core Signals) are PENDING — a peer answering an empty hint
+    is ABSENT from the result, never an error (collect_peer_cognition
+    rules).
+    """
+    rows: list[dict] = []
+    cognition = getattr(services, "cognition_service", None)
+    if cognition is not None:
+        try:
+            snap = await cognition.surface(window="30d")
+            rows.append(
+                {
+                    "project": "gaius",
+                    "interval": snap.interval or "",
+                    "range_start_ms": int(snap.range_start_ms),
+                    "range_end_ms": int(snap.range_end_ms),
+                    "buckets": [
+                        {
+                            "start_ms": b.start_ms,
+                            "end_ms": b.end_ms,
+                            "thoughts": 0,
+                            "cycles": 0,
+                        }
+                        for b in snap.buckets
+                    ],
+                    "items": [
+                        {
+                            "group": c.group,
+                            "id": c.id,
+                            "system": c.system,
+                            "total": int(c.total),
+                            "series": [int(v) for v in c.series],
+                            "peer": "gaius",
+                        }
+                        for c in snap.contributions
+                    ],
+                }
+            )
+        except Exception:
+            logger.exception("local contributions overview failed (absent)")
+
+    queue: list[tuple[str, str]] = list(configured_peers(services))
+    queue.extend(directory_seeds())
+    seen_addr: set[str] = set()
+    seen_project = {r["project"] for r in rows}
+    while queue:
+        hint_project, target = queue.pop(0)
+        addr = target.replace("grpc://", "").strip()
+        if not addr or addr in seen_addr:
+            continue
+        seen_addr.add(addr)
+        reply = await query_peer(
+            addr, kind=zpb.SERVER_QUERY_KIND_CONTRIBUTIONS
+        )
+        if reply is None:
+            continue
+        project = (reply.project or hint_project or "").strip() or addr
+        hint = reply.contributions
+        if (
+            project not in seen_project
+            and project != "gaius"
+            and len(hint.items)
+        ):
+            seen_project.add(project)
+            rows.append(
+                {
+                    "project": project,
+                    "interval": hint.interval or "",
+                    "range_start_ms": int(hint.range_start_ms),
+                    "range_end_ms": int(hint.range_end_ms),
+                    "buckets": [
+                        {
+                            "start_ms": int(b.start_ms),
+                            "end_ms": int(b.end_ms),
+                            "thoughts": int(b.thoughts),
+                            "cycles": int(b.cycles),
+                        }
+                        for b in hint.buckets
+                    ],
+                    "items": [
+                        {
+                            "group": i.group,
+                            "id": i.id,
+                            "system": i.system,
+                            "total": int(i.total),
+                            "series": [int(v) for v in i.series],
+                            "peer": project,
+                        }
+                        for i in hint.items
+                    ],
+                }
+            )
+        peers = await query_peer(addr, kind=zpb.SERVER_QUERY_KIND_PEERS)
+        if peers is None:
+            continue
+        for peer in peers.peers:
+            tgt = (peer.target or "").strip()
+            if tgt:
+                queue.append((peer.project or "", tgt))
+    return sorted(rows, key=lambda r: r["project"])
+
+
 def _url_is_loopback(url: str) -> bool:
     from urllib.parse import urlparse
 

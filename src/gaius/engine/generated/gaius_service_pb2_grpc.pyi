@@ -190,6 +190,7 @@ class GaiusServiceStub:
     FederationCognition: grpc.UnaryUnaryMultiCallable[gaius_service_pb2.FederationCognitionRequest, gaius_service_pb2.FederationCognitionResponse]
     CognitionCorpus: grpc.UnaryUnaryMultiCallable[gaius_service_pb2.CognitionCorpusRequest, gaius_service_pb2.CognitionCorpusResponse]
     CognitionTrace: grpc.UnaryUnaryMultiCallable[gaius_service_pb2.CognitionTraceRequest, gaius_service_pb2.CognitionTraceResponse]
+    FederationContributions: grpc.UnaryUnaryMultiCallable[gaius_service_pb2.FederationContributionsRequest, gaius_service_pb2.FederationContributionsResponse]
     AskPresent: grpc.UnaryUnaryMultiCallable[gaius_service_pb2.AskPresentRequest, gaius_service_pb2.AskPresentResponse]
     FmpNews: grpc.UnaryUnaryMultiCallable[gaius_service_pb2.FmpNewsRequest, gaius_service_pb2.FmpNewsResponse]
     FmpSearch: grpc.UnaryUnaryMultiCallable[gaius_service_pb2.FmpSearchRequest, gaius_service_pb2.FmpSearchResponse]
@@ -520,6 +521,7 @@ class GaiusServiceAsyncStub(GaiusServiceStub):
     FederationCognition: grpc.aio.UnaryUnaryMultiCallable[gaius_service_pb2.FederationCognitionRequest, gaius_service_pb2.FederationCognitionResponse]  # type: ignore[assignment]
     CognitionCorpus: grpc.aio.UnaryUnaryMultiCallable[gaius_service_pb2.CognitionCorpusRequest, gaius_service_pb2.CognitionCorpusResponse]  # type: ignore[assignment]
     CognitionTrace: grpc.aio.UnaryUnaryMultiCallable[gaius_service_pb2.CognitionTraceRequest, gaius_service_pb2.CognitionTraceResponse]  # type: ignore[assignment]
+    FederationContributions: grpc.aio.UnaryUnaryMultiCallable[gaius_service_pb2.FederationContributionsRequest, gaius_service_pb2.FederationContributionsResponse]  # type: ignore[assignment]
     AskPresent: grpc.aio.UnaryUnaryMultiCallable[gaius_service_pb2.AskPresentRequest, gaius_service_pb2.AskPresentResponse]  # type: ignore[assignment]
     FmpNews: grpc.aio.UnaryUnaryMultiCallable[gaius_service_pb2.FmpNewsRequest, gaius_service_pb2.FmpNewsResponse]  # type: ignore[assignment]
     FmpSearch: grpc.aio.UnaryUnaryMultiCallable[gaius_service_pb2.FmpSearchRequest, gaius_service_pb2.FmpSearchResponse]  # type: ignore[assignment]
@@ -1303,6 +1305,13 @@ class GaiusServiceServicer(metaclass=abc.ABCMeta):
         request: gaius_service_pb2.CognitionTraceRequest,
         context: _ServicerContext,
     ) -> typing.Union[gaius_service_pb2.CognitionTraceResponse, collections.abc.Awaitable[gaius_service_pb2.CognitionTraceResponse]]: ...
+
+    @abc.abstractmethod
+    def FederationContributions(
+        self,
+        request: gaius_service_pb2.FederationContributionsRequest,
+        context: _ServicerContext,
+    ) -> typing.Union[gaius_service_pb2.FederationContributionsResponse, collections.abc.Awaitable[gaius_service_pb2.FederationContributionsResponse]]: ...
 
     @abc.abstractmethod
     def AskPresent(

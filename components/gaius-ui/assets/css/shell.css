@@ -1855,41 +1855,6 @@ body:has(.cog-page) .shell-footer {
 .cog-h3 { background: color-mix(in oklch, var(--color-kumo-success) 75%, var(--color-kumo-recessed)); }
 .cog-h4 { background: var(--color-kumo-success); }
 .cog-hoff { background: transparent; }
-.cog-bars {
-  display: flex;
-  align-items: flex-end;
-  gap: 3px;
-  height: 88px;
-}
-.cog-bar {
-  flex: 1;
-  height: 100%;
-  display: flex;
-  align-items: flex-end;
-  background: transparent;
-}
-.cog-bar-fill {
-  width: 100%;
-  background: var(--color-kumo-brand);
-  border-radius: 2px 2px 0 0;
-  min-height: 2px;
-}
-.cog-how-grid {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-.cog-how-row {
-  display: grid;
-  grid-template-columns: 2.2rem repeat(24, 11px);
-  gap: 2px;
-  align-items: center;
-}
-.cog-how-lab,
-.cog-how-h {
-  font-size: 0.62rem;
-  color: var(--text-color-kumo-subtle);
-}
 .cog-top {
   list-style: none;
   margin: 0;
@@ -2877,41 +2842,11 @@ body:has(.sum-page) .shell-footer { display: none; }
   .sum-rail { width: 100%; max-height: 36vh; border-right: 0; border-bottom: 1px solid var(--color-kumo-line); }
 }
 
-/* ── Cognition scale-aware activity (2026-08-30) ──
-   Fluid cells override the fixed 11px grid above; the SVG activity chart
-   positions true-width buckets over the real range (AgentsView grammar). */
+/* ── Cognition scale-aware Activity heatmap (2026-08-31) ──
+   Fluid cells override the fixed 11px grid above; the 2D calendar is the
+   Activity component (AgentsView Heatmap grammar). */
 .cog-year-col { grid-template-rows: repeat(7, var(--cog-cell, 11px)); }
 .cog-cell { width: var(--cog-cell, 11px); height: var(--cog-cell, 11px); }
-.cog-activity { width: 100%; min-height: 120px; }
-.cog-activity-svg { display: block; width: 100%; }
-.cog-activity-svg .cog-grid {
-  stroke: var(--color-kumo-line);
-  stroke-width: 1;
-  opacity: 0.6;
-}
-.cog-activity-svg .cog-axis {
-  fill: var(--text-color-kumo-subtle);
-  font-size: 10px;
-  font-family: ui-monospace, monospace;
-}
-.cog-activity-svg .cog-bar-rect {
-  fill: var(--color-kumo-success);
-  opacity: 0.85;
-}
-.cog-activity-svg .cog-bar-rect:hover { opacity: 1; }
-.cog-activity-svg .cog-bar-zero { opacity: 0.15; }
-.cog-activity-svg .cog-cycles-line {
-  fill: none;
-  stroke: var(--text-color-kumo-subtle);
-  stroke-width: 1.25;
-  stroke-dasharray: 3 2;
-  opacity: 0.8;
-}
-.cog-activity-svg .cog-future {
-  fill: var(--color-kumo-elevated);
-  opacity: 0.5;
-  pointer-events: none;
-}
 .cog-empty { padding: 1.2rem 0.5rem; font-size: 0.82rem; }
 .cog-strip { display: flex; gap: 3px; align-items: center; overflow: hidden; }
 /* 2D contributions calendar (AgentsView Heatmap conformance) */
@@ -2974,6 +2909,38 @@ body:has(.sum-page) .shell-footer { display: none; }
 .cog-corpus-when { margin-left: auto; font-size: 0.65rem; }
 .cog-corpus-sub { font-size: 0.66rem; margin-top: 0.15rem; }
 .cog-trace-h { margin: 0.7rem 0 0.25rem; font-size: 0.66rem; letter-spacing: 0.04em; }
+/* Contributions (sources + workflows) — replaces hour-of-week */
+.cog-contrib { display: flex; flex-direction: column; gap: 0.35rem; }
+.cog-contrib-h { font-size: 0.66rem; letter-spacing: 0.04em; margin-top: 0.5rem; }
+.cog-contrib-h:first-child { margin-top: 0; }
+.cog-contrib-row {
+  display: grid;
+  grid-template-columns: minmax(6rem, 9rem) 1fr auto;
+  gap: 0.5rem;
+  align-items: center;
+  font-size: 0.74rem;
+}
+.cog-contrib-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cog-contrib-track {
+  background: var(--color-kumo-recessed, #1b2128);
+  border-radius: 2px;
+  height: 8px;
+}
+.cog-contrib-bar {
+  display: block;
+  height: 8px;
+  min-width: 2px;
+  border-radius: 2px;
+  background: var(--color-kumo-success);
+  opacity: 0.85;
+}
+.cog-contrib-n { font-size: 0.7rem; }
+.cog-contrib-strip { grid-column: 1 / -1; display: flex; gap: 1px; overflow: hidden; }
+.cog-contrib-strip .cog-cell { width: 5px; height: 5px; border-radius: 1px; }
+.cog-contrib-other .cog-contrib-name { color: var(--text-color-kumo-subtle); }
+/* Calendar brush selection (range authoring on the Activity heatmap) */
+.cog-cell-sel { outline: 1px solid var(--color-kumo-success); outline-offset: -1px; }
+#cog-year [data-s] { cursor: crosshair; }
 
 /* ── Cognition Phase 2: drawer, live ticker, brush, waterfall ── */
 .cog-drawer-backdrop {
@@ -3012,10 +2979,6 @@ body:has(.sum-page) .shell-footer { display: none; }
 .cog-live-dot.on { background: var(--color-kumo-success); }
 .cog-rail-item.cog-live-new { animation: cogFlash 1.6s ease-out 1; }
 @keyframes cogFlash { from { background: var(--color-kumo-elevated); } to { background: transparent; } }
-.cog-activity-svg .cog-brush {
-  fill: var(--color-kumo-success); opacity: 0.18; stroke: var(--color-kumo-success);
-  stroke-width: 1; pointer-events: none;
-}
 .cog-chip {
   display: inline-flex; align-items: center; gap: 0.35rem;
   border: 1px solid var(--color-kumo-line); border-radius: 999px;

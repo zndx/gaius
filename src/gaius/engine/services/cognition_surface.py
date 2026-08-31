@@ -23,6 +23,7 @@ from gaius.engine.services.cognition_buffer import NEXT_QUESTION_RESERVE_TOKENS
 from gaius.engine.services.cognition_buckets import (
     BUCKET_SECONDS,
     build_buckets,
+    fold_named_series,
     fold_rows,
     resolve_bucket,
     resolve_range,
@@ -88,6 +89,24 @@ class SurfaceStream:
 
 
 @dataclass
+class SurfaceContribution:
+    """One named contributor from a system of record (federated contract).
+
+    Bootstrapped locally today (gaius.activity sources / gaius.openlineage
+    workflows); federated systems of record — Atlas+OpenLineage, Metaflow,
+    Airflow via signals-protocol kind=CONTRIBUTIONS — are PENDING and will
+    arrive with their own ``system`` and ``peer`` stamps.
+    """
+
+    group: str  # "source" | "workflow"
+    id: str
+    system: str
+    total: int
+    peer: str = "gaius"
+    series: list[int] = field(default_factory=list)
+
+
+@dataclass
 class CognitionSurface:
     running: bool
     cycles_completed: int
@@ -108,6 +127,7 @@ class CognitionSurface:
     days: list[SurfaceDay] = field(default_factory=list)  # legacy; empty
     hours: list[SurfaceHour] = field(default_factory=list)
     stream_counts: list[SurfaceStream] = field(default_factory=list)
+    contributions: list[SurfaceContribution] = field(default_factory=list)
     error: str = ""
     # Scale-aware series
     buckets: list[SurfaceBucket] = field(default_factory=list)
@@ -116,6 +136,25 @@ class CognitionSurface:
     range_end_ms: int = 0
     effective_end_ms: int = 0
     bucket_seconds: int = 0
+
+
+def _contributions(group: str, system: str, rows, windows) -> list:
+    """Fold DB rows into sorted SurfaceContribution rows (desc, name tiebreak)."""
+    folded = fold_named_series(
+        windows, [(r["t"], str(r["id"]), int(r["n"])) for r in rows]
+    )
+    out = [
+        SurfaceContribution(
+            group=group,
+            id=name,
+            system=system,
+            total=sum(series),
+            series=series,
+        )
+        for name, series in folded.items()
+    ]
+    out.sort(key=lambda c: (-c.total, c.id))
+    return out
 
 
 def normalize_window(window_days: int) -> int:
@@ -296,20 +335,36 @@ async def build_cognition_surface(
             start,
             end,
         )
-        hour_rows = await conn.fetch(
-            """
-            SELECT
-              EXTRACT(DOW FROM created_at AT TIME ZONE 'UTC')::int AS weekday,
-              EXTRACT(HOUR FROM created_at AT TIME ZONE 'UTC')::int AS hour,
-              COUNT(*)::int AS n
-            FROM cognition_thoughts
-            WHERE created_at >= $1 AND created_at < $2
-              AND ($3 = '' OR thought_type = $3)
+        # Contributions by system of record (local bootstrap; federated
+        # systems over signals-protocol are PENDING). Same grain + range
+        # params as the thought buckets → positional series alignment.
+        source_rows = await conn.fetch(
+            f"""
+            SELECT date_trunc('{grain}', created_at AT TIME ZONE 'UTC') AS t,
+                   domain AS id,
+                   COUNT(*)::int AS n
+            FROM activity_events
+            WHERE event_type = 'kb_create'
+              AND domain IS NOT NULL AND domain <> ''
+              AND created_at >= $1 AND created_at < $2
             GROUP BY 1, 2
             """,
             start,
             end,
-            stream_id,
+        )
+        workflow_rows = await conn.fetch(
+            f"""
+            SELECT date_trunc('{grain}', event_time AT TIME ZONE 'UTC') AS t,
+                   job_name AS id,
+                   COUNT(*)::int AS n
+            FROM lineage_events
+            WHERE job_namespace = 'gaius.flows'
+              AND run_state = 'START'
+              AND event_time >= $1 AND event_time < $2
+            GROUP BY 1, 2
+            """,
+            start,
+            end,
         )
         recent_rows = await conn.fetch(
             """
@@ -398,14 +453,13 @@ async def build_cognition_surface(
         recent=[_row_thought(r) for r in recent_rows],
         top=[_row_thought(r) for r in top_rows],
         days=[],  # legacy field; superseded by buckets
-        hours=[
-            SurfaceHour(
-                weekday=int(r["weekday"]),
-                hour=int(r["hour"]),
-                thoughts=int(r["n"]),
+        hours=[],  # legacy field; superseded by contributions
+        contributions=(
+            _contributions("source", "gaius.activity", source_rows, windows)
+            + _contributions(
+                "workflow", "gaius.openlineage", workflow_rows, windows
             )
-            for r in hour_rows
-        ],
+        ),
         stream_counts=[SurfaceStream(id=i, thoughts=n) for i, n in stream_pairs],
         buckets=buckets,
         interval=unit,

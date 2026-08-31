@@ -621,6 +621,36 @@ class GaiusZndxEngineServicer(zpb_grpc.EngineServicer):
                         logger.exception(
                             "ServerQuery COGNITION failed (hint left empty)"
                         )
+            if int(request.kind) == zpb.SERVER_QUERY_KIND_CONTRIBUTIONS:
+                # Contribution overview (~30d) from local systems of record
+                # (gaius.activity / gaius.openlineage). Federated systems —
+                # Atlas+OpenLineage, Metaflow, Airflow — are PENDING and
+                # will answer from their own peers. Empty stays honest.
+                cognition = getattr(self._services, "cognition_service", None)
+                if cognition is not None:
+                    try:
+                        snap = await cognition.surface(window="30d")
+                        hint = resp.contributions
+                        hint.project = "gaius"
+                        hint.interval = snap.interval or ""
+                        hint.range_start_ms = int(snap.range_start_ms)
+                        hint.range_end_ms = int(snap.range_end_ms)
+                        for b in snap.buckets:
+                            hint.buckets.add(
+                                start_ms=b.start_ms, end_ms=b.end_ms
+                            )
+                        for c in snap.contributions:
+                            hint.items.add(
+                                group=c.group,
+                                id=c.id,
+                                system=c.system,
+                                total=int(c.total),
+                                series=[int(v) for v in c.series],
+                            )
+                    except Exception:
+                        logger.exception(
+                            "ServerQuery CONTRIBUTIONS failed (hint left empty)"
+                        )
             return resp
         except ServerQueryError as e:
             await context.abort(grpc.StatusCode.FAILED_PRECONDITION, str(e))

@@ -1,5 +1,4 @@
 (function () {
-  var WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
   var CC = window.CogChart;
 
   function $(id) {
@@ -335,192 +334,6 @@
       });
   }
 
-  /* ── THE Activity chart + brush ──────────────────────────────────────── */
-
-  var Y_LABEL_W = 34;
-  var RIGHT_PAD = 10;
-  var CHART_H = 170;
-  var TOP_PAD = 12;
-  var X_LABEL_H = 18;
-  var lastLayout = null; // {rangeStart, span, plotW, width}
-
-  function svgEl(tag, attrs) {
-    var el = document.createElementNS("http://www.w3.org/2000/svg", tag);
-    for (var k in attrs) el.setAttribute(k, attrs[k]);
-    return el;
-  }
-
-  function paintActivity(data, hostWidth) {
-    var host = $("cog-activity");
-    if (!host) return;
-    host.replaceChildren();
-    var buckets = data.buckets || [];
-    var meta = $("cog-activity-meta");
-    if (meta) {
-      var asOf = data.effective_end_ms
-        ? new Date(data.effective_end_ms).toISOString().replace("T", " ").slice(0, 16) + "Z"
-        : "—";
-      meta.textContent =
-        (data.interval || "?") + " buckets · " + buckets.length + " · as of " + asOf;
-    }
-    if (!buckets.length) {
-      var empty = document.createElement("div");
-      empty.className = "muted cog-empty";
-      empty.textContent = "No thoughts in this window.";
-      host.appendChild(empty);
-      lastLayout = null;
-      return;
-    }
-
-    var width = Math.max(hostWidth || host.clientWidth || 600, 220);
-    var plotW = Math.max(width - Y_LABEL_W - RIGHT_PAD, 100);
-    var rangeStart = data.range_start_ms;
-    var rangeEnd = data.range_end_ms;
-    var span = Math.max(rangeEnd - rangeStart, 1);
-    lastLayout = { rangeStart: rangeStart, span: span, plotW: plotW, width: width };
-
-    function xForMs(ms) {
-      return Y_LABEL_W + ((ms - rangeStart) / span) * plotW;
-    }
-
-    var maxThoughts = 0;
-    var maxCycles = 0;
-    buckets.forEach(function (b) {
-      if (b.thoughts > maxThoughts) maxThoughts = b.thoughts;
-      if (b.cycles > maxCycles) maxCycles = b.cycles;
-    });
-    var scale = CC.niceScale(maxThoughts, 4);
-
-    function yFor(v) {
-      var plotH = CHART_H - TOP_PAD;
-      return CHART_H - (v / scale.max) * plotH;
-    }
-
-    var svgH = CHART_H + X_LABEL_H;
-    var svg = svgEl("svg", {
-      class: "cog-activity-svg",
-      viewBox: "0 0 " + width + " " + svgH,
-      width: "100%",
-      height: svgH,
-      role: "img",
-      "aria-label": "Thought activity",
-    });
-
-    var ticks = Math.round(scale.max / scale.step);
-    for (var i = 0; i <= ticks; i++) {
-      var val = scale.step * i;
-      var y = yFor(val);
-      svg.appendChild(
-        svgEl("line", { x1: Y_LABEL_W, x2: width - RIGHT_PAD, y1: y, y2: y, class: "cog-grid" })
-      );
-      var lab = svgEl("text", { x: Y_LABEL_W - 5, y: y + 3, class: "cog-axis", "text-anchor": "end" });
-      lab.textContent = String(val);
-      svg.appendChild(lab);
-    }
-
-    buckets.forEach(function (b) {
-      var cellX = xForMs(b.start_ms);
-      var cellW = Math.max(((b.end_ms - b.start_ms) / span) * plotW, 1);
-      var gap = Math.min(cellW * 0.2, 2);
-      var top = yFor(b.thoughts);
-      var rect = svgEl("rect", {
-        x: cellX + gap / 2,
-        y: top,
-        width: Math.max(cellW - gap, 1),
-        height: Math.max(CHART_H - top, 0),
-        class: "cog-bar-rect" + (b.thoughts ? "" : " cog-bar-zero"),
-      });
-      var title = svgEl("title", {});
-      title.textContent =
-        CC.rangeLabel(b.start_ms, b.end_ms, data.interval) +
-        " · " + b.thoughts + " thoughts · " + b.cycles + " cycles" +
-        (b.tokens ? " · " + fmtNum(b.tokens) + " tok" : "");
-      rect.appendChild(title);
-      svg.appendChild(rect);
-    });
-
-    if (maxCycles > 0) {
-      var pts = buckets
-        .map(function (b) {
-          var mid = (b.start_ms + b.end_ms) / 2;
-          var v = (b.cycles / maxCycles) * scale.max;
-          return xForMs(mid).toFixed(1) + "," + yFor(v).toFixed(1);
-        })
-        .join(" ");
-      svg.appendChild(svgEl("polyline", { points: pts, class: "cog-cycles-line" }));
-    }
-
-    if (data.effective_end_ms && data.effective_end_ms < rangeEnd) {
-      var fx = xForMs(data.effective_end_ms);
-      svg.appendChild(
-        svgEl("rect", {
-          x: fx,
-          y: TOP_PAD,
-          width: Math.max(width - RIGHT_PAD - fx, 0),
-          height: CHART_H - TOP_PAD,
-          class: "cog-future",
-        })
-      );
-    }
-
-    CC.unitTicks(buckets, data.interval, rangeStart, span, xForMs).forEach(function (t) {
-      svg.appendChild(
-        svgEl("line", { x1: t.x, x2: t.x, y1: CHART_H, y2: CHART_H + 4, class: "cog-grid" })
-      );
-      var anchor = t.edge === "start" ? "start" : t.edge === "end" ? "end" : "middle";
-      var lab = svgEl("text", { x: t.x, y: CHART_H + 14, class: "cog-axis", "text-anchor": anchor });
-      lab.textContent = t.label;
-      svg.appendChild(lab);
-    });
-
-    attachBrush(svg);
-    host.appendChild(svg);
-  }
-
-  function svgXToMs(svg, clientX) {
-    if (!lastLayout) return 0;
-    var rect = svg.getBoundingClientRect();
-    var x = ((clientX - rect.left) / Math.max(rect.width, 1)) * lastLayout.width;
-    var frac = (x - Y_LABEL_W) / Math.max(lastLayout.plotW, 1);
-    if (frac < 0) frac = 0;
-    if (frac > 1) frac = 1;
-    return Math.round(lastLayout.rangeStart + frac * lastLayout.span);
-  }
-
-  function attachBrush(svg) {
-    var startMs = 0;
-    var rect = null;
-    svg.style.touchAction = "none";
-    svg.addEventListener("pointerdown", function (ev) {
-      startMs = svgXToMs(svg, ev.clientX);
-      rect = svgEl("rect", { y: TOP_PAD, height: CHART_H - TOP_PAD, class: "cog-brush" });
-      svg.appendChild(rect);
-      svg.setPointerCapture(ev.pointerId);
-    });
-    svg.addEventListener("pointermove", function (ev) {
-      if (!rect || !lastLayout) return;
-      var curMs = svgXToMs(svg, ev.clientX);
-      var lo = Math.min(startMs, curMs);
-      var hi = Math.max(startMs, curMs);
-      var x1 = Y_LABEL_W + ((lo - lastLayout.rangeStart) / lastLayout.span) * lastLayout.plotW;
-      var x2 = Y_LABEL_W + ((hi - lastLayout.rangeStart) / lastLayout.span) * lastLayout.plotW;
-      rect.setAttribute("x", x1);
-      rect.setAttribute("width", Math.max(x2 - x1, 0));
-    });
-    svg.addEventListener("pointerup", function (ev) {
-      if (!rect) return;
-      var endMs = svgXToMs(svg, ev.clientX);
-      var w = parseFloat(rect.getAttribute("width") || "0");
-      rect.remove();
-      rect = null;
-      if (w < 8) return; /* click, not a drag */
-      range.from = Math.min(startMs, endMs);
-      range.to = Math.max(startMs, endMs);
-      paintRangeChip();
-      load();
-    });
-  }
-
   /* ── Contributions calendar — always 2D (7 dow rows × week columns) ────
      AgentsView Heatmap.svelte pattern: the calendar is DAILY regardless of
      the Activity chart's bucket grain. When the surface answered at a
@@ -540,11 +353,26 @@
     if (!panel || !host) return;
     var buckets = data.buckets || [];
     var unit = data.interval;
-    if (unit === "hour" || unit === "6h" || !buckets.length) {
+    /* meta first, so the readout survives empty windows */
+    var meta = $("cog-cal-meta");
+    if (meta) {
+      var asOf = data.effective_end_ms
+        ? new Date(data.effective_end_ms).toISOString().slice(0, 16).replace("T", " ") + "Z"
+        : "";
+      meta.textContent =
+        (unit || "?") + " buckets · " + buckets.length +
+        (asOf ? " · as of " + asOf : "") + " · UTC";
+    }
+    if (!buckets.length) {
       panel.hidden = true;
       return;
     }
     panel.hidden = false;
+    if (unit === "hour" || unit === "6h") {
+      /* sub-day windows: bucket strip (still brushable via data-s/e) */
+      renderStrip(host, buckets, unit, hostWidth);
+      return;
+    }
     if (unit === "day") {
       renderYearGrid(host, buckets, data, hostWidth);
       return;
@@ -593,6 +421,8 @@
       cell.style.width = step - 3 + "px";
       cell.style.height = "16px";
       cell.title = CC.rangeLabel(b.start_ms, b.end_ms, unit) + " · " + b.thoughts + " thoughts";
+      cell.dataset.s = String(b.start_ms);
+      cell.dataset.e = String(b.end_ms);
       strip.appendChild(cell);
     });
     host.appendChild(strip);
@@ -647,6 +477,11 @@
         var inWin = day >= start && day <= end;
         cell.className = "cog-cell " + (inWin ? "cog-h" + level(n) : "cog-hoff");
         cell.title = key + " · " + n + " thoughts";
+        if (inWin) {
+          var dayMs = Date.UTC(day.getUTCFullYear(), day.getUTCMonth(), day.getUTCDate());
+          cell.dataset.s = String(dayMs);
+          cell.dataset.e = String(dayMs + 86400000);
+        }
         if (inWin && i <= 3 && day.getUTCMonth() !== lastMonth) {
           if (lastMonth !== -1 && cellStep >= 4) {
             var m = document.createElement("span");
@@ -668,52 +503,160 @@
     host.appendChild(row);
   }
 
-  /* ── Hour of week — normalized per week ──────────────────────────────── */
+  /* ── Contributions — by Source and Workflow (federated contract) ──────
+     Rows come from data.contributions: local systems of record today
+     (gaius.activity / gaius.openlineage); federated systems over the
+     signals protocol (Atlas+OpenLineage, Metaflow, Airflow) are PENDING
+     and will arrive peer/system-stamped through the same shape. */
 
-  function paintHow(data) {
-    var host = $("cog-how");
-    host.replaceChildren();
-    var spanDays = Math.max((data.range_end_ms - data.range_start_ms) / 86400000, 1);
-    var weeks = Math.max(spanDays / 7, 1 / 7);
-    var map = {};
-    var rates = [];
-    (data.hours || []).forEach(function (h) {
-      var rate = h.thoughts / weeks;
-      map[h.weekday + ":" + h.hour] = { n: h.thoughts, rate: rate };
-      rates.push(rate);
-    });
-    var level = CC.heatLevels(rates);
-    var table = document.createElement("div");
-    table.className = "cog-how-grid";
-    var head = document.createElement("div");
-    head.className = "cog-how-row";
-    head.appendChild(document.createElement("span"));
-    for (var hr = 0; hr < 24; hr++) {
-      var hs = document.createElement("span");
-      hs.className = "cog-how-h";
-      hs.textContent = hr % 3 === 0 ? String(hr) : "";
-      head.appendChild(hs);
+  var CONTRIB_MAX_ROWS = 6;   /* AgentsView MAX_SERIES */
+  var CONTRIB_MAX_STRIP = 64; /* per-row strip only when buckets fit */
+  var fedContribCount = -1;   /* engines answering kind=CONTRIBUTIONS */
+
+  function contribMeta() {
+    var meta = $("cog-contrib-meta");
+    if (!meta) return;
+    meta.textContent =
+      "by source · by workflow · UTC" +
+      (fedContribCount >= 0
+        ? " · federated: " + fedContribCount + " answering · more PENDING"
+        : "");
+  }
+
+  function contribSection(host, label, items, data) {
+    var h = document.createElement("div");
+    h.className = "cog-contrib-h mono muted";
+    h.textContent = label;
+    host.appendChild(h);
+    if (!items.length) {
+      var none = document.createElement("div");
+      none.className = "muted cog-empty";
+      none.textContent = "No " + label.toLowerCase() + " in this window.";
+      host.appendChild(none);
+      return;
     }
-    table.appendChild(head);
-    for (var wd = 0; wd < 7; wd++) {
+    var buckets = data.buckets || [];
+    var shown = items.slice(0, CONTRIB_MAX_ROWS);
+    var rest = items.slice(CONTRIB_MAX_ROWS);
+    if (rest.length) {
+      var other = {
+        id: "Other (" + rest.length + ")",
+        system: "",
+        total: 0,
+        series: new Array(buckets.length).fill(0),
+        other: true,
+      };
+      rest.forEach(function (c) {
+        other.total += c.total || 0;
+        (c.series || []).forEach(function (v, i) { other.series[i] += v; });
+      });
+      shown.push(other);
+    }
+    var max = shown.reduce(function (m, c) { return Math.max(m, c.total || 0); }, 1);
+    shown.forEach(function (c) {
       var row = document.createElement("div");
-      row.className = "cog-how-row";
-      var lab = document.createElement("span");
-      lab.className = "cog-how-lab";
-      lab.textContent = WEEKDAYS[wd];
-      row.appendChild(lab);
-      for (var hour = 0; hour < 24; hour++) {
-        var cell = document.createElement("span");
-        var v = map[wd + ":" + hour];
-        cell.className = "cog-cell cog-h" + level(v ? v.rate : 0);
-        cell.title =
-          WEEKDAYS[wd] + " " + hour + "h UTC · " +
-          (v ? v.n + " thoughts · " + v.rate.toFixed(2) + "/wk" : "0");
-        row.appendChild(cell);
+      row.className = "cog-contrib-row" + (c.other ? " cog-contrib-other" : "");
+      var name = document.createElement("span");
+      name.className = "cog-contrib-name mono";
+      name.textContent = c.id;
+      name.title = c.id + (c.system ? " · " + c.system + " · " + (c.peer || "gaius") : "");
+      var track = document.createElement("span");
+      track.className = "cog-contrib-track";
+      var bar = document.createElement("span");
+      bar.className = "cog-contrib-bar";
+      bar.style.width = ((c.total / max) * 100).toFixed(1) + "%";
+      track.appendChild(bar);
+      var n = document.createElement("span");
+      n.className = "cog-contrib-n mono muted";
+      n.textContent = fmtNum(c.total);
+      row.appendChild(name);
+      row.appendChild(track);
+      row.appendChild(n);
+      if (buckets.length && buckets.length <= CONTRIB_MAX_STRIP && !c.other) {
+        var level = CC.heatLevels(c.series || []);
+        var strip = document.createElement("span");
+        strip.className = "cog-contrib-strip";
+        (c.series || []).forEach(function (v, i) {
+          var cell = document.createElement("span");
+          cell.className = "cog-cell cog-h" + level(v);
+          cell.title =
+            CC.rangeLabel(buckets[i].start_ms, buckets[i].end_ms, data.interval) + " · " + v;
+          strip.appendChild(cell);
+        });
+        row.appendChild(strip);
       }
-      table.appendChild(row);
+      host.appendChild(row);
+    });
+  }
+
+  function paintContributions(data) {
+    var host = $("cog-contrib");
+    if (!host) return;
+    host.replaceChildren();
+    var items = data.contributions || [];
+    contribSection(host, "SOURCES", items.filter(function (c) { return c.group === "source"; }), data);
+    contribSection(host, "WORKFLOWS", items.filter(function (c) { return c.group === "workflow"; }), data);
+    contribMeta();
+  }
+
+  function loadFederationContributions() {
+    fetch("/api/gaius/v1/federation/contributions")
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (data) {
+        if (!data) return;
+        fedContribCount = (data.items || []).length;
+        contribMeta();
+      })
+      .catch(function () {});
+  }
+
+  /* ── Calendar brush — range authoring on the Activity heatmap ────────── */
+
+  function attachCalendarBrush() {
+    var host = $("cog-year");
+    if (!host) return;
+    var anchor = null;
+    host.style.touchAction = "none";
+    function cellAt(ev) {
+      var el = document.elementFromPoint(ev.clientX, ev.clientY);
+      return el && el.closest ? el.closest("[data-s]") : null;
     }
-    host.appendChild(table);
+    function mark(lo, hi) {
+      host.querySelectorAll("[data-s]").forEach(function (c) {
+        var s = +c.dataset.s;
+        c.classList.toggle("cog-cell-sel", s >= lo && s < hi);
+      });
+    }
+    host.addEventListener("pointerdown", function (ev) {
+      var c = cellAt(ev);
+      if (!c) return;
+      anchor = { s: +c.dataset.s, e: +c.dataset.e };
+      try { host.setPointerCapture(ev.pointerId); } catch (e) { /* noop */ }
+      mark(anchor.s, anchor.e);
+    });
+    host.addEventListener("pointermove", function (ev) {
+      if (!anchor) return;
+      var c = cellAt(ev);
+      if (c) mark(Math.min(anchor.s, +c.dataset.s), Math.max(anchor.e, +c.dataset.e));
+    });
+    host.addEventListener("pointerup", function (ev) {
+      if (!anchor) return;
+      var c = cellAt(ev);
+      var s = anchor.s;
+      var e = anchor.e;
+      if (c) {
+        s = Math.min(s, +c.dataset.s);
+        e = Math.max(e, +c.dataset.e);
+      }
+      host.querySelectorAll(".cog-cell-sel").forEach(function (x) {
+        x.classList.remove("cog-cell-sel");
+      });
+      anchor = null;
+      range.from = s; /* click w/o drag = single-cell range */
+      range.to = e;
+      paintRangeChip();
+      load();
+    });
   }
 
   /* ── Federation lanes (self + peers answering kind=COGNITION) ────────── */
@@ -1010,13 +953,11 @@
   var loadVersion = 0;
 
   function paintAll(data) {
-    var w = $("cog-activity") ? $("cog-activity").clientWidth : 0;
     paintChrome(data);
     paintStats(data);
     paintRail(data);
-    paintActivity(data, w);
-    paintCalendar(data, $("cog-year") ? $("cog-year").clientWidth : w);
-    paintHow(data);
+    paintCalendar(data, $("cog-year") ? $("cog-year").clientWidth : 0);
+    paintContributions(data);
     paintTop(data);
     if (window.GaiusSurface) {
       window.GaiusSurface.setPage("/cognition");
@@ -1106,16 +1047,17 @@
       hydrateControls();
       load(false);
     });
-    if (CC && $("cog-activity")) {
-      CC.observeWidth($("cog-activity"), function () {
+    if (CC && $("cog-calendar-panel")) {
+      CC.observeWidth($("cog-calendar-panel"), function () {
         if (lastData) {
-          paintActivity(lastData, $("cog-activity").clientWidth);
           paintCalendar(lastData, $("cog-year") ? $("cog-year").clientWidth : 0);
         }
       });
     }
+    attachCalendarBrush();
     startEvents();
     loadFederation();
+    loadFederationContributions();
     loadCorpus();
     var corpus = $("cog-corpus");
     if (corpus)
@@ -1126,6 +1068,7 @@
     setInterval(function () {
       if (document.visibilityState === "visible") {
         loadFederation();
+        loadFederationContributions();
         loadCorpus();
       }
     }, 120000);

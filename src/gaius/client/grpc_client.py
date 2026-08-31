@@ -1558,6 +1558,17 @@ class GrpcEngineClient:
                     {"weekday": h.weekday, "hour": h.hour, "thoughts": h.thoughts}
                     for h in response.hours
                 ],
+                "contributions": [
+                    {
+                        "group": c.group,
+                        "id": c.id,
+                        "system": c.system,
+                        "total": c.total,
+                        "series": list(c.series),
+                        "peer": c.peer,
+                    }
+                    for c in response.contributions
+                ],
                 "stream_counts": [
                     {"id": s.id, "thoughts": s.thoughts}
                     for s in response.stream_counts

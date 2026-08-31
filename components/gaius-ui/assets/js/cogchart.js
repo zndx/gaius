@@ -5,23 +5,6 @@
 (function () {
   "use strict";
 
-  /* 1/2/5 x 10^n ladder targeting ~tickTarget intervals, with headroom. */
-  function niceScale(maxY, tickTarget) {
-    tickTarget = tickTarget || 4;
-    if (!isFinite(maxY) || maxY <= 0) return { step: 1, max: 1 };
-    var rough = maxY / tickTarget;
-    var exp = Math.floor(Math.log10(rough));
-    var base = Math.pow(10, exp);
-    var normalized = rough / base;
-    var mult;
-    if (normalized <= 1) mult = 1;
-    else if (normalized <= 2) mult = 2;
-    else if (normalized <= 5) mult = 5;
-    else mult = 10;
-    var step = Math.max(mult * base, 1);
-    return { step: step, max: Math.ceil(maxY / step) * step };
-  }
-
   /* Observe an element's content width; call cb(width) on change. */
   function observeWidth(el, cb) {
     if (!el || typeof ResizeObserver === "undefined") return null;
@@ -75,11 +58,6 @@
     return MONTHS[d.getUTCMonth()] + " " + d.getUTCDate();
   }
 
-  function monthLabel(ms) {
-    var d = new Date(ms);
-    return MONTHS[d.getUTCMonth()] + " '" + String(d.getUTCFullYear()).slice(2);
-  }
-
   /* Tooltip range label per bucket unit (UTC — the page's stated zone). */
   function rangeLabel(startMs, endMs, unit) {
     if (unit === "hour" || unit === "6h") {
@@ -90,44 +68,11 @@
     return dateLabel(startMs) + " – " + dateLabel(endMs - 1);
   }
 
-  /* Unit-aware x ticks. hour/6h → five even fractions labeled with real
-     UTC times; day → Monday bucket starts; week → 1st-of-month starts;
-     month → every bucket start, thinned to ~8 labels. */
-  function unitTicks(buckets, unit, rangeStartMs, rangeSpanMs, xForMs) {
-    var out = [];
-    if (unit === "hour" || unit === "6h") {
-      [0, 0.25, 0.5, 0.75, 1].forEach(function (f) {
-        var ms = rangeStartMs + f * rangeSpanMs;
-        out.push({ x: xForMs(ms), label: timeLabel(ms), edge: f === 0 ? "start" : f === 1 ? "end" : "" });
-      });
-      return out;
-    }
-    function boundary(pred, labelFn) {
-      buckets.forEach(function (b) {
-        if (pred(b.start_ms)) out.push({ x: xForMs(b.start_ms), label: labelFn(b.start_ms), edge: "" });
-      });
-    }
-    if (unit === "day") {
-      boundary(function (ms) { return new Date(ms).getUTCDay() === 1; }, dateLabel);
-    } else if (unit === "week") {
-      boundary(function (ms) { return new Date(ms).getUTCDate() <= 7; }, monthLabel);
-    } else {
-      var step = Math.max(1, Math.ceil(buckets.length / 8));
-      buckets.forEach(function (b, i) {
-        if (i % step === 0) out.push({ x: xForMs(b.start_ms), label: monthLabel(b.start_ms), edge: "" });
-      });
-    }
-    return out;
-  }
-
   window.CogChart = {
-    niceScale: niceScale,
     observeWidth: observeWidth,
     heatLevels: heatLevels,
     timeLabel: timeLabel,
     dateLabel: dateLabel,
-    monthLabel: monthLabel,
     rangeLabel: rangeLabel,
-    unitTicks: unitTicks,
   };
 })();

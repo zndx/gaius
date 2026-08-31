@@ -789,8 +789,24 @@ class CognitionStreamCount(_message.Message):
     thoughts: int
     def __init__(self, id: _Optional[str] = ..., thoughts: _Optional[int] = ...) -> None: ...
 
+class CognitionContribution(_message.Message):
+    __slots__ = ("group", "id", "system", "total", "series", "peer")
+    GROUP_FIELD_NUMBER: _ClassVar[int]
+    ID_FIELD_NUMBER: _ClassVar[int]
+    SYSTEM_FIELD_NUMBER: _ClassVar[int]
+    TOTAL_FIELD_NUMBER: _ClassVar[int]
+    SERIES_FIELD_NUMBER: _ClassVar[int]
+    PEER_FIELD_NUMBER: _ClassVar[int]
+    group: str
+    id: str
+    system: str
+    total: int
+    series: _containers.RepeatedScalarFieldContainer[int]
+    peer: str
+    def __init__(self, group: _Optional[str] = ..., id: _Optional[str] = ..., system: _Optional[str] = ..., total: _Optional[int] = ..., series: _Optional[_Iterable[int]] = ..., peer: _Optional[str] = ...) -> None: ...
+
 class CognitionSurfaceResponse(_message.Message):
-    __slots__ = ("running", "cycles_completed", "cycles_in_window", "last_cycle_timestamp_ms", "current_task", "thoughts", "streams", "active_days", "thoughts_per_cycle", "concentration_stream", "concentration_pct", "reserve_tokens", "project", "unit", "recent", "top", "days", "hours", "stream_counts", "error", "buckets", "interval", "range_start_ms", "range_end_ms", "effective_end_ms", "bucket_seconds")
+    __slots__ = ("running", "cycles_completed", "cycles_in_window", "last_cycle_timestamp_ms", "current_task", "thoughts", "streams", "active_days", "thoughts_per_cycle", "concentration_stream", "concentration_pct", "reserve_tokens", "project", "unit", "recent", "top", "days", "hours", "stream_counts", "error", "buckets", "interval", "range_start_ms", "range_end_ms", "effective_end_ms", "bucket_seconds", "contributions")
     RUNNING_FIELD_NUMBER: _ClassVar[int]
     CYCLES_COMPLETED_FIELD_NUMBER: _ClassVar[int]
     CYCLES_IN_WINDOW_FIELD_NUMBER: _ClassVar[int]
@@ -817,6 +833,7 @@ class CognitionSurfaceResponse(_message.Message):
     RANGE_END_MS_FIELD_NUMBER: _ClassVar[int]
     EFFECTIVE_END_MS_FIELD_NUMBER: _ClassVar[int]
     BUCKET_SECONDS_FIELD_NUMBER: _ClassVar[int]
+    CONTRIBUTIONS_FIELD_NUMBER: _ClassVar[int]
     running: bool
     cycles_completed: int
     cycles_in_window: int
@@ -843,7 +860,8 @@ class CognitionSurfaceResponse(_message.Message):
     range_end_ms: int
     effective_end_ms: int
     bucket_seconds: int
-    def __init__(self, running: bool = ..., cycles_completed: _Optional[int] = ..., cycles_in_window: _Optional[int] = ..., last_cycle_timestamp_ms: _Optional[int] = ..., current_task: _Optional[str] = ..., thoughts: _Optional[int] = ..., streams: _Optional[int] = ..., active_days: _Optional[int] = ..., thoughts_per_cycle: _Optional[float] = ..., concentration_stream: _Optional[str] = ..., concentration_pct: _Optional[float] = ..., reserve_tokens: _Optional[int] = ..., project: _Optional[str] = ..., unit: _Optional[str] = ..., recent: _Optional[_Iterable[_Union[ThoughtMessage, _Mapping]]] = ..., top: _Optional[_Iterable[_Union[ThoughtMessage, _Mapping]]] = ..., days: _Optional[_Iterable[_Union[CognitionDayBucket, _Mapping]]] = ..., hours: _Optional[_Iterable[_Union[CognitionHourCell, _Mapping]]] = ..., stream_counts: _Optional[_Iterable[_Union[CognitionStreamCount, _Mapping]]] = ..., error: _Optional[str] = ..., buckets: _Optional[_Iterable[_Union[CognitionBucket, _Mapping]]] = ..., interval: _Optional[str] = ..., range_start_ms: _Optional[int] = ..., range_end_ms: _Optional[int] = ..., effective_end_ms: _Optional[int] = ..., bucket_seconds: _Optional[int] = ...) -> None: ...
+    contributions: _containers.RepeatedCompositeFieldContainer[CognitionContribution]
+    def __init__(self, running: bool = ..., cycles_completed: _Optional[int] = ..., cycles_in_window: _Optional[int] = ..., last_cycle_timestamp_ms: _Optional[int] = ..., current_task: _Optional[str] = ..., thoughts: _Optional[int] = ..., streams: _Optional[int] = ..., active_days: _Optional[int] = ..., thoughts_per_cycle: _Optional[float] = ..., concentration_stream: _Optional[str] = ..., concentration_pct: _Optional[float] = ..., reserve_tokens: _Optional[int] = ..., project: _Optional[str] = ..., unit: _Optional[str] = ..., recent: _Optional[_Iterable[_Union[ThoughtMessage, _Mapping]]] = ..., top: _Optional[_Iterable[_Union[ThoughtMessage, _Mapping]]] = ..., days: _Optional[_Iterable[_Union[CognitionDayBucket, _Mapping]]] = ..., hours: _Optional[_Iterable[_Union[CognitionHourCell, _Mapping]]] = ..., stream_counts: _Optional[_Iterable[_Union[CognitionStreamCount, _Mapping]]] = ..., error: _Optional[str] = ..., buckets: _Optional[_Iterable[_Union[CognitionBucket, _Mapping]]] = ..., interval: _Optional[str] = ..., range_start_ms: _Optional[int] = ..., range_end_ms: _Optional[int] = ..., effective_end_ms: _Optional[int] = ..., bucket_seconds: _Optional[int] = ..., contributions: _Optional[_Iterable[_Union[CognitionContribution, _Mapping]]] = ...) -> None: ...
 
 class CognitionThoughtRequest(_message.Message):
     __slots__ = ("id",)
@@ -2818,6 +2836,34 @@ class FederationCognitionResponse(_message.Message):
     items: _containers.RepeatedCompositeFieldContainer[FederationCognitionItem]
     error: str
     def __init__(self, items: _Optional[_Iterable[_Union[FederationCognitionItem, _Mapping]]] = ..., error: _Optional[str] = ...) -> None: ...
+
+class FederationContributionsRequest(_message.Message):
+    __slots__ = ()
+    def __init__(self) -> None: ...
+
+class FederationContributionsItem(_message.Message):
+    __slots__ = ("project", "interval", "range_start_ms", "range_end_ms", "buckets", "items")
+    PROJECT_FIELD_NUMBER: _ClassVar[int]
+    INTERVAL_FIELD_NUMBER: _ClassVar[int]
+    RANGE_START_MS_FIELD_NUMBER: _ClassVar[int]
+    RANGE_END_MS_FIELD_NUMBER: _ClassVar[int]
+    BUCKETS_FIELD_NUMBER: _ClassVar[int]
+    ITEMS_FIELD_NUMBER: _ClassVar[int]
+    project: str
+    interval: str
+    range_start_ms: int
+    range_end_ms: int
+    buckets: _containers.RepeatedCompositeFieldContainer[CognitionBucket]
+    items: _containers.RepeatedCompositeFieldContainer[CognitionContribution]
+    def __init__(self, project: _Optional[str] = ..., interval: _Optional[str] = ..., range_start_ms: _Optional[int] = ..., range_end_ms: _Optional[int] = ..., buckets: _Optional[_Iterable[_Union[CognitionBucket, _Mapping]]] = ..., items: _Optional[_Iterable[_Union[CognitionContribution, _Mapping]]] = ...) -> None: ...
+
+class FederationContributionsResponse(_message.Message):
+    __slots__ = ("items", "error")
+    ITEMS_FIELD_NUMBER: _ClassVar[int]
+    ERROR_FIELD_NUMBER: _ClassVar[int]
+    items: _containers.RepeatedCompositeFieldContainer[FederationContributionsItem]
+    error: str
+    def __init__(self, items: _Optional[_Iterable[_Union[FederationContributionsItem, _Mapping]]] = ..., error: _Optional[str] = ...) -> None: ...
 
 class CognitionCorpusRequest(_message.Message):
     __slots__ = ("limit", "window_days", "flow")
