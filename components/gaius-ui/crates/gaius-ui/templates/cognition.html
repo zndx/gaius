@@ -41,6 +41,13 @@
       <span class="pill" id="cog-running">—</span>
     </div>
     <div class="cog-stats" id="cog-stats" aria-label="Cognition totals"></div>
+    <div class="cog-panel" id="cog-fed-panel" hidden>
+      <div class="cog-panel-head">
+        <h2>Federation</h2>
+        <span class="muted mono" id="cog-fed-meta">peers answering kind=COGNITION</span>
+      </div>
+      <div id="cog-fed" class="cog-fed" aria-label="Federation cognition lanes"></div>
+    </div>
     <div class="cog-panel">
       <div class="cog-panel-head">
         <h2>Activity</h2>
@@ -55,12 +62,12 @@
       </div>
       <div id="cog-year" class="cog-year" role="img" aria-label="Calendar heatmap"></div>
     </div>
-    <div class="cog-panel" id="cog-wf-panel">
+    <div class="cog-panel" id="cog-corpus-panel" hidden>
       <div class="cog-panel-head">
-        <h2>Waterfall</h2>
-        <span class="muted mono" id="cog-wf-meta">last 60 s · engine channels</span>
+        <h2>Reasoning corpus</h2>
+        <span class="muted mono" id="cog-corpus-meta">hx.cot_reasoning</span>
       </div>
-      <canvas id="cog-waterfall" class="cog-wf-canvas" aria-label="Cognition waterfall"></canvas>
+      <div id="cog-corpus" class="cog-corpus" aria-label="Retained reasoning traces"></div>
     </div>
     <div class="cog-split">
       <div class="cog-panel">

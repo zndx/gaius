@@ -2914,6 +2914,66 @@ body:has(.sum-page) .shell-footer { display: none; }
 }
 .cog-empty { padding: 1.2rem 0.5rem; font-size: 0.82rem; }
 .cog-strip { display: flex; gap: 3px; align-items: center; overflow: hidden; }
+/* 2D contributions calendar (AgentsView Heatmap conformance) */
+.cog-year { flex-direction: column; gap: 2px; overflow: hidden; }
+.cog-year-row { display: flex; gap: 0.45rem; }
+.cog-year-dows {
+  width: 26px;
+  grid-template-rows: repeat(7, var(--cog-cell, 11px));
+  gap: var(--cog-gap, 3px);
+  align-content: start;
+  text-align: right;
+}
+.cog-year-weeks { gap: var(--cog-gap, 3px); }
+.cog-year-col {
+  grid-template-rows: repeat(7, var(--cog-cell, 11px));
+  gap: var(--cog-gap, 3px);
+}
+.cog-year-months {
+  position: relative;
+  height: 13px;
+  margin-left: calc(26px + 0.45rem);
+  font-size: 0.62rem;
+  color: var(--text-color-kumo-subtle);
+}
+.cog-year-months span { position: absolute; top: 0; white-space: nowrap; }
+.cog-hoff { background: transparent; }
+/* Federation cognition lanes */
+.cog-fed { display: flex; flex-direction: column; gap: 0.35rem; }
+.cog-fed-lane {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.3rem 0.5rem;
+  border-radius: 4px;
+  background: var(--color-kumo-recessed, #1b2128);
+}
+.cog-fed-lane.self { outline: 1px solid color-mix(in oklch, var(--color-kumo-success) 40%, transparent); }
+.cog-fed-chip { font-size: 0.72rem; font-weight: 600; min-width: 4.5rem; }
+.cog-fed-spark { width: 120px; height: 16px; flex: 0 0 auto; }
+.cog-fed-spark rect { fill: var(--color-kumo-success, #3fb68b); opacity: 0.85; }
+.cog-fed-counts { font-size: 0.68rem; }
+.cog-fed-last { font-size: 0.65rem; margin-left: auto; }
+/* Reasoning corpus panel */
+.cog-corpus { display: flex; flex-direction: column; gap: 0.3rem; }
+.cog-corpus-row {
+  padding: 0.35rem 0.5rem;
+  border-radius: 4px;
+  background: var(--color-kumo-recessed, #1b2128);
+  cursor: pointer;
+}
+.cog-corpus-row:hover { outline: 1px solid color-mix(in oklch, var(--color-kumo-success) 40%, transparent); }
+.cog-corpus-top { display: flex; align-items: baseline; gap: 0.5rem; }
+.cog-corpus-top strong { font-size: 0.78rem; }
+.cog-corpus-badge {
+  font-size: 0.62rem;
+  padding: 0 0.35rem;
+  border-radius: 3px;
+  background: color-mix(in oklch, var(--color-kumo-success) 25%, var(--color-kumo-recessed));
+}
+.cog-corpus-when { margin-left: auto; font-size: 0.65rem; }
+.cog-corpus-sub { font-size: 0.66rem; margin-top: 0.15rem; }
+.cog-trace-h { margin: 0.7rem 0 0.25rem; font-size: 0.66rem; letter-spacing: 0.04em; }
 
 /* ── Cognition Phase 2: drawer, live ticker, brush, waterfall ── */
 .cog-drawer-backdrop {
@@ -2962,4 +3022,3 @@ body:has(.sum-page) .shell-footer { display: none; }
   padding: 0.15rem 0.6rem; font-size: 0.72rem; background: var(--color-kumo-elevated);
   cursor: pointer;
 }
-.cog-wf-canvas { width: 100%; height: 140px; display: block; }

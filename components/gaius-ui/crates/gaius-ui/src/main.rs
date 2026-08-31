@@ -477,6 +477,46 @@ async fn federation_surfaces_api() -> impl IntoResponse {
     }
 }
 
+async fn federation_cognition_api() -> impl IntoResponse {
+    match gaius::Gaius::from_env().federation_cognition().await {
+        Ok(v) => Json(v).into_response(),
+        Err(e) => summary_err(e),
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct CorpusQuery {
+    limit: Option<i32>,
+    window_days: Option<i32>,
+    flow: Option<String>,
+}
+
+async fn cognition_corpus_api(Query(q): Query<CorpusQuery>) -> impl IntoResponse {
+    match gaius::Gaius::from_env()
+        .cognition_corpus(
+            q.limit.unwrap_or(0),
+            q.window_days.unwrap_or(0),
+            q.flow.unwrap_or_default(),
+        )
+        .await
+    {
+        Ok(v) => Json(v).into_response(),
+        Err(e) => summary_err(e),
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct TraceQuery {
+    id: String,
+}
+
+async fn cognition_trace_api(Query(q): Query<TraceQuery>) -> impl IntoResponse {
+    match gaius::Gaius::from_env().cognition_trace(q.id).await {
+        Ok(v) => Json(v).into_response(),
+        Err(e) => summary_err(e),
+    }
+}
+
 async fn summary_index_api(Query(q): Query<SummaryQuery>) -> impl IntoResponse {
     match gaius::Gaius::from_env()
         .summary_index(
@@ -1093,6 +1133,12 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/gaius/v1/ops", get(ops_api))
         .route("/api/gaius/v1/watts", get(watts_api))
         .route("/api/gaius/v1/federation/surfaces", get(federation_surfaces_api))
+        .route(
+            "/api/gaius/v1/federation/cognition",
+            get(federation_cognition_api),
+        )
+        .route("/api/gaius/v1/cognition/corpus", get(cognition_corpus_api))
+        .route("/api/gaius/v1/cognition/trace", get(cognition_trace_api))
         .route(
             "/api/gaius/v1/ask/artifacts",
             get(ask_artifacts)

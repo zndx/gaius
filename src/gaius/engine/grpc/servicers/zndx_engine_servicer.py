@@ -591,6 +591,36 @@ class GaiusZndxEngineServicer(zpb_grpc.EngineServicer):
                     )
                     for c in cards
                 )
+            if int(request.kind) == zpb.SERVER_QUERY_KIND_COGNITION:
+                # Cognition overview (~30d) — async enrichment like SCHEDULES.
+                # No cognition unit / failure → hint left unset (honest).
+                cognition = getattr(self._services, "cognition_service", None)
+                if cognition is not None:
+                    try:
+                        snap = await cognition.surface(window="30d")
+                        hint = resp.cognition
+                        hint.project = "gaius"
+                        hint.unit = snap.unit or "cognition"
+                        hint.running = bool(snap.running)
+                        hint.thoughts = int(snap.thoughts)
+                        hint.cycles = int(snap.cycles_in_window)
+                        hint.last_cycle_ms = int(snap.last_cycle_timestamp_ms)
+                        hint.interval = snap.interval or ""
+                        hint.range_start_ms = int(snap.range_start_ms)
+                        hint.range_end_ms = int(snap.range_end_ms)
+                        for b in snap.buckets:
+                            hint.buckets.add(
+                                start_ms=b.start_ms,
+                                end_ms=b.end_ms,
+                                thoughts=b.thoughts,
+                                cycles=b.cycles,
+                            )
+                        for s in snap.stream_counts:
+                            hint.streams.add(id=s.id, thoughts=s.thoughts)
+                    except Exception:
+                        logger.exception(
+                            "ServerQuery COGNITION failed (hint left empty)"
+                        )
             return resp
         except ServerQueryError as e:
             await context.abort(grpc.StatusCode.FAILED_PRECONDITION, str(e))

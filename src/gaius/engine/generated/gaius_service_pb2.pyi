@@ -2781,6 +2781,134 @@ class FederationSurfacesResponse(_message.Message):
     error: str
     def __init__(self, items: _Optional[_Iterable[_Union[FederationSurface, _Mapping]]] = ..., error: _Optional[str] = ...) -> None: ...
 
+class FederationCognitionRequest(_message.Message):
+    __slots__ = ()
+    def __init__(self) -> None: ...
+
+class FederationCognitionItem(_message.Message):
+    __slots__ = ("project", "unit", "running", "thoughts", "cycles", "last_cycle_ms", "interval", "range_start_ms", "range_end_ms", "buckets", "stream_counts")
+    PROJECT_FIELD_NUMBER: _ClassVar[int]
+    UNIT_FIELD_NUMBER: _ClassVar[int]
+    RUNNING_FIELD_NUMBER: _ClassVar[int]
+    THOUGHTS_FIELD_NUMBER: _ClassVar[int]
+    CYCLES_FIELD_NUMBER: _ClassVar[int]
+    LAST_CYCLE_MS_FIELD_NUMBER: _ClassVar[int]
+    INTERVAL_FIELD_NUMBER: _ClassVar[int]
+    RANGE_START_MS_FIELD_NUMBER: _ClassVar[int]
+    RANGE_END_MS_FIELD_NUMBER: _ClassVar[int]
+    BUCKETS_FIELD_NUMBER: _ClassVar[int]
+    STREAM_COUNTS_FIELD_NUMBER: _ClassVar[int]
+    project: str
+    unit: str
+    running: bool
+    thoughts: int
+    cycles: int
+    last_cycle_ms: int
+    interval: str
+    range_start_ms: int
+    range_end_ms: int
+    buckets: _containers.RepeatedCompositeFieldContainer[CognitionBucket]
+    stream_counts: _containers.RepeatedCompositeFieldContainer[CognitionStreamCount]
+    def __init__(self, project: _Optional[str] = ..., unit: _Optional[str] = ..., running: bool = ..., thoughts: _Optional[int] = ..., cycles: _Optional[int] = ..., last_cycle_ms: _Optional[int] = ..., interval: _Optional[str] = ..., range_start_ms: _Optional[int] = ..., range_end_ms: _Optional[int] = ..., buckets: _Optional[_Iterable[_Union[CognitionBucket, _Mapping]]] = ..., stream_counts: _Optional[_Iterable[_Union[CognitionStreamCount, _Mapping]]] = ...) -> None: ...
+
+class FederationCognitionResponse(_message.Message):
+    __slots__ = ("items", "error")
+    ITEMS_FIELD_NUMBER: _ClassVar[int]
+    ERROR_FIELD_NUMBER: _ClassVar[int]
+    items: _containers.RepeatedCompositeFieldContainer[FederationCognitionItem]
+    error: str
+    def __init__(self, items: _Optional[_Iterable[_Union[FederationCognitionItem, _Mapping]]] = ..., error: _Optional[str] = ...) -> None: ...
+
+class CognitionCorpusRequest(_message.Message):
+    __slots__ = ("limit", "window_days", "flow")
+    LIMIT_FIELD_NUMBER: _ClassVar[int]
+    WINDOW_DAYS_FIELD_NUMBER: _ClassVar[int]
+    FLOW_FIELD_NUMBER: _ClassVar[int]
+    limit: int
+    window_days: int
+    flow: str
+    def __init__(self, limit: _Optional[int] = ..., window_days: _Optional[int] = ..., flow: _Optional[str] = ...) -> None: ...
+
+class CognitionCorpusItem(_message.Message):
+    __slots__ = ("id", "flow_name", "step_name", "run_id", "subject", "technique", "model_name", "decision", "confidence", "input_tokens", "output_tokens", "latency_ms", "generated_at_ms", "product_id", "has_layers", "layer_count")
+    ID_FIELD_NUMBER: _ClassVar[int]
+    FLOW_NAME_FIELD_NUMBER: _ClassVar[int]
+    STEP_NAME_FIELD_NUMBER: _ClassVar[int]
+    RUN_ID_FIELD_NUMBER: _ClassVar[int]
+    SUBJECT_FIELD_NUMBER: _ClassVar[int]
+    TECHNIQUE_FIELD_NUMBER: _ClassVar[int]
+    MODEL_NAME_FIELD_NUMBER: _ClassVar[int]
+    DECISION_FIELD_NUMBER: _ClassVar[int]
+    CONFIDENCE_FIELD_NUMBER: _ClassVar[int]
+    INPUT_TOKENS_FIELD_NUMBER: _ClassVar[int]
+    OUTPUT_TOKENS_FIELD_NUMBER: _ClassVar[int]
+    LATENCY_MS_FIELD_NUMBER: _ClassVar[int]
+    GENERATED_AT_MS_FIELD_NUMBER: _ClassVar[int]
+    PRODUCT_ID_FIELD_NUMBER: _ClassVar[int]
+    HAS_LAYERS_FIELD_NUMBER: _ClassVar[int]
+    LAYER_COUNT_FIELD_NUMBER: _ClassVar[int]
+    id: str
+    flow_name: str
+    step_name: str
+    run_id: str
+    subject: str
+    technique: str
+    model_name: str
+    decision: str
+    confidence: float
+    input_tokens: int
+    output_tokens: int
+    latency_ms: int
+    generated_at_ms: int
+    product_id: str
+    has_layers: bool
+    layer_count: int
+    def __init__(self, id: _Optional[str] = ..., flow_name: _Optional[str] = ..., step_name: _Optional[str] = ..., run_id: _Optional[str] = ..., subject: _Optional[str] = ..., technique: _Optional[str] = ..., model_name: _Optional[str] = ..., decision: _Optional[str] = ..., confidence: _Optional[float] = ..., input_tokens: _Optional[int] = ..., output_tokens: _Optional[int] = ..., latency_ms: _Optional[int] = ..., generated_at_ms: _Optional[int] = ..., product_id: _Optional[str] = ..., has_layers: bool = ..., layer_count: _Optional[int] = ...) -> None: ...
+
+class CognitionCorpusResponse(_message.Message):
+    __slots__ = ("items", "total", "error")
+    ITEMS_FIELD_NUMBER: _ClassVar[int]
+    TOTAL_FIELD_NUMBER: _ClassVar[int]
+    ERROR_FIELD_NUMBER: _ClassVar[int]
+    items: _containers.RepeatedCompositeFieldContainer[CognitionCorpusItem]
+    total: int
+    error: str
+    def __init__(self, items: _Optional[_Iterable[_Union[CognitionCorpusItem, _Mapping]]] = ..., total: _Optional[int] = ..., error: _Optional[str] = ...) -> None: ...
+
+class CognitionTraceRequest(_message.Message):
+    __slots__ = ("id",)
+    ID_FIELD_NUMBER: _ClassVar[int]
+    id: str
+    def __init__(self, id: _Optional[str] = ...) -> None: ...
+
+class CognitionReasoningLayer(_message.Message):
+    __slots__ = ("layer", "producer", "tokens", "text")
+    LAYER_FIELD_NUMBER: _ClassVar[int]
+    PRODUCER_FIELD_NUMBER: _ClassVar[int]
+    TOKENS_FIELD_NUMBER: _ClassVar[int]
+    TEXT_FIELD_NUMBER: _ClassVar[int]
+    layer: str
+    producer: str
+    tokens: int
+    text: str
+    def __init__(self, layer: _Optional[str] = ..., producer: _Optional[str] = ..., tokens: _Optional[int] = ..., text: _Optional[str] = ...) -> None: ...
+
+class CognitionTraceResponse(_message.Message):
+    __slots__ = ("item", "prompt", "reasoning_trace", "output", "layers", "error")
+    ITEM_FIELD_NUMBER: _ClassVar[int]
+    PROMPT_FIELD_NUMBER: _ClassVar[int]
+    REASONING_TRACE_FIELD_NUMBER: _ClassVar[int]
+    OUTPUT_FIELD_NUMBER: _ClassVar[int]
+    LAYERS_FIELD_NUMBER: _ClassVar[int]
+    ERROR_FIELD_NUMBER: _ClassVar[int]
+    item: CognitionCorpusItem
+    prompt: str
+    reasoning_trace: str
+    output: str
+    layers: _containers.RepeatedCompositeFieldContainer[CognitionReasoningLayer]
+    error: str
+    def __init__(self, item: _Optional[_Union[CognitionCorpusItem, _Mapping]] = ..., prompt: _Optional[str] = ..., reasoning_trace: _Optional[str] = ..., output: _Optional[str] = ..., layers: _Optional[_Iterable[_Union[CognitionReasoningLayer, _Mapping]]] = ..., error: _Optional[str] = ...) -> None: ...
+
 class AskPresentRequest(_message.Message):
     __slots__ = ("kind", "symbol", "title", "from_date", "to_date", "payload_json")
     KIND_FIELD_NUMBER: _ClassVar[int]

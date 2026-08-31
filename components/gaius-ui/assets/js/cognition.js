@@ -521,7 +521,18 @@
     });
   }
 
-  /* ── Calendar / strip — fluid cells ──────────────────────────────────── */
+  /* ── Contributions calendar — always 2D (7 dow rows × week columns) ────
+     AgentsView Heatmap.svelte pattern: the calendar is DAILY regardless of
+     the Activity chart's bucket grain. When the surface answered at a
+     coarser grain (week/month), refetch the SAME range at bucket=day; only
+     if the server degrades day away (>MAX_BUCKETS span) fall back to the
+     honest 1-row strip. Sunday-start columns, Mon/Wed/Fri row labels,
+     month labels above, fluid cellStep across the full panel width. */
+
+  var MONTHS_SHORT = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
+    "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+  var CAL_DOW_W = 26; /* .cog-year-dows fixed width (px), synced with CSS */
+  var calCache = { key: "", data: null };
 
   function paintCalendar(data, hostWidth) {
     var panel = $("cog-calendar-panel");
@@ -534,43 +545,96 @@
       return;
     }
     panel.hidden = false;
-    host.replaceChildren();
-
-    var level = CC.heatLevels(buckets.map(function (b) { return b.thoughts; }));
-    var width = Math.max(hostWidth || host.clientWidth || 600, 220);
-
-    if (unit !== "day") {
-      var step = Math.min(24, Math.max(6, (width - 8) / buckets.length));
-      var strip = document.createElement("div");
-      strip.className = "cog-strip";
-      buckets.forEach(function (b) {
-        var cell = document.createElement("span");
-        cell.className = "cog-cell cog-h" + level(b.thoughts);
-        cell.style.width = step - 3 + "px";
-        cell.style.height = "16px";
-        cell.title = CC.rangeLabel(b.start_ms, b.end_ms, unit) + " · " + b.thoughts + " thoughts";
-        strip.appendChild(cell);
-      });
-      host.appendChild(strip);
+    if (unit === "day") {
+      renderYearGrid(host, buckets, data, hostWidth);
       return;
     }
+    /* coarser grain: fetch daily cells for the same range + filters */
+    var q = new URLSearchParams();
+    if (range.from && range.to) {
+      q.set("from_ms", String(range.from));
+      q.set("to_ms", String(range.to));
+    } else {
+      q.set("window", params().window);
+    }
+    if (params().stream) q.set("stream", params().stream);
+    q.set("bucket", "day");
+    var key = q.toString();
+    if (calCache.key === key && calCache.data) {
+      renderYearGrid(host, calCache.data.buckets, calCache.data, hostWidth);
+      return;
+    }
+    var version = loadVersion;
+    fetch("/api/gaius/v1/cognition?" + key)
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (day) {
+        if (version !== loadVersion) return;
+        if (day && day.interval === "day" && (day.buckets || []).length) {
+          calCache = { key: key, data: day };
+          renderYearGrid(host, day.buckets, day, hostWidth);
+        } else {
+          /* server degraded day away (range too wide) — honest strip */
+          renderStrip(host, buckets, unit, hostWidth);
+        }
+      })
+      .catch(function () { renderStrip(host, buckets, unit, hostWidth); });
+  }
 
+  function renderStrip(host, buckets, unit, hostWidth) {
+    host.replaceChildren();
+    var level = CC.heatLevels(buckets.map(function (b) { return b.thoughts; }));
+    var width = Math.max(hostWidth || host.clientWidth || 600, 220);
+    var step = Math.min(24, Math.max(6, (width - 8) / buckets.length));
+    var strip = document.createElement("div");
+    strip.className = "cog-strip";
+    buckets.forEach(function (b) {
+      var cell = document.createElement("span");
+      cell.className = "cog-cell cog-h" + level(b.thoughts);
+      cell.style.width = step - 3 + "px";
+      cell.style.height = "16px";
+      cell.title = CC.rangeLabel(b.start_ms, b.end_ms, unit) + " · " + b.thoughts + " thoughts";
+      strip.appendChild(cell);
+    });
+    host.appendChild(strip);
+  }
+
+  function renderYearGrid(host, buckets, meta, hostWidth) {
+    host.replaceChildren();
+    var level = CC.heatLevels(buckets.map(function (b) { return b.thoughts; }));
     var byDay = {};
     buckets.forEach(function (b) {
       byDay[new Date(b.start_ms).toISOString().slice(0, 10)] = b.thoughts;
     });
-    var start = new Date(data.range_start_ms);
-    var end = new Date(data.range_end_ms - 1);
+    var start = new Date(meta.range_start_ms);
+    var end = new Date(meta.range_end_ms - 1);
     var cursor = new Date(Date.UTC(start.getUTCFullYear(), start.getUTCMonth(), start.getUTCDate()));
-    var back = cursor.getUTCDay() === 0 ? 6 : cursor.getUTCDay() - 1;
-    cursor.setUTCDate(cursor.getUTCDate() - back);
-    var cols = Math.ceil((end - cursor) / (7 * 86400000)) + 1;
-    var cellStep = Math.min(16, Math.max(4, (width - 34) / cols));
-    var cellPx = Math.max(3, Math.floor(cellStep) - 2);
+    cursor.setUTCDate(cursor.getUTCDate() - cursor.getUTCDay()); /* back to Sunday */
+    var cols = Math.ceil((end - cursor) / (7 * 86400000));
+    var width = Math.max(hostWidth || host.clientWidth || 600, 220);
+    var budget = width - CAL_DOW_W - 12;
+    var cellStep = Math.min(18, Math.max(3, budget / cols));
+    var gapPx = Math.min(3, Math.max(1, Math.round(cellStep * 0.18)));
+    var cellPx = Math.max(2, Math.floor(cellStep - gapPx));
+    var stepPx = cellPx + gapPx;
     host.style.setProperty("--cog-cell", cellPx + "px");
+    host.style.setProperty("--cog-gap", gapPx + "px");
 
+    /* month labels row (AgentsView: label where a new month lands in rows ≤3) */
+    var months = document.createElement("div");
+    months.className = "cog-year-months";
+    var row = document.createElement("div");
+    row.className = "cog-year-row";
+    var labels = document.createElement("div");
+    labels.className = "cog-year-dows";
+    ["", "Mon", "", "Wed", "", "Fri", ""].forEach(function (lab) {
+      var s = document.createElement("span");
+      s.textContent = lab;
+      labels.appendChild(s);
+    });
     var weeks = document.createElement("div");
     weeks.className = "cog-year-weeks";
+    var lastMonth = -1;
+    var colIdx = 0;
     while (cursor <= end) {
       var col = document.createElement("div");
       col.className = "cog-year-col";
@@ -583,20 +647,25 @@
         var inWin = day >= start && day <= end;
         cell.className = "cog-cell " + (inWin ? "cog-h" + level(n) : "cog-hoff");
         cell.title = key + " · " + n + " thoughts";
+        if (inWin && i <= 3 && day.getUTCMonth() !== lastMonth) {
+          if (lastMonth !== -1 && cellStep >= 4) {
+            var m = document.createElement("span");
+            m.textContent = MONTHS_SHORT[day.getUTCMonth()];
+            m.style.left = colIdx * stepPx + "px";
+            months.appendChild(m);
+          }
+          lastMonth = day.getUTCMonth();
+        }
         col.appendChild(cell);
       }
       weeks.appendChild(col);
       cursor.setUTCDate(cursor.getUTCDate() + 7);
+      colIdx++;
     }
-    var labels = document.createElement("div");
-    labels.className = "cog-year-dows";
-    ["Mon", "", "Wed", "", "Fri", "", ""].forEach(function (lab) {
-      var s = document.createElement("span");
-      s.textContent = lab;
-      labels.appendChild(s);
-    });
-    host.appendChild(labels);
-    host.appendChild(weeks);
+    row.appendChild(labels);
+    row.appendChild(weeks);
+    host.appendChild(months);
+    host.appendChild(row);
   }
 
   /* ── Hour of week — normalized per week ──────────────────────────────── */
@@ -647,64 +716,219 @@
     host.appendChild(table);
   }
 
-  /* ── Waterfall strip (poll ~5s while visible) ────────────────────────── */
+  /* ── Federation lanes (self + peers answering kind=COGNITION) ────────── */
 
-  function paintWaterfall(data) {
-    var canvas = $("cog-waterfall");
-    if (!canvas || !data || !data.matrix || !data.n_channels) return;
-    var C = data.n_channels | 0;
-    var T = data.n_times | 0;
-    if (C < 1 || T < 1) return;
-    var dpr = window.devicePixelRatio || 1;
-    var cssW = canvas.clientWidth || 800;
-    var cssH = canvas.clientHeight || 140;
-    var W = Math.max(1, Math.floor(cssW * dpr));
-    var H = Math.max(1, Math.floor(cssH * dpr));
-    if (canvas.width !== W || canvas.height !== H) {
-      canvas.width = W;
-      canvas.height = H;
-    }
-    var names = data.channel_names || [];
-    var labelW = Math.round(52 * dpr);
-    var colW = (W - labelW) / T;
-    var rowH = H / C;
-    var ctx = canvas.getContext("2d");
-    ctx.clearRect(0, 0, W, H);
-    var cs = getComputedStyle(document.documentElement);
-    var fg = (cs.getPropertyValue("--color-kumo-success") || "#3fb68b").trim();
-    ctx.font = Math.round(9 * dpr) + "px ui-monospace, monospace";
-    ctx.fillStyle = (cs.getPropertyValue("--text-color-kumo-subtle") || "#889").trim();
-    for (var r = 0; r < C; r++) {
-      ctx.fillText((names[r] || "").slice(0, 8), 2, r * rowH + rowH * 0.7);
-    }
-    for (var ry = 0; ry < C; ry++) {
-      /* per-row auto-contrast: normalize to the row max */
-      var rowMax = 0;
-      var x;
-      for (x = 0; x < T; x++) {
-        var v = Math.abs(Number(data.matrix[ry * T + x]) || 0);
-        if (v > rowMax) rowMax = v;
-      }
-      if (rowMax <= 0) continue;
-      ctx.fillStyle = fg;
-      for (x = 0; x < T; x++) {
-        var mag = Math.abs(Number(data.matrix[ry * T + x]) || 0) / rowMax;
-        if (mag <= 0.02) continue;
-        ctx.globalAlpha = Math.min(0.15 + mag * 0.85, 1);
-        ctx.fillRect(labelW + x * colW, ry * rowH + 1, Math.max(colW, 1), rowH - 2);
-      }
-    }
-    ctx.globalAlpha = 1;
-    var meta = $("cog-wf-meta");
-    if (meta) meta.textContent = "last 60 s · " + C + " channels · " + (data.driver || "");
+  function fedSpark(buckets) {
+    var svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    svg.setAttribute("class", "cog-fed-spark");
+    svg.setAttribute("viewBox", "0 0 120 16");
+    svg.setAttribute("preserveAspectRatio", "none");
+    var max = 0;
+    buckets.forEach(function (b) { if (b.thoughts > max) max = b.thoughts; });
+    if (!max) return svg;
+    var n = buckets.length;
+    var bw = 120 / n;
+    buckets.forEach(function (b, i) {
+      if (!b.thoughts) return;
+      var h = Math.max(1.5, (b.thoughts / max) * 15);
+      var r = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+      r.setAttribute("x", (i * bw).toFixed(2));
+      r.setAttribute("y", (16 - h).toFixed(2));
+      r.setAttribute("width", Math.max(bw - 0.6, 0.6).toFixed(2));
+      r.setAttribute("height", h.toFixed(2));
+      svg.appendChild(r);
+    });
+    return svg;
   }
 
-  function pollWaterfall() {
-    if (document.visibilityState !== "visible") return;
-    fetch("/api/gaius/v1/cognition/waterfall?window_s=60")
+  function paintFederation(data) {
+    var panel = $("cog-fed-panel");
+    var host = $("cog-fed");
+    if (!panel || !host) return;
+    var items = (data && data.items) || [];
+    if (!items.length) {
+      panel.hidden = true;
+      return;
+    }
+    panel.hidden = false;
+    host.replaceChildren();
+    items.forEach(function (it) {
+      var lane = document.createElement("div");
+      lane.className = "cog-fed-lane" + (it.project === "gaius" ? " self" : "");
+      var chip = document.createElement("span");
+      chip.className = "cog-fed-chip mono";
+      chip.textContent = it.project;
+      var dot = document.createElement("span");
+      dot.className = "cog-live-dot" + (it.running ? " on" : "");
+      dot.title = it.running ? "running" : "stopped";
+      var counts = document.createElement("span");
+      counts.className = "muted mono cog-fed-counts";
+      counts.textContent =
+        it.thoughts + " thoughts · " + it.cycles + " cycles" +
+        (it.interval ? " · " + it.interval : "");
+      lane.appendChild(chip);
+      lane.appendChild(dot);
+      lane.appendChild(fedSpark(it.buckets || []));
+      lane.appendChild(counts);
+      if (it.last_cycle_ms) {
+        var last = document.createElement("span");
+        last.className = "muted cog-fed-last";
+        last.textContent = "last cycle " + relTime(it.last_cycle_ms);
+        lane.appendChild(last);
+      }
+      host.appendChild(lane);
+    });
+    var meta = $("cog-fed-meta");
+    if (meta) meta.textContent = items.length + " engine" + (items.length === 1 ? "" : "s") + " · ~30d · absent peers are honest absences";
+  }
+
+  function loadFederation() {
+    fetch("/api/gaius/v1/federation/cognition")
       .then(function (r) { return r.ok ? r.json() : null; })
-      .then(function (data) { if (data) paintWaterfall(data); })
+      .then(function (data) { if (data) paintFederation(data); })
       .catch(function () {});
+  }
+
+  /* ── Reasoning corpus (hx.cot_reasoning — traces are the product) ────── */
+
+  function corpusRow(it) {
+    var row = document.createElement("div");
+    row.className = "cog-corpus-row";
+    row.dataset.traceId = it.id;
+    var top = document.createElement("div");
+    top.className = "cog-corpus-top";
+    var subj = document.createElement("strong");
+    subj.textContent = it.subject || "(no subject)";
+    top.appendChild(subj);
+    if (it.has_layers) {
+      var badge = document.createElement("span");
+      badge.className = "cog-corpus-badge";
+      badge.textContent = it.layer_count + " layers";
+      badge.title = "dual-constraint reasoning_layers retained";
+      top.appendChild(badge);
+    }
+    var when = document.createElement("span");
+    when.className = "muted cog-corpus-when";
+    when.textContent = relTime(it.generated_at_ms);
+    top.appendChild(when);
+    var sub = document.createElement("div");
+    sub.className = "muted mono cog-corpus-sub";
+    sub.textContent =
+      it.flow_name + "/" + it.step_name + " · run " + it.run_id +
+      " · " + it.technique + " · " + it.model_name +
+      " · " + it.output_tokens + " tok" +
+      (it.latency_ms ? " · " + (it.latency_ms / 1000).toFixed(1) + "s" : "");
+    row.appendChild(top);
+    row.appendChild(sub);
+    return row;
+  }
+
+  function paintCorpus(data) {
+    var panel = $("cog-corpus-panel");
+    var host = $("cog-corpus");
+    if (!panel || !host) return;
+    var items = (data && data.items) || [];
+    if (!items.length) {
+      panel.hidden = true;
+      return;
+    }
+    panel.hidden = false;
+    host.replaceChildren();
+    items.forEach(function (it) { host.appendChild(corpusRow(it)); });
+    var meta = $("cog-corpus-meta");
+    if (meta)
+      meta.textContent =
+        items.length + " of " + data.total + " traces · 30d · hx.cot_reasoning";
+  }
+
+  function loadCorpus() {
+    fetch("/api/gaius/v1/cognition/corpus?limit=20&window_days=30")
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (data) { if (data) paintCorpus(data); })
+      .catch(function () {});
+  }
+
+  function traceSection(parent, label, text, mono) {
+    if (!text) return;
+    var h = document.createElement("div");
+    h.className = "cog-trace-h mono muted";
+    h.textContent = label;
+    var pre = document.createElement("pre");
+    pre.className = "cog-drawer-content" + (mono ? " mono" : "");
+    pre.textContent = text;
+    parent.appendChild(h);
+    parent.appendChild(pre);
+  }
+
+  function openTraceDrawer(id) {
+    if (!id) return;
+    fetch("/api/gaius/v1/cognition/trace?id=" + encodeURIComponent(id))
+      .then(function (r) {
+        return r.text().then(function (text) {
+          if (!r.ok) throw new Error(text || "trace " + r.status);
+          return JSON.parse(text);
+        });
+      })
+      .then(function (data) {
+        var it = data.item || {};
+        var root = $("cog-drawer-root");
+        root.replaceChildren();
+        var backdrop = document.createElement("div");
+        backdrop.className = "cog-drawer-backdrop";
+        backdrop.addEventListener("click", closeDrawer);
+        var drawer = document.createElement("aside");
+        drawer.className = "cog-drawer";
+        drawer.setAttribute("role", "dialog");
+        var head = document.createElement("div");
+        head.className = "cog-drawer-head";
+        var type = document.createElement("span");
+        type.className = "cog-type";
+        type.textContent = "trace";
+        var title = document.createElement("span");
+        title.className = "cog-drawer-title";
+        title.textContent = it.subject || id;
+        var close = document.createElement("button");
+        close.type = "button";
+        close.className = "cog-drawer-close";
+        close.setAttribute("aria-label", "Close");
+        close.textContent = "✕";
+        close.addEventListener("click", closeDrawer);
+        head.appendChild(type);
+        head.appendChild(title);
+        head.appendChild(close);
+        drawer.appendChild(head);
+        var body = document.createElement("div");
+        body.className = "cog-drawer-body";
+        var dl = document.createElement("dl");
+        dl.className = "cog-drawer-meta";
+        metaRow(dl, "flow", it.flow_name + "/" + it.step_name);
+        metaRow(dl, "run", it.run_id);
+        metaRow(dl, "product", it.product_id);
+        metaRow(dl, "technique", it.technique);
+        metaRow(dl, "model", it.model_name);
+        metaRow(dl, "decision", it.decision);
+        metaRow(dl, "confidence", it.confidence ? it.confidence.toFixed(2) : "");
+        metaRow(dl, "tokens", it.input_tokens + " in · " + it.output_tokens + " out");
+        metaRow(dl, "latency", it.latency_ms ? (it.latency_ms / 1000).toFixed(1) + "s" : "");
+        metaRow(dl, "generated", it.generated_at_ms ? new Date(it.generated_at_ms).toISOString() : "");
+        body.appendChild(dl);
+        (data.layers || []).forEach(function (l) {
+          traceSection(
+            body,
+            "LAYER " + l.layer + " · " + (l.producer || "?") +
+              (l.tokens ? " · " + l.tokens + " tok" : "") +
+              " · " + l.text.length + " ch",
+            l.text,
+            false
+          );
+        });
+        traceSection(body, "REASONING TRACE · " + (data.reasoning_trace || "").length + " ch", data.reasoning_trace, false);
+        traceSection(body, "DECISION OUTPUT", data.output, true);
+        drawer.appendChild(body);
+        root.appendChild(backdrop);
+        root.appendChild(drawer);
+      })
+      .catch(function (err) { showError(String(err.message || err)); });
   }
 
   /* ── Chrome, errors ──────────────────────────────────────────────────── */
@@ -891,11 +1115,23 @@
       });
     }
     startEvents();
+    loadFederation();
+    loadCorpus();
+    var corpus = $("cog-corpus");
+    if (corpus)
+      corpus.addEventListener("click", function (ev) {
+        var row = ev.target.closest("[data-trace-id]");
+        if (row) openTraceDrawer(row.dataset.traceId);
+      });
+    setInterval(function () {
+      if (document.visibilityState === "visible") {
+        loadFederation();
+        loadCorpus();
+      }
+    }, 120000);
     setInterval(function () {
       if (document.visibilityState === "visible") load(false);
     }, 60000);
-    setInterval(pollWaterfall, 5000);
-    pollWaterfall();
     load(false);
   }
 

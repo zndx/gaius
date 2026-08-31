@@ -428,6 +428,105 @@ async def collect_peer_surfaces(
     return sorted(by_project.values(), key=lambda row: row["project"])
 
 
+def _cognition_hint_row(project: str, hint) -> dict:
+    """Uniform row for a zndx CognitionHint."""
+    return {
+        "project": project,
+        "unit": hint.unit or "cognition",
+        "running": bool(hint.running),
+        "thoughts": int(hint.thoughts),
+        "cycles": int(hint.cycles),
+        "last_cycle_ms": int(hint.last_cycle_ms),
+        "interval": hint.interval or "",
+        "range_start_ms": int(hint.range_start_ms),
+        "range_end_ms": int(hint.range_end_ms),
+        "buckets": [
+            {
+                "start_ms": int(b.start_ms),
+                "end_ms": int(b.end_ms),
+                "thoughts": int(b.thoughts),
+                "cycles": int(b.cycles),
+            }
+            for b in hint.buckets
+        ],
+        "streams": [
+            {"id": s.id, "thoughts": int(s.thoughts)} for s in hint.streams
+        ],
+    }
+
+
+async def collect_peer_cognition(services: object) -> list[dict]:
+    """S2S: self + PEERS cognition overviews (kind=COGNITION).
+
+    A peer without a cognition unit answers an empty hint and is ABSENT
+    from the result — honest, never an error (collect_peer_surfaces rules).
+    """
+    rows: list[dict] = []
+    cognition = getattr(services, "cognition_service", None)
+    if cognition is not None:
+        try:
+            snap = await cognition.surface(window="30d")
+            rows.append(
+                {
+                    "project": "gaius",
+                    "unit": snap.unit or "cognition",
+                    "running": bool(snap.running),
+                    "thoughts": int(snap.thoughts),
+                    "cycles": int(snap.cycles_in_window),
+                    "last_cycle_ms": int(snap.last_cycle_timestamp_ms),
+                    "interval": snap.interval or "",
+                    "range_start_ms": int(snap.range_start_ms),
+                    "range_end_ms": int(snap.range_end_ms),
+                    "buckets": [
+                        {
+                            "start_ms": b.start_ms,
+                            "end_ms": b.end_ms,
+                            "thoughts": b.thoughts,
+                            "cycles": b.cycles,
+                        }
+                        for b in snap.buckets
+                    ],
+                    "streams": [
+                        {"id": s.id, "thoughts": s.thoughts}
+                        for s in snap.stream_counts
+                    ],
+                }
+            )
+        except Exception:
+            logger.exception("local cognition overview failed (absent)")
+
+    queue: list[tuple[str, str]] = list(configured_peers(services))
+    queue.extend(directory_seeds())
+    seen_addr: set[str] = set()
+    seen_project = {r["project"] for r in rows}
+    while queue:
+        hint_project, target = queue.pop(0)
+        addr = target.replace("grpc://", "").strip()
+        if not addr or addr in seen_addr:
+            continue
+        seen_addr.add(addr)
+        reply = await query_peer(addr, kind=zpb.SERVER_QUERY_KIND_COGNITION)
+        if reply is None:
+            continue
+        project = (reply.project or hint_project or "").strip() or addr
+        hint = reply.cognition
+        if (
+            project not in seen_project
+            and project != "gaius"
+            and (hint.thoughts or hint.running or len(hint.buckets))
+        ):
+            seen_project.add(project)
+            rows.append(_cognition_hint_row(project, hint))
+        peers = await query_peer(addr, kind=zpb.SERVER_QUERY_KIND_PEERS)
+        if peers is None:
+            continue
+        for peer in peers.peers:
+            tgt = (peer.target or "").strip()
+            if tgt:
+                queue.append((peer.project or "", tgt))
+    return sorted(rows, key=lambda r: r["project"])
+
+
 def _url_is_loopback(url: str) -> bool:
     from urllib.parse import urlparse
 

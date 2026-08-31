@@ -351,6 +351,78 @@ message FederationSurfacesResponse {
   string error = 2;
 }
 
+message FederationCognitionRequest {}
+
+message FederationCognitionItem {
+  string project = 1;
+  string unit = 2;
+  bool running = 3;
+  int32 thoughts = 4;
+  int32 cycles = 5;
+  int64 last_cycle_ms = 6;
+  string interval = 7;
+  int64 range_start_ms = 8;
+  int64 range_end_ms = 9;
+  repeated CognitionBucket buckets = 10;
+  repeated CognitionStreamCount stream_counts = 11;
+}
+
+message FederationCognitionResponse {
+  repeated FederationCognitionItem items = 1;
+  string error = 2;
+}
+
+message CognitionCorpusRequest {
+  int32 limit = 1;
+  int32 window_days = 2;
+  string flow = 3;
+}
+
+message CognitionCorpusItem {
+  string id = 1;
+  string flow_name = 2;
+  string step_name = 3;
+  string run_id = 4;
+  string subject = 5;
+  string technique = 6;
+  string model_name = 7;
+  string decision = 8;
+  double confidence = 9;
+  int64 input_tokens = 10;
+  int64 output_tokens = 11;
+  int64 latency_ms = 12;
+  int64 generated_at_ms = 13;
+  string product_id = 14;
+  bool has_layers = 15;
+  int32 layer_count = 16;
+}
+
+message CognitionCorpusResponse {
+  repeated CognitionCorpusItem items = 1;
+  int32 total = 2;
+  string error = 3;
+}
+
+message CognitionTraceRequest {
+  string id = 1;
+}
+
+message CognitionReasoningLayer {
+  string layer = 1;
+  string producer = 2;
+  int64 tokens = 3;
+  string text = 4;
+}
+
+message CognitionTraceResponse {
+  CognitionCorpusItem item = 1;
+  string prompt = 2;
+  string reasoning_trace = 3;
+  string output = 4;
+  repeated CognitionReasoningLayer layers = 5;
+  string error = 6;
+}
+
 message AskPresentRequest {
   string kind = 1;
   string symbol = 2;
@@ -511,6 +583,9 @@ service GaiusService {
   rpc SummarySchedules(SummarySchedulesRequest) returns (SummarySchedulesResponse);
   rpc SummaryScheduleTrigger(SummaryScheduleTriggerRequest) returns (SummaryScheduleTriggerResponse);
   rpc FederationSurfaces(FederationSurfacesRequest) returns (FederationSurfacesResponse);
+  rpc FederationCognition(FederationCognitionRequest) returns (FederationCognitionResponse);
+  rpc CognitionCorpus(CognitionCorpusRequest) returns (CognitionCorpusResponse);
+  rpc CognitionTrace(CognitionTraceRequest) returns (CognitionTraceResponse);
   rpc AskPresent(AskPresentRequest) returns (AskPresentResponse);
   rpc EnsureEndpoint(StartEndpointRequest) returns (EnsureEndpointResponse);
   rpc StopEndpoint(StopEndpointRequest) returns (EndpointResponse);

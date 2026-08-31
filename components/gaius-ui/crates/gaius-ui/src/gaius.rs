@@ -16,7 +16,8 @@ use pb::{
     CognitionWaterfallRequest,
     SummaryForkRequest, SummaryGetRequest, SummaryHopRequest, SummaryIndexRequest,
     SummaryScheduleTriggerRequest, SummarySchedulesRequest,
-    FederationSurfacesRequest, AskPresentRequest,
+    FederationSurfacesRequest, FederationCognitionRequest, AskPresentRequest,
+    CognitionCorpusRequest, CognitionCorpusItem, CognitionTraceRequest,
     EnsureEndpointResponse, StartEndpointRequest, StopEndpointRequest,
     SignalsTelemetryRequest, DiscoverSurfaceRequest,
 };
@@ -507,6 +508,129 @@ impl Gaius {
             return Err(GaiusError::Message(r.error));
         }
         serde_json::from_str(&r.artifact_json).map_err(|e| GaiusError::Message(e.to_string()))
+    }
+
+    fn corpus_item_json(i: CognitionCorpusItem) -> serde_json::Value {
+        serde_json::json!({
+            "id": i.id,
+            "flow_name": i.flow_name,
+            "step_name": i.step_name,
+            "run_id": i.run_id,
+            "subject": i.subject,
+            "technique": i.technique,
+            "model_name": i.model_name,
+            "decision": i.decision,
+            "confidence": i.confidence,
+            "input_tokens": i.input_tokens,
+            "output_tokens": i.output_tokens,
+            "latency_ms": i.latency_ms,
+            "generated_at_ms": i.generated_at_ms,
+            "product_id": i.product_id,
+            "has_layers": i.has_layers,
+            "layer_count": i.layer_count,
+        })
+    }
+
+    pub async fn cognition_corpus(
+        &self,
+        limit: i32,
+        window_days: i32,
+        flow: String,
+    ) -> Result<serde_json::Value, GaiusError> {
+        let mut c = self.client().await?;
+        let r = c
+            .cognition_corpus(CognitionCorpusRequest {
+                limit,
+                window_days,
+                flow,
+            })
+            .await?
+            .into_inner();
+        if !r.error.is_empty() {
+            return Err(GaiusError::Message(r.error));
+        }
+        Ok(serde_json::json!({
+            "total": r.total,
+            "items": r.items.into_iter().map(Self::corpus_item_json).collect::<Vec<_>>(),
+        }))
+    }
+
+    pub async fn cognition_trace(&self, id: String) -> Result<serde_json::Value, GaiusError> {
+        let mut c = self.client().await?;
+        let r = c
+            .cognition_trace(CognitionTraceRequest { id })
+            .await?
+            .into_inner();
+        if !r.error.is_empty() {
+            return Err(GaiusError::Message(r.error));
+        }
+        Ok(serde_json::json!({
+            "item": r.item.map(Self::corpus_item_json),
+            "prompt": r.prompt,
+            "reasoning_trace": r.reasoning_trace,
+            "output": r.output,
+            "layers": r
+                .layers
+                .into_iter()
+                .map(|l| {
+                    serde_json::json!({
+                        "layer": l.layer,
+                        "producer": l.producer,
+                        "tokens": l.tokens,
+                        "text": l.text,
+                    })
+                })
+                .collect::<Vec<_>>(),
+        }))
+    }
+
+    pub async fn federation_cognition(&self) -> Result<serde_json::Value, GaiusError> {
+        let mut c = self.client().await?;
+        let r = c
+            .federation_cognition(FederationCognitionRequest {})
+            .await?
+            .into_inner();
+        if !r.error.is_empty() {
+            return Err(GaiusError::Message(r.error));
+        }
+        Ok(serde_json::json!({
+            "items": r
+                .items
+                .into_iter()
+                .map(|i| {
+                    serde_json::json!({
+                        "project": i.project,
+                        "unit": i.unit,
+                        "running": i.running,
+                        "thoughts": i.thoughts,
+                        "cycles": i.cycles,
+                        "last_cycle_ms": i.last_cycle_ms,
+                        "interval": i.interval,
+                        "range_start_ms": i.range_start_ms,
+                        "range_end_ms": i.range_end_ms,
+                        "buckets": i
+                            .buckets
+                            .into_iter()
+                            .map(|b| {
+                                serde_json::json!({
+                                    "start_ms": b.start_ms,
+                                    "end_ms": b.end_ms,
+                                    "thoughts": b.thoughts,
+                                    "cycles": b.cycles,
+                                })
+                            })
+                            .collect::<Vec<_>>(),
+                        "streams": i
+                            .stream_counts
+                            .into_iter()
+                            .map(|s| {
+                                serde_json::json!({ "id": s.id, "thoughts": s.thoughts })
+                            })
+                            .collect::<Vec<_>>(),
+                    })
+                })
+                .collect::<Vec<_>>(),
+        }))
     }
 
     pub async fn federation_surfaces(&self) -> Result<serde_json::Value, GaiusError> {

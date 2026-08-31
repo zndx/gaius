@@ -101,6 +101,14 @@ from ...generated import (
     CognitionThoughtDetail,
     CognitionThoughtRequest,
     CognitionThoughtResponse,
+    FederationCognitionRequest,
+    FederationCognitionResponse,
+    CognitionCorpusRequest,
+    CognitionCorpusResponse,
+    CognitionTraceRequest,
+    CognitionReasoningLayer,
+    CognitionTraceResponse,
+    CognitionCorpusItem,
     CognitionDayBucket,
     CognitionHourCell,
     CognitionStreamCount,
@@ -2426,6 +2434,122 @@ class GaiusServicer(GaiusServiceServicer):
         return CognitionThoughtResponse(
             thought=_detail(detail),
             chain=[_detail(d) for d in chain],
+        )
+
+    async def FederationCognition(
+        self,
+        request: FederationCognitionRequest,
+        context: aio.ServicerContext,
+    ) -> FederationCognitionResponse:
+        """Federation-wide cognition overviews (self + answering peers)."""
+        from ...s2s import collect_peer_cognition
+
+        try:
+            rows = await collect_peer_cognition(self._services)
+        except Exception as e:
+            logger.exception("FederationCognition failed")
+            return FederationCognitionResponse(error=str(e))
+        resp = FederationCognitionResponse()
+        for r in rows:
+            item = resp.items.add(
+                project=r["project"],
+                unit=r["unit"],
+                running=r["running"],
+                thoughts=r["thoughts"],
+                cycles=r["cycles"],
+                last_cycle_ms=r["last_cycle_ms"],
+                interval=r["interval"],
+                range_start_ms=r["range_start_ms"],
+                range_end_ms=r["range_end_ms"],
+            )
+            for b in r["buckets"]:
+                item.buckets.add(
+                    start_ms=b["start_ms"],
+                    end_ms=b["end_ms"],
+                    thoughts=b["thoughts"],
+                    cycles=b["cycles"],
+                )
+            for s in r["streams"]:
+                item.stream_counts.add(id=s["id"], thoughts=s["thoughts"])
+        return resp
+
+    @staticmethod
+    def _corpus_item(d: dict) -> "CognitionCorpusItem":
+        return CognitionCorpusItem(
+            id=d["id"],
+            flow_name=d["flow_name"],
+            step_name=d["step_name"],
+            run_id=d["run_id"],
+            subject=d["subject"],
+            technique=d["technique"],
+            model_name=d["model_name"],
+            decision=d["decision"],
+            confidence=d["confidence"],
+            input_tokens=d["input_tokens"],
+            output_tokens=d["output_tokens"],
+            latency_ms=d["latency_ms"],
+            generated_at_ms=d["generated_at_ms"],
+            product_id=d["product_id"],
+            has_layers=d["has_layers"],
+            layer_count=d["layer_count"],
+        )
+
+    async def CognitionCorpus(
+        self,
+        request: CognitionCorpusRequest,
+        context: aio.ServicerContext,
+    ) -> CognitionCorpusResponse:
+        """Recent hx.cot_reasoning traces (light rows, newest first)."""
+        import asyncio
+
+        from ...services import cognition_corpus
+
+        try:
+            items, total = await asyncio.to_thread(
+                cognition_corpus.fetch_corpus,
+                limit=request.limit or 40,
+                window_days=request.window_days or 30,
+                flow=request.flow or "",
+            )
+        except Exception as e:
+            logger.exception("CognitionCorpus failed")
+            return CognitionCorpusResponse(error=str(e))
+        return CognitionCorpusResponse(
+            items=[self._corpus_item(d) for d in items],
+            total=total,
+        )
+
+    async def CognitionTrace(
+        self,
+        request: CognitionTraceRequest,
+        context: aio.ServicerContext,
+    ) -> CognitionTraceResponse:
+        """One full reasoning trace with tagged dual-constraint layers."""
+        import asyncio
+
+        from ...services import cognition_corpus
+
+        try:
+            d = await asyncio.to_thread(
+                cognition_corpus.fetch_trace, request.id or ""
+            )
+        except Exception as e:
+            logger.exception("CognitionTrace failed")
+            return CognitionTraceResponse(error=str(e))
+        return CognitionTraceResponse(
+            item=self._corpus_item(d["item"]),
+            prompt=d["prompt"],
+            reasoning_trace=d["reasoning_trace"],
+            output=d["output"],
+            layers=[
+                CognitionReasoningLayer(
+                    layer=l["layer"],
+                    producer=l["producer"],
+                    tokens=l["tokens"],
+                    text=l["text"],
+                )
+                for l in d["layers"]
+            ],
         )
 
     async def CognitionWaterfall(

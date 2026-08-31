@@ -187,6 +187,9 @@ class GaiusServiceStub:
     WeeklySignalsSummaryGet: grpc.UnaryUnaryMultiCallable[gaius_service_pb2.WeeklySignalsSummaryGetRequest, gaius_service_pb2.WeeklySignalsSummaryGetResponse]
     KnowledgeSummary: grpc.UnaryUnaryMultiCallable[gaius_service_pb2.KnowledgeSummaryRequest, gaius_service_pb2.KnowledgeSummaryResponse]
     FederationSurfaces: grpc.UnaryUnaryMultiCallable[gaius_service_pb2.FederationSurfacesRequest, gaius_service_pb2.FederationSurfacesResponse]
+    FederationCognition: grpc.UnaryUnaryMultiCallable[gaius_service_pb2.FederationCognitionRequest, gaius_service_pb2.FederationCognitionResponse]
+    CognitionCorpus: grpc.UnaryUnaryMultiCallable[gaius_service_pb2.CognitionCorpusRequest, gaius_service_pb2.CognitionCorpusResponse]
+    CognitionTrace: grpc.UnaryUnaryMultiCallable[gaius_service_pb2.CognitionTraceRequest, gaius_service_pb2.CognitionTraceResponse]
     AskPresent: grpc.UnaryUnaryMultiCallable[gaius_service_pb2.AskPresentRequest, gaius_service_pb2.AskPresentResponse]
     FmpNews: grpc.UnaryUnaryMultiCallable[gaius_service_pb2.FmpNewsRequest, gaius_service_pb2.FmpNewsResponse]
     FmpSearch: grpc.UnaryUnaryMultiCallable[gaius_service_pb2.FmpSearchRequest, gaius_service_pb2.FmpSearchResponse]
@@ -514,6 +517,9 @@ class GaiusServiceAsyncStub(GaiusServiceStub):
     WeeklySignalsSummaryGet: grpc.aio.UnaryUnaryMultiCallable[gaius_service_pb2.WeeklySignalsSummaryGetRequest, gaius_service_pb2.WeeklySignalsSummaryGetResponse]  # type: ignore[assignment]
     KnowledgeSummary: grpc.aio.UnaryUnaryMultiCallable[gaius_service_pb2.KnowledgeSummaryRequest, gaius_service_pb2.KnowledgeSummaryResponse]  # type: ignore[assignment]
     FederationSurfaces: grpc.aio.UnaryUnaryMultiCallable[gaius_service_pb2.FederationSurfacesRequest, gaius_service_pb2.FederationSurfacesResponse]  # type: ignore[assignment]
+    FederationCognition: grpc.aio.UnaryUnaryMultiCallable[gaius_service_pb2.FederationCognitionRequest, gaius_service_pb2.FederationCognitionResponse]  # type: ignore[assignment]
+    CognitionCorpus: grpc.aio.UnaryUnaryMultiCallable[gaius_service_pb2.CognitionCorpusRequest, gaius_service_pb2.CognitionCorpusResponse]  # type: ignore[assignment]
+    CognitionTrace: grpc.aio.UnaryUnaryMultiCallable[gaius_service_pb2.CognitionTraceRequest, gaius_service_pb2.CognitionTraceResponse]  # type: ignore[assignment]
     AskPresent: grpc.aio.UnaryUnaryMultiCallable[gaius_service_pb2.AskPresentRequest, gaius_service_pb2.AskPresentResponse]  # type: ignore[assignment]
     FmpNews: grpc.aio.UnaryUnaryMultiCallable[gaius_service_pb2.FmpNewsRequest, gaius_service_pb2.FmpNewsResponse]  # type: ignore[assignment]
     FmpSearch: grpc.aio.UnaryUnaryMultiCallable[gaius_service_pb2.FmpSearchRequest, gaius_service_pb2.FmpSearchResponse]  # type: ignore[assignment]
@@ -1276,6 +1282,27 @@ class GaiusServiceServicer(metaclass=abc.ABCMeta):
         request: gaius_service_pb2.FederationSurfacesRequest,
         context: _ServicerContext,
     ) -> typing.Union[gaius_service_pb2.FederationSurfacesResponse, collections.abc.Awaitable[gaius_service_pb2.FederationSurfacesResponse]]: ...
+
+    @abc.abstractmethod
+    def FederationCognition(
+        self,
+        request: gaius_service_pb2.FederationCognitionRequest,
+        context: _ServicerContext,
+    ) -> typing.Union[gaius_service_pb2.FederationCognitionResponse, collections.abc.Awaitable[gaius_service_pb2.FederationCognitionResponse]]: ...
+
+    @abc.abstractmethod
+    def CognitionCorpus(
+        self,
+        request: gaius_service_pb2.CognitionCorpusRequest,
+        context: _ServicerContext,
+    ) -> typing.Union[gaius_service_pb2.CognitionCorpusResponse, collections.abc.Awaitable[gaius_service_pb2.CognitionCorpusResponse]]: ...
+
+    @abc.abstractmethod
+    def CognitionTrace(
+        self,
+        request: gaius_service_pb2.CognitionTraceRequest,
+        context: _ServicerContext,
+    ) -> typing.Union[gaius_service_pb2.CognitionTraceResponse, collections.abc.Awaitable[gaius_service_pb2.CognitionTraceResponse]]: ...
 
     @abc.abstractmethod
     def AskPresent(

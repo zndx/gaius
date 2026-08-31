@@ -1803,6 +1803,81 @@ message FederationSurfacesResponse {
   string error = 2;
 }
 
+// Federation-wide cognition overviews: self + every answering peer
+// (ServerQuery kind=COGNITION fan-out). Absent peers are honest absences.
+message FederationCognitionRequest {}
+
+message FederationCognitionItem {
+  string project = 1;
+  string unit = 2;
+  bool running = 3;
+  int32 thoughts = 4;
+  int32 cycles = 5;
+  int64 last_cycle_ms = 6;
+  string interval = 7;
+  int64 range_start_ms = 8;
+  int64 range_end_ms = 9;
+  repeated CognitionBucket buckets = 10;
+  repeated CognitionStreamCount stream_counts = 11;
+}
+
+message FederationCognitionResponse {
+  repeated FederationCognitionItem items = 1;
+  string error = 2;
+}
+
+// Reasoning corpus (hx.cot_reasoning) — reasoning traces are the product.
+message CognitionCorpusRequest {
+  int32 limit = 1;        // default 40, max 200
+  int32 window_days = 2;  // default 30
+  string flow = 3;        // optional flow_name filter
+}
+
+message CognitionCorpusItem {
+  string id = 1;
+  string flow_name = 2;
+  string step_name = 3;
+  string run_id = 4;
+  string subject = 5;
+  string technique = 6;
+  string model_name = 7;
+  string decision = 8;
+  double confidence = 9;
+  int64 input_tokens = 10;
+  int64 output_tokens = 11;
+  int64 latency_ms = 12;
+  int64 generated_at_ms = 13;
+  string product_id = 14;
+  bool has_layers = 15;   // dual-constraint reasoning_layers present
+  int32 layer_count = 16;
+}
+
+message CognitionCorpusResponse {
+  repeated CognitionCorpusItem items = 1;
+  int32 total = 2;        // matched in window (before limit)
+  string error = 3;
+}
+
+message CognitionTraceRequest {
+  string id = 1;
+}
+
+message CognitionReasoningLayer {
+  string layer = 1;       // model | method
+  string producer = 2;    // e.g. cot_reflection@engine/<model>@vllm:<port>
+  int64 tokens = 3;
+  string text = 4;
+}
+
+message CognitionTraceResponse {
+  CognitionCorpusItem item = 1;
+  string prompt = 2;
+  string reasoning_trace = 3;
+  string output = 4;
+  repeated CognitionReasoningLayer layers = 5;
+  string error = 6;
+}
+
 // Ask rich-present (OHLC/table/links/markdown). Engine FMP — no façade HTTP.
 message AskPresentRequest {
   string kind = 1;                 // ohlc | table | links | markdown
@@ -3501,6 +3576,9 @@ service GaiusService {
   rpc WeeklySignalsSummaryGet(WeeklySignalsSummaryGetRequest) returns (WeeklySignalsSummaryGetResponse);
   rpc KnowledgeSummary(KnowledgeSummaryRequest) returns (KnowledgeSummaryResponse);
   rpc FederationSurfaces(FederationSurfacesRequest) returns (FederationSurfacesResponse);
+  rpc FederationCognition(FederationCognitionRequest) returns (FederationCognitionResponse);
+  rpc CognitionCorpus(CognitionCorpusRequest) returns (CognitionCorpusResponse);
+  rpc CognitionTrace(CognitionTraceRequest) returns (CognitionTraceResponse);
   rpc AskPresent(AskPresentRequest) returns (AskPresentResponse);
   rpc FmpNews(FmpNewsRequest) returns (FmpNewsResponse);
   rpc FmpSearch(FmpSearchRequest) returns (FmpSearchResponse);
