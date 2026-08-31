@@ -91,9 +91,12 @@ _PROTO_TO_STATUS: dict["ProtoCheckStatus", "CheckStatus"] = {v: k for k, v in _S
 # Expected cadences for periodic tasks: task_type -> (interval, label, catch-up hint)
 _PERIODIC_TASK_CADENCES: dict[str, tuple[timedelta, str, str]] = {
     # Engine cognition cycle — core thinking loop
-    "cognition_cycle":       (timedelta(minutes=15), "Cognition cycle",       "Engine must be running: devenv processes up"),
-    "llm_triage":            (timedelta(hours=1),    "LLM triage",            "Engine must be running: devenv processes up"),
-    "content_processing":    (timedelta(hours=1),    "Content processing",    "Engine must be running: devenv processes up"),
+    # Expected = the REAL cron cadence (ratio thresholds add the slack).
+    # The old 15min/1h values predated the current schedules and flagged
+    # healthy mid-cycle tasks as "critically overdue" (2026-08-31).
+    "cognition_cycle":       (timedelta(hours=4),    "Cognition cycle",       "Engine must be running: devenv processes up"),
+    "llm_triage":            (timedelta(hours=4),    "LLM triage",            "Engine must be running: devenv processes up"),
+    "content_processing":    (timedelta(hours=2),    "Content processing",    "Engine must be running: devenv processes up"),
     "article_curation":      (timedelta(hours=6),    "Article curation",      "Engine must be running: devenv processes up"),
     "card_publishing":       (timedelta(hours=6),    "Card publishing",       "Engine must be running: devenv processes up"),
     "evolution_cycle":       (timedelta(hours=12),   "Evolution cycle",       "Engine must be running: devenv processes up"),
