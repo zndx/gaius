@@ -723,7 +723,11 @@ class AgendaTracker:
 
     async def _persist_all(self) -> None:
         """Persist all active operations to database."""
-        for operation in self._active_operations.values():
+        # Snapshot: each awaited persist yields the loop, and workload
+        # lifecycle handlers add/remove operations concurrently —
+        # iterating the live dict raised "dictionary changed size during
+        # iteration" (observed 2026-08-31).
+        for operation in list(self._active_operations.values()):
             try:
                 await self._persist_operation(operation)
             except Exception as e:
