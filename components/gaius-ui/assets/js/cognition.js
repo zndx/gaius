@@ -511,17 +511,6 @@
 
   var CONTRIB_MAX_ROWS = 6;   /* AgentsView MAX_SERIES */
   var CONTRIB_MAX_STRIP = 64; /* per-row strip only when buckets fit */
-  var fedContribCount = -1;   /* engines answering kind=CONTRIBUTIONS */
-
-  function contribMeta() {
-    var meta = $("cog-contrib-meta");
-    if (!meta) return;
-    meta.textContent =
-      "by source · by workflow · UTC" +
-      (fedContribCount >= 0
-        ? " · federated: " + fedContribCount + " answering · more PENDING"
-        : "");
-  }
 
   function contribSection(host, label, items, data) {
     var h = document.createElement("div");
@@ -596,18 +585,6 @@
     var items = data.contributions || [];
     contribSection(host, "SOURCES", items.filter(function (c) { return c.group === "source"; }), data);
     contribSection(host, "WORKFLOWS", items.filter(function (c) { return c.group === "workflow"; }), data);
-    contribMeta();
-  }
-
-  function loadFederationContributions() {
-    fetch("/api/gaius/v1/federation/contributions")
-      .then(function (r) { return r.ok ? r.json() : null; })
-      .then(function (data) {
-        if (!data) return;
-        fedContribCount = (data.items || []).length;
-        contribMeta();
-      })
-      .catch(function () {});
   }
 
   /* ── Calendar brush — range authoring on the Activity heatmap ────────── */
@@ -1057,7 +1034,6 @@
     attachCalendarBrush();
     startEvents();
     loadFederation();
-    loadFederationContributions();
     loadCorpus();
     var corpus = $("cog-corpus");
     if (corpus)
@@ -1068,7 +1044,6 @@
     setInterval(function () {
       if (document.visibilityState === "visible") {
         loadFederation();
-        loadFederationContributions();
         loadCorpus();
       }
     }, 120000);
