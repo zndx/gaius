@@ -353,16 +353,6 @@
     if (!panel || !host) return;
     var buckets = data.buckets || [];
     var unit = data.interval;
-    /* meta first, so the readout survives empty windows */
-    var meta = $("cog-cal-meta");
-    if (meta) {
-      var asOf = data.effective_end_ms
-        ? new Date(data.effective_end_ms).toISOString().slice(0, 16).replace("T", " ") + "Z"
-        : "";
-      meta.textContent =
-        (unit || "?") + " buckets · " + buckets.length +
-        (asOf ? " · as of " + asOf : "") + " · UTC";
-    }
     if (!buckets.length) {
       panel.hidden = true;
       return;
@@ -698,8 +688,6 @@
       }
       host.appendChild(lane);
     });
-    var meta = $("cog-fed-meta");
-    if (meta) meta.textContent = items.length + " engine" + (items.length === 1 ? "" : "s") + " · ~30d · absent peers are honest absences";
   }
 
   function loadFederation() {
@@ -755,10 +743,6 @@
     panel.hidden = false;
     host.replaceChildren();
     items.forEach(function (it) { host.appendChild(corpusRow(it)); });
-    var meta = $("cog-corpus-meta");
-    if (meta)
-      meta.textContent =
-        items.length + " of " + data.total + " traces · 30d · hx.cot_reasoning";
   }
 
   function loadCorpus() {
