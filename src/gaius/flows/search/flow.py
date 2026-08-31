@@ -396,7 +396,6 @@ Provide a clear, well-structured response that synthesizes information from all 
                     "technique": "cot_reflection",
                     "max_tokens": 2048,
                 },
-                timeout=120.0,
             )
 
             return {

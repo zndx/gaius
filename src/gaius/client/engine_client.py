@@ -85,7 +85,9 @@ class EngineInferenceClient:
             temperature: Sampling temperature
             max_tokens: Maximum tokens to generate
             technique: Optional optillm technique
-            timeout: gRPC timeout in seconds (default 120s for inference)
+            timeout: gRPC timeout in seconds. Default scales with
+                max_tokens (outer safety net only — the engine supervises
+                token progress; see grpc_client.resolve_timeout).
 
         Returns:
             CompletionResult with response
@@ -116,6 +118,14 @@ class EngineInferenceClient:
 
         # Default to instruct model if not specified
         agent = model or "thinking"
+
+        if timeout is None:
+            # OUTER SAFETY NET ONLY (progress doctrine): the engine
+            # supervises token arrival (#VLLM.00000005.STALLED); this
+            # deadline exists for a dead engine. Mirrors
+            # grpc_client.resolve_timeout — a fixed 120s here silently
+            # killed xhigh-effort 4096-token summaries (2026-08-31).
+            timeout = max(480.0, max_tokens / 4 + 240)
 
         # Route through scheduler
         result = await scheduler.complete(
@@ -149,7 +159,9 @@ class EngineInferenceClient:
             temperature: Sampling temperature
             max_tokens: Maximum tokens
             technique: Optional optillm technique
-            timeout: gRPC timeout in seconds (default 120s for inference)
+            timeout: gRPC timeout in seconds. Default scales with
+                max_tokens (outer safety net only — the engine supervises
+                token progress; see grpc_client.resolve_timeout).
 
         Returns:
             CompletionResult

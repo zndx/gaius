@@ -2430,7 +2430,6 @@ created_at: {now.isoformat()}
                 model="thinking",
                 temperature=0.7,
                 max_tokens=4096,
-                timeout=120.0,
             )
             # Wrap in ExternalResponse-compatible shape
             from gaius.engine.backends.external.base import ExternalResponse
@@ -2717,7 +2716,6 @@ created_at: {now.isoformat()}
                 model="thinking",
                 temperature=0.7,
                 max_tokens=4096,
-                timeout=120.0,
             )
 
             if not result.content:
