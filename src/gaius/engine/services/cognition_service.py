@@ -2436,6 +2436,12 @@ Your summary note content"""
             to_ms=to_ms,
         )
 
+    async def thought_detail(self, thought_id: str) -> Any:
+        """One thought in full + its ancestor chain (drawer view)."""
+        from .cognition_surface import fetch_thought_detail
+
+        return await fetch_thought_detail(self._db_pool, thought_id)
+
     async def get_pending_tasks(self, limit: int = 10) -> list[dict]:
         """Get pending scheduled tasks.
 

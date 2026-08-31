@@ -845,6 +845,60 @@ class CognitionSurfaceResponse(_message.Message):
     bucket_seconds: int
     def __init__(self, running: bool = ..., cycles_completed: _Optional[int] = ..., cycles_in_window: _Optional[int] = ..., last_cycle_timestamp_ms: _Optional[int] = ..., current_task: _Optional[str] = ..., thoughts: _Optional[int] = ..., streams: _Optional[int] = ..., active_days: _Optional[int] = ..., thoughts_per_cycle: _Optional[float] = ..., concentration_stream: _Optional[str] = ..., concentration_pct: _Optional[float] = ..., reserve_tokens: _Optional[int] = ..., project: _Optional[str] = ..., unit: _Optional[str] = ..., recent: _Optional[_Iterable[_Union[ThoughtMessage, _Mapping]]] = ..., top: _Optional[_Iterable[_Union[ThoughtMessage, _Mapping]]] = ..., days: _Optional[_Iterable[_Union[CognitionDayBucket, _Mapping]]] = ..., hours: _Optional[_Iterable[_Union[CognitionHourCell, _Mapping]]] = ..., stream_counts: _Optional[_Iterable[_Union[CognitionStreamCount, _Mapping]]] = ..., error: _Optional[str] = ..., buckets: _Optional[_Iterable[_Union[CognitionBucket, _Mapping]]] = ..., interval: _Optional[str] = ..., range_start_ms: _Optional[int] = ..., range_end_ms: _Optional[int] = ..., effective_end_ms: _Optional[int] = ..., bucket_seconds: _Optional[int] = ...) -> None: ...
 
+class CognitionThoughtRequest(_message.Message):
+    __slots__ = ("id",)
+    ID_FIELD_NUMBER: _ClassVar[int]
+    id: str
+    def __init__(self, id: _Optional[str] = ...) -> None: ...
+
+class CognitionThoughtDetail(_message.Message):
+    __slots__ = ("id", "thought_type", "title", "summary", "content", "salience", "confidence", "novelty", "generation", "timestamp_ms", "note_path", "status", "generator_model", "tokens_used", "domains", "thought_chain_id", "predecessor_id")
+    ID_FIELD_NUMBER: _ClassVar[int]
+    THOUGHT_TYPE_FIELD_NUMBER: _ClassVar[int]
+    TITLE_FIELD_NUMBER: _ClassVar[int]
+    SUMMARY_FIELD_NUMBER: _ClassVar[int]
+    CONTENT_FIELD_NUMBER: _ClassVar[int]
+    SALIENCE_FIELD_NUMBER: _ClassVar[int]
+    CONFIDENCE_FIELD_NUMBER: _ClassVar[int]
+    NOVELTY_FIELD_NUMBER: _ClassVar[int]
+    GENERATION_FIELD_NUMBER: _ClassVar[int]
+    TIMESTAMP_MS_FIELD_NUMBER: _ClassVar[int]
+    NOTE_PATH_FIELD_NUMBER: _ClassVar[int]
+    STATUS_FIELD_NUMBER: _ClassVar[int]
+    GENERATOR_MODEL_FIELD_NUMBER: _ClassVar[int]
+    TOKENS_USED_FIELD_NUMBER: _ClassVar[int]
+    DOMAINS_FIELD_NUMBER: _ClassVar[int]
+    THOUGHT_CHAIN_ID_FIELD_NUMBER: _ClassVar[int]
+    PREDECESSOR_ID_FIELD_NUMBER: _ClassVar[int]
+    id: str
+    thought_type: str
+    title: str
+    summary: str
+    content: str
+    salience: float
+    confidence: float
+    novelty: float
+    generation: int
+    timestamp_ms: int
+    note_path: str
+    status: str
+    generator_model: str
+    tokens_used: int
+    domains: _containers.RepeatedScalarFieldContainer[str]
+    thought_chain_id: str
+    predecessor_id: str
+    def __init__(self, id: _Optional[str] = ..., thought_type: _Optional[str] = ..., title: _Optional[str] = ..., summary: _Optional[str] = ..., content: _Optional[str] = ..., salience: _Optional[float] = ..., confidence: _Optional[float] = ..., novelty: _Optional[float] = ..., generation: _Optional[int] = ..., timestamp_ms: _Optional[int] = ..., note_path: _Optional[str] = ..., status: _Optional[str] = ..., generator_model: _Optional[str] = ..., tokens_used: _Optional[int] = ..., domains: _Optional[_Iterable[str]] = ..., thought_chain_id: _Optional[str] = ..., predecessor_id: _Optional[str] = ...) -> None: ...
+
+class CognitionThoughtResponse(_message.Message):
+    __slots__ = ("thought", "chain", "error")
+    THOUGHT_FIELD_NUMBER: _ClassVar[int]
+    CHAIN_FIELD_NUMBER: _ClassVar[int]
+    ERROR_FIELD_NUMBER: _ClassVar[int]
+    thought: CognitionThoughtDetail
+    chain: _containers.RepeatedCompositeFieldContainer[CognitionThoughtDetail]
+    error: str
+    def __init__(self, thought: _Optional[_Union[CognitionThoughtDetail, _Mapping]] = ..., chain: _Optional[_Iterable[_Union[CognitionThoughtDetail, _Mapping]]] = ..., error: _Optional[str] = ...) -> None: ...
+
 class CognitionWaterfallRequest(_message.Message):
     __slots__ = ("window_s",)
     WINDOW_S_FIELD_NUMBER: _ClassVar[int]

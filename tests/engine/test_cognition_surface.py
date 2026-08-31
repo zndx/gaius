@@ -180,6 +180,50 @@ async def test_surface_hour_window_via_grammar() -> None:
 
 
 @pytest.mark.asyncio
+async def test_fetch_thought_detail_maps_and_chains() -> None:
+    from datetime import timedelta
+
+    from gaius.engine.services.cognition_surface import fetch_thought_detail
+
+    now = datetime.now(timezone.utc)
+
+    def _detail_row(tid: str, gen: int, pred: str | None) -> dict:
+        return {
+            "id": tid,
+            "thought_type": "pattern",
+            "title": f"g{gen}",
+            "summary": "s",
+            "content": "full reasoning text",
+            "salience": 0.5,
+            "confidence": 0.7,
+            "novelty": 0.2,
+            "generation": gen,
+            "created_at": now - timedelta(minutes=10 - gen),
+            "note_path": "scratch/x.md",
+            "status": "active",
+            "generator_model": "Qwen/Qwen3.8-27B",
+            "tokens_used": 321,
+            "domains": ["signals", "kudu"],
+            "thought_chain_id": "c1",
+            "predecessor_id": pred,
+        }
+
+    script = [
+        _detail_row("t2", 1, "t1"),
+        [_detail_row("t2", 1, "t1"), _detail_row("t1", 0, None)],
+    ]
+    detail, chain = await fetch_thought_detail(_Pool(script), "t2")
+    assert detail["content"] == "full reasoning text"
+    assert detail["tokens_used"] == 321
+    assert detail["domains"] == ["signals", "kudu"]
+    assert detail["predecessor_id"] == "t1"
+    assert [c["id"] for c in chain] == ["t1", "t2"] or [c["id"] for c in chain] == ["t2", "t1"]
+
+    with pytest.raises(ValueError, match="COG.00000035"):
+        await fetch_thought_detail(_Pool([]), "")
+
+
+@pytest.mark.asyncio
 async def test_servicer_surface_nosvc() -> None:
     from gaius.engine.generated import CognitionSurfaceRequest
     from gaius.engine.grpc.servicers.gaius_servicer import GaiusServicer

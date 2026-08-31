@@ -517,6 +517,38 @@ message CognitionSurfaceResponse {
   int32 bucket_seconds = 26;      // nominal seconds per bucket
 }
 
+// One thought, in full — the drawer view (everything the DB knows).
+message CognitionThoughtRequest {
+  string id = 1;                  // cognition_thoughts.id (uuid)
+}
+
+message CognitionThoughtDetail {
+  string id = 1;
+  string thought_type = 2;
+  string title = 3;
+  string summary = 4;
+  string content = 5;             // full reasoning text — never truncated here
+  float salience = 6;
+  float confidence = 7;
+  float novelty = 8;
+  int32 generation = 9;
+  int64 timestamp_ms = 10;
+  string note_path = 11;
+  string status = 12;             // active|surfaced|acknowledged|stale|archived
+  string generator_model = 13;
+  int32 tokens_used = 14;
+  repeated string domains = 15;
+  string thought_chain_id = 16;
+  string predecessor_id = 17;
+}
+
+message CognitionThoughtResponse {
+  CognitionThoughtDetail thought = 1;
+  // Ancestor chain via predecessor_id (roots first, generation order).
+  repeated CognitionThoughtDetail chain = 2;
+  string error = 3;
+}
+
 // EEG-style cognition waterfall (1 Hz epochs). Matrix is row-major
 // n_channels × n_times; column 0 is oldest (left), last is newest (right).
 message CognitionWaterfallRequest {
@@ -3398,6 +3430,7 @@ service GaiusService {
 
   // Cognition streaming - replaces TUI polling
   rpc SubscribeCognition(CognitionStreamRequest) returns (stream CognitionEvent);
+  rpc CognitionThought(CognitionThoughtRequest) returns (CognitionThoughtResponse);
 
   // Evolution streaming - replaces TUI polling
   rpc SubscribeEvolution(EvolutionStreamRequest) returns (stream EvolutionEvent);

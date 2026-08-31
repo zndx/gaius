@@ -225,6 +225,11 @@ class GaiusServiceStub(object):
                 request_serializer=gaius__service__pb2.CognitionStreamRequest.SerializeToString,
                 response_deserializer=gaius__service__pb2.CognitionEvent.FromString,
                 _registered_method=True)
+        self.CognitionThought = channel.unary_unary(
+                '/gaius.engine.GaiusService/CognitionThought',
+                request_serializer=gaius__service__pb2.CognitionThoughtRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.CognitionThoughtResponse.FromString,
+                _registered_method=True)
         self.SubscribeEvolution = channel.unary_stream(
                 '/gaius.engine.GaiusService/SubscribeEvolution',
                 request_serializer=gaius__service__pb2.EvolutionStreamRequest.SerializeToString,
@@ -1048,6 +1053,12 @@ class GaiusServiceServicer(object):
     def SubscribeCognition(self, request, context):
         """Cognition streaming - replaces TUI polling
         """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def CognitionThought(self, request, context):
+        """Missing associated documentation comment in .proto file."""
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
@@ -2010,6 +2021,11 @@ def add_GaiusServiceServicer_to_server(servicer, server):
                     servicer.SubscribeCognition,
                     request_deserializer=gaius__service__pb2.CognitionStreamRequest.FromString,
                     response_serializer=gaius__service__pb2.CognitionEvent.SerializeToString,
+            ),
+            'CognitionThought': grpc.unary_unary_rpc_method_handler(
+                    servicer.CognitionThought,
+                    request_deserializer=gaius__service__pb2.CognitionThoughtRequest.FromString,
+                    response_serializer=gaius__service__pb2.CognitionThoughtResponse.SerializeToString,
             ),
             'SubscribeEvolution': grpc.unary_stream_rpc_method_handler(
                     servicer.SubscribeEvolution,
@@ -3593,6 +3609,33 @@ class GaiusService(object):
             '/gaius.engine.GaiusService/SubscribeCognition',
             gaius__service__pb2.CognitionStreamRequest.SerializeToString,
             gaius__service__pb2.CognitionEvent.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def CognitionThought(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/gaius.engine.GaiusService/CognitionThought',
+            gaius__service__pb2.CognitionThoughtRequest.SerializeToString,
+            gaius__service__pb2.CognitionThoughtResponse.FromString,
             options,
             channel_credentials,
             insecure,

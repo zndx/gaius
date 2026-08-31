@@ -34,8 +34,10 @@
           <option value="month">Month</option>
         </select>
       </label>
+      <button type="button" id="cog-range-chip" class="cog-chip" hidden>range ✕</button>
       <button type="button" id="cog-refresh" class="btn">Refresh</button>
       <span class="muted mono" id="cog-updated">UTC</span>
+      <span class="cog-live-dot" id="cog-live" title="live stream"></span>
       <span class="pill" id="cog-running">—</span>
     </div>
     <div class="cog-stats" id="cog-stats" aria-label="Cognition totals"></div>
@@ -52,6 +54,13 @@
         <span class="muted">thoughts · UTC</span>
       </div>
       <div id="cog-year" class="cog-year" role="img" aria-label="Calendar heatmap"></div>
+    </div>
+    <div class="cog-panel" id="cog-wf-panel">
+      <div class="cog-panel-head">
+        <h2>Waterfall</h2>
+        <span class="muted mono" id="cog-wf-meta">last 60 s · engine channels</span>
+      </div>
+      <canvas id="cog-waterfall" class="cog-wf-canvas" aria-label="Cognition waterfall"></canvas>
     </div>
     <div class="cog-split">
       <div class="cog-panel">
@@ -71,6 +80,7 @@
     </div>
   </section>
 </div>
+<div id="cog-drawer-root"></div>
 <script src="/assets/js/cogchart.js?v={{ asset_v }}" defer></script>
 <script src="/assets/js/cognition.js?v={{ asset_v }}" defer></script>
 {% include "footer.html" %}

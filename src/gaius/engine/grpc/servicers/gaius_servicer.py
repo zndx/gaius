@@ -98,6 +98,9 @@ from ...generated import (
     CognitionWaterfallRequest,
     CognitionWaterfallResponse,
     CognitionBucket,
+    CognitionThoughtDetail,
+    CognitionThoughtRequest,
+    CognitionThoughtResponse,
     CognitionDayBucket,
     CognitionHourCell,
     CognitionStreamCount,
@@ -2365,6 +2368,64 @@ class GaiusServicer(GaiusServiceServicer):
             range_end_ms=int(getattr(snap, "range_end_ms", 0) or 0),
             effective_end_ms=int(getattr(snap, "effective_end_ms", 0) or 0),
             bucket_seconds=int(getattr(snap, "bucket_seconds", 0) or 0),
+        )
+
+    async def CognitionThought(
+        self,
+        request: CognitionThoughtRequest,
+        context: aio.ServicerContext,
+    ) -> CognitionThoughtResponse:
+        """One thought in full + its ancestor chain (the drawer view)."""
+        cognition = getattr(self._services, "cognition_service", None)
+        if not cognition:
+            return CognitionThoughtResponse(
+                error=(
+                    "Cognition service not available.\n"
+                    "Guru Meditation: #COG.00000024.NOSVC\n"
+                    "  Try: /health fix engine"
+                ),
+            )
+        try:
+            detail, chain = await cognition.thought_detail(request.id or "")
+        except ValueError as e:
+            return CognitionThoughtResponse(error=str(e))
+        except Exception as e:
+            return CognitionThoughtResponse(
+                error=(
+                    f"Cognition thought failed: {e}\n"
+                    "Guru Meditation: #COG.00000028.SURFACE\n"
+                    "  Try: /health fix postgres"
+                ),
+            )
+        if not detail:
+            return CognitionThoughtResponse(
+                error=f"Thought not found: {request.id}"
+            )
+
+        def _detail(d: dict) -> CognitionThoughtDetail:
+            return CognitionThoughtDetail(
+                id=d["id"],
+                thought_type=d["thought_type"],
+                title=d["title"],
+                summary=d["summary"],
+                content=d["content"],
+                salience=d["salience"],
+                confidence=d["confidence"],
+                novelty=d["novelty"],
+                generation=d["generation"],
+                timestamp_ms=d["timestamp_ms"],
+                note_path=d["note_path"],
+                status=d["status"],
+                generator_model=d["generator_model"],
+                tokens_used=d["tokens_used"],
+                domains=d["domains"],
+                thought_chain_id=d["thought_chain_id"],
+                predecessor_id=d["predecessor_id"],
+            )
+
+        return CognitionThoughtResponse(
+            thought=_detail(detail),
+            chain=[_detail(d) for d in chain],
         )
 
     async def CognitionWaterfall(

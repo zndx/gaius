@@ -6,12 +6,12 @@
     return document.getElementById(id);
   }
 
-  /* ── URL / params (minimal-URL policy; defaults omitted) ─────────────── */
+  /* ── URL / params (minimal-URL; defaults omitted; from/to = brush) ────── */
 
   var DEFAULT_WINDOW = "365d";
+  var range = { from: 0, to: 0 }; // brush selection (ms); 0 = none
 
   function legacyWindow(days) {
-    /* Back-compat for old ?window_days= links. */
     var n = parseInt(days, 10);
     if (!n) return "";
     if (n <= 1) return "24h";
@@ -36,6 +36,10 @@
     if (p.window && p.window !== DEFAULT_WINDOW) q.set("window", p.window);
     if (p.bucket) q.set("bucket", p.bucket);
     if (p.stream) q.set("stream", p.stream);
+    if (range.from && range.to) {
+      q.set("from", String(range.from));
+      q.set("to", String(range.to));
+    }
     var s = q.toString();
     var next = s ? location.pathname + "?" + s : location.pathname;
     if (next !== location.pathname + location.search) {
@@ -48,7 +52,22 @@
     var w = q.get("window") || legacyWindow(q.get("window_days")) || DEFAULT_WINDOW;
     if ($("cog-win")) $("cog-win").value = w;
     if ($("cog-bucket")) $("cog-bucket").value = q.get("bucket") || "";
-    /* stream options are (re)built from the response; boot seeds the value */
+    range.from = parseInt(q.get("from") || "0", 10) || 0;
+    range.to = parseInt(q.get("to") || "0", 10) || 0;
+    paintRangeChip();
+  }
+
+  function paintRangeChip() {
+    var chip = $("cog-range-chip");
+    if (!chip) return;
+    if (range.from && range.to) {
+      chip.hidden = false;
+      chip.textContent =
+        CC.dateLabel(range.from) + " " + CC.timeLabel(range.from) +
+        " – " + CC.dateLabel(range.to) + " " + CC.timeLabel(range.to) + " ✕";
+    } else {
+      chip.hidden = true;
+    }
   }
 
   function thoughtHref(t) {
@@ -79,7 +98,7 @@
     return (Math.round(n * 10) / 10).toFixed(1) + "%";
   }
 
-  /* ── Stats + rail + top (unchanged shape) ────────────────────────────── */
+  /* ── Stats + rail + top ──────────────────────────────────────────────── */
 
   function paintStats(data) {
     var cards = [
@@ -90,7 +109,7 @@
       [
         data.thoughts_per_cycle ? data.thoughts_per_cycle.toFixed(1) : "—",
         "Thoughts/cycle",
-        "",
+        data.current_task ? "task: " + data.current_task : "",
       ],
       [
         fmtPct(data.concentration_pct),
@@ -109,9 +128,28 @@
         '</div><div class="landing-stat-label">' +
         c[1] +
         "</div>" +
-        (c[2] ? '<div class="muted cog-stat-sub">' + c[2] + "</div>" : "");
+        (c[2] ? '<div class="muted cog-stat-sub"></div>' : "");
+      if (c[2]) div.querySelector(".cog-stat-sub").textContent = c[2];
       el.appendChild(div);
     });
+  }
+
+  function railItem(t, live) {
+    var li = document.createElement("li");
+    li.className = "cog-rail-item" + (live ? " cog-live-new" : "");
+    li.dataset.id = t.id || t.thought_id || "";
+    li.innerHTML =
+      '<div class="cog-rail-title"></div>' +
+      '<div class="cog-rail-meta">' +
+      '<span class="cog-type"></span>' +
+      '<span class="muted"></span>' +
+      "</div>";
+    li.querySelector(".cog-rail-title").textContent = t.title || "(untitled)";
+    li.querySelector(".cog-type").textContent = (t.thought_type || "—").toUpperCase();
+    li.querySelector(".muted").textContent = relTime(t.timestamp_ms);
+    if (t.summary) li.title = t.summary;
+    li.style.cursor = "pointer";
+    return li;
   }
 
   function paintRail(data) {
@@ -144,32 +182,7 @@
       list.appendChild(empty);
     }
     items.forEach(function (t) {
-      var href = thoughtHref(t);
-      var li = document.createElement("li");
-      li.className = "cog-rail-item";
-      if (href) {
-        li.innerHTML =
-          '<a class="cog-rail-link" href=""></a>' +
-          '<div class="cog-rail-meta">' +
-          '<span class="cog-type"></span>' +
-          '<span class="muted"></span>' +
-          "</div>";
-        var a = li.querySelector(".cog-rail-link");
-        a.href = href;
-        a.textContent = t.title || "(untitled)";
-      } else {
-        li.innerHTML =
-          '<div class="cog-rail-title"></div>' +
-          '<div class="cog-rail-meta">' +
-          '<span class="cog-type"></span>' +
-          '<span class="muted"></span>' +
-          "</div>";
-        li.querySelector(".cog-rail-title").textContent = t.title || "(untitled)";
-      }
-      li.querySelector(".cog-type").textContent = (t.thought_type || "—").toUpperCase();
-      li.querySelector(".muted").textContent = relTime(t.timestamp_ms);
-      if (t.summary) li.title = t.summary;
-      list.appendChild(li);
+      list.appendChild(railItem(t, false));
     });
     var foot = $("cog-rail-foot");
     if (foot) {
@@ -196,22 +209,19 @@
       return;
     }
     items.forEach(function (t, i) {
-      var href = thoughtHref(t);
       var li = document.createElement("li");
       li.className = "cog-top-item";
+      li.dataset.id = t.id || "";
+      li.style.cursor = "pointer";
       li.innerHTML =
         '<span class="cog-top-n"></span>' +
         '<div class="cog-top-body">' +
-        (href
-          ? '<a class="cog-top-title cog-top-link" href=""></a>'
-          : '<div class="cog-top-title"></div>') +
+        '<div class="cog-top-title"></div>' +
         '<div class="muted cog-top-sub"></div>' +
         "</div>" +
         '<span class="cog-top-score mono"></span>';
       li.querySelector(".cog-top-n").textContent = String(i + 1);
-      var titleEl = li.querySelector(".cog-top-title");
-      titleEl.textContent = t.title || "(untitled)";
-      if (href) titleEl.setAttribute("href", href);
+      li.querySelector(".cog-top-title").textContent = t.title || "(untitled)";
       li.querySelector(".cog-top-sub").textContent =
         (t.thought_type || "—") + (t.summary ? " · " + t.summary : "");
       li.querySelector(".cog-top-score").textContent = t.salience
@@ -221,13 +231,118 @@
     });
   }
 
-  /* ── THE Activity chart: true-width buckets over the real range ──────── */
+  /* ── Thought drawer (full content + ancestor chain) ──────────────────── */
+
+  function closeDrawer() {
+    var root = $("cog-drawer-root");
+    if (root) root.replaceChildren();
+  }
+
+  function metaRow(dl, label, value) {
+    if (value === "" || value == null) return;
+    var dt = document.createElement("dt");
+    dt.textContent = label;
+    var dd = document.createElement("dd");
+    dd.textContent = String(value);
+    dl.appendChild(dt);
+    dl.appendChild(dd);
+  }
+
+  function openDrawer(id) {
+    if (!id) return;
+    fetch("/api/gaius/v1/cognition/thought?id=" + encodeURIComponent(id))
+      .then(function (r) {
+        return r.text().then(function (text) {
+          if (!r.ok) throw new Error(text || "thought " + r.status);
+          return JSON.parse(text);
+        });
+      })
+      .then(function (data) {
+        var t = data.thought;
+        if (!t) throw new Error("thought missing");
+        var root = $("cog-drawer-root");
+        root.replaceChildren();
+        var backdrop = document.createElement("div");
+        backdrop.className = "cog-drawer-backdrop";
+        backdrop.addEventListener("click", closeDrawer);
+        var drawer = document.createElement("aside");
+        drawer.className = "cog-drawer";
+        drawer.setAttribute("role", "dialog");
+        drawer.innerHTML =
+          '<div class="cog-drawer-head">' +
+          '<span class="cog-type"></span>' +
+          '<span class="cog-drawer-title"></span>' +
+          '<button type="button" class="cog-drawer-close" aria-label="Close">✕</button>' +
+          "</div>" +
+          '<div class="cog-drawer-body">' +
+          '<dl class="cog-drawer-meta"></dl>' +
+          '<div class="cog-drawer-content"></div>' +
+          '<div class="cog-drawer-links"></div>' +
+          '<h4 class="muted">Chain</h4><div class="cog-drawer-chain"></div>' +
+          "</div>";
+        drawer.querySelector(".cog-type").textContent = (t.thought_type || "—").toUpperCase();
+        drawer.querySelector(".cog-drawer-title").textContent = t.title || "(untitled)";
+        drawer.querySelector(".cog-drawer-close").addEventListener("click", closeDrawer);
+        var dl = drawer.querySelector(".cog-drawer-meta");
+        metaRow(dl, "salience", t.salience != null ? t.salience.toFixed(2) : "");
+        metaRow(dl, "confidence", t.confidence ? t.confidence.toFixed(2) : "");
+        metaRow(dl, "novelty", t.novelty ? t.novelty.toFixed(2) : "");
+        metaRow(dl, "status", t.status);
+        metaRow(dl, "generation", t.generation);
+        metaRow(dl, "tokens", t.tokens_used ? fmtNum(t.tokens_used) : "");
+        metaRow(dl, "model", t.generator_model);
+        metaRow(dl, "when", relTime(t.timestamp_ms));
+        metaRow(dl, "domains", (t.domains || []).join(", "));
+        drawer.querySelector(".cog-drawer-content").textContent =
+          t.content || t.summary || "(no content)";
+        var links = drawer.querySelector(".cog-drawer-links");
+        var a = document.createElement("a");
+        a.className = "cog-chip";
+        a.href = thoughtHref(t);
+        a.textContent = "Open in Summary →";
+        links.appendChild(a);
+        var chainHost = drawer.querySelector(".cog-drawer-chain");
+        var chain = data.chain || [];
+        if (chain.length <= 1) {
+          var none = document.createElement("div");
+          none.className = "muted";
+          none.textContent = "No predecessors.";
+          chainHost.appendChild(none);
+        } else {
+          chain.forEach(function (c) {
+            var row = document.createElement("div");
+            row.className = "cog-chain-item" + (c.id === t.id ? " current" : "");
+            if (c.id === t.id) {
+              row.textContent = "g" + c.generation + " · " + (c.title || c.id);
+            } else {
+              var link = document.createElement("a");
+              link.href = "#";
+              link.textContent = "g" + c.generation + " · " + (c.title || c.id);
+              link.addEventListener("click", function (ev) {
+                ev.preventDefault();
+                openDrawer(c.id);
+              });
+              row.appendChild(link);
+            }
+            chainHost.appendChild(row);
+          });
+        }
+        root.appendChild(backdrop);
+        root.appendChild(drawer);
+      })
+      .catch(function (err) {
+        showError(String(err.message || err));
+      });
+  }
+
+  /* ── THE Activity chart + brush ──────────────────────────────────────── */
 
   var Y_LABEL_W = 34;
   var RIGHT_PAD = 10;
   var CHART_H = 170;
   var TOP_PAD = 12;
   var X_LABEL_H = 18;
+  var lastLayout = null; // {rangeStart, span, plotW, width}
 
   function svgEl(tag, attrs) {
     var el = document.createElementNS("http://www.w3.org/2000/svg", tag);
@@ -253,6 +368,7 @@
       empty.className = "muted cog-empty";
       empty.textContent = "No thoughts in this window.";
       host.appendChild(empty);
+      lastLayout = null;
       return;
     }
 
@@ -261,6 +377,7 @@
     var rangeStart = data.range_start_ms;
     var rangeEnd = data.range_end_ms;
     var span = Math.max(rangeEnd - rangeStart, 1);
+    lastLayout = { rangeStart: rangeStart, span: span, plotW: plotW, width: width };
 
     function xForMs(ms) {
       return Y_LABEL_W + ((ms - rangeStart) / span) * plotW;
@@ -289,26 +406,18 @@
       "aria-label": "Thought activity",
     });
 
-    /* y grid + labels */
     var ticks = Math.round(scale.max / scale.step);
     for (var i = 0; i <= ticks; i++) {
       var val = scale.step * i;
       var y = yFor(val);
       svg.appendChild(
-        svgEl("line", {
-          x1: Y_LABEL_W,
-          x2: width - RIGHT_PAD,
-          y1: y,
-          y2: y,
-          class: "cog-grid",
-        })
+        svgEl("line", { x1: Y_LABEL_W, x2: width - RIGHT_PAD, y1: y, y2: y, class: "cog-grid" })
       );
       var lab = svgEl("text", { x: Y_LABEL_W - 5, y: y + 3, class: "cog-axis", "text-anchor": "end" });
       lab.textContent = String(val);
       svg.appendChild(lab);
     }
 
-    /* bars: each bucket owns [cellX, cellX+cellW) sized by its REAL bounds */
     buckets.forEach(function (b) {
       var cellX = xForMs(b.start_ms);
       var cellW = Math.max(((b.end_ms - b.start_ms) / span) * plotW, 1);
@@ -330,7 +439,6 @@
       svg.appendChild(rect);
     });
 
-    /* cycles overlay: stepped line normalized to its own max */
     if (maxCycles > 0) {
       var pts = buckets
         .map(function (b) {
@@ -342,7 +450,6 @@
       svg.appendChild(svgEl("polyline", { points: pts, class: "cog-cycles-line" }));
     }
 
-    /* partial/future shading from effective_end */
     if (data.effective_end_ms && data.effective_end_ms < rangeEnd) {
       var fx = xForMs(data.effective_end_ms);
       svg.appendChild(
@@ -356,26 +463,65 @@
       );
     }
 
-    /* x ticks (unit-aware) */
     CC.unitTicks(buckets, data.interval, rangeStart, span, xForMs).forEach(function (t) {
       svg.appendChild(
         svgEl("line", { x1: t.x, x2: t.x, y1: CHART_H, y2: CHART_H + 4, class: "cog-grid" })
       );
       var anchor = t.edge === "start" ? "start" : t.edge === "end" ? "end" : "middle";
-      var lab = svgEl("text", {
-        x: t.x,
-        y: CHART_H + 14,
-        class: "cog-axis",
-        "text-anchor": anchor,
-      });
+      var lab = svgEl("text", { x: t.x, y: CHART_H + 14, class: "cog-axis", "text-anchor": anchor });
       lab.textContent = t.label;
       svg.appendChild(lab);
     });
 
+    attachBrush(svg);
     host.appendChild(svg);
   }
 
-  /* ── Calendar (day interval) / strip (week+month) — fluid cells ──────── */
+  function svgXToMs(svg, clientX) {
+    if (!lastLayout) return 0;
+    var rect = svg.getBoundingClientRect();
+    var x = ((clientX - rect.left) / Math.max(rect.width, 1)) * lastLayout.width;
+    var frac = (x - Y_LABEL_W) / Math.max(lastLayout.plotW, 1);
+    if (frac < 0) frac = 0;
+    if (frac > 1) frac = 1;
+    return Math.round(lastLayout.rangeStart + frac * lastLayout.span);
+  }
+
+  function attachBrush(svg) {
+    var startMs = 0;
+    var rect = null;
+    svg.style.touchAction = "none";
+    svg.addEventListener("pointerdown", function (ev) {
+      startMs = svgXToMs(svg, ev.clientX);
+      rect = svgEl("rect", { y: TOP_PAD, height: CHART_H - TOP_PAD, class: "cog-brush" });
+      svg.appendChild(rect);
+      svg.setPointerCapture(ev.pointerId);
+    });
+    svg.addEventListener("pointermove", function (ev) {
+      if (!rect || !lastLayout) return;
+      var curMs = svgXToMs(svg, ev.clientX);
+      var lo = Math.min(startMs, curMs);
+      var hi = Math.max(startMs, curMs);
+      var x1 = Y_LABEL_W + ((lo - lastLayout.rangeStart) / lastLayout.span) * lastLayout.plotW;
+      var x2 = Y_LABEL_W + ((hi - lastLayout.rangeStart) / lastLayout.span) * lastLayout.plotW;
+      rect.setAttribute("x", x1);
+      rect.setAttribute("width", Math.max(x2 - x1, 0));
+    });
+    svg.addEventListener("pointerup", function (ev) {
+      if (!rect) return;
+      var endMs = svgXToMs(svg, ev.clientX);
+      var w = parseFloat(rect.getAttribute("width") || "0");
+      rect.remove();
+      rect = null;
+      if (w < 8) return; /* click, not a drag */
+      range.from = Math.min(startMs, endMs);
+      range.to = Math.max(startMs, endMs);
+      paintRangeChip();
+      load();
+    });
+  }
+
+  /* ── Calendar / strip — fluid cells ──────────────────────────────────── */
 
   function paintCalendar(data, hostWidth) {
     var panel = $("cog-calendar-panel");
@@ -394,7 +540,6 @@
     var width = Math.max(hostWidth || host.clientWidth || 600, 220);
 
     if (unit !== "day") {
-      /* week/month: one fluid cell per bucket, single row */
       var step = Math.min(24, Math.max(6, (width - 8) / buckets.length));
       var strip = document.createElement("div");
       strip.className = "cog-strip";
@@ -410,7 +555,6 @@
       return;
     }
 
-    /* day: GitHub-style 7×N calendar with WIDTH-RESPONSIVE cells */
     var byDay = {};
     buckets.forEach(function (b) {
       byDay[new Date(b.start_ms).toISOString().slice(0, 10)] = b.thoughts;
@@ -455,7 +599,7 @@
     host.appendChild(weeks);
   }
 
-  /* ── Hour of week — normalized per occurrence in the window ──────────── */
+  /* ── Hour of week — normalized per week ──────────────────────────────── */
 
   function paintHow(data) {
     var host = $("cog-how");
@@ -503,6 +647,68 @@
     host.appendChild(table);
   }
 
+  /* ── Waterfall strip (poll ~5s while visible) ────────────────────────── */
+
+  function paintWaterfall(data) {
+    var canvas = $("cog-waterfall");
+    if (!canvas || !data || !data.matrix || !data.n_channels) return;
+    var C = data.n_channels | 0;
+    var T = data.n_times | 0;
+    if (C < 1 || T < 1) return;
+    var dpr = window.devicePixelRatio || 1;
+    var cssW = canvas.clientWidth || 800;
+    var cssH = canvas.clientHeight || 140;
+    var W = Math.max(1, Math.floor(cssW * dpr));
+    var H = Math.max(1, Math.floor(cssH * dpr));
+    if (canvas.width !== W || canvas.height !== H) {
+      canvas.width = W;
+      canvas.height = H;
+    }
+    var names = data.channel_names || [];
+    var labelW = Math.round(52 * dpr);
+    var colW = (W - labelW) / T;
+    var rowH = H / C;
+    var ctx = canvas.getContext("2d");
+    ctx.clearRect(0, 0, W, H);
+    var cs = getComputedStyle(document.documentElement);
+    var fg = (cs.getPropertyValue("--color-kumo-success") || "#3fb68b").trim();
+    ctx.font = Math.round(9 * dpr) + "px ui-monospace, monospace";
+    ctx.fillStyle = (cs.getPropertyValue("--text-color-kumo-subtle") || "#889").trim();
+    for (var r = 0; r < C; r++) {
+      ctx.fillText((names[r] || "").slice(0, 8), 2, r * rowH + rowH * 0.7);
+    }
+    for (var ry = 0; ry < C; ry++) {
+      /* per-row auto-contrast: normalize to the row max */
+      var rowMax = 0;
+      var x;
+      for (x = 0; x < T; x++) {
+        var v = Math.abs(Number(data.matrix[ry * T + x]) || 0);
+        if (v > rowMax) rowMax = v;
+      }
+      if (rowMax <= 0) continue;
+      ctx.fillStyle = fg;
+      for (x = 0; x < T; x++) {
+        var mag = Math.abs(Number(data.matrix[ry * T + x]) || 0) / rowMax;
+        if (mag <= 0.02) continue;
+        ctx.globalAlpha = Math.min(0.15 + mag * 0.85, 1);
+        ctx.fillRect(labelW + x * colW, ry * rowH + 1, Math.max(colW, 1), rowH - 2);
+      }
+    }
+    ctx.globalAlpha = 1;
+    var meta = $("cog-wf-meta");
+    if (meta) meta.textContent = "last 60 s · " + C + " channels · " + (data.driver || "");
+  }
+
+  function pollWaterfall() {
+    if (document.visibilityState !== "visible") return;
+    fetch("/api/gaius/v1/cognition/waterfall?window_s=60")
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (data) { if (data) paintWaterfall(data); })
+      .catch(function () {});
+  }
+
+  /* ── Chrome, errors ──────────────────────────────────────────────────── */
+
   function paintChrome(data) {
     var run = $("cog-running");
     if (run) {
@@ -523,6 +729,55 @@
     if (!el) return;
     el.hidden = !msg;
     el.textContent = msg || "";
+  }
+
+  /* ── Live SSE ticker (SubscribeCognition bridge) ─────────────────────── */
+
+  var THOUGHT_TYPES = {
+    thought: 1, pattern: 1, connection: 1, curiosity: 1,
+    self_observation: 1, engine_audit: 1,
+  };
+
+  function startEvents() {
+    if (typeof EventSource === "undefined") return;
+    var dot = $("cog-live");
+    var es = new EventSource("/api/gaius/v1/cognition/events");
+    es.addEventListener("open", function () {
+      if (dot) dot.classList.add("on");
+    });
+    es.addEventListener("error", function () {
+      if (dot) dot.classList.remove("on");
+      /* EventSource auto-reconnects; the 60s poll below covers the gap. */
+    });
+    es.addEventListener("cognition", function (msg) {
+      var ev;
+      try {
+        ev = JSON.parse(msg.data);
+      } catch (e) {
+        return;
+      }
+      if (THOUGHT_TYPES[ev.type] && ev.thought_id) {
+        var list = $("cog-rail-list");
+        if (list) {
+          var emptyRow = list.querySelector(".cog-rail-empty");
+          if (emptyRow) emptyRow.remove();
+          list.prepend(
+            railItem(
+              {
+                id: ev.thought_id,
+                title: ev.title,
+                thought_type: ev.thought_type,
+                summary: ev.summary,
+                timestamp_ms: ev.timestamp_ms,
+              },
+              true
+            )
+          );
+        }
+      } else if (ev.type === "cycle_end") {
+        load(false); /* refresh panels once a cycle lands */
+      }
+    });
   }
 
   /* ── Load + resize + history ─────────────────────────────────────────── */
@@ -554,8 +809,14 @@
     if (pushHistory !== false) writeUrl(p);
     var version = ++loadVersion;
     var q = new URLSearchParams();
-    q.set("window", p.window);
-    if (p.bucket) q.set("bucket", p.bucket);
+    if (range.from && range.to) {
+      q.set("from_ms", String(range.from));
+      q.set("to_ms", String(range.to));
+      if (p.bucket) q.set("bucket", p.bucket);
+    } else {
+      q.set("window", p.window);
+      if (p.bucket) q.set("bucket", p.bucket);
+    }
     if (p.stream) q.set("stream", p.stream);
     return fetch("/api/gaius/v1/cognition?" + q.toString())
       .then(function (r) {
@@ -565,7 +826,7 @@
         });
       })
       .then(function (data) {
-        if (version !== loadVersion) return; /* stale response — drop */
+        if (version !== loadVersion) return;
         lastData = data;
         showError("");
         paintAll(data);
@@ -579,7 +840,6 @@
   function boot() {
     hydrateControls();
     var q = new URLSearchParams(location.search);
-    /* seed the stream select value so the first response marks it selected */
     if (q.get("stream") && $("cog-stream")) {
       var o = document.createElement("option");
       o.value = q.get("stream");
@@ -588,7 +848,35 @@
     }
     if ($("cog-refresh")) $("cog-refresh").addEventListener("click", function () { load(); });
     ["cog-win", "cog-bucket", "cog-stream"].forEach(function (id) {
-      if ($(id)) $(id).addEventListener("change", function () { load(); });
+      if ($(id))
+        $(id).addEventListener("change", function () {
+          range.from = 0;
+          range.to = 0;
+          paintRangeChip();
+          load();
+        });
+    });
+    if ($("cog-range-chip"))
+      $("cog-range-chip").addEventListener("click", function () {
+        range.from = 0;
+        range.to = 0;
+        paintRangeChip();
+        load();
+      });
+    document.addEventListener("keydown", function (ev) {
+      if (ev.key === "Escape") closeDrawer();
+    });
+    /* delegated drawer opens from rail + top lists */
+    ["cog-rail-list", "cog-top"].forEach(function (id) {
+      var el = $(id);
+      if (!el) return;
+      el.addEventListener("click", function (ev) {
+        var li = ev.target.closest("[data-id]");
+        if (li && li.dataset.id) {
+          ev.preventDefault();
+          openDrawer(li.dataset.id);
+        }
+      });
     });
     window.addEventListener("popstate", function () {
       hydrateControls();
@@ -602,6 +890,12 @@
         }
       });
     }
+    startEvents();
+    setInterval(function () {
+      if (document.visibilityState === "visible") load(false);
+    }, 60000);
+    setInterval(pollWaterfall, 5000);
+    pollWaterfall();
     load(false);
   }
 

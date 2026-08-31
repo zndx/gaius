@@ -79,6 +79,66 @@ message CognitionSurfaceResponse {
   int32 bucket_seconds = 26;
 }
 
+message CognitionThoughtRequest {
+  string id = 1;
+}
+
+message CognitionThoughtDetail {
+  string id = 1;
+  string thought_type = 2;
+  string title = 3;
+  string summary = 4;
+  string content = 5;
+  float salience = 6;
+  float confidence = 7;
+  float novelty = 8;
+  int32 generation = 9;
+  int64 timestamp_ms = 10;
+  string note_path = 11;
+  string status = 12;
+  string generator_model = 13;
+  int32 tokens_used = 14;
+  repeated string domains = 15;
+  string thought_chain_id = 16;
+  string predecessor_id = 17;
+}
+
+message CognitionThoughtResponse {
+  CognitionThoughtDetail thought = 1;
+  repeated CognitionThoughtDetail chain = 2;
+  string error = 3;
+}
+
+message CognitionStreamRequest {
+  int32 buffer_size = 1;
+  repeated string event_types = 2;
+}
+
+message CognitionEvent {
+  enum Type {
+    CYCLE_START = 0;
+    THOUGHT = 1;
+    PATTERN = 2;
+    CONNECTION = 3;
+    CURIOSITY = 4;
+    SELF_OBSERVATION = 5;
+    ENGINE_AUDIT = 6;
+    CYCLE_END = 7;
+    ERROR = 8;
+  }
+  Type type = 1;
+  int64 timestamp_ms = 2;
+  string thought_id = 3;
+  string thought_type = 4;
+  string title = 5;
+  string summary = 6;
+  float salience = 7;
+  int32 generation = 8;
+  string cycle_id = 9;
+  int32 thoughts_in_cycle = 10;
+  string error = 11;
+}
+
 message CognitionWaterfallRequest {
   int32 window_s = 1;
 }
@@ -438,6 +498,8 @@ message DiscoverStatus {
 service GaiusService {
   rpc CognitionSurface(CognitionSurfaceRequest) returns (CognitionSurfaceResponse);
   rpc CognitionWaterfall(CognitionWaterfallRequest) returns (CognitionWaterfallResponse);
+  rpc CognitionThought(CognitionThoughtRequest) returns (CognitionThoughtResponse);
+  rpc SubscribeCognition(CognitionStreamRequest) returns (stream CognitionEvent);
   rpc AgendaList(AgendaListRequest) returns (AgendaListResponse);
   rpc AgendaGet(AgendaGetRequest) returns (AgendaGetResponse);
   rpc AgendaCreate(AgendaCreateRequest) returns (AgendaCreateResponse);

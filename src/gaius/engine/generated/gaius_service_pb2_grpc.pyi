@@ -120,6 +120,7 @@ class GaiusServiceStub:
     EngineAudit: grpc.UnaryUnaryMultiCallable[gaius_service_pb2.EngineAuditRequest, gaius_service_pb2.EngineAuditResponse]
     SubscribeCognition: grpc.UnaryStreamMultiCallable[gaius_service_pb2.CognitionStreamRequest, gaius_service_pb2.CognitionEvent]
     """Cognition streaming - replaces TUI polling"""
+    CognitionThought: grpc.UnaryUnaryMultiCallable[gaius_service_pb2.CognitionThoughtRequest, gaius_service_pb2.CognitionThoughtResponse]
     SubscribeEvolution: grpc.UnaryStreamMultiCallable[gaius_service_pb2.EvolutionStreamRequest, gaius_service_pb2.EvolutionEvent]
     """Evolution streaming - replaces TUI polling"""
     SubscribeActivity: grpc.UnaryStreamMultiCallable[gaius_service_pb2.ActivityStreamRequest, gaius_service_pb2.ActivityEvent]
@@ -446,6 +447,7 @@ class GaiusServiceAsyncStub(GaiusServiceStub):
     EngineAudit: grpc.aio.UnaryUnaryMultiCallable[gaius_service_pb2.EngineAuditRequest, gaius_service_pb2.EngineAuditResponse]  # type: ignore[assignment]
     SubscribeCognition: grpc.aio.UnaryStreamMultiCallable[gaius_service_pb2.CognitionStreamRequest, gaius_service_pb2.CognitionEvent]  # type: ignore[assignment]
     """Cognition streaming - replaces TUI polling"""
+    CognitionThought: grpc.aio.UnaryUnaryMultiCallable[gaius_service_pb2.CognitionThoughtRequest, gaius_service_pb2.CognitionThoughtResponse]  # type: ignore[assignment]
     SubscribeEvolution: grpc.aio.UnaryStreamMultiCallable[gaius_service_pb2.EvolutionStreamRequest, gaius_service_pb2.EvolutionEvent]  # type: ignore[assignment]
     """Evolution streaming - replaces TUI polling"""
     SubscribeActivity: grpc.aio.UnaryStreamMultiCallable[gaius_service_pb2.ActivityStreamRequest, gaius_service_pb2.ActivityEvent]  # type: ignore[assignment]
@@ -997,6 +999,13 @@ class GaiusServiceServicer(metaclass=abc.ABCMeta):
         context: _ServicerContext,
     ) -> typing.Union[collections.abc.Iterator[gaius_service_pb2.CognitionEvent], collections.abc.AsyncIterator[gaius_service_pb2.CognitionEvent]]:
         """Cognition streaming - replaces TUI polling"""
+
+    @abc.abstractmethod
+    def CognitionThought(
+        self,
+        request: gaius_service_pb2.CognitionThoughtRequest,
+        context: _ServicerContext,
+    ) -> typing.Union[gaius_service_pb2.CognitionThoughtResponse, collections.abc.Awaitable[gaius_service_pb2.CognitionThoughtResponse]]: ...
 
     @abc.abstractmethod
     def SubscribeEvolution(

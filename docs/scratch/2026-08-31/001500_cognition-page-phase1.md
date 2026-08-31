@@ -71,3 +71,34 @@ subset (numbers matched); `days` legacy field retained but empty.
 Phase 2 (brush drill-down, thought drawer + chains, SSE ticker via
 SubscribeCognition, waterfall strip) · Phase 3 (SERVER_QUERY_KIND_COGNITION
 + collector + per-peer lanes) · Phase 4 (hx.cot_reasoning corpus panel).
+
+## Phase 2 (same session) — depth: drawer, live, brush, waterfall
+
+- **Thought drawer**: new `GaiusService/CognitionThought` RPC — full
+  `content` (never truncated), confidence/novelty/status/domains/
+  generator_model/tokens_used, and the ancestor chain via the
+  `predecessor_id` recursive CTE (ported from the MCP get_thought_chain).
+  Rail/top rows open the drawer; chain rows navigate; "Open in Summary"
+  keeps the deep link. Guru `#COG.00000035.NOTHOUGHT`.
+- **Live SSE ticker**: gaius-ui bridges the engine's existing (previously
+  unconsumed) `SubscribeCognition` stream to
+  `/api/gaius/v1/cognition/events`. Lesson: the engine stream yields
+  nothing until the first cognition event, so the bridge must send HTTP
+  headers immediately and connect upstream lazily (spawn + mpsc channel,
+  `hello` event, KeepAlive comments) — the first implementation hung the
+  response awaiting the subscribe. Client: EventSource with live dot,
+  thought events prepend to the rail, `cycle_end` triggers a panel refresh;
+  60s visibility-aware poll as fallback.
+- **Brush range selection**: pointer-drag on the Activity SVG →
+  `from_ms/to_ms` refetch (server-side membership; buckets re-resolve for
+  the sub-range), URL-persisted, clear-chip. Keyboard nav deferred.
+- **Waterfall strip**: the already-routed
+  `/api/gaius/v1/cognition/waterfall` finally painted — per-row
+  auto-contrast canvas, 5s visibility-aware poll (23 channels live,
+  driver=warehouse).
+- Rendered previously-dead fields: `current_task` on the stats tile.
+
+Validated on a throwaway instance against the live engine (fast iteration,
+no restart round-trip), 6/6: drawer content+chain, rich fields, not-found
+503, SSE 200/event-stream, waterfall 23×240 matrix, brush sub-range
+honesty. Production restart follows.

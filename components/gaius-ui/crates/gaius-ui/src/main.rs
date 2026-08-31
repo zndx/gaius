@@ -17,7 +17,10 @@ mod pty;
 use askama::Template;
 use axum::{
     extract::{DefaultBodyLimit, Multipart, Query, State},
-    response::{Html, IntoResponse, Json, Redirect},
+    response::{
+        sse::{Event, KeepAlive, Sse},
+        Html, IntoResponse, Json, Redirect,
+    },
     routing::{get, post},
     Form, Router,
 };
@@ -588,6 +591,63 @@ struct WaterfallQuery {
     window_s: Option<i32>,
 }
 
+#[derive(Deserialize)]
+struct ThoughtQuery {
+    id: Option<String>,
+}
+
+async fn cognition_thought_api(Query(q): Query<ThoughtQuery>) -> impl IntoResponse {
+    let id = q.id.unwrap_or_default();
+    match gaius::Gaius::from_env().cognition_thought(id).await {
+        Ok(t) => Json(t).into_response(),
+        Err(e) => (
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            format!("{e}\n"),
+        )
+            .into_response(),
+    }
+}
+
+/// SSE bridge over the engine's SubscribeCognition stream. One upstream
+/// gRPC stream per browser connection; EventSource reconnects on drop.
+///
+/// Headers are sent IMMEDIATELY: the upstream subscribe is connected lazily
+/// in a spawned task (the engine's stream yields nothing until its first
+/// cognition event, so awaiting it before responding would hang the HTTP
+/// response). KeepAlive comments keep the connection warm meanwhile.
+async fn cognition_events_api() -> impl IntoResponse {
+    use tokio_stream::StreamExt;
+
+    let (tx, rx) = tokio::sync::mpsc::channel::<Event>(64);
+    tokio::spawn(async move {
+        match gaius::Gaius::from_env().subscribe_cognition().await {
+            Ok(stream) => {
+                let _ = tx
+                    .send(Event::default().event("hello").data("{\"connected\":true}"))
+                    .await;
+                let mut stream = std::pin::pin!(stream);
+                while let Some(value) = stream.next().await {
+                    if tx
+                        .send(Event::default().event("cognition").data(value.to_string()))
+                        .await
+                        .is_err()
+                    {
+                        break; /* browser went away */
+                    }
+                }
+            }
+            Err(e) => {
+                let _ = tx
+                    .send(Event::default().event("error").data(e.to_string()))
+                    .await;
+            }
+        }
+    });
+    let sse = tokio_stream::wrappers::ReceiverStream::new(rx)
+        .map(Ok::<Event, std::convert::Infallible>);
+    Sse::new(sse).keep_alive(KeepAlive::default())
+}
+
 async fn cognition_waterfall_api(Query(q): Query<WaterfallQuery>) -> impl IntoResponse {
     let window_s = q.window_s.unwrap_or(60);
     match gaius::Gaius::from_env()
@@ -1028,6 +1088,8 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/gaius/v1/board", get(board_api))
         .route("/api/gaius/v1/cognition", get(cognition_api))
         .route("/api/gaius/v1/cognition/waterfall", get(cognition_waterfall_api))
+        .route("/api/gaius/v1/cognition/thought", get(cognition_thought_api))
+        .route("/api/gaius/v1/cognition/events", get(cognition_events_api))
         .route("/api/gaius/v1/ops", get(ops_api))
         .route("/api/gaius/v1/watts", get(watts_api))
         .route("/api/gaius/v1/federation/surfaces", get(federation_surfaces_api))

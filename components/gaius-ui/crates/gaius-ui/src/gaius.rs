@@ -284,6 +284,42 @@ impl Gaius {
         Ok(CognitionSurfaceJson::from(r))
     }
 
+    pub async fn cognition_thought(
+        &self,
+        id: String,
+    ) -> Result<CognitionThoughtJson, GaiusError> {
+        let mut c = self.client().await?;
+        let r = c
+            .cognition_thought(pb::CognitionThoughtRequest { id })
+            .await?
+            .into_inner();
+        if !r.error.is_empty() {
+            return Err(GaiusError::Message(r.error));
+        }
+        Ok(CognitionThoughtJson {
+            thought: r.thought.map(thought_detail_json),
+            chain: r.chain.into_iter().map(thought_detail_json).collect(),
+        })
+    }
+
+    /// Held-open cognition event stream mapped to JSON values (SSE bridge).
+    pub async fn subscribe_cognition(
+        &self,
+    ) -> Result<impl tokio_stream::Stream<Item = serde_json::Value> + Send, GaiusError>
+    {
+        use tokio_stream::StreamExt;
+
+        let mut c = self.client().await?;
+        let stream = c
+            .subscribe_cognition(pb::CognitionStreamRequest {
+                buffer_size: 100,
+                event_types: Vec::new(),
+            })
+            .await?
+            .into_inner();
+        Ok(stream.filter_map(|item| item.ok().map(|ev| cognition_event_value(&ev))))
+    }
+
     pub async fn cognition_waterfall(
         &self,
         window_s: i32,
@@ -834,4 +870,51 @@ impl From<pb::ThoughtMessage> for ThoughtJson {
             note_path: t.note_path,
         }
     }
+}
+
+#[derive(Serialize)]
+pub struct CognitionThoughtJson {
+    pub thought: Option<serde_json::Value>,
+    pub chain: Vec<serde_json::Value>,
+}
+
+fn thought_detail_json(d: pb::CognitionThoughtDetail) -> serde_json::Value {
+    serde_json::json!({
+        "id": d.id,
+        "thought_type": d.thought_type,
+        "title": d.title,
+        "summary": d.summary,
+        "content": d.content,
+        "salience": d.salience,
+        "confidence": d.confidence,
+        "novelty": d.novelty,
+        "generation": d.generation,
+        "timestamp_ms": d.timestamp_ms,
+        "note_path": d.note_path,
+        "status": d.status,
+        "generator_model": d.generator_model,
+        "tokens_used": d.tokens_used,
+        "domains": d.domains,
+        "thought_chain_id": d.thought_chain_id,
+        "predecessor_id": d.predecessor_id,
+    })
+}
+
+fn cognition_event_value(ev: &pb::CognitionEvent) -> serde_json::Value {
+    let kind = pb::cognition_event::Type::try_from(ev.r#type)
+        .map(|t| format!("{t:?}").to_lowercase())
+        .unwrap_or_else(|_| "unknown".to_string());
+    serde_json::json!({
+        "type": kind,
+        "timestamp_ms": ev.timestamp_ms,
+        "thought_id": ev.thought_id,
+        "thought_type": ev.thought_type,
+        "title": ev.title,
+        "summary": ev.summary,
+        "salience": ev.salience,
+        "generation": ev.generation,
+        "cycle_id": ev.cycle_id,
+        "thoughts_in_cycle": ev.thoughts_in_cycle,
+        "error": ev.error,
+    })
 }

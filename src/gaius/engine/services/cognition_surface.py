@@ -414,3 +414,75 @@ async def build_cognition_surface(
         effective_end_ms=_ts_ms(min(now, end)),
         bucket_seconds=int(BUCKET_SECONDS[unit]),
     )
+
+
+SURFACE_GURU_NOTHOUGHT = (
+    "CognitionThought needs a thought id.\n"
+    "  Guru: #COG.00000035.NOTHOUGHT"
+)
+
+_THOUGHT_COLUMNS = (
+    "id, thought_type, title, summary, content, salience, confidence, novelty, "
+    "generation, created_at, note_path, status, generator_model, tokens_used, "
+    "domains, thought_chain_id, predecessor_id"
+)
+
+
+def _row_detail(row: Any) -> dict[str, Any]:
+    return {
+        "id": str(row["id"]),
+        "thought_type": row["thought_type"] or "",
+        "title": row["title"] or "",
+        "summary": row["summary"] or "",
+        "content": row["content"] or "",
+        "salience": float(row["salience"] or 0.0),
+        "confidence": float(row["confidence"] or 0.0),
+        "novelty": float(row["novelty"] or 0.0),
+        "generation": int(row["generation"] or 0),
+        "timestamp_ms": _ts_ms(row["created_at"]),
+        "note_path": row["note_path"] or "",
+        "status": row["status"] or "",
+        "generator_model": row["generator_model"] or "",
+        "tokens_used": int(row["tokens_used"] or 0),
+        "domains": list(row["domains"] or []),
+        "thought_chain_id": str(row["thought_chain_id"] or "") if row["thought_chain_id"] else "",
+        "predecessor_id": str(row["predecessor_id"] or "") if row["predecessor_id"] else "",
+    }
+
+
+async def fetch_thought_detail(
+    db_pool: Any, thought_id: str
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """One thought in full + its ancestor chain (roots first).
+
+    Fail-fast on a missing pool; a missing id raises ValueError; an unknown
+    id returns ({}, []) — the caller decides how to say "not found".
+    """
+    if db_pool is None:
+        raise RuntimeError(SURFACE_GURU_NODB)
+    tid = (thought_id or "").strip()
+    if not tid:
+        raise ValueError(SURFACE_GURU_NOTHOUGHT)
+
+    async with db_pool.acquire() as conn:
+        row = await conn.fetchrow(
+            f"SELECT {_THOUGHT_COLUMNS} FROM cognition_thoughts WHERE id = $1::uuid",
+            tid,
+        )
+        if row is None:
+            return {}, []
+        chain_rows = await conn.fetch(
+            f"""
+            WITH RECURSIVE chain AS (
+                SELECT {_THOUGHT_COLUMNS}
+                FROM cognition_thoughts WHERE id = $1::uuid
+                UNION ALL
+                SELECT {', '.join('t.' + c.strip() for c in _THOUGHT_COLUMNS.split(','))}
+                FROM cognition_thoughts t
+                JOIN chain c ON t.id = c.predecessor_id
+            )
+            SELECT * FROM chain ORDER BY generation, created_at
+            """,
+            tid,
+        )
+    return _row_detail(row), [_row_detail(r) for r in chain_rows]
