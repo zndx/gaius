@@ -172,37 +172,58 @@ class HealingEventRecorder:
             logger.warning(f"Cannot record {event_type.value} event: no database pool")
             return None
 
-        sequence_num = self._next_sequence_num(sequence_id)
+        # sequence_num derives ATOMICALLY from the DB. The old in-memory
+        # counter reset to 1 on every engine restart and collided with rows
+        # already recorded for the same sequence (duplicate-key errors under
+        # restart-heavy operations, observed 2026-08-31) — silently dropping
+        # healing telemetry.
         event = HealingEvent(
             event_type=event_type,
             endpoint=endpoint,
             tier=tier,
             sequence_id=sequence_id,
-            sequence_num=sequence_num,
+            sequence_num=0,  # assigned by the INSERT below
             payload=payload,
             aiops_event_id=aiops_event_id,
             failure_mode_id=failure_mode_id,
         )
 
         try:
-            async with pool.acquire() as conn:
-                await conn.execute(
-                    """
-                    INSERT INTO healing_events (
-                        event_id, sequence_id, sequence_num, event_type,
-                        endpoint, tier, payload, aiops_event_id, failure_mode_id
-                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-                    """,
-                    event.event_id,
-                    sequence_id,
-                    sequence_num,
-                    event_type.value,
-                    endpoint,
-                    tier,
-                    json.dumps(payload),
-                    aiops_event_id,
-                    failure_mode_id,
+            from asyncpg.exceptions import UniqueViolationError
+
+            sequence_num = None
+            for _attempt in range(3):
+                try:
+                    async with pool.acquire() as conn:
+                        sequence_num = await conn.fetchval(
+                            """
+                            INSERT INTO healing_events (
+                                event_id, sequence_id, sequence_num, event_type,
+                                endpoint, tier, payload, aiops_event_id, failure_mode_id
+                            )
+                            SELECT $1, $2, COALESCE(MAX(sequence_num), 0) + 1,
+                                   $3, $4, $5, $6, $7, $8
+                            FROM healing_events WHERE sequence_id = $2
+                            RETURNING sequence_num
+                            """,
+                            event.event_id,
+                            sequence_id,
+                            event_type.value,
+                            endpoint,
+                            tier,
+                            json.dumps(payload),
+                            aiops_event_id,
+                            failure_mode_id,
+                        )
+                    break
+                except UniqueViolationError:
+                    continue  # concurrent writer took the number; recompute
+            if sequence_num is None:
+                raise RuntimeError(
+                    f"could not allocate sequence_num for {sequence_id} after 3 attempts"
                 )
+            event.sequence_num = sequence_num
+            self._sequence_counters[sequence_id] = sequence_num + 1
 
             logger.debug(
                 f"Recorded healing event: {event_type.value} for {endpoint} "
