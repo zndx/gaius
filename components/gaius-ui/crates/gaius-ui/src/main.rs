@@ -471,6 +471,27 @@ async fn ops_api(State(state): State<openai::AppState>) -> impl IntoResponse {
 }
 
 async fn federation_surfaces_api() -> impl IntoResponse {
+    // Varnish proof point: serve the waffle from the cache layer (60s ttl
+    // + 6h grace = instant responses, background refresh, never an empty
+    // menu). Falls back to the live collector when varnish is absent.
+    let vport = std::env::var("VARNISH_PORT").unwrap_or_else(|_| "6081".into());
+    let url = format!("http://127.0.0.1:{vport}/api/gaius/v1/federation/surfaces_origin");
+    if let Ok(client) = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(6))
+        .build()
+    {
+        if let Ok(resp) = client.get(&url).send().await {
+            if resp.status().is_success() {
+                if let Ok(v) = resp.json::<serde_json::Value>().await {
+                    return Json(v).into_response();
+                }
+            }
+        }
+    }
+    federation_surfaces_origin_api().await.into_response()
+}
+
+async fn federation_surfaces_origin_api() -> impl IntoResponse {
     match gaius::Gaius::from_env().federation_surfaces().await {
         Ok(v) => Json(v).into_response(),
         Err(e) => summary_err(e),
@@ -1140,6 +1161,10 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/gaius/v1/ops", get(ops_api))
         .route("/api/gaius/v1/watts", get(watts_api))
         .route("/api/gaius/v1/federation/surfaces", get(federation_surfaces_api))
+        .route(
+            "/api/gaius/v1/federation/surfaces_origin",
+            get(federation_surfaces_origin_api),
+        )
         .route(
             "/api/gaius/v1/federation/cognition",
             get(federation_cognition_api),

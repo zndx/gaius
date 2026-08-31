@@ -16,11 +16,6 @@ banner "GAIUS ENGINE - Centralized Inference & Evolution Daemon"
 # (gRPC SO_REUSEPORT would otherwise dual-bind; see #EN.00000014.DUALBIND)
 assert_tcp_port_free "${GAIUS_ENGINE_GRPC_PORT:-50051}" "gaius-engine lattice"
 
-# Same cluster hostname as Signals/Ægir when they export it.
-if [[ -z "${GAIUS_ADVERTISE_HOST:-}" && -n "${SIGNALS_ADVERTISE_HOST:-}" ]]; then
-  export GAIUS_ADVERTISE_HOST="$SIGNALS_ADVERTISE_HOST"
-fi
-
 # Follow devenv's assigned PGPORT (worktrees / sibling projects). If
 # systemd pinned this checkout's postmaster to the lattice port, wait
 # discovers that live listener instead of a dark assigned port.
@@ -57,6 +52,12 @@ export GAIUS_HX_POLARIS_URI="${GAIUS_HX_POLARIS_URI:-http://127.0.0.1:8181/api/c
 export SIGNALS_WAREHOUSE_DSN="${SIGNALS_WAREHOUSE_DSN:-postgresql://signals@127.0.0.1:5455/signals}"
 export GAIUS_WAREHOUSE_DSN="${GAIUS_WAREHOUSE_DSN:-postgresql://gaius:gaius@127.0.0.1:${PGPORT:-5444}/zndx_gaius}"
 export SIGNALS_ROOT="${SIGNALS_ROOT:-$HOME/local/src/wxs/signals}"
+# Canonical federation identity. Without this, advertise_host() falls back
+# to FQDN detection which can pick up the WAN reverse-DNS name
+# (customer.*.isp.starlink.com) — unresolvable over WARP / off-LAN, so
+# waffle links break (observed 2026-08-31). Mirrors the signals unit's
+# SIGNALS_ADVERTISE_HOST convention.
+export GAIUS_ADVERTISE_HOST="${GAIUS_ADVERTISE_HOST:-${SIGNALS_ADVERTISE_HOST:-tinybox.dev.vista.zndx.org}}"
 # Engine is the Kudu writer (INSERT gpu_metrics_tier0). Do not start the
 # C++ sidecar ingest from this process.
 

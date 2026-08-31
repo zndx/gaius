@@ -43,7 +43,11 @@
   function render(items) {
     list.innerHTML = "";
     var rows = items || [];
-    if (empty) empty.hidden = rows.length > 0;
+    if (empty) {
+      // Definitive result: only now may we claim there are no peers.
+      empty.textContent = "No peers advertising a primary UI.";
+      empty.hidden = rows.length > 0;
+    }
     rows.forEach(function (it) {
       var li = document.createElement("li");
       var a = document.createElement("a");
@@ -58,6 +62,11 @@
   }
 
   async function load() {
+    // Honest in-flight state: never show "no peers" while discovering.
+    if (empty) {
+      empty.hidden = false;
+      empty.textContent = "Discovering federation peers…";
+    }
     try {
       var r = await fetch("/api/gaius/v1/federation/surfaces");
       var data = await r.json();
@@ -85,4 +94,8 @@
     if (open) load();
   });
   if (closeBtn) closeBtn.addEventListener("click", function () { setOpen(false); });
+
+  // Prime the varnish-backed surfaces cache at page load so the first
+  // waffle open is already populated (rail stays hidden; render is cheap).
+  load();
 })();

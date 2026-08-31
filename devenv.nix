@@ -251,6 +251,39 @@
     '';
   };
 
+  services.varnish = {
+    enable = true;
+    listen = "127.0.0.1:6081";
+    # Proof point: the federated waffle fan-out. ttl+grace means the menu
+    # is served instantly from cache while a background fetch refreshes —
+    # the user never sees an empty waffle. Only the *_origin route is
+    # cached; everything else passes through untouched.
+    vcl = ''
+      vcl 4.1;
+
+      backend gaius_ui {
+        .host = "127.0.0.1";
+        .port = "9890";
+        .connect_timeout = 2s;
+        .first_byte_timeout = 30s;
+      }
+
+      sub vcl_recv {
+        if (req.url ~ "^/api/gaius/v1/federation/surfaces_origin") {
+          return (hash);
+        }
+        return (pass);
+      }
+
+      sub vcl_backend_response {
+        if (bereq.url ~ "^/api/gaius/v1/federation/surfaces_origin") {
+          set beresp.ttl = 60s;
+          set beresp.grace = 6h;
+        }
+      }
+    '';
+  };
+
   # Qdrant as a custom process (not a native devenv service)
   processes.qdrant = {
     exec = ''

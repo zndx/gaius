@@ -376,6 +376,41 @@ async def status_peer(target: str) -> zpb.StatusResponse | None:
         await channel.close()
 
 
+def _canonicalize_same_box(url: str, reached_via: str) -> str:
+    """Rewrite a same-box peer's advertised URL host to our canonical host.
+
+    When we reached the peer via loopback or our own advertise host, it
+    lives on this machine — whatever host it advertises (WAN reverse-DNS
+    like customer.*.isp.starlink.com included) refers to this box and is
+    canonicalized so links resolve on any network path (LAN, WARP, road).
+    A peer reached at a genuinely different host keeps its own identity.
+    """
+    host = advertise_host()
+    if not url or not host:
+        return url
+    via_host = (reached_via or "").rsplit(":", 1)[0]
+    if via_host and not is_loopback_host(via_host) and via_host != host:
+        return url
+    parsed = urlparse(url)
+    if not parsed.hostname or parsed.hostname == host:
+        return url
+    netloc = f"{host}:{parsed.port}" if parsed.port else host
+    return urlunparse(
+        (parsed.scheme or "http", netloc, parsed.path, parsed.params, parsed.query, parsed.fragment)
+    )
+
+
+def _canonical_target(addr: str) -> str:
+    """Loopback peer targets are same-box; display the canonical host."""
+    host = advertise_host()
+    if not host or not addr:
+        return addr
+    tgt_host, sep, port = addr.rpartition(":")
+    if sep and is_loopback_host(tgt_host):
+        return f"{host}:{port}"
+    return addr
+
+
 async def collect_peer_surfaces(
     services: object,
     *,
@@ -415,8 +450,8 @@ async def collect_peer_surfaces(
                 by_project[key] = {
                     "project": project or addr,
                     "title": surface_title(project or ""),
-                    "engine_target": addr,
-                    "primary_ui": ui,
+                    "engine_target": _canonical_target(addr),
+                    "primary_ui": _canonicalize_same_box(ui, addr),
                 }
         peers = await query_peer(addr, kind=zpb.SERVER_QUERY_KIND_PEERS)
         if peers is None:
