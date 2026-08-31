@@ -35,7 +35,7 @@
   function cacheKey() {
     return (
       "gaius-discover:" +
-      (wEl ? wEl.value : "1h") +
+      (wEl ? wEl.value : "12h") +
       ":" +
       currentQuery()
     );
@@ -348,7 +348,7 @@
   async function load() {
     if (document.hidden || inflight) return;
     inflight = true;
-    var windowV = wEl ? wEl.value : "1h";
+    var windowV = wEl ? wEl.value : "12h";
     var breakdown = bEl ? bEl.value : "source";
     var query = currentQuery();
     var url =

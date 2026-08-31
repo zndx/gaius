@@ -3943,10 +3943,10 @@ Respond with:
                 "refresh",
                 {"reason": reason},
             )
-        window = "1h"
+        window = "12h"
         query_parts: list[str] = []
         if parts and (
-            parts[0].lower() in ("salience", "1h", "24h", "36h")
+            parts[0].lower() in ("salience", "1h", "12h", "24h", "36h")
             or (parts[0][-1:].lower() in "mhd" and parts[0][:-1].isdigit())
         ):
             window = parts[0]

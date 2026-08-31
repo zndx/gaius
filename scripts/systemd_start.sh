@@ -52,6 +52,19 @@ for i in $(seq 1 "$POLL_ITERS"); do
   fi
   if unit_already_ready && compose_visible; then
     info "compose-owned Engine/Status ready on :${GRPC_PORT} (iter=$i)"
+    # Warm the varnish-fronted surfaces: the malloc store is empty after a
+    # restart, and cold multi-hour Impala windows take 10-20s each. One
+    # sequential fire-and-forget pass (default 12h first) makes every
+    # first view serve from cache; grace keeps it instant thereafter.
+    (
+      sleep 5
+      for w in 12h 1h 24h 36h; do
+        curl -sf --max-time 140 -o /dev/null \
+          "http://127.0.0.1:9890/api/gaius/v1/discover?window=$w" || true
+      done
+      curl -sf --max-time 30 -o /dev/null \
+        "http://127.0.0.1:9890/api/gaius/v1/federation/surfaces" || true
+    ) >/dev/null 2>&1 &
     exit 0
   fi
   if [[ "$FORCED_ENGINE_RESTART" -eq 0 && "$i" -ge 12 ]]; then

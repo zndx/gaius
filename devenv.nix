@@ -254,10 +254,14 @@
   services.varnish = {
     enable = true;
     listen = "127.0.0.1:6081";
-    # Proof point: the federated waffle fan-out. ttl+grace means the menu
-    # is served instantly from cache while a background fetch refreshes —
-    # the user never sees an empty waffle. Only the *_origin route is
-    # cached; everything else passes through untouched.
+    # Cached *_origin routes (everything else passes through untouched):
+    # - federation/surfaces_origin: the waffle fan-out — the menu is never
+    #   empty and never slow.
+    # - discover_origin: the Kumo histogram payload — multi-hour Impala
+    #   queries across Iceberg+Kudu serve instantly with background
+    #   refresh; near-live windows get a short ttl so they track the wall.
+    # first_byte_timeout is a generous outer net so a cold multi-hour
+    # Impala fetch completes into cache even after the browser gave up.
     vcl = ''
       vcl 4.1;
 
@@ -265,20 +269,38 @@
         .host = "127.0.0.1";
         .port = "9890";
         .connect_timeout = 2s;
-        .first_byte_timeout = 30s;
+        .first_byte_timeout = 120s;
       }
 
       sub vcl_recv {
-        if (req.url ~ "^/api/gaius/v1/federation/surfaces_origin") {
+        if (req.url ~ "^/api/gaius/v1/federation/surfaces_origin" ||
+            req.url ~ "^/api/gaius/v1/discover_origin") {
           return (hash);
         }
         return (pass);
       }
 
       sub vcl_backend_response {
-        if (bereq.url ~ "^/api/gaius/v1/federation/surfaces_origin") {
-          set beresp.ttl = 60s;
-          set beresp.grace = 6h;
+        if (bereq.url ~ "^/api/gaius/v1/federation/surfaces_origin" ||
+            bereq.url ~ "^/api/gaius/v1/discover_origin") {
+          if (beresp.status >= 400) {
+            # A background refresh that fails must not displace the good
+            # stale object; a foreground error must not stick in cache.
+            if (bereq.is_bgfetch) {
+              return (abandon);
+            }
+            set beresp.ttl = 1s;
+            set beresp.grace = 0s;
+            set beresp.uncacheable = true;
+          } else {
+            if (bereq.url ~ "^/api/gaius/v1/discover_origin" &&
+                bereq.url ~ "[?&]window=([12]h|[0-9]+m)") {
+              set beresp.ttl = 10s;
+            } else {
+              set beresp.ttl = 60s;
+            }
+            set beresp.grace = 6h;
+          }
         }
       }
     '';

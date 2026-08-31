@@ -16,7 +16,7 @@ mod pty;
 
 use askama::Template;
 use axum::{
-    extract::{DefaultBodyLimit, Multipart, Query, State},
+    extract::{DefaultBodyLimit, Multipart, Query, RawQuery, State},
     response::{
         sse::{Event, KeepAlive, Sse},
         Html, IntoResponse, Json, Redirect,
@@ -204,10 +204,38 @@ async fn discover(State(state): State<openai::AppState>) -> impl IntoResponse {
     )
 }
 
-async fn discover_api(Query(q): Query<DiscoverQuery>) -> impl IntoResponse {
+async fn discover_api(RawQuery(raw): RawQuery, Query(q): Query<DiscoverQuery>) -> impl IntoResponse {
+    // Varnish loop-through (waffle precedent): the Kumo histogram payload —
+    // multi-hour Impala queries across Iceberg+Kudu — serves instantly from
+    // cache with background refresh. The hierarchical query path itself is
+    // untouched; varnish only fronts the finished HTTP response. Falls back
+    // to the live surface when varnish is absent.
+    let vport = std::env::var("VARNISH_PORT").unwrap_or_else(|_| "6081".into());
+    let qs = raw.map(|s| format!("?{s}")).unwrap_or_default();
+    let url = format!("http://127.0.0.1:{vport}/api/gaius/v1/discover_origin{qs}");
+    if let Ok(client) = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(150))
+        .build()
+    {
+        if let Ok(resp) = client.get(&url).send().await {
+            if resp.status().is_success() {
+                if let Ok(v) = resp.json::<serde_json::Value>().await {
+                    return Json(v).into_response();
+                }
+            }
+        }
+    }
+    discover_surface_json(q).await.into_response()
+}
+
+async fn discover_origin_api(Query(q): Query<DiscoverQuery>) -> impl IntoResponse {
+    discover_surface_json(q).await
+}
+
+async fn discover_surface_json(q: DiscoverQuery) -> axum::response::Response {
     match gaius::Gaius::from_env()
         .discover_surface(
-            q.window.unwrap_or_default(),
+            q.window.unwrap_or_else(|| "12h".into()),
             q.query.unwrap_or_default(),
             q.breakdown.unwrap_or_default(),
             q.limit.unwrap_or(50),
@@ -215,7 +243,7 @@ async fn discover_api(Query(q): Query<DiscoverQuery>) -> impl IntoResponse {
         .await
     {
         Ok(v) => Json(v).into_response(),
-        Err(e) => summary_err(e),
+        Err(e) => summary_err(e).into_response(),
     }
 }
 
@@ -1134,6 +1162,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/", get(discover))
         .route("/lab/board", get(board))
         .route("/api/gaius/v1/discover", get(discover_api))
+        .route("/api/gaius/v1/discover_origin", get(discover_origin_api))
         .route("/agenda", get(agenda))
         .route("/api/gaius/v1/agenda", get(agenda_api).post(agenda_create))
         .route("/api/gaius/v1/agenda/update", post(agenda_update))

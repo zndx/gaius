@@ -18,7 +18,7 @@ GURU_NODB = (
     "  Try: /health fix postgres"
 )
 GURU_WINDOW = (
-    "Discover window must be like 1h, 24h, 36h, or 7d (1..3660 days).\n"
+    "Discover window must be like 1h, 12h, 24h, 36h, or 7d (1..3660 days).\n"
     "  Guru: #DI.00000002.BADWINDOW"
 )
 GURU_LIMIT = (
@@ -105,7 +105,7 @@ class DiscoverSurface:
 
 
 def parse_window(raw: str) -> timedelta:
-    token = (raw or "1h").strip().lower()
+    token = (raw or "12h").strip().lower()
     m = _WINDOW_RE.match(token)
     if not m:
         raise DiscoverError(GURU_WINDOW)
@@ -217,8 +217,10 @@ def _cron_field(expr: str, lo: int, hi: int) -> set[int]:
 
 
 def _window_token(window: str) -> str:
-    w = (window or "1h").strip().lower()
-    if w in ("", "salience"):
+    w = (window or "12h").strip().lower()
+    if w == "":
+        return "12h"
+    if w == "salience":
         return "1h"
     return w
 
@@ -421,7 +423,7 @@ def _fill_minutes(
 async def load_discover(
     db_pool: Any,
     *,
-    window: str = "1h",
+    window: str = "12h",
     query: str = "",
     breakdown: str = "source",
     limit: int = 50,

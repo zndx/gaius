@@ -94,7 +94,7 @@ impl Gaius {
         let r = c
             .discover_surface(DiscoverSurfaceRequest {
                 window: if window.is_empty() {
-                    "1h".into()
+                    "12h".into()
                 } else {
                     window
                 },
@@ -358,10 +358,14 @@ impl Gaius {
 
     async fn discover_client(&self) -> Result<GaiusServiceClient<Channel>, GaiusError> {
         let endpoint = format!("http://{}", self.target.trim());
+        // Generous outer net (progress doctrine): the engine's own 110s
+        // outer net governs; this only bounds a dead engine. Varnish owns
+        // interactivity for the discover surface. Chain: servicer 110s <
+        // varnish first_byte 120s < here 130s < proxy reqwest 150s.
         let ch = Channel::from_shared(endpoint)
             .map_err(|e| GaiusError::Message(e.to_string()))?
             .connect_timeout(Duration::from_secs(2))
-            .timeout(Duration::from_secs(4))
+            .timeout(Duration::from_secs(130))
             .connect()
             .await?;
         Ok(GaiusServiceClient::new(ch))

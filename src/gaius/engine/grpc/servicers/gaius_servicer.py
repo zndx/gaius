@@ -2119,7 +2119,7 @@ class GaiusServicer(GaiusServiceServicer):
             request.query or "", list(request.feature_pins or [])
         )
         if uses_landing_mv(
-            request.window or "36h",
+            request.window or "12h",
             parsed,
             request.from_ts or "",
             request.to_ts or "",
@@ -2130,10 +2130,18 @@ class GaiusServicer(GaiusServiceServicer):
 
         pool = _summary_db(self._services)
         try:
+            # Generous outer net only (progress doctrine). Varnish fronts this
+            # surface, so interactivity is the cache layer's job — the origin
+            # is allowed to let Impala across Iceberg+Kudu take its time.
+            # 110s sits under varnish's 120s first_byte_timeout so an honest
+            # error propagates before the fetch is torn down; a failed
+            # background refresh is abandoned by the VCL and the last good
+            # object keeps serving. The old 2.5s wait_for silently substituted
+            # the 36h landing MV for ANY window — success with wrong data.
             snap = await asyncio.wait_for(
                 load_discover(
                     pool,
-                    window=request.window or "36h",
+                    window=request.window or "12h",
                     query=request.query or "",
                     breakdown=request.breakdown or "source",
                     limit=request.limit or 50,
@@ -2141,23 +2149,17 @@ class GaiusServicer(GaiusServiceServicer):
                     from_ts=request.from_ts or "",
                     to_ts=request.to_ts or "",
                 ),
-                timeout=2.5,
+                timeout=110.0,
             )
         except TimeoutError:
-            cached = peek_landing()
-            if cached is not None:
-                return self._discover_proto(cached)
             return DiscoverSurfaceResponse(
                 error=(
-                    "Discover surface timed out.\n"
+                    "Discover surface timed out (110s outer net).\n"
                     "Guru Meditation: #DI.00000009.SLOWPOOL\n"
-                    "  Try: /discover refresh"
+                    "  Try: /health fix postgres"
                 )
             )
         except DiscoverError as e:
-            cached = peek_landing()
-            if cached is not None:
-                return self._discover_proto(cached)
             return DiscoverSurfaceResponse(error=str(e))
         except Exception as e:
             return DiscoverSurfaceResponse(
