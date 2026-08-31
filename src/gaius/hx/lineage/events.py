@@ -61,6 +61,37 @@ class DatasetFacets:
         return result
 
 
+# Marquez/Atlas "Source" identity per dataset namespace (dataSource facet).
+# Signals' Atlas-OL facade materializes /api/v1/sources from these at ingest;
+# a dataset without a facet lands on the "default" source (stock Marquez
+# behavior). URIs are descriptive source identities, not live connections.
+DATA_SOURCES: dict[str, dict[str, str]] = {
+    "gaius.source": {
+        "name": "gaius-feeds",
+        "uri": "postgres://localhost:5444/zndx_gaius#feed_sources",
+    },
+    "gaius.kb": {"name": "gaius-kb", "uri": "file:///raid/signals/var/kb/dev"},
+    "gaius.hx": {
+        "name": "signals-iceberg",
+        "uri": "s3://signals-dataproducts/iceberg",
+    },
+    "gaius.qdrant": {"name": "gaius-qdrant", "uri": "http://localhost:6333"},
+    "gaius.thought": {
+        "name": "gaius-postgres",
+        "uri": "postgres://localhost:5444/zndx_gaius",
+    },
+    "gaius.config": {
+        "name": "gaius-postgres",
+        "uri": "postgres://localhost:5444/zndx_gaius",
+    },
+    "gaius.fmp": {"name": "fmp-api", "uri": "https://financialmodelingprep.com"},
+}
+
+_DATASOURCE_SCHEMA_URL = (
+    "https://openlineage.io/spec/facets/1-0-0/DatasourceDatasetFacet.json"
+)
+
+
 @dataclass
 class Dataset:
     """A data source or sink in the lineage graph.
@@ -78,12 +109,25 @@ class Dataset:
     facets: DatasetFacets = field(default_factory=DatasetFacets)
 
     def to_dict(self) -> dict:
-        """Convert to OpenLineage JSON format."""
+        """Convert to OpenLineage JSON format.
+
+        Attaches the namespace's default ``dataSource`` facet when the
+        caller supplied none, so Marquez Sources materialize truthfully.
+        """
         result = {
             "namespace": self.namespace,
             "name": self.name,
         }
         facets = self.facets.to_dict()
+        if "dataSource" not in facets:
+            source = DATA_SOURCES.get(self.namespace)
+            if source:
+                facets["dataSource"] = {
+                    "_producer": "https://github.com/zndx/gaius",
+                    "_schemaURL": _DATASOURCE_SCHEMA_URL,
+                    "name": source["name"],
+                    "uri": source["uri"],
+                }
         if facets:
             result["facets"] = facets
         return result
