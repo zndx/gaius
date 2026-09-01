@@ -210,6 +210,64 @@ mdbook documentation in `docs/`. Save work summaries and notes to `docs/notes/$(
 - **Claude Code**: Slash commands, conversational interface
 - **CAD orthographic views**: Multiple projection views updating together
 
+## Objective-Oriented Verification (DOCTRINE)
+
+**Objectives drive system efficacy while allowing for drift.** Workflows
+completing without errors is necessary but never sufficient: incremental
+deterministic checks verify MECHANICS ("cards were published"), not
+INTENT ("the public surface tracks the present"). Both can be green
+while the objective silently fails — and both can flap while the
+objective is fine. The Brier-scored efficacy ledger provides the
+objective, quantitative measurement that deterministic checks cannot.
+
+This is BDD scenario thinking realized quantitatively: Given a logical
+FSM position, When a probe/timeout/heuristic renders a verdict, Then the
+declared Objective resolves the outcome — except the Then is not a
+binary assertion but a scored resolution, so every check accrues a
+calibration record (Brier, α) per (observer × call-site × FSM state).
+The RASE/OSM scenario vocabulary was the qualitative form; the ledger +
+objectives are its quantitative realization.
+
+### Rules
+
+1. **Every scheduled task and Metaflow workflow carries a verifiable
+   Objective** — declared in `objective_service.OBJECTIVES` with its DAG
+   linkage, cadence, and `resolves` patterns. A task class without an
+   objective is unfinished work (skeleton specs are acceptable interim).
+2. **The verification system cannot function without explicit success
+   criteria.** Every objective gate states its criterion concretely
+   (threshold, comparison, source column) with the rationale for the
+   threshold in `ObjectiveSpec.params`. "Some cards exist" is not a
+   criterion; "newest source_date within 7d of now" is.
+3. **Capture INTENT objectives, not just mechanics objectives.** For
+   each surface ask: what did the *schedule* promise? `site_freshness`
+   (mechanics: cards flow to the public surface) and `content_currency`
+   (intent: the RIGHT cards flow — content tracks the present) are the
+   canonical pair; the 2026-09-01 finding was mechanics green for weeks
+   while intent failed.
+4. **Every probe, timeout, and heuristic verdict is a FORECAST** in the
+   efficacy ledger: an affirmative proposition + the observer's implied
+   P(true), stamped with the caller's FSM position (one probe function,
+   many call sites, one row each). Polarity convention lives at
+   `efficacy_ledger.VERDICT_P` — an inversion silently flips every score.
+5. **Outcomes come from objective verification (silver) or independent
+   authority (gold)** — the human at the CLI, or Overwatch (ACP+Grok)
+   checking the PUBLIC result from outside the trust boundary. Internal
+   machinery confirming internal machinery is still a forecast, however
+   confident.
+6. **Drift is allowed; divergence is surfaced, not punished per-event.**
+   A single miss changes a score, not behavior. No probe is auto-disabled,
+   no threshold auto-tuned; salt annotates. Nautilus (model-free) watches
+   for sustained objective failure/staleness; Overwatch judges what
+   determinism cannot settle; the judge itself is Brier-scored.
+7. **When an objective FAILs, the diagnosis names the DAG stage** (which
+   gate, which upstream class) so remediation lands on the true cause —
+   e.g. content_currency's selection gate pointed past "publishing
+   works" to enrichment head-of-line starvation.
+
+CLI surfaces: `/objective verify|history`, `/efficacy [report|recent|resolve]`,
+`/nautilus`, `/overwatch`.
+
 ## Fail-Fast Policy (MANDATORY)
 
 **Fail-fast is an iron-clad design principle in this codebase.** All code must surface errors immediately with actionable remediation paths. Never silently degrade, fall back to placeholders, or continue with partial functionality.
