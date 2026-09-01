@@ -1,7 +1,9 @@
-"""Overwatch judge: ACP + Grok, structurally immune to local-model outages.
+"""Overwatch: the ACP + Grok judgement capability — its own capability,
+distinct from Nautilus (the model-free watcher that escalates here).
+Structurally immune to local-model outages.
 
-The judge is invoked event-driven (never cron) by Nautilus when a
-trigger fires and deterministic verification cannot settle the question.
+Overwatch is invoked event-driven (never cron) when Nautilus fires a
+trigger whose question deterministic verification cannot settle.
 
 Independence properties (the load-bearing part):
 - ``JUDGE_AGENT = "grok"`` is a FROZEN constant — never

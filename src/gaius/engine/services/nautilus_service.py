@@ -1,10 +1,15 @@
-"""Nautilus: the in-engine, model-free Overwatch watcher (BaseDaemon).
+"""Nautilus: the in-engine, MODEL-FREE detection capability (BaseDaemon).
+
+Nautilus and Overwatch are DISTINCT capabilities (user doctrine):
+Nautilus is the model-free watcher — deterministic snapshots, pure
+triggers, zero LLM code, always works; Overwatch is its own capability
+(ACP + Grok judgement, overwatch_judge) that Nautilus ESCALATES TO for
+what deterministic verification cannot settle. Neither contains the
+other.
 
 Polls deterministic surfaces every 60s, evaluates the pure trigger set
-(nautilus_triggers), applies once-per-scope-phase arming, records
-firings to overwatch_events, and — for what deterministic verification
-cannot settle — consults the Overwatch judge (ACP + Grok, pinned,
-fail-closed; overwatch_judge).
+(nautilus_triggers), applies once-per-scope-phase arming, and records
+firings (plus any Overwatch consultation results) to overwatch_events.
 
 Also owns the objective resolution sweep: recently-completed objective
 verifications are the outcome source for upstream probe forecasts (that
@@ -45,8 +50,10 @@ logger = logging.getLogger(__name__)
 POLL_INTERVAL_S = 60.0
 
 # Triggers whose questions deterministic checks cannot settle alone —
-# these consult the judge. The rest are record-and-report.
-JUDGE_TRIGGERS = {"kill_loop", "frozen_incident", "objective_stale"}
+# these escalate to the Overwatch capability. The rest are Nautilus-only
+# record-and-report.
+OVERWATCH_TRIGGERS = {"kill_loop", "frozen_incident", "objective_stale"}
+JUDGE_TRIGGERS = OVERWATCH_TRIGGERS  # back-compat alias
 
 
 class NautilusService(BaseDaemon):
@@ -267,7 +274,7 @@ class NautilusService(BaseDaemon):
             f"{firing.detail}"
         )
         judge_payload: dict[str, Any] = {"status": "not_invoked"}
-        if firing.trigger in JUDGE_TRIGGERS:
+        if firing.trigger in OVERWATCH_TRIGGERS:
             judge_payload = await self._judge.consult(
                 trigger=firing.trigger,
                 scope=firing.scope,
@@ -296,7 +303,7 @@ class NautilusService(BaseDaemon):
                     firing.scope,
                     firing.detail,
                     json.dumps(firing.evidence, default=str),
-                    firing.trigger in JUDGE_TRIGGERS,
+                    firing.trigger in OVERWATCH_TRIGGERS,
                     judge_payload.get("status"),
                     json.dumps(verdict, default=str) if verdict else None,
                     action,

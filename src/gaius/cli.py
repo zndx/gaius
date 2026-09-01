@@ -210,6 +210,8 @@ class GaiusCLI:
                     result["data"] = self._run_async(self._cmd_objective(args))
                 elif command == "overwatch":
                     result["data"] = self._run_async(self._cmd_overwatch(args))
+                elif command == "nautilus":
+                    result["data"] = self._run_async(self._cmd_nautilus(args))
                 # Inference management (high-level)
                 elif command == "inference" or command == "inf":
                     result["data"] = self._run_async(self._cmd_inference(args))
@@ -4056,12 +4058,13 @@ Respond with:
             )
         return await client.call("Objective", "history", {"limit": 20})
 
-    async def _cmd_overwatch(self, args: str) -> dict:
-        """Overwatch: Nautilus detector + ACP/Grok judge.
+    async def _cmd_nautilus(self, args: str) -> dict:
+        """Nautilus: the MODEL-FREE detection capability (distinct from
+        Overwatch, which it escalates to).
 
         Usage:
-            /overwatch [status]   - detector heartbeat, armed triggers, judge availability
-            /overwatch history    - recent trigger firings + judge verdicts
+            /nautilus [status]   - watcher heartbeat, cycles, armed triggers
+            /nautilus history    - trigger firings (all, incl. Nautilus-only)
         """
         sub = (args.split()[0].lower() if args else "status")
         try:
@@ -4073,7 +4076,51 @@ Respond with:
             }
         if sub == "history":
             return await client.call("Overwatch", "history", {"limit": 20})
-        return await client.call("Overwatch", "status", {})
+        status = await client.call("Overwatch", "status", {})
+        if "error" in status:
+            return status
+        return {
+            "capability": "nautilus (model-free detection)",
+            "running": status["running"],
+            "cycles": status["cycles"],
+            "firings_recorded": status["firings_recorded"],
+            "armed": status["armed"],
+        }
+
+    async def _cmd_overwatch(self, args: str) -> dict:
+        """Overwatch: the ACP+Grok judgement capability (its own capability;
+        Nautilus is the separate model-free watcher that escalates here).
+
+        Usage:
+            /overwatch [status]   - judge agent, availability, autonomy tier
+            /overwatch history    - escalations that reached Overwatch (judge verdicts)
+        """
+        sub = (args.split()[0].lower() if args else "status")
+        try:
+            client = await self._get_engine_client_cached()
+        except Exception as e:
+            return {
+                "error": f"Failed to connect to engine: {e}",
+                "suggestion": "Run: systemctl restart gaius",
+            }
+        if sub == "history":
+            hist = await client.call("Overwatch", "history", {"limit": 50})
+            if "error" in hist:
+                return hist
+            return {
+                "capability": "overwatch (ACP+Grok judgement)",
+                "rows": [r for r in hist.get("rows", []) if r.get("judge_invoked")],
+            }
+        status = await client.call("Overwatch", "status", {})
+        if "error" in status:
+            return status
+        return {
+            "capability": "overwatch (ACP+Grok judgement)",
+            "judge_agent": status["judge_agent"],
+            "judge_available": status["judge_available"],
+            "autonomy": status["autonomy"],
+            "escalation_source": "nautilus (model-free watcher, /nautilus)",
+        }
 
     async def _cmd_gpu(self, args: str) -> dict:
         """GPU orchestrator operations.
