@@ -820,6 +820,16 @@ class GaiusServiceStub(object):
                 request_serializer=gaius__service__pb2.EfficacyResolveRequest.SerializeToString,
                 response_deserializer=gaius__service__pb2.EfficacyResolveResponse.FromString,
                 _registered_method=True)
+        self.ObjectiveVerify = channel.unary_unary(
+                '/gaius.engine.GaiusService/ObjectiveVerify',
+                request_serializer=gaius__service__pb2.ObjectiveVerifyRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.ObjectiveVerifyResponse.FromString,
+                _registered_method=True)
+        self.ObjectiveHistory = channel.unary_unary(
+                '/gaius.engine.GaiusService/ObjectiveHistory',
+                request_serializer=gaius__service__pb2.ObjectiveHistoryRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.ObjectiveHistoryResponse.FromString,
+                _registered_method=True)
 
 
 class GaiusServiceServicer(object):
@@ -1912,6 +1922,21 @@ class GaiusServiceServicer(object):
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def ObjectiveVerify(self, request, context):
+        """Verifiable objectives (outcome side of the ledger)
+        Run verification now (one or all)
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def ObjectiveHistory(self, request, context):
+        """objective_verifications rows
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
 
 def add_GaiusServiceServicer_to_server(servicer, server):
     rpc_method_handlers = {
@@ -2699,6 +2724,16 @@ def add_GaiusServiceServicer_to_server(servicer, server):
                     servicer.EfficacyResolve,
                     request_deserializer=gaius__service__pb2.EfficacyResolveRequest.FromString,
                     response_serializer=gaius__service__pb2.EfficacyResolveResponse.SerializeToString,
+            ),
+            'ObjectiveVerify': grpc.unary_unary_rpc_method_handler(
+                    servicer.ObjectiveVerify,
+                    request_deserializer=gaius__service__pb2.ObjectiveVerifyRequest.FromString,
+                    response_serializer=gaius__service__pb2.ObjectiveVerifyResponse.SerializeToString,
+            ),
+            'ObjectiveHistory': grpc.unary_unary_rpc_method_handler(
+                    servicer.ObjectiveHistory,
+                    request_deserializer=gaius__service__pb2.ObjectiveHistoryRequest.FromString,
+                    response_serializer=gaius__service__pb2.ObjectiveHistoryResponse.SerializeToString,
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
@@ -6940,6 +6975,60 @@ class GaiusService(object):
             '/gaius.engine.GaiusService/EfficacyResolve',
             gaius__service__pb2.EfficacyResolveRequest.SerializeToString,
             gaius__service__pb2.EfficacyResolveResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ObjectiveVerify(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/gaius.engine.GaiusService/ObjectiveVerify',
+            gaius__service__pb2.ObjectiveVerifyRequest.SerializeToString,
+            gaius__service__pb2.ObjectiveVerifyResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ObjectiveHistory(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/gaius.engine.GaiusService/ObjectiveHistory',
+            gaius__service__pb2.ObjectiveHistoryRequest.SerializeToString,
+            gaius__service__pb2.ObjectiveHistoryResponse.FromString,
             options,
             channel_credentials,
             insecure,

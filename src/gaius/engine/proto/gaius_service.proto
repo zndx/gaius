@@ -3758,6 +3758,54 @@ service GaiusService {
   rpc EfficacyReport(EfficacyReportRequest) returns (EfficacyReportResponse);    // Brier + alpha per (observer x call_site x momentum bucket)
   rpc EfficacyRecent(EfficacyRecentRequest) returns (EfficacyRecentResponse);    // Recent forecasts with latest resolution
   rpc EfficacyResolve(EfficacyResolveRequest) returns (EfficacyResolveResponse); // Append a resolution event (gold = human)
+
+  // Verifiable objectives (outcome side of the ledger)
+  rpc ObjectiveVerify(ObjectiveVerifyRequest) returns (ObjectiveVerifyResponse);   // Run verification now (one or all)
+  rpc ObjectiveHistory(ObjectiveHistoryRequest) returns (ObjectiveHistoryResponse); // objective_verifications rows
+}
+
+message ObjectiveVerifyRequest {
+  string objective = 1;         // empty = verify all declared objectives
+}
+
+message ObjectiveGate {
+  string gate = 1;
+  string verdict = 2;
+  string evidence = 3;
+}
+
+message ObjectiveResult {
+  string objective = 1;
+  string run_id = 2;
+  string verdict = 3;
+  double accuracy = 4;
+  repeated ObjectiveGate gates = 5;
+  string error = 6;
+}
+
+message ObjectiveVerifyResponse {
+  repeated ObjectiveResult results = 1;
+  string error = 2;
+}
+
+message ObjectiveHistoryRequest {
+  int32 limit = 1;              // default 20
+}
+
+message ObjectiveHistoryRow {
+  string run_id = 1;
+  string objective_name = 2;
+  string verdict = 3;
+  double accuracy = 4;
+  int32 gates_total = 5;
+  int32 gates_passed = 6;
+  string started_at = 7;
+  string gate_results = 8;      // JSON
+}
+
+message ObjectiveHistoryResponse {
+  repeated ObjectiveHistoryRow rows = 1;
+  string error = 2;
 }
 
 // ───────────────────────────────────────────────────────────────────────────

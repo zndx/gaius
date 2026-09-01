@@ -368,6 +368,12 @@ class GaiusServiceStub:
     """Recent forecasts with latest resolution"""
     EfficacyResolve: grpc.UnaryUnaryMultiCallable[gaius_service_pb2.EfficacyResolveRequest, gaius_service_pb2.EfficacyResolveResponse]
     """Append a resolution event (gold = human)"""
+    ObjectiveVerify: grpc.UnaryUnaryMultiCallable[gaius_service_pb2.ObjectiveVerifyRequest, gaius_service_pb2.ObjectiveVerifyResponse]
+    """Verifiable objectives (outcome side of the ledger)
+    Run verification now (one or all)
+    """
+    ObjectiveHistory: grpc.UnaryUnaryMultiCallable[gaius_service_pb2.ObjectiveHistoryRequest, gaius_service_pb2.ObjectiveHistoryResponse]
+    """objective_verifications rows"""
 
 @typing.type_check_only
 class GaiusServiceAsyncStub(GaiusServiceStub):
@@ -709,6 +715,12 @@ class GaiusServiceAsyncStub(GaiusServiceStub):
     """Recent forecasts with latest resolution"""
     EfficacyResolve: grpc.aio.UnaryUnaryMultiCallable[gaius_service_pb2.EfficacyResolveRequest, gaius_service_pb2.EfficacyResolveResponse]  # type: ignore[assignment]
     """Append a resolution event (gold = human)"""
+    ObjectiveVerify: grpc.aio.UnaryUnaryMultiCallable[gaius_service_pb2.ObjectiveVerifyRequest, gaius_service_pb2.ObjectiveVerifyResponse]  # type: ignore[assignment]
+    """Verifiable objectives (outcome side of the ledger)
+    Run verification now (one or all)
+    """
+    ObjectiveHistory: grpc.aio.UnaryUnaryMultiCallable[gaius_service_pb2.ObjectiveHistoryRequest, gaius_service_pb2.ObjectiveHistoryResponse]  # type: ignore[assignment]
+    """objective_verifications rows"""
 
 class GaiusServiceServicer(metaclass=abc.ABCMeta):
     @abc.abstractmethod
@@ -1989,5 +2001,23 @@ class GaiusServiceServicer(metaclass=abc.ABCMeta):
         context: _ServicerContext,
     ) -> typing.Union[gaius_service_pb2.EfficacyResolveResponse, collections.abc.Awaitable[gaius_service_pb2.EfficacyResolveResponse]]:
         """Append a resolution event (gold = human)"""
+
+    @abc.abstractmethod
+    def ObjectiveVerify(
+        self,
+        request: gaius_service_pb2.ObjectiveVerifyRequest,
+        context: _ServicerContext,
+    ) -> typing.Union[gaius_service_pb2.ObjectiveVerifyResponse, collections.abc.Awaitable[gaius_service_pb2.ObjectiveVerifyResponse]]:
+        """Verifiable objectives (outcome side of the ledger)
+        Run verification now (one or all)
+        """
+
+    @abc.abstractmethod
+    def ObjectiveHistory(
+        self,
+        request: gaius_service_pb2.ObjectiveHistoryRequest,
+        context: _ServicerContext,
+    ) -> typing.Union[gaius_service_pb2.ObjectiveHistoryResponse, collections.abc.Awaitable[gaius_service_pb2.ObjectiveHistoryResponse]]:
+        """objective_verifications rows"""
 
 def add_GaiusServiceServicer_to_server(servicer: GaiusServiceServicer, server: typing.Union[grpc.Server, grpc.aio.Server]) -> None: ...

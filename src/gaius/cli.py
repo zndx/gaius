@@ -206,6 +206,8 @@ class GaiusCLI:
                     result["data"] = self._run_async(self._cmd_discover(args))
                 elif command == "efficacy":
                     result["data"] = self._run_async(self._cmd_efficacy(args))
+                elif command == "objective":
+                    result["data"] = self._run_async(self._cmd_objective(args))
                 # Inference management (high-level)
                 elif command == "inference" or command == "inf":
                     result["data"] = self._run_async(self._cmd_inference(args))
@@ -4026,6 +4028,31 @@ Respond with:
         elif sub not in ("report",):
             observer = parts[0]
         return await client.call("Efficacy", "report", {"observer": observer})
+
+    async def _cmd_objective(self, args: str) -> dict:
+        """Verifiable objectives (the outcome side of the efficacy ledger).
+
+        Usage:
+            /objective verify [name]  - run verification now (all, or one)
+            /objective history        - recent objective_verifications rows
+        """
+        parts = args.split() if args else []
+        sub = parts[0].lower() if parts else "history"
+        try:
+            client = await self._get_engine_client_cached()
+        except Exception as e:
+            return {
+                "error": f"Failed to connect to engine: {e}",
+                "suggestion": "Run: systemctl restart gaius",
+            }
+        if sub == "verify":
+            name = parts[1] if len(parts) > 1 else ""
+            # Objective verification does live HTTP + KV round-trips;
+            # give it a generous outer net, never a snappy default.
+            return await client.call(
+                "Objective", "verify", {"objective": name}, timeout=180
+            )
+        return await client.call("Objective", "history", {"limit": 20})
 
     async def _cmd_gpu(self, args: str) -> dict:
         """GPU orchestrator operations.

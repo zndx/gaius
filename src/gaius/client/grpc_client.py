@@ -978,8 +978,69 @@ class GrpcEngineClient:
             return await self._call_article(action, params, timeout)
         elif service == "Efficacy":
             return await self._call_efficacy(action, params, timeout)
+        elif service == "Objective":
+            return await self._call_objective(action, params, timeout)
         else:
             raise ValueError(f"Unknown service: {service}")
+
+    async def _call_objective(
+        self, action: str, params: dict, timeout: float
+    ) -> dict:
+        """Handle Objective verification calls."""
+        from ..engine.generated import (
+            ObjectiveHistoryRequest,
+            ObjectiveVerifyRequest,
+        )
+
+        if action == "verify":
+            response = await self._stub.ObjectiveVerify(
+                ObjectiveVerifyRequest(objective=params.get("objective", "")),
+                timeout=timeout,
+            )
+            if response.error:
+                return {"error": response.error}
+            return {
+                "results": [
+                    {
+                        "objective": r.objective,
+                        "run_id": r.run_id,
+                        "verdict": r.verdict,
+                        "accuracy": round(r.accuracy, 3),
+                        "gates": [
+                            {
+                                "gate": g.gate,
+                                "verdict": g.verdict,
+                                "evidence": g.evidence,
+                            }
+                            for g in r.gates
+                        ],
+                        "error": r.error or None,
+                    }
+                    for r in response.results
+                ]
+            }
+        elif action == "history":
+            response = await self._stub.ObjectiveHistory(
+                ObjectiveHistoryRequest(limit=int(params.get("limit", 20))),
+                timeout=timeout,
+            )
+            if response.error:
+                return {"error": response.error}
+            return {
+                "rows": [
+                    {
+                        "run_id": r.run_id,
+                        "objective": r.objective_name,
+                        "verdict": r.verdict,
+                        "accuracy": round(r.accuracy, 3),
+                        "gates": f"{r.gates_passed}/{r.gates_total}",
+                        "started_at": r.started_at,
+                    }
+                    for r in response.rows
+                ]
+            }
+        else:
+            raise ValueError(f"Unknown Objective action: {action}")
 
     async def _call_efficacy(
         self, action: str, params: dict, timeout: float

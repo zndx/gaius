@@ -259,6 +259,13 @@ from ...generated import (
     EfficacyResolveRequest,
     EfficacyResolveResponse,
     EfficacyScoreRow,
+    ObjectiveGate,
+    ObjectiveHistoryRequest,
+    ObjectiveHistoryResponse,
+    ObjectiveHistoryRow,
+    ObjectiveResult,
+    ObjectiveVerifyRequest,
+    ObjectiveVerifyResponse,
     DiscoverBucket as ProtoDiscoverBucket,
     DiscoverDoc as ProtoDiscoverDoc,
     DiscoverFacet as ProtoDiscoverFacet,
@@ -9394,6 +9401,81 @@ class GaiusServicer(GaiusServiceServicer):
         except Exception as e:
             logger.exception("EfficacyRecent failed")
             return EfficacyRecentResponse(error=str(e))
+
+    async def ObjectiveVerify(
+        self,
+        request: ObjectiveVerifyRequest,
+        context: aio.ServicerContext,
+    ) -> ObjectiveVerifyResponse:
+        try:
+            from gaius.engine.services.collection_service import CollectionService
+            from gaius.engine.services.objective_service import ObjectiveService
+
+            pool = _summary_db(self._services)
+            service = ObjectiveService(
+                pool, collection_service=CollectionService(pool)
+            )
+            if request.objective:
+                results = [await service.verify(request.objective)]
+            else:
+                results = await service.verify_all()
+            return ObjectiveVerifyResponse(
+                results=[
+                    ObjectiveResult(
+                        objective=r.get("objective", ""),
+                        run_id=r.get("run_id", ""),
+                        verdict=r.get("verdict", "error"),
+                        accuracy=float(r.get("accuracy", 0.0)),
+                        gates=[
+                            ObjectiveGate(
+                                gate=g["gate"],
+                                verdict=g["verdict"],
+                                evidence=str(g.get("evidence", "")),
+                            )
+                            for g in r.get("gates", [])
+                        ],
+                        error=r.get("error", "") or "",
+                    )
+                    for r in results
+                ]
+            )
+        except Exception as e:
+            logger.exception("ObjectiveVerify failed")
+            return ObjectiveVerifyResponse(error=str(e))
+
+    async def ObjectiveHistory(
+        self,
+        request: ObjectiveHistoryRequest,
+        context: aio.ServicerContext,
+    ) -> ObjectiveHistoryResponse:
+        try:
+            import json as _json
+
+            from gaius.engine.services.objective_service import ObjectiveService
+
+            pool = _summary_db(self._services)
+            service = ObjectiveService(pool)
+            rows = await service.history(limit=request.limit or 20)
+            return ObjectiveHistoryResponse(
+                rows=[
+                    ObjectiveHistoryRow(
+                        run_id=r["run_id"],
+                        objective_name=r["objective_name"],
+                        verdict=r["verdict"],
+                        accuracy=float(r["accuracy"]),
+                        gates_total=r["gates_total"],
+                        gates_passed=r["gates_passed"],
+                        started_at=str(r["started_at"]),
+                        gate_results=_json.dumps(r["gate_results"], default=str)
+                        if not isinstance(r["gate_results"], str)
+                        else r["gate_results"],
+                    )
+                    for r in rows
+                ]
+            )
+        except Exception as e:
+            logger.exception("ObjectiveHistory failed")
+            return ObjectiveHistoryResponse(error=str(e))
 
     async def EfficacyResolve(
         self,

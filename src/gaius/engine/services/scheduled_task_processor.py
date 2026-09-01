@@ -552,6 +552,35 @@ class ScheduledTaskProcessor(BaseDaemon):
             from gaius.engine.services.agenda_emit import emit_publish_cards
 
             emit_publish_cards(published)
+            # The publish task's own claim, as a scored forecast: "the
+            # cards from this slot are publicly served." The
+            # site_freshness objective silver-resolves it (3-way compare)
+            # — the loop that catches local success divorced from the
+            # public objective.
+            try:
+                from gaius.engine.fsm import FsmPosition, TASK_CLAIMED
+                from gaius.engine.services.efficacy_ledger import get_ledger
+
+                ledger = get_ledger()
+                if ledger is not None:
+                    await ledger.record_forecast(
+                        observer="probe:publish.cards_public",
+                        observer_kind="probe",
+                        call_site="scheduled_task_processor.handle_publish_cards",
+                        proposition=f"slot {slot} cards are publicly served",
+                        verdict="fail" if card_sync_failed else "pass",
+                        evidence={
+                            "published_count": published_count,
+                            "card_sync_failed": len(card_sync_failed),
+                        },
+                        position=FsmPosition(
+                            task_class="publish_cards",
+                            task_id=task.id,
+                            task_lifecycle=TASK_CLAIMED,
+                        ),
+                    )
+            except Exception:  # noqa: BLE001 — ledger is fail-open
+                logger.debug("publish forecast record skipped", exc_info=True)
             if card_sync_failed:
                 failed_ids = [c.get("card_id", "?") for c in card_sync_failed]
                 published["status"] = "failed"
@@ -894,6 +923,41 @@ class ScheduledTaskProcessor(BaseDaemon):
             )
 
         self.register_handler("tier_settle", handle_tier_settle)
+
+        async def handle_objective_verify(task: ScheduledTask) -> dict[str, Any]:
+            """Verify declared objectives (all, or payload {"objective": name}).
+
+            The outcome side of the efficacy ledger: internal probes
+            forecast; this establishes whether the objective actually
+            happened and resolves those forecasts (Brier).
+            """
+            from gaius.engine.services.objective_service import ObjectiveService
+
+            service = ObjectiveService(
+                self._pool, collection_service=CollectionService(self._pool)
+            )
+            name = (task.payload or {}).get("objective")
+            if name:
+                results = [await service.verify(name)]
+            else:
+                results = await service.verify_all()
+            failed = [r for r in results if r.get("verdict") == "fail"]
+            out: dict[str, Any] = {
+                "verified": len(results),
+                "failed": len(failed),
+                "results": results,
+            }
+            if failed:
+                out["status"] = "failed"
+                out["error"] = (
+                    "#OBJ.00000002.OBJFAIL "
+                    + ", ".join(r["objective"] for r in failed)
+                    + " objective(s) FAILED\n"
+                    "  Try: /objective history; /objective verify <name>"
+                )
+            return out
+
+        self.register_handler("objective_verify", handle_objective_verify)
 
         async def handle_feature_probe(task: ScheduledTask) -> dict[str, Any]:
             from .feature_probe import run_probe_batch

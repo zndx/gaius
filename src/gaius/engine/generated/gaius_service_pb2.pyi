@@ -5274,6 +5274,80 @@ class RefreshDiscoverLandingResponse(_message.Message):
     error: str
     def __init__(self, accepted: bool = ..., started: bool = ..., refreshed_at: _Optional[str] = ..., error: _Optional[str] = ...) -> None: ...
 
+class ObjectiveVerifyRequest(_message.Message):
+    __slots__ = ("objective",)
+    OBJECTIVE_FIELD_NUMBER: _ClassVar[int]
+    objective: str
+    def __init__(self, objective: _Optional[str] = ...) -> None: ...
+
+class ObjectiveGate(_message.Message):
+    __slots__ = ("gate", "verdict", "evidence")
+    GATE_FIELD_NUMBER: _ClassVar[int]
+    VERDICT_FIELD_NUMBER: _ClassVar[int]
+    EVIDENCE_FIELD_NUMBER: _ClassVar[int]
+    gate: str
+    verdict: str
+    evidence: str
+    def __init__(self, gate: _Optional[str] = ..., verdict: _Optional[str] = ..., evidence: _Optional[str] = ...) -> None: ...
+
+class ObjectiveResult(_message.Message):
+    __slots__ = ("objective", "run_id", "verdict", "accuracy", "gates", "error")
+    OBJECTIVE_FIELD_NUMBER: _ClassVar[int]
+    RUN_ID_FIELD_NUMBER: _ClassVar[int]
+    VERDICT_FIELD_NUMBER: _ClassVar[int]
+    ACCURACY_FIELD_NUMBER: _ClassVar[int]
+    GATES_FIELD_NUMBER: _ClassVar[int]
+    ERROR_FIELD_NUMBER: _ClassVar[int]
+    objective: str
+    run_id: str
+    verdict: str
+    accuracy: float
+    gates: _containers.RepeatedCompositeFieldContainer[ObjectiveGate]
+    error: str
+    def __init__(self, objective: _Optional[str] = ..., run_id: _Optional[str] = ..., verdict: _Optional[str] = ..., accuracy: _Optional[float] = ..., gates: _Optional[_Iterable[_Union[ObjectiveGate, _Mapping]]] = ..., error: _Optional[str] = ...) -> None: ...
+
+class ObjectiveVerifyResponse(_message.Message):
+    __slots__ = ("results", "error")
+    RESULTS_FIELD_NUMBER: _ClassVar[int]
+    ERROR_FIELD_NUMBER: _ClassVar[int]
+    results: _containers.RepeatedCompositeFieldContainer[ObjectiveResult]
+    error: str
+    def __init__(self, results: _Optional[_Iterable[_Union[ObjectiveResult, _Mapping]]] = ..., error: _Optional[str] = ...) -> None: ...
+
+class ObjectiveHistoryRequest(_message.Message):
+    __slots__ = ("limit",)
+    LIMIT_FIELD_NUMBER: _ClassVar[int]
+    limit: int
+    def __init__(self, limit: _Optional[int] = ...) -> None: ...
+
+class ObjectiveHistoryRow(_message.Message):
+    __slots__ = ("run_id", "objective_name", "verdict", "accuracy", "gates_total", "gates_passed", "started_at", "gate_results")
+    RUN_ID_FIELD_NUMBER: _ClassVar[int]
+    OBJECTIVE_NAME_FIELD_NUMBER: _ClassVar[int]
+    VERDICT_FIELD_NUMBER: _ClassVar[int]
+    ACCURACY_FIELD_NUMBER: _ClassVar[int]
+    GATES_TOTAL_FIELD_NUMBER: _ClassVar[int]
+    GATES_PASSED_FIELD_NUMBER: _ClassVar[int]
+    STARTED_AT_FIELD_NUMBER: _ClassVar[int]
+    GATE_RESULTS_FIELD_NUMBER: _ClassVar[int]
+    run_id: str
+    objective_name: str
+    verdict: str
+    accuracy: float
+    gates_total: int
+    gates_passed: int
+    started_at: str
+    gate_results: str
+    def __init__(self, run_id: _Optional[str] = ..., objective_name: _Optional[str] = ..., verdict: _Optional[str] = ..., accuracy: _Optional[float] = ..., gates_total: _Optional[int] = ..., gates_passed: _Optional[int] = ..., started_at: _Optional[str] = ..., gate_results: _Optional[str] = ...) -> None: ...
+
+class ObjectiveHistoryResponse(_message.Message):
+    __slots__ = ("rows", "error")
+    ROWS_FIELD_NUMBER: _ClassVar[int]
+    ERROR_FIELD_NUMBER: _ClassVar[int]
+    rows: _containers.RepeatedCompositeFieldContainer[ObjectiveHistoryRow]
+    error: str
+    def __init__(self, rows: _Optional[_Iterable[_Union[ObjectiveHistoryRow, _Mapping]]] = ..., error: _Optional[str] = ...) -> None: ...
+
 class EfficacyReportRequest(_message.Message):
     __slots__ = ("observer", "all_epochs")
     OBSERVER_FIELD_NUMBER: _ClassVar[int]
