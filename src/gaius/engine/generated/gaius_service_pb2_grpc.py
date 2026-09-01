@@ -805,6 +805,21 @@ class GaiusServiceStub(object):
                 request_serializer=gaius__service__pb2.RefreshDiscoverLandingRequest.SerializeToString,
                 response_deserializer=gaius__service__pb2.RefreshDiscoverLandingResponse.FromString,
                 _registered_method=True)
+        self.EfficacyReport = channel.unary_unary(
+                '/gaius.engine.GaiusService/EfficacyReport',
+                request_serializer=gaius__service__pb2.EfficacyReportRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.EfficacyReportResponse.FromString,
+                _registered_method=True)
+        self.EfficacyRecent = channel.unary_unary(
+                '/gaius.engine.GaiusService/EfficacyRecent',
+                request_serializer=gaius__service__pb2.EfficacyRecentRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.EfficacyRecentResponse.FromString,
+                _registered_method=True)
+        self.EfficacyResolve = channel.unary_unary(
+                '/gaius.engine.GaiusService/EfficacyResolve',
+                request_serializer=gaius__service__pb2.EfficacyResolveRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.EfficacyResolveResponse.FromString,
+                _registered_method=True)
 
 
 class GaiusServiceServicer(object):
@@ -1873,6 +1888,30 @@ class GaiusServiceServicer(object):
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def EfficacyReport(self, request, context):
+        """─────────────────────────────────────────────────────────────────────────
+        Efficacy Ledger (state-aware Brier scoring for probes/timeouts/judges)
+        ─────────────────────────────────────────────────────────────────────────
+        Brier + alpha per (observer x call_site x momentum bucket)
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def EfficacyRecent(self, request, context):
+        """Recent forecasts with latest resolution
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def EfficacyResolve(self, request, context):
+        """Append a resolution event (gold = human)
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
 
 def add_GaiusServiceServicer_to_server(servicer, server):
     rpc_method_handlers = {
@@ -2645,6 +2684,21 @@ def add_GaiusServiceServicer_to_server(servicer, server):
                     servicer.RefreshDiscoverLanding,
                     request_deserializer=gaius__service__pb2.RefreshDiscoverLandingRequest.FromString,
                     response_serializer=gaius__service__pb2.RefreshDiscoverLandingResponse.SerializeToString,
+            ),
+            'EfficacyReport': grpc.unary_unary_rpc_method_handler(
+                    servicer.EfficacyReport,
+                    request_deserializer=gaius__service__pb2.EfficacyReportRequest.FromString,
+                    response_serializer=gaius__service__pb2.EfficacyReportResponse.SerializeToString,
+            ),
+            'EfficacyRecent': grpc.unary_unary_rpc_method_handler(
+                    servicer.EfficacyRecent,
+                    request_deserializer=gaius__service__pb2.EfficacyRecentRequest.FromString,
+                    response_serializer=gaius__service__pb2.EfficacyRecentResponse.SerializeToString,
+            ),
+            'EfficacyResolve': grpc.unary_unary_rpc_method_handler(
+                    servicer.EfficacyResolve,
+                    request_deserializer=gaius__service__pb2.EfficacyResolveRequest.FromString,
+                    response_serializer=gaius__service__pb2.EfficacyResolveResponse.SerializeToString,
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
@@ -6805,6 +6859,87 @@ class GaiusService(object):
             '/gaius.engine.GaiusService/RefreshDiscoverLanding',
             gaius__service__pb2.RefreshDiscoverLandingRequest.SerializeToString,
             gaius__service__pb2.RefreshDiscoverLandingResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def EfficacyReport(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/gaius.engine.GaiusService/EfficacyReport',
+            gaius__service__pb2.EfficacyReportRequest.SerializeToString,
+            gaius__service__pb2.EfficacyReportResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def EfficacyRecent(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/gaius.engine.GaiusService/EfficacyRecent',
+            gaius__service__pb2.EfficacyRecentRequest.SerializeToString,
+            gaius__service__pb2.EfficacyRecentResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def EfficacyResolve(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/gaius.engine.GaiusService/EfficacyResolve',
+            gaius__service__pb2.EfficacyResolveRequest.SerializeToString,
+            gaius__service__pb2.EfficacyResolveResponse.FromString,
             options,
             channel_credentials,
             insecure,

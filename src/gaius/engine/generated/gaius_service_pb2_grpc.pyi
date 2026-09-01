@@ -358,6 +358,16 @@ class GaiusServiceStub:
     """Signals DCGM — one scrape, no store. Discover via Status.surfaces kind=telemetry."""
     DiscoverSurface: grpc.UnaryUnaryMultiCallable[gaius_service_pb2.DiscoverSurfaceRequest, gaius_service_pb2.DiscoverSurfaceResponse]
     RefreshDiscoverLanding: grpc.UnaryUnaryMultiCallable[gaius_service_pb2.RefreshDiscoverLandingRequest, gaius_service_pb2.RefreshDiscoverLandingResponse]
+    EfficacyReport: grpc.UnaryUnaryMultiCallable[gaius_service_pb2.EfficacyReportRequest, gaius_service_pb2.EfficacyReportResponse]
+    """─────────────────────────────────────────────────────────────────────────
+    Efficacy Ledger (state-aware Brier scoring for probes/timeouts/judges)
+    ─────────────────────────────────────────────────────────────────────────
+    Brier + alpha per (observer x call_site x momentum bucket)
+    """
+    EfficacyRecent: grpc.UnaryUnaryMultiCallable[gaius_service_pb2.EfficacyRecentRequest, gaius_service_pb2.EfficacyRecentResponse]
+    """Recent forecasts with latest resolution"""
+    EfficacyResolve: grpc.UnaryUnaryMultiCallable[gaius_service_pb2.EfficacyResolveRequest, gaius_service_pb2.EfficacyResolveResponse]
+    """Append a resolution event (gold = human)"""
 
 @typing.type_check_only
 class GaiusServiceAsyncStub(GaiusServiceStub):
@@ -689,6 +699,16 @@ class GaiusServiceAsyncStub(GaiusServiceStub):
     """Signals DCGM — one scrape, no store. Discover via Status.surfaces kind=telemetry."""
     DiscoverSurface: grpc.aio.UnaryUnaryMultiCallable[gaius_service_pb2.DiscoverSurfaceRequest, gaius_service_pb2.DiscoverSurfaceResponse]  # type: ignore[assignment]
     RefreshDiscoverLanding: grpc.aio.UnaryUnaryMultiCallable[gaius_service_pb2.RefreshDiscoverLandingRequest, gaius_service_pb2.RefreshDiscoverLandingResponse]  # type: ignore[assignment]
+    EfficacyReport: grpc.aio.UnaryUnaryMultiCallable[gaius_service_pb2.EfficacyReportRequest, gaius_service_pb2.EfficacyReportResponse]  # type: ignore[assignment]
+    """─────────────────────────────────────────────────────────────────────────
+    Efficacy Ledger (state-aware Brier scoring for probes/timeouts/judges)
+    ─────────────────────────────────────────────────────────────────────────
+    Brier + alpha per (observer x call_site x momentum bucket)
+    """
+    EfficacyRecent: grpc.aio.UnaryUnaryMultiCallable[gaius_service_pb2.EfficacyRecentRequest, gaius_service_pb2.EfficacyRecentResponse]  # type: ignore[assignment]
+    """Recent forecasts with latest resolution"""
+    EfficacyResolve: grpc.aio.UnaryUnaryMultiCallable[gaius_service_pb2.EfficacyResolveRequest, gaius_service_pb2.EfficacyResolveResponse]  # type: ignore[assignment]
+    """Append a resolution event (gold = human)"""
 
 class GaiusServiceServicer(metaclass=abc.ABCMeta):
     @abc.abstractmethod
@@ -1941,5 +1961,33 @@ class GaiusServiceServicer(metaclass=abc.ABCMeta):
         request: gaius_service_pb2.RefreshDiscoverLandingRequest,
         context: _ServicerContext,
     ) -> typing.Union[gaius_service_pb2.RefreshDiscoverLandingResponse, collections.abc.Awaitable[gaius_service_pb2.RefreshDiscoverLandingResponse]]: ...
+
+    @abc.abstractmethod
+    def EfficacyReport(
+        self,
+        request: gaius_service_pb2.EfficacyReportRequest,
+        context: _ServicerContext,
+    ) -> typing.Union[gaius_service_pb2.EfficacyReportResponse, collections.abc.Awaitable[gaius_service_pb2.EfficacyReportResponse]]:
+        """─────────────────────────────────────────────────────────────────────────
+        Efficacy Ledger (state-aware Brier scoring for probes/timeouts/judges)
+        ─────────────────────────────────────────────────────────────────────────
+        Brier + alpha per (observer x call_site x momentum bucket)
+        """
+
+    @abc.abstractmethod
+    def EfficacyRecent(
+        self,
+        request: gaius_service_pb2.EfficacyRecentRequest,
+        context: _ServicerContext,
+    ) -> typing.Union[gaius_service_pb2.EfficacyRecentResponse, collections.abc.Awaitable[gaius_service_pb2.EfficacyRecentResponse]]:
+        """Recent forecasts with latest resolution"""
+
+    @abc.abstractmethod
+    def EfficacyResolve(
+        self,
+        request: gaius_service_pb2.EfficacyResolveRequest,
+        context: _ServicerContext,
+    ) -> typing.Union[gaius_service_pb2.EfficacyResolveResponse, collections.abc.Awaitable[gaius_service_pb2.EfficacyResolveResponse]]:
+        """Append a resolution event (gold = human)"""
 
 def add_GaiusServiceServicer_to_server(servicer: GaiusServiceServicer, server: typing.Union[grpc.Server, grpc.aio.Server]) -> None: ...

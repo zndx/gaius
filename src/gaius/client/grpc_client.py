@@ -976,8 +976,91 @@ class GrpcEngineClient:
             return await self._call_collection(action, params, timeout)
         elif service == "Article":
             return await self._call_article(action, params, timeout)
+        elif service == "Efficacy":
+            return await self._call_efficacy(action, params, timeout)
         else:
             raise ValueError(f"Unknown service: {service}")
+
+    async def _call_efficacy(
+        self, action: str, params: dict, timeout: float
+    ) -> dict:
+        """Handle Efficacy ledger calls (Brier-scored probe forecasts)."""
+        from ..engine.generated import (
+            EfficacyRecentRequest,
+            EfficacyReportRequest,
+            EfficacyResolveRequest,
+        )
+
+        if action == "report":
+            response = await self._stub.EfficacyReport(
+                EfficacyReportRequest(
+                    observer=params.get("observer", ""),
+                    all_epochs=bool(params.get("all_epochs", False)),
+                ),
+                timeout=timeout,
+            )
+            if response.error:
+                return {"error": response.error}
+            return {
+                "rows": [
+                    {
+                        "observer": r.observer,
+                        "call_site": r.call_site,
+                        "momentum_bucket": r.momentum_bucket,
+                        "n": r.n,
+                        "resolved": r.resolved,
+                        "brier": None if r.brier < 0 else round(r.brier, 4),
+                        "alpha": round(r.alpha, 4),
+                        "alpha_note": r.alpha_note,
+                        "engine_rev": r.engine_rev,
+                    }
+                    for r in response.rows
+                ]
+            }
+        elif action == "recent":
+            response = await self._stub.EfficacyRecent(
+                EfficacyRecentRequest(
+                    observer=params.get("observer", ""),
+                    limit=int(params.get("limit", 25)),
+                ),
+                timeout=timeout,
+            )
+            if response.error:
+                return {"error": response.error}
+            return {
+                "rows": [
+                    {
+                        "forecast_id": r.forecast_id,
+                        "created_at": r.created_at,
+                        "observer": r.observer,
+                        "call_site": r.call_site,
+                        "proposition": r.proposition,
+                        "verdict": r.verdict,
+                        "p": round(r.p, 3),
+                        "side_effect": r.side_effect or None,
+                        "position": r.position,
+                        "engine_rev": r.engine_rev,
+                        "resolved": r.resolved,
+                        "outcome": r.outcome if r.resolved else None,
+                        "resolver": r.resolver or None,
+                    }
+                    for r in response.rows
+                ]
+            }
+        elif action == "resolve":
+            response = await self._stub.EfficacyResolve(
+                EfficacyResolveRequest(
+                    forecast_id=params.get("forecast_id", ""),
+                    outcome=bool(params.get("outcome", False)),
+                    silver=bool(params.get("silver", False)),
+                    resolver=params.get("resolver", ""),
+                    note=params.get("note", ""),
+                ),
+                timeout=timeout,
+            )
+            return {"ok": response.ok, "error": response.error or None}
+        else:
+            raise ValueError(f"Unknown Efficacy action: {action}")
 
     async def _call_orchestrator(
         self, action: str, params: dict, timeout: float

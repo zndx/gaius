@@ -619,6 +619,14 @@ class GaiusEngine:
             if self._grpc_server:
                 self._grpc_server.update_service("db_pool", self._db_pool)
             try:
+                from .services.efficacy_ledger import init_ledger
+
+                init_ledger(self._db_pool)
+            except Exception:
+                # Ledger absence must never block engine start (its own
+                # recording contract is fail-open; see efficacy_ledger).
+                logger.exception("#EFF.00000001.RECFAIL ledger init failed")
+            try:
                 from .services.discover_landing import request_discover_landing_refresh
 
                 await request_discover_landing_refresh(

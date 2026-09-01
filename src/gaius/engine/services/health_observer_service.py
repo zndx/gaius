@@ -1041,8 +1041,26 @@ class HealthObserverService(BaseDaemon):
 
                 # Run RCA phase after successful remediation
                 rca_start = time.monotonic()
+                if self._event_recorder and incident.sequence_id:
+                    await self._event_recorder.record_rca_started(
+                        sequence_id=incident.sequence_id,
+                        endpoint=incident.endpoint,
+                        incident_fingerprint=incident.fingerprint,
+                        failure_mode_id=incident.failure_mode_id,
+                    )
                 rca_result = await self._run_rca_phase(incident, remediation_result)
                 rca_duration_ms = int((time.monotonic() - rca_start) * 1000)
+
+                # An RCA that produced nothing parseable is a FAILED RCA,
+                # not a silent skip — record it so the ledger has negative
+                # RCA examples (never called before 2026-09-01).
+                if rca_result is None and self._event_recorder and incident.sequence_id:
+                    await self._event_recorder.record_rca_failed(
+                        sequence_id=incident.sequence_id,
+                        endpoint=incident.endpoint,
+                        error="RCA produced no parseable JSON verdict",
+                        stage="parsing",
+                    )
 
                 # Store RCA classification on incident and record to DB
                 if rca_result:
@@ -1083,9 +1101,10 @@ class HealthObserverService(BaseDaemon):
 
                 incident.status = "recovering"
                 self._recovery_start[incident.fingerprint] = datetime.now()
+                rca_label = incident.rca_classification or "failed-to-parse"
                 logger.info(
                     f"Remediation succeeded for {incident.fingerprint} "
-                    f"(RCA: {incident.rca_classification})"
+                    f"(RCA: {rca_label})"
                 )
             else:
                 # Record failure
@@ -1299,8 +1318,47 @@ class HealthObserverService(BaseDaemon):
                 },
             )
 
-            # Parse response for success indicator
-            return self._parse_acp_response(response)
+            # Parse response into a 3-way verdict; only explicit success
+            # counts (fail-closed — #HO.00000003.ACPINCONCLUSIVE).
+            verdict = self._parse_acp_response(response)
+            if verdict == "inconclusive":
+                logger.warning(
+                    f"#HO.00000003.ACPINCONCLUSIVE ACP response for "
+                    f"{incident.fingerprint} had no clear outcome "
+                    "indicator — treated as not-success (fail-closed)"
+                )
+            # The ACP judge is a scored forecaster like everyone else:
+            # its claim ("this remediation succeeded") lands in the
+            # efficacy ledger and is silver-resolved by the recovery
+            # verification outcome.
+            try:
+                from ...acp.client import load_acp_agent_selection
+                from ..services.efficacy_ledger import get_ledger
+
+                ledger = get_ledger()
+                if ledger is not None:
+                    agent = load_acp_agent_selection()
+                    ledger_verdict = (
+                        "pass" if verdict == "success"
+                        else "fail" if verdict == "failure"
+                        else "inconclusive"
+                    )
+                    await ledger.record_forecast(
+                        observer=f"judge:acp-{agent}",
+                        observer_kind="judge",
+                        call_site="health_observer_service._tier2_remediate_acp",
+                        proposition=(
+                            f"remediation of {incident.fingerprint} succeeded"
+                        ),
+                        verdict=ledger_verdict,
+                        evidence={"endpoint": incident.endpoint,
+                                  "tier": incident.current_tier},
+                        model_id=agent,
+                        sequence_id=incident.sequence_id,
+                    )
+            except Exception:  # noqa: BLE001 — ledger is fail-open
+                logger.debug("judge forecast record skipped", exc_info=True)
+            return verdict == "success"
 
         except Exception as e:
             logger.error(f"ACP escalation failed: {e}")
@@ -1409,16 +1467,18 @@ first-line restart (that path is spent).
 
 Begin your investigation now."""
 
-    def _parse_acp_response(self, response: str) -> bool:
-        """Parse ACP response for success indicator.
+    def _parse_acp_response(self, response: str) -> str:
+        """Parse ACP response into a 3-way verdict.
 
-        Args:
-            response: ACP agent response text
-
-        Returns:
-            True if remediation appears successful
+        Returns one of "success" | "failure" | "inconclusive". The old
+        bool form defaulted to True when no indicator matched — the
+        mechanism by which a garbage ACP response was scored as a
+        successful remediation ("Remediation succeeded (RCA: None)",
+        2026-09-01 incident). Fail-closed: only an explicit success
+        indicator is success; anything unrecognizable is INCONCLUSIVE,
+        which the remediation gate treats as not-success.
         """
-        response_lower = response.lower()
+        response_lower = (response or "").lower()
         success_indicators = [
             "remediation succeeded",
             "successfully restarted",
@@ -1435,14 +1495,13 @@ Begin your investigation now."""
 
         for indicator in success_indicators:
             if indicator in response_lower:
-                return True
+                return "success"
 
         for indicator in failure_indicators:
             if indicator in response_lower:
-                return False
+                return "failure"
 
-        # Default to success if no clear indicators
-        return True
+        return "inconclusive"
 
     async def _run_rca_phase(
         self,
@@ -1556,17 +1615,31 @@ Begin your investigation now."""
         self,
         fingerprint: str,
     ) -> list[dict[str, Any]]:
-        """Get history of previous occurrences of this fingerprint.
+        """History of previous healing events for this fingerprint's endpoint.
 
-        Args:
-            fingerprint: Incident fingerprint to search for
-
-        Returns:
-            List of previous incident dicts
+        Backed by the healing_events ledger (the docstring used to claim
+        this while the body returned [] — every RCA prompt was built with
+        empty history until 2026-09-01).
         """
-        # For now, return empty - would query healing_events table
-        # This could be enhanced to query the database for historical incidents
-        return []
+        if not self._event_recorder:
+            return []
+        endpoint = fingerprint.split(":", 1)[1] if ":" in fingerprint else fingerprint
+        try:
+            events = await self._event_recorder.get_recent_events(
+                endpoint=endpoint, limit=20, hours=24 * 7
+            )
+        except Exception as e:
+            logger.warning(f"Incident history lookup failed: {e}")
+            return []
+        return [
+            {
+                "event_type": ev.get("event_type"),
+                "tier": ev.get("tier"),
+                "created_at": str(ev.get("created_at")),
+                "payload": ev.get("payload"),
+            }
+            for ev in events
+        ]
 
     async def _get_scheduler_context(self) -> dict[str, Any] | None:
         """Get current scheduler state for RCA context.
@@ -2073,14 +2146,35 @@ Begin your investigation now."""
             report: Current health report
         """
         resolved = []
+        check_absent: set[str] = set()
 
         for fingerprint, incident in self._active_incidents.items():
             # Check if the associated check is now passing
             check_passed = self._check_passed_for_incident(report, incident)
 
             # If check status is indeterminate, skip this incident
-            # (don't assume passed or failed when we can't find matching check)
+            # (don't assume passed or failed when we can't find matching
+            # check) — EXCEPT a "recovering" incident whose check has been
+            # absent for the whole recovery window: that used to freeze
+            # forever (neither resolved nor escalated —
+            # _escalate_stale_incidents only fires on "active"). Resolve
+            # it explicitly as check_absent; never leave a sequence open.
             if check_passed is None:
+                if incident.status == "recovering":
+                    started = self._recovery_start.get(fingerprint)
+                    if started is not None:
+                        now = datetime.now(timezone.utc)
+                        if started.tzinfo is None:
+                            started = started.replace(tzinfo=timezone.utc)
+                        elapsed = (now - started).total_seconds()
+                        if elapsed >= self.config.recovery_verification_time:
+                            logger.warning(
+                                f"#HO.00000004.CHECKABSENT {fingerprint}: "
+                                "originating check absent for the whole "
+                                "recovery window — resolving as check_absent"
+                            )
+                            check_absent.add(fingerprint)
+                            resolved.append(fingerprint)
                 continue
 
             # Handle "active" incidents that are now healthy
@@ -2166,16 +2260,19 @@ Begin your investigation now."""
             self._recovery_start.pop(fingerprint, None)
             self._incidents_resolved += 1
 
-            # Record incident resolution for Observe panel
+            # Record incident resolution for Observe panel. check_absent
+            # resolutions are honest about WHY the sequence closed — the
+            # check vanished; recovery was never verified.
+            outcome = "check_absent" if fingerprint in check_absent else "success"
             record_incident_change(delta=-1, status="resolved")
 
-            # Record timer cleared due to successful resolution
+            # Record timer cleared with the true resolution reason
             if self._event_recorder and incident.sequence_id:
                 await self._event_recorder.record_recovery_timer_cleared(
                     sequence_id=incident.sequence_id,
                     endpoint=incident.endpoint,
                     fingerprint=fingerprint,
-                    reason="resolved",
+                    reason=outcome if outcome != "success" else "resolved",
                 )
 
                 # Handle timezone-aware created_at
@@ -2189,13 +2286,13 @@ Begin your investigation now."""
                 await self._event_recorder.complete_sequence(
                     sequence_id=incident.sequence_id,
                     endpoint=incident.endpoint,
-                    outcome="success",
+                    outcome=outcome,
                     total_attempts=incident.attempts,
                     final_tier=incident.current_tier,
                     total_duration_ms=total_duration_ms,
                 )
 
-            logger.info(f"Incident resolved: {fingerprint}")
+            logger.info(f"Incident resolved ({outcome}): {fingerprint}")
 
             for callback in self._on_resolution:
                 try:

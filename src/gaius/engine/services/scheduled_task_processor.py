@@ -195,6 +195,49 @@ class ScheduledTaskProcessor(BaseDaemon):
         except YkAdmitError as e:
             logger.error(f"{log_prefix} YK admit failed: {e}")
             await asyncio.to_thread(delete_flow_sentinel, wid)
+            # Efficacy ledger (timeout doctrine): the admission timeout is
+            # INCONCLUSIVE about the workload ("would it have been
+            # admitted?") — it is not evidence the queue is broken. What
+            # it IS evidence of gets its own theory: forecast, crisply
+            # resolvable against runs_v3 (is a curation-class flow
+            # occupying the queue right now?). Last night's Sweeps 12–14
+            # showed exactly this verdict being wrong on every curation
+            # window and self-resolving on retry.
+            try:
+                from gaius.engine.fsm import (
+                    ADMIT_NOTADMITTED,
+                    position_for_admission,
+                )
+                from gaius.engine.services.efficacy_ledger import get_ledger
+
+                ledger = get_ledger()
+                if ledger is not None:
+                    pos = position_for_admission(kind, ADMIT_NOTADMITTED)
+                    await ledger.record_forecast(
+                        observer="timeout:yk.admit",
+                        observer_kind="timeout",
+                        call_site="scheduled_task_processor._run_spawned_metaflow",
+                        proposition=f"workload {wid} admitted within window",
+                        verdict="inconclusive",
+                        evidence={"kind": kind, "error": str(e)[:300]},
+                        side_effect="spawn_failed",
+                        position=pos,
+                    )
+                    await ledger.record_forecast(
+                        observer="theory:yk.queue_starved",
+                        observer_kind="theory",
+                        call_site="scheduled_task_processor._run_spawned_metaflow",
+                        proposition=(
+                            f"a long-running flow occupies {kind}'s queue "
+                            f"during task {task.id}"
+                        ),
+                        verdict="pass",
+                        p=0.7,
+                        evidence={"kind": kind, "workload_id": wid},
+                        position=pos,
+                    )
+            except Exception:  # noqa: BLE001 — ledger is fail-open
+                logger.debug("ledger record for YK admit skipped", exc_info=True)
             return {"status": "error", "error": str(e), "workload_id": wid}
         try:
             proc = await asyncio.create_subprocess_exec(
@@ -489,17 +532,38 @@ class ScheduledTaskProcessor(BaseDaemon):
                     f"failed={enrich_failed}\n"
                     "  Try: RenderCards + Brave summaries, then /publish cards"
                 )
+            # Per-card KV sync outcomes were previously collected by
+            # publish_and_sync and then discarded here — cards could be
+            # 'published' in Postgres yet absent from the public KV,
+            # with the task green (found 2026-09-01: aging live site).
+            # The old kv_sync_success field was tautological (sync_to_kv
+            # returns success or raises; it could never be False).
+            card_syncs = result.get("card_syncs", [])
+            card_sync_failed = [c for c in card_syncs if not c.get("success")]
             published = {
                 "slot": slot,
                 "admitted_count": admitted,
                 "enriched_count": enrich_count,
                 "enriched_failed": enrich_failed,
                 "published_count": published_count,
-                "kv_sync_success": result.get("kv_sync", {}).get("success", False),
+                "card_synced_count": len(card_syncs) - len(card_sync_failed),
+                "card_sync_failed_count": len(card_sync_failed),
             }
             from gaius.engine.services.agenda_emit import emit_publish_cards
 
             emit_publish_cards(published)
+            if card_sync_failed:
+                failed_ids = [c.get("card_id", "?") for c in card_sync_failed]
+                published["status"] = "failed"
+                published["error"] = (
+                    f"#COL.00000017.CARDKVFAIL {len(card_sync_failed)} card "
+                    f"page(s) published in DB but not synced to KV: "
+                    f"{', '.join(failed_ids)}\n"
+                    "  Cards stay published locally; the freshness objective "
+                    "reconciles.\n"
+                    "  Try: /health fix pipeline; or gaius-cli "
+                    "'/publish sync'"
+                )
             return published
 
         async def handle_article_curate(task: ScheduledTask) -> dict[str, Any]:

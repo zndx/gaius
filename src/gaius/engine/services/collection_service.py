@@ -1825,15 +1825,35 @@ class CollectionService:
         # Publish cards first
         published = await self.publish_cards(count=count, collection_id=collection_id)
 
-        # Sync individual card detail pages to KV
+        # Sync individual card detail pages to KV. One immediate retry
+        # per card absorbs transient Cloudflare errors; a persistent
+        # failure is recorded honestly and surfaced by the caller
+        # (#COL.00000017.CARDKVFAIL) — never discarded.
         card_sync_results = []
         for card in published:
-            try:
-                result = await self.sync_card_to_kv(card.card_id)
-                card_sync_results.append({"card_id": card.card_id, "success": True})
-            except Exception as e:
-                logger.warning(f"Failed to sync card {card.card_id} to KV: {e}")
-                card_sync_results.append({"card_id": card.card_id, "success": False, "error": str(e)})
+            last_err: Exception | None = None
+            for attempt in (1, 2):
+                try:
+                    await self.sync_card_to_kv(card.card_id)
+                    card_sync_results.append(
+                        {"card_id": card.card_id, "success": True}
+                    )
+                    last_err = None
+                    break
+                except Exception as e:
+                    last_err = e
+                    logger.warning(
+                        f"Card KV sync attempt {attempt}/2 failed for "
+                        f"{card.card_id}: {e}"
+                    )
+            if last_err is not None:
+                card_sync_results.append(
+                    {
+                        "card_id": card.card_id,
+                        "success": False,
+                        "error": str(last_err),
+                    }
+                )
 
         # Sync landing page card list to KV
         sync_result = await self.sync_to_kv()

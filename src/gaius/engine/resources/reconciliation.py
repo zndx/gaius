@@ -1220,6 +1220,15 @@ class ReconciliationService(BaseDaemon):
         # Consecutive failed-probe streaks per endpoint (progress doctrine:
         # one flapped probe must never kill a serving model).
         self._unhealthy_streak: dict[str, int] = {}
+        # Consecutive healthy observations per endpoint — the FSM momentum
+        # axis for efficacy-ledger stamping (a FAIL at momentum 40 is
+        # scored in a different bucket than one at momentum 0).
+        self._healthy_streak: dict[str, int] = {}
+        # Open (unresolved) fail-forecast ids per endpoint, with whether
+        # remediation ran — resolved by subsequent green probes
+        # (self-recovered-noaction => the forecast was a scored miss) or
+        # by a remediated streak (silver true, ambiguity noted).
+        self._open_fail_forecasts: dict[str, list[tuple[Any, bool]]] = {}
         self._last_drift_time: Optional[datetime] = None
         self._remediation_count = 0
         self._successful_remediations = 0
@@ -1408,20 +1417,48 @@ class ReconciliationService(BaseDaemon):
             # flapped under TierSettle host load and reconciliation
             # recycled a healthy thinking 27B every cycle, mid-inference.
             # Require sustained failure before declaring drift.
+            suppress_remediation = False
+            momentum_before = self._healthy_streak.get(name, 0)
             if (
                 obs.expected_state == EndpointState.HEALTHY
                 and actual_state == EndpointState.UNHEALTHY
             ):
                 streak = self._unhealthy_streak.get(name, 0) + 1
                 self._unhealthy_streak[name] = streak
+                self._healthy_streak[name] = 0
                 if streak < 3:
                     logger.warning(
                         f"#EN.00000018.PROBEFLAP {name}: health probe failed "
                         f"({streak}/3 consecutive) — observing, not remediating"
                     )
-                    continue
+                    # Suppress remediation ONLY; observation/result
+                    # bookkeeping below must continue (an earlier
+                    # `continue` here left downstream consumers reading
+                    # stale observations during a flap streak).
+                    suppress_remediation = True
+                # Every probe FAIL on an expected-healthy endpoint is a
+                # forecast in the efficacy ledger, stamped with the FSM
+                # position (momentum = green streak before this failure).
+                await self._ledger_record_endpoint_fail(
+                    name,
+                    actual_state,
+                    momentum=momentum_before,
+                    streak=streak,
+                    will_remediate=not suppress_remediation,
+                )
             else:
                 self._unhealthy_streak.pop(name, None)
+                if (
+                    obs.expected_state == EndpointState.HEALTHY
+                    and actual_state == EndpointState.HEALTHY
+                ):
+                    self._healthy_streak[name] = momentum_before + 1
+                    # Two consecutive green probes settle any open fail
+                    # forecasts: unremediated ones were scored misses
+                    # (self-recovered with no action); remediated ones
+                    # resolve silver-true with the ambiguity noted.
+                    if self._healthy_streak[name] >= 2:
+                        await self._ledger_resolve_open(name)
 
             is_drifted = actual_state != obs.expected_state
 
@@ -1432,7 +1469,7 @@ class ReconciliationService(BaseDaemon):
                 is_drifted=is_drifted,
             )
 
-            if is_drifted:
+            if is_drifted and not suppress_remediation:
                 self._drift_count += 1
                 self._last_drift_time = datetime.now()
                 logger.warning(
@@ -1486,6 +1523,73 @@ class ReconciliationService(BaseDaemon):
 
             # Notify AgendaTracker of state transitions
             await self._notify_agenda_tracker(name, obs.expected_state, actual_state)
+
+    async def _ledger_record_endpoint_fail(
+        self,
+        name: str,
+        actual_state: EndpointState,
+        momentum: int,
+        streak: int,
+        will_remediate: bool,
+    ) -> None:
+        """Record a failed endpoint probe as an efficacy-ledger forecast.
+
+        Non-raising by ledger contract: reconciliation behavior is
+        identical with or without a ledger.
+        """
+        from gaius.engine.fsm import position_for_endpoint
+        from gaius.engine.services.efficacy_ledger import get_ledger
+
+        ledger = get_ledger()
+        if ledger is None:
+            return
+        forecast_id = await ledger.record_forecast(
+            observer="probe:reconciliation.endpoint_health",
+            observer_kind="probe",
+            call_site="reconciliation._reconcile_endpoints",
+            proposition=f"endpoint {name} is not serving",
+            verdict="fail",
+            evidence={"streak": streak, "actual_state": actual_state.value},
+            side_effect="remediate" if will_remediate else "skip_remediation",
+            position=position_for_endpoint(name, actual_state.value, momentum),
+        )
+        if forecast_id is not None:
+            self._open_fail_forecasts.setdefault(name, []).append(
+                (forecast_id, will_remediate)
+            )
+
+    async def _ledger_resolve_open(self, name: str) -> None:
+        """Settle open fail forecasts once the endpoint is green again.
+
+        Unremediated fail → the endpoint recovered with NO action: the
+        probe's "not serving" claim was a miss (outcome False). After a
+        remediation the claim resolves silver-True but the resolver notes
+        the ambiguity — a restart fixing things does not prove the
+        endpoint was truly wedged.
+        """
+        from gaius.engine.services.efficacy_ledger import get_ledger
+
+        ledger = get_ledger()
+        open_fails = self._open_fail_forecasts.pop(name, [])
+        if ledger is None or not open_fails:
+            return
+        for forecast_id, remediated in open_fails:
+            if remediated:
+                await ledger.resolve(
+                    forecast_id,
+                    outcome=True,
+                    tier="silver",
+                    resolver="remediated-after-streak:ambiguous",
+                    note="endpoint healthy after remediation; wedge unproven",
+                )
+            else:
+                await ledger.resolve(
+                    forecast_id,
+                    outcome=False,
+                    tier="silver",
+                    resolver="self-recovered-noaction",
+                    note="2 consecutive green probes with no remediation",
+                )
 
     async def _notify_agenda_tracker(
         self,

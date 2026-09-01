@@ -2759,19 +2759,25 @@ class HealthChecker:
                         suggestion="Run: dbmate up",
                     )
 
-                # Count task failures in last 24h
+                # Count task failures in last 24h. Ground truth is the
+                # `error` column — task handlers never write a
+                # result->>'success' key, so the old predicate was
+                # permanently NULL and this check sat green while the
+                # live site aged (found 2026-09-01). Watchdog resets
+                # leave completed_at NULL, so failures are counted from
+                # created_at, not completed_at.
                 curate_failures = await conn.fetchval("""
                     SELECT COUNT(*) FROM scheduled_tasks
                     WHERE task_type = 'article_curate'
-                      AND completed_at > NOW() - interval '24 hours'
-                      AND (result::jsonb->>'success')::boolean = FALSE
+                      AND created_at > NOW() - interval '24 hours'
+                      AND error IS NOT NULL
                 """) or 0
 
                 publish_failures = await conn.fetchval("""
                     SELECT COUNT(*) FROM scheduled_tasks
                     WHERE task_type = 'publish_cards'
-                      AND completed_at > NOW() - interval '24 hours'
-                      AND (result::jsonb->>'success')::boolean = FALSE
+                      AND created_at > NOW() - interval '24 hours'
+                      AND error IS NOT NULL
                 """) or 0
 
                 # Get cards published in last 24h
@@ -2780,12 +2786,12 @@ class HealthChecker:
                     WHERE published_at > NOW() - interval '24 hours'
                 """) or 0
 
-                # Get curations in last 7 days
+                # Get curations in last 7 days (clean completions)
                 curations_week = await conn.fetchval("""
                     SELECT COUNT(*) FROM scheduled_tasks
                     WHERE task_type = 'article_curate'
                       AND completed_at > NOW() - interval '7 days'
-                      AND (result::jsonb->>'success')::boolean = TRUE
+                      AND error IS NULL
                 """) or 0
 
                 # Get current pending backlog

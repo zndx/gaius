@@ -5273,3 +5273,109 @@ class RefreshDiscoverLandingResponse(_message.Message):
     refreshed_at: str
     error: str
     def __init__(self, accepted: bool = ..., started: bool = ..., refreshed_at: _Optional[str] = ..., error: _Optional[str] = ...) -> None: ...
+
+class EfficacyReportRequest(_message.Message):
+    __slots__ = ("observer", "all_epochs")
+    OBSERVER_FIELD_NUMBER: _ClassVar[int]
+    ALL_EPOCHS_FIELD_NUMBER: _ClassVar[int]
+    observer: str
+    all_epochs: bool
+    def __init__(self, observer: _Optional[str] = ..., all_epochs: bool = ...) -> None: ...
+
+class EfficacyScoreRow(_message.Message):
+    __slots__ = ("observer", "call_site", "momentum_bucket", "n", "resolved", "brier", "alpha", "alpha_note", "engine_rev")
+    OBSERVER_FIELD_NUMBER: _ClassVar[int]
+    CALL_SITE_FIELD_NUMBER: _ClassVar[int]
+    MOMENTUM_BUCKET_FIELD_NUMBER: _ClassVar[int]
+    N_FIELD_NUMBER: _ClassVar[int]
+    RESOLVED_FIELD_NUMBER: _ClassVar[int]
+    BRIER_FIELD_NUMBER: _ClassVar[int]
+    ALPHA_FIELD_NUMBER: _ClassVar[int]
+    ALPHA_NOTE_FIELD_NUMBER: _ClassVar[int]
+    ENGINE_REV_FIELD_NUMBER: _ClassVar[int]
+    observer: str
+    call_site: str
+    momentum_bucket: str
+    n: int
+    resolved: int
+    brier: float
+    alpha: float
+    alpha_note: str
+    engine_rev: str
+    def __init__(self, observer: _Optional[str] = ..., call_site: _Optional[str] = ..., momentum_bucket: _Optional[str] = ..., n: _Optional[int] = ..., resolved: _Optional[int] = ..., brier: _Optional[float] = ..., alpha: _Optional[float] = ..., alpha_note: _Optional[str] = ..., engine_rev: _Optional[str] = ...) -> None: ...
+
+class EfficacyReportResponse(_message.Message):
+    __slots__ = ("rows", "error")
+    ROWS_FIELD_NUMBER: _ClassVar[int]
+    ERROR_FIELD_NUMBER: _ClassVar[int]
+    rows: _containers.RepeatedCompositeFieldContainer[EfficacyScoreRow]
+    error: str
+    def __init__(self, rows: _Optional[_Iterable[_Union[EfficacyScoreRow, _Mapping]]] = ..., error: _Optional[str] = ...) -> None: ...
+
+class EfficacyRecentRequest(_message.Message):
+    __slots__ = ("observer", "limit")
+    OBSERVER_FIELD_NUMBER: _ClassVar[int]
+    LIMIT_FIELD_NUMBER: _ClassVar[int]
+    observer: str
+    limit: int
+    def __init__(self, observer: _Optional[str] = ..., limit: _Optional[int] = ...) -> None: ...
+
+class EfficacyForecastRow(_message.Message):
+    __slots__ = ("forecast_id", "created_at", "observer", "call_site", "proposition", "verdict", "p", "side_effect", "position", "engine_rev", "resolved", "outcome", "resolver")
+    FORECAST_ID_FIELD_NUMBER: _ClassVar[int]
+    CREATED_AT_FIELD_NUMBER: _ClassVar[int]
+    OBSERVER_FIELD_NUMBER: _ClassVar[int]
+    CALL_SITE_FIELD_NUMBER: _ClassVar[int]
+    PROPOSITION_FIELD_NUMBER: _ClassVar[int]
+    VERDICT_FIELD_NUMBER: _ClassVar[int]
+    P_FIELD_NUMBER: _ClassVar[int]
+    SIDE_EFFECT_FIELD_NUMBER: _ClassVar[int]
+    POSITION_FIELD_NUMBER: _ClassVar[int]
+    ENGINE_REV_FIELD_NUMBER: _ClassVar[int]
+    RESOLVED_FIELD_NUMBER: _ClassVar[int]
+    OUTCOME_FIELD_NUMBER: _ClassVar[int]
+    RESOLVER_FIELD_NUMBER: _ClassVar[int]
+    forecast_id: str
+    created_at: str
+    observer: str
+    call_site: str
+    proposition: str
+    verdict: str
+    p: float
+    side_effect: str
+    position: str
+    engine_rev: str
+    resolved: bool
+    outcome: bool
+    resolver: str
+    def __init__(self, forecast_id: _Optional[str] = ..., created_at: _Optional[str] = ..., observer: _Optional[str] = ..., call_site: _Optional[str] = ..., proposition: _Optional[str] = ..., verdict: _Optional[str] = ..., p: _Optional[float] = ..., side_effect: _Optional[str] = ..., position: _Optional[str] = ..., engine_rev: _Optional[str] = ..., resolved: bool = ..., outcome: bool = ..., resolver: _Optional[str] = ...) -> None: ...
+
+class EfficacyRecentResponse(_message.Message):
+    __slots__ = ("rows", "error")
+    ROWS_FIELD_NUMBER: _ClassVar[int]
+    ERROR_FIELD_NUMBER: _ClassVar[int]
+    rows: _containers.RepeatedCompositeFieldContainer[EfficacyForecastRow]
+    error: str
+    def __init__(self, rows: _Optional[_Iterable[_Union[EfficacyForecastRow, _Mapping]]] = ..., error: _Optional[str] = ...) -> None: ...
+
+class EfficacyResolveRequest(_message.Message):
+    __slots__ = ("forecast_id", "outcome", "silver", "resolver", "note")
+    FORECAST_ID_FIELD_NUMBER: _ClassVar[int]
+    OUTCOME_FIELD_NUMBER: _ClassVar[int]
+    SILVER_FIELD_NUMBER: _ClassVar[int]
+    RESOLVER_FIELD_NUMBER: _ClassVar[int]
+    NOTE_FIELD_NUMBER: _ClassVar[int]
+    forecast_id: str
+    outcome: bool
+    silver: bool
+    resolver: str
+    note: str
+    def __init__(self, forecast_id: _Optional[str] = ..., outcome: bool = ..., silver: bool = ..., resolver: _Optional[str] = ..., note: _Optional[str] = ...) -> None: ...
+
+class EfficacyResolveResponse(_message.Message):
+    __slots__ = ("ok", "error")
+    OK_FIELD_NUMBER: _ClassVar[int]
+    ERROR_FIELD_NUMBER: _ClassVar[int]
+    ok: bool
+    error: str
+    def __init__(self, ok: bool = ..., error: _Optional[str] = ...) -> None: ...

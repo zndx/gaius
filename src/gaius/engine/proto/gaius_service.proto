@@ -3751,4 +3751,76 @@ service GaiusService {
   rpc SignalsTelemetry(SignalsTelemetryRequest) returns (SignalsTelemetryResponse);
   rpc DiscoverSurface(DiscoverSurfaceRequest) returns (DiscoverSurfaceResponse);
   rpc RefreshDiscoverLanding(RefreshDiscoverLandingRequest) returns (RefreshDiscoverLandingResponse);
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Efficacy Ledger (state-aware Brier scoring for probes/timeouts/judges)
+  // ─────────────────────────────────────────────────────────────────────────
+  rpc EfficacyReport(EfficacyReportRequest) returns (EfficacyReportResponse);    // Brier + alpha per (observer x call_site x momentum bucket)
+  rpc EfficacyRecent(EfficacyRecentRequest) returns (EfficacyRecentResponse);    // Recent forecasts with latest resolution
+  rpc EfficacyResolve(EfficacyResolveRequest) returns (EfficacyResolveResponse); // Append a resolution event (gold = human)
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// Efficacy Ledger messages
+// ───────────────────────────────────────────────────────────────────────────
+
+message EfficacyReportRequest {
+  string observer = 1;          // optional filter; empty = all observers
+  bool all_epochs = 2;          // default false = current engine_rev only
+}
+
+message EfficacyScoreRow {
+  string observer = 1;
+  string call_site = 2;
+  string momentum_bucket = 3;   // cold | warming | rolling | deep | unknown
+  int32 n = 4;                  // total forecasts in group
+  int32 resolved = 5;           // forecasts with an outcome
+  double brier = 6;             // mean (p - outcome)^2 over resolved; -1 = uncalibrated
+  double alpha = 7;             // shrunk discount alpha
+  string alpha_note = 8;        // human-readable summary
+  string engine_rev = 9;
+}
+
+message EfficacyReportResponse {
+  repeated EfficacyScoreRow rows = 1;
+  string error = 2;
+}
+
+message EfficacyRecentRequest {
+  string observer = 1;          // optional filter
+  int32 limit = 2;              // default 25
+}
+
+message EfficacyForecastRow {
+  string forecast_id = 1;
+  string created_at = 2;
+  string observer = 3;
+  string call_site = 4;
+  string proposition = 5;
+  string verdict = 6;
+  double p = 7;
+  string side_effect = 8;
+  string position = 9;          // compact FSM position summary
+  string engine_rev = 10;
+  bool resolved = 11;
+  bool outcome = 12;            // meaningful only when resolved
+  string resolver = 13;
+}
+
+message EfficacyRecentResponse {
+  repeated EfficacyForecastRow rows = 1;
+  string error = 2;
+}
+
+message EfficacyResolveRequest {
+  string forecast_id = 1;
+  bool outcome = 2;
+  bool silver = 3;              // default false = gold (human attestation)
+  string resolver = 4;          // provenance; default "human:cli"
+  string note = 5;
+}
+
+message EfficacyResolveResponse {
+  bool ok = 1;
+  string error = 2;
 }

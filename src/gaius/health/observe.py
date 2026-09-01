@@ -1,5 +1,11 @@
 """HealthObserver daemon for autonomous health monitoring and remediation.
 
+DEPRECATED (2026-09-01): this module is a near-complete DUPLICATE of the
+engine-side ``gaius.engine.services.health_observer_service`` and is
+reachable only from two CLI call sites. Do NOT add new machinery here —
+build against the engine service. Retirement is on the backlog; this
+copy will not receive FSM/efficacy-ledger wiring.
+
 Implements continuous observability following the EvolutionDaemon pattern.
 Integrates with ACP (Agent Client Protocol) to delegate complex diagnosis
 and remediation via ACP.

@@ -204,6 +204,8 @@ class GaiusCLI:
                     result["data"] = self._run_async(self._cmd_gpu(args))
                 elif command == "discover":
                     result["data"] = self._run_async(self._cmd_discover(args))
+                elif command == "efficacy":
+                    result["data"] = self._run_async(self._cmd_efficacy(args))
                 # Inference management (high-level)
                 elif command == "inference" or command == "inf":
                     result["data"] = self._run_async(self._cmd_inference(args))
@@ -3970,6 +3972,60 @@ Respond with:
                 "limit": 50,
             },
         )
+
+    async def _cmd_efficacy(self, args: str) -> dict:
+        """Efficacy ledger: state-aware Brier scoring for probes/timeouts.
+
+        Usage:
+            /efficacy                       - alpha report per (observer x call_site x momentum)
+            /efficacy report [observer]     - same, filtered to one observer
+            /efficacy recent [observer]     - recent forecasts + resolutions
+            /efficacy resolve <forecast_id> <true|false> [--silver] [--note "..."]
+                                            - append an outcome (gold = human)
+        """
+        parts = args.split() if args else []
+        sub = parts[0].lower() if parts else "report"
+        try:
+            client = await self._get_engine_client_cached()
+        except Exception as e:
+            return {
+                "error": f"Failed to connect to engine: {e}",
+                "suggestion": "Run: systemctl restart gaius",
+            }
+        if sub == "recent":
+            observer = parts[1] if len(parts) > 1 else ""
+            return await client.call(
+                "Efficacy", "recent", {"observer": observer, "limit": 25}
+            )
+        if sub == "resolve":
+            if len(parts) < 3 or parts[2].lower() not in ("true", "false"):
+                return {
+                    "error": (
+                        "Usage: /efficacy resolve <forecast_id> <true|false> "
+                        '[--silver] [--note "..."]'
+                    )
+                }
+            note = ""
+            if "--note" in parts:
+                note = " ".join(parts[parts.index("--note") + 1 :]).strip('"')
+            return await client.call(
+                "Efficacy",
+                "resolve",
+                {
+                    "forecast_id": parts[1],
+                    "outcome": parts[2].lower() == "true",
+                    "silver": "--silver" in parts,
+                    "resolver": "human:cli",
+                    "note": note,
+                },
+            )
+        # default: report (optionally filtered)
+        observer = ""
+        if sub == "report" and len(parts) > 1:
+            observer = parts[1]
+        elif sub not in ("report",):
+            observer = parts[0]
+        return await client.call("Efficacy", "report", {"observer": observer})
 
     async def _cmd_gpu(self, args: str) -> dict:
         """GPU orchestrator operations.

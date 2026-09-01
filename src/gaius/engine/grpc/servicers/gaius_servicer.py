@@ -251,6 +251,14 @@ from ...generated import (
     SummaryScheduleTriggerResponse,
     DiscoverSurfaceRequest,
     DiscoverSurfaceResponse,
+    EfficacyForecastRow,
+    EfficacyRecentRequest,
+    EfficacyRecentResponse,
+    EfficacyReportRequest,
+    EfficacyReportResponse,
+    EfficacyResolveRequest,
+    EfficacyResolveResponse,
+    EfficacyScoreRow,
     DiscoverBucket as ProtoDiscoverBucket,
     DiscoverDoc as ProtoDiscoverDoc,
     DiscoverFacet as ProtoDiscoverFacet,
@@ -9291,3 +9299,126 @@ class GaiusServicer(GaiusServiceServicer):
                 message=f"RenderCards error: {e}",
                 error=str(e),
             )
+
+    # ─────────────────────────────────────────────────────────────────────
+    # Efficacy Ledger
+    # ─────────────────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _efficacy_ledger():
+        from gaius.engine.services.efficacy_ledger import get_ledger
+
+        ledger = get_ledger()
+        if ledger is None:
+            raise RuntimeError(
+                "Efficacy ledger not initialized.\n"
+                "  Guru: #EFF.00000003.NOLEDGER\n"
+                "  Try: /health fix postgres (pool init creates the ledger)"
+            )
+        return ledger
+
+    async def EfficacyReport(
+        self,
+        request: EfficacyReportRequest,
+        context: aio.ServicerContext,
+    ) -> EfficacyReportResponse:
+        try:
+            ledger = self._efficacy_ledger()
+            rows = await ledger.report(
+                observer=request.observer or None,
+                current_epoch_only=not request.all_epochs,
+            )
+            return EfficacyReportResponse(
+                rows=[
+                    EfficacyScoreRow(
+                        observer=r["observer"],
+                        call_site=r["call_site"],
+                        momentum_bucket=r["momentum_bucket"],
+                        n=r["n"],
+                        resolved=r["resolved"],
+                        brier=r["brier"] if r["brier"] is not None else -1.0,
+                        alpha=r["alpha"],
+                        alpha_note=r["alpha_note"],
+                        engine_rev=r["engine_rev"],
+                    )
+                    for r in rows
+                ]
+            )
+        except Exception as e:
+            logger.exception("EfficacyReport failed")
+            return EfficacyReportResponse(error=str(e))
+
+    async def EfficacyRecent(
+        self,
+        request: EfficacyRecentRequest,
+        context: aio.ServicerContext,
+    ) -> EfficacyRecentResponse:
+        try:
+            ledger = self._efficacy_ledger()
+            rows = await ledger.recent(
+                observer=request.observer or None,
+                limit=request.limit or 25,
+            )
+            out = []
+            for r in rows:
+                pos_bits = [
+                    f"{k}={r[k]}"
+                    for k in (
+                        "task_class",
+                        "task_lifecycle",
+                        "endpoint",
+                        "endpoint_state",
+                        "admission_phase",
+                        "momentum",
+                    )
+                    if r.get(k) is not None
+                ]
+                out.append(
+                    EfficacyForecastRow(
+                        forecast_id=str(r["forecast_id"]),
+                        created_at=str(r["created_at"]),
+                        observer=r["observer"],
+                        call_site=r["call_site"],
+                        proposition=r["proposition"],
+                        verdict=r["verdict"],
+                        p=r["p"],
+                        side_effect=r.get("side_effect") or "",
+                        position=" ".join(pos_bits),
+                        engine_rev=r["engine_rev"],
+                        resolved=r.get("outcome") is not None,
+                        outcome=bool(r.get("outcome")),
+                        resolver=r.get("resolver") or "",
+                    )
+                )
+            return EfficacyRecentResponse(rows=out)
+        except Exception as e:
+            logger.exception("EfficacyRecent failed")
+            return EfficacyRecentResponse(error=str(e))
+
+    async def EfficacyResolve(
+        self,
+        request: EfficacyResolveRequest,
+        context: aio.ServicerContext,
+    ) -> EfficacyResolveResponse:
+        try:
+            ledger = self._efficacy_ledger()
+            ok = await ledger.resolve(
+                request.forecast_id,
+                outcome=request.outcome,
+                tier="silver" if request.silver else "gold",
+                resolver=request.resolver or "human:cli",
+                note=request.note or None,
+            )
+            if not ok:
+                return EfficacyResolveResponse(
+                    ok=False,
+                    error=(
+                        "Resolution write failed.\n"
+                        "  Guru: #EFF.00000002.RESFAIL\n"
+                        "  Try: /health fix postgres"
+                    ),
+                )
+            return EfficacyResolveResponse(ok=True)
+        except Exception as e:
+            logger.exception("EfficacyResolve failed")
+            return EfficacyResolveResponse(ok=False, error=str(e))
