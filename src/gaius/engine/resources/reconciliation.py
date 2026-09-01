@@ -1543,11 +1543,14 @@ class ReconciliationService(BaseDaemon):
         ledger = get_ledger()
         if ledger is None:
             return
+        # Polarity convention: affirmative proposition, verdict carries
+        # the probe's answer. The probe claims the endpoint is NOT
+        # serving → verdict "fail" on "is serving" (p=0.15).
         forecast_id = await ledger.record_forecast(
             observer="probe:reconciliation.endpoint_health",
             observer_kind="probe",
             call_site="reconciliation._reconcile_endpoints",
-            proposition=f"endpoint {name} is not serving",
+            proposition=f"endpoint {name} is serving",
             verdict="fail",
             evidence={"streak": streak, "actual_state": actual_state.value},
             side_effect="remediate" if will_remediate else "skip_remediation",
@@ -1573,22 +1576,30 @@ class ReconciliationService(BaseDaemon):
         open_fails = self._open_fail_forecasts.pop(name, [])
         if ledger is None or not open_fails:
             return
+        # Outcomes are on the affirmative proposition "endpoint is
+        # serving": self-recovery with no action → it WAS serving
+        # (outcome=True — the fail verdict scores as a miss, 0.72);
+        # remediation confirmed by recovery → it was NOT serving at
+        # claim time (outcome=False — the fail verdict scores well),
+        # with the restart ambiguity noted in provenance.
         for forecast_id, remediated in open_fails:
             if remediated:
                 await ledger.resolve(
                     forecast_id,
-                    outcome=True,
+                    outcome=False,
                     tier="silver",
                     resolver="remediated-after-streak:ambiguous",
-                    note="endpoint healthy after remediation; wedge unproven",
+                    note="healthy only after remediation; wedge plausible, "
+                    "restart-fixed-it ambiguity noted",
                 )
             else:
                 await ledger.resolve(
                     forecast_id,
-                    outcome=False,
+                    outcome=True,
                     tier="silver",
                     resolver="self-recovered-noaction",
-                    note="2 consecutive green probes with no remediation",
+                    note="2 consecutive green probes with no remediation — "
+                    "the endpoint was serving all along",
                 )
 
     async def _notify_agenda_tracker(

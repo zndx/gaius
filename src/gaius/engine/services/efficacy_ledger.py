@@ -40,6 +40,19 @@ from gaius.engine.fsm import FsmPosition, momentum_bucket
 logger = logging.getLogger(__name__)
 
 # Implied P(proposition true) per verdict. Mature probes pass explicit p.
+#
+# POLARITY CONVENTION (load-bearing — an inversion here silently flips
+# every Brier score, found 2026-09-01): `p` is ALWAYS the observer's
+# implied P(proposition is TRUE). Phrase the proposition in the
+# AFFIRMATIVE of the healthy/desired state, and let the verdict carry
+# the observer's answer:
+#   probe claims trouble  → proposition "endpoint X is serving",
+#                           verdict "fail"  (p=0.15: low P(serving))
+#   probe claims success  → proposition "cards are publicly served",
+#                           verdict "pass"  (p=0.85)
+# Resolutions then read naturally: outcome=True means the healthy state
+# HELD. A trouble-claiming probe that was wrong scores (0.15−1)²=0.72;
+# one that was right scores (0.15−0)²=0.02.
 VERDICT_P: dict[str, float] = {
     "pass": 0.85,
     "fail": 0.15,
