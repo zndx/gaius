@@ -89,10 +89,14 @@ class ServiceRegistry:
     # Nautilus service — Overwatch's model-free detector (ACP+Grok judge)
     nautilus_service: Any = None
 
-    # Caught by #GR.00000005.UNKNOWNSVC on 2026-09-01: these two were
-    # registered by server.py and silently dropped for want of a field.
+    # Caught by #GR.00000005.UNKNOWNSVC on 2026-09-01: all four were
+    # registered by server.py and silently dropped for want of a field —
+    # reconciliation_service among them, meaning servicer-side access to
+    # it had been None since inception.
     agenda_tracker: Any = None
     daemon_registry: Any = None
+    flow_scheduler_service: Any = None
+    reconciliation_service: Any = None
 
     # X Bookmarks service for syncing X/Twitter bookmarks to KB
     x_bookmarks_service: Any = None
