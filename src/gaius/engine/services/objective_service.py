@@ -48,6 +48,7 @@ class ObjectiveSpec:
     # None = declared but verifier pending (records inconclusive).
     verifier: str | None = None     # method name on ObjectiveService
     skeleton_check: str | None = field(default=None)  # SQL for skeleton specs
+    params: dict[str, Any] = field(default_factory=dict)  # verifier thresholds
 
 
 # The registry: every DAG-bearing task class declares an objective. Full
@@ -63,6 +64,25 @@ OBJECTIVES: dict[str, ObjectiveSpec] = {
         description="Public cards on gaius.zndx.org are fresh and coherent "
         "across DB, KV, and the live site",
         verifier="verify_site_freshness",
+    ),
+    "content_currency": ObjectiveSpec(
+        name="content_currency",
+        dag=("article_curate", "publish_cards", "feed_check"),
+        flows=("ArticleCurationFlow",),
+        resolves=("slot % serves current content%",),
+        cadence=timedelta(hours=6),
+        description="The INTENT of the publishing schedule: the public "
+        "surface's newly published content tracks the present, not the "
+        "backlog. site_freshness proves cards flow; this proves the "
+        "RIGHT cards flow. (Found 2026-09-01: mechanics green while "
+        "publishing 18-day-old content past 25 fresher pending cards.)",
+        verifier="verify_content_currency",
+        params={
+            # 7d = 2x the worst-case weekly curation cadence the health
+            # checker documents (~4-5 curations/week). Tunable per spec.
+            "current_days": 7,
+            "window_hours": 24,
+        },
     ),
     "skos_labels": ObjectiveSpec(
         name="skos_labels",
@@ -263,6 +283,104 @@ class ObjectiveService:
             {"gate": "live_coherent", "verdict": live_verdict, "evidence": live_evidence}
         )
         return gates
+
+    async def verify_content_currency(self, spec: ObjectiveSpec) -> list[dict[str, Any]]:
+        """The schedule's INTENT: published content tracks the present.
+
+        Three gates, all against `collections.cards.source_date` (the
+        content's own date, e.g. arXiv submission), never `published_at`
+        (our push time — that is site_freshness's axis, and measuring it
+        alone let mechanics stay green while the surface aged):
+        1. published_content_current — newest source_date among the
+           window's publishes is within current_days.
+        2. selection_favors_current — when the pending backlog CONTAINS
+           current content, the window's publishes include some of it
+           (the publisher must not starve fresh content while it exists).
+        3. curation_inflow_current — the corpus's newest source_date is
+           within current_days (is curation even ingesting the present?).
+        """
+        current_days = int(spec.params.get("current_days", 7))
+        window_hours = int(spec.params.get("window_hours", 24))
+        gates: list[dict[str, Any]] = []
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT
+                  (SELECT max(source_date) FROM collections.cards
+                    WHERE published_at > NOW() - INTERVAL '1 hour' * $1)
+                    AS pub_newest,
+                  (SELECT count(*) FROM collections.cards
+                    WHERE published_at > NOW() - INTERVAL '1 hour' * $1
+                      AND source_date > NOW() - INTERVAL '1 day' * $2)
+                    AS pub_current,
+                  (SELECT count(*) FROM collections.cards
+                    WHERE status = 'pending'
+                      AND source_date > NOW() - INTERVAL '1 day' * $2)
+                    AS pending_current,
+                  (SELECT max(source_date) FROM collections.cards)
+                    AS corpus_newest
+                """,
+                window_hours,
+                current_days,
+            )
+        pub_newest = row["pub_newest"]
+        pub_current = int(row["pub_current"] or 0)
+        pending_current = int(row["pending_current"] or 0)
+        corpus_newest = row["corpus_newest"]
+
+        threshold = f"within {current_days}d"
+        g1_ok = pub_newest is not None and (
+            await self._within_days(pub_newest, current_days)
+        )
+        gates.append(
+            {
+                "gate": "published_content_current",
+                "verdict": "pass" if g1_ok else "fail",
+                "evidence": (
+                    f"newest source_date in last {window_hours}h publishes = "
+                    f"{pub_newest} ({threshold} required)"
+                ),
+            }
+        )
+        if pending_current == 0:
+            # No current content available — the publisher cannot be
+            # blamed for selection; the failure (if any) is inflow's.
+            g2_verdict = "inconclusive"
+            g2_evidence = "no current pending content to select from"
+        else:
+            g2_verdict = "pass" if pub_current > 0 else "fail"
+            g2_evidence = (
+                f"{pending_current} current card(s) pending; "
+                f"{pub_current} current card(s) published in window"
+            )
+        gates.append(
+            {
+                "gate": "selection_favors_current",
+                "verdict": g2_verdict,
+                "evidence": g2_evidence,
+            }
+        )
+        g3_ok = corpus_newest is not None and (
+            await self._within_days(corpus_newest, current_days)
+        )
+        gates.append(
+            {
+                "gate": "curation_inflow_current",
+                "verdict": "pass" if g3_ok else "fail",
+                "evidence": f"corpus newest source_date = {corpus_newest} ({threshold})",
+            }
+        )
+        return gates
+
+    async def _within_days(self, d: Any, days: int) -> bool:
+        async with self._pool.acquire() as conn:
+            return bool(
+                await conn.fetchval(
+                    "SELECT $1::date > (NOW() - INTERVAL '1 day' * $2)::date",
+                    d,
+                    days,
+                )
+            )
 
     # ------------------------------------------------------------------
     # Recording + resolution

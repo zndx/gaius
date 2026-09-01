@@ -563,6 +563,11 @@ class ScheduledTaskProcessor(BaseDaemon):
 
                 ledger = get_ledger()
                 if ledger is not None:
+                    pos = FsmPosition(
+                        task_class="publish_cards",
+                        task_id=task.id,
+                        task_lifecycle=TASK_CLAIMED,
+                    )
                     await ledger.record_forecast(
                         observer="probe:publish.cards_public",
                         observer_kind="probe",
@@ -573,12 +578,46 @@ class ScheduledTaskProcessor(BaseDaemon):
                             "published_count": published_count,
                             "card_sync_failed": len(card_sync_failed),
                         },
-                        position=FsmPosition(
-                            task_class="publish_cards",
-                            task_id=task.id,
-                            task_lifecycle=TASK_CLAIMED,
-                        ),
+                        position=pos,
                     )
+                    # INTENT-level self-report (the schedule's objective is
+                    # a CURRENT public surface, not merely a served one):
+                    # the publisher knows the source dates of what it just
+                    # selected and must say honestly whether it served the
+                    # present or the backlog. Resolved by the
+                    # content_currency objective.
+                    published_ids = [
+                        c.get("card_id")
+                        for c in result.get("published", [])
+                        if c.get("card_id")
+                    ]
+                    if published_ids:
+                        newest_src = await self._pool.fetchval(
+                            """
+                            SELECT max(source_date) FROM collections.cards
+                            WHERE card_id = ANY($1::text[])
+                            """,
+                            published_ids,
+                        )
+                        is_current = await self._pool.fetchval(
+                            "SELECT $1::date > (NOW() - INTERVAL '7 days')::date",
+                            newest_src,
+                        ) if newest_src is not None else False
+                        await ledger.record_forecast(
+                            observer="probe:publish.content_current",
+                            observer_kind="probe",
+                            call_site="scheduled_task_processor.handle_publish_cards",
+                            proposition=(
+                                f"slot {slot} serves current content "
+                                "(source within 7d)"
+                            ),
+                            verdict="pass" if is_current else "fail",
+                            evidence={
+                                "newest_source_date": str(newest_src),
+                                "published_ids": published_ids,
+                            },
+                            position=pos,
+                        )
             except Exception:  # noqa: BLE001 — ledger is fail-open
                 logger.debug("publish forecast record skipped", exc_info=True)
             if card_sync_failed:
