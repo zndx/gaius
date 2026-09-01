@@ -266,6 +266,12 @@ from ...generated import (
     ObjectiveResult,
     ObjectiveVerifyRequest,
     ObjectiveVerifyResponse,
+    OverwatchArmedTrigger,
+    OverwatchEventRow,
+    OverwatchHistoryRequest,
+    OverwatchHistoryResponse,
+    OverwatchStatusRequest,
+    OverwatchStatusResponse,
     DiscoverBucket as ProtoDiscoverBucket,
     DiscoverDoc as ProtoDiscoverDoc,
     DiscoverFacet as ProtoDiscoverFacet,
@@ -9401,6 +9407,82 @@ class GaiusServicer(GaiusServiceServicer):
         except Exception as e:
             logger.exception("EfficacyRecent failed")
             return EfficacyRecentResponse(error=str(e))
+
+    async def OverwatchStatus(
+        self,
+        request: OverwatchStatusRequest,
+        context: aio.ServicerContext,
+    ) -> OverwatchStatusResponse:
+        try:
+            nautilus = getattr(self._services, "nautilus_service", None)
+            if nautilus is None:
+                return OverwatchStatusResponse(
+                    error=(
+                        "Nautilus not running.\n"
+                        "  Guru: #OW.00000008.NODAEMON\n"
+                        "  Try: systemctl restart gaius"
+                    )
+                )
+            s = nautilus.status()
+            return OverwatchStatusResponse(
+                running=s["running"],
+                cycles=s["cycles"],
+                firings_recorded=s["firings_recorded"],
+                armed=[
+                    OverwatchArmedTrigger(trigger=a["trigger"], scope=a["scope"])
+                    for a in s["armed_triggers"]
+                ],
+                autonomy=s["autonomy"],
+                judge_agent=s["judge_agent"],
+                judge_available=s["judge_available"],
+            )
+        except Exception as e:
+            logger.exception("OverwatchStatus failed")
+            return OverwatchStatusResponse(error=str(e))
+
+    async def OverwatchHistory(
+        self,
+        request: OverwatchHistoryRequest,
+        context: aio.ServicerContext,
+    ) -> OverwatchHistoryResponse:
+        try:
+            import json as _json
+
+            pool = _summary_db(self._services)
+            async with pool.acquire() as conn:
+                rows = await conn.fetch(
+                    """
+                    SELECT created_at, trigger_name, scope, detail,
+                           judge_invoked, judge_status, judge_verdict,
+                           action_taken
+                    FROM overwatch_events
+                    ORDER BY created_at DESC LIMIT $1
+                    """,
+                    request.limit or 20,
+                )
+            return OverwatchHistoryResponse(
+                rows=[
+                    OverwatchEventRow(
+                        created_at=str(r["created_at"]),
+                        trigger_name=r["trigger_name"],
+                        scope=r["scope"],
+                        detail=r["detail"],
+                        judge_invoked=r["judge_invoked"],
+                        judge_status=r["judge_status"] or "",
+                        judge_verdict=(
+                            _json.dumps(r["judge_verdict"], default=str)
+                            if r["judge_verdict"] is not None
+                            and not isinstance(r["judge_verdict"], str)
+                            else (r["judge_verdict"] or "")
+                        ),
+                        action_taken=r["action_taken"],
+                    )
+                    for r in rows
+                ]
+            )
+        except Exception as e:
+            logger.exception("OverwatchHistory failed")
+            return OverwatchHistoryResponse(error=str(e))
 
     async def ObjectiveVerify(
         self,

@@ -3762,6 +3762,48 @@ service GaiusService {
   // Verifiable objectives (outcome side of the ledger)
   rpc ObjectiveVerify(ObjectiveVerifyRequest) returns (ObjectiveVerifyResponse);   // Run verification now (one or all)
   rpc ObjectiveHistory(ObjectiveHistoryRequest) returns (ObjectiveHistoryResponse); // objective_verifications rows
+
+  // Overwatch (Nautilus detector + ACP/Grok judge)
+  rpc OverwatchStatus(OverwatchStatusRequest) returns (OverwatchStatusResponse);   // Detector heartbeat, armed triggers, judge availability
+  rpc OverwatchHistory(OverwatchHistoryRequest) returns (OverwatchHistoryResponse); // overwatch_events rows
+}
+
+message OverwatchStatusRequest {}
+
+message OverwatchArmedTrigger {
+  string trigger = 1;
+  string scope = 2;
+}
+
+message OverwatchStatusResponse {
+  bool running = 1;
+  int32 cycles = 2;
+  int32 firings_recorded = 3;
+  repeated OverwatchArmedTrigger armed = 4;
+  string autonomy = 5;
+  string judge_agent = 6;
+  bool judge_available = 7;
+  string error = 8;
+}
+
+message OverwatchHistoryRequest {
+  int32 limit = 1;              // default 20
+}
+
+message OverwatchEventRow {
+  string created_at = 1;
+  string trigger_name = 2;
+  string scope = 3;
+  string detail = 4;
+  bool judge_invoked = 5;
+  string judge_status = 6;
+  string judge_verdict = 7;     // JSON
+  string action_taken = 8;
+}
+
+message OverwatchHistoryResponse {
+  repeated OverwatchEventRow rows = 1;
+  string error = 2;
 }
 
 message ObjectiveVerifyRequest {

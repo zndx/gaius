@@ -980,8 +980,62 @@ class GrpcEngineClient:
             return await self._call_efficacy(action, params, timeout)
         elif service == "Objective":
             return await self._call_objective(action, params, timeout)
+        elif service == "Overwatch":
+            return await self._call_overwatch(action, params, timeout)
         else:
             raise ValueError(f"Unknown service: {service}")
+
+    async def _call_overwatch(
+        self, action: str, params: dict, timeout: float
+    ) -> dict:
+        """Handle Overwatch (Nautilus + judge) calls."""
+        from ..engine.generated import (
+            OverwatchHistoryRequest,
+            OverwatchStatusRequest,
+        )
+
+        if action == "status":
+            response = await self._stub.OverwatchStatus(
+                OverwatchStatusRequest(), timeout=timeout
+            )
+            if response.error:
+                return {"error": response.error}
+            return {
+                "running": response.running,
+                "cycles": response.cycles,
+                "firings_recorded": response.firings_recorded,
+                "armed": [
+                    {"trigger": a.trigger, "scope": a.scope}
+                    for a in response.armed
+                ],
+                "autonomy": response.autonomy,
+                "judge_agent": response.judge_agent,
+                "judge_available": response.judge_available,
+            }
+        elif action == "history":
+            response = await self._stub.OverwatchHistory(
+                OverwatchHistoryRequest(limit=int(params.get("limit", 20))),
+                timeout=timeout,
+            )
+            if response.error:
+                return {"error": response.error}
+            return {
+                "rows": [
+                    {
+                        "created_at": r.created_at,
+                        "trigger": r.trigger_name,
+                        "scope": r.scope,
+                        "detail": r.detail,
+                        "judge_invoked": r.judge_invoked,
+                        "judge_status": r.judge_status or None,
+                        "judge_verdict": r.judge_verdict or None,
+                        "action_taken": r.action_taken,
+                    }
+                    for r in response.rows
+                ]
+            }
+        else:
+            raise ValueError(f"Unknown Overwatch action: {action}")
 
     async def _call_objective(
         self, action: str, params: dict, timeout: float

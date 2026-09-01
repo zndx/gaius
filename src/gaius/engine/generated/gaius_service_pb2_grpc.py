@@ -830,6 +830,16 @@ class GaiusServiceStub(object):
                 request_serializer=gaius__service__pb2.ObjectiveHistoryRequest.SerializeToString,
                 response_deserializer=gaius__service__pb2.ObjectiveHistoryResponse.FromString,
                 _registered_method=True)
+        self.OverwatchStatus = channel.unary_unary(
+                '/gaius.engine.GaiusService/OverwatchStatus',
+                request_serializer=gaius__service__pb2.OverwatchStatusRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.OverwatchStatusResponse.FromString,
+                _registered_method=True)
+        self.OverwatchHistory = channel.unary_unary(
+                '/gaius.engine.GaiusService/OverwatchHistory',
+                request_serializer=gaius__service__pb2.OverwatchHistoryRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.OverwatchHistoryResponse.FromString,
+                _registered_method=True)
 
 
 class GaiusServiceServicer(object):
@@ -1937,6 +1947,21 @@ class GaiusServiceServicer(object):
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def OverwatchStatus(self, request, context):
+        """Overwatch (Nautilus detector + ACP/Grok judge)
+        Detector heartbeat, armed triggers, judge availability
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def OverwatchHistory(self, request, context):
+        """overwatch_events rows
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
 
 def add_GaiusServiceServicer_to_server(servicer, server):
     rpc_method_handlers = {
@@ -2734,6 +2759,16 @@ def add_GaiusServiceServicer_to_server(servicer, server):
                     servicer.ObjectiveHistory,
                     request_deserializer=gaius__service__pb2.ObjectiveHistoryRequest.FromString,
                     response_serializer=gaius__service__pb2.ObjectiveHistoryResponse.SerializeToString,
+            ),
+            'OverwatchStatus': grpc.unary_unary_rpc_method_handler(
+                    servicer.OverwatchStatus,
+                    request_deserializer=gaius__service__pb2.OverwatchStatusRequest.FromString,
+                    response_serializer=gaius__service__pb2.OverwatchStatusResponse.SerializeToString,
+            ),
+            'OverwatchHistory': grpc.unary_unary_rpc_method_handler(
+                    servicer.OverwatchHistory,
+                    request_deserializer=gaius__service__pb2.OverwatchHistoryRequest.FromString,
+                    response_serializer=gaius__service__pb2.OverwatchHistoryResponse.SerializeToString,
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
@@ -7029,6 +7064,60 @@ class GaiusService(object):
             '/gaius.engine.GaiusService/ObjectiveHistory',
             gaius__service__pb2.ObjectiveHistoryRequest.SerializeToString,
             gaius__service__pb2.ObjectiveHistoryResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def OverwatchStatus(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/gaius.engine.GaiusService/OverwatchStatus',
+            gaius__service__pb2.OverwatchStatusRequest.SerializeToString,
+            gaius__service__pb2.OverwatchStatusResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def OverwatchHistory(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/gaius.engine.GaiusService/OverwatchHistory',
+            gaius__service__pb2.OverwatchHistoryRequest.SerializeToString,
+            gaius__service__pb2.OverwatchHistoryResponse.FromString,
             options,
             channel_credentials,
             insecure,

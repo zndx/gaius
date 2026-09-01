@@ -86,6 +86,14 @@ class ServiceRegistry:
     # Health observer service for autonomous FMEA monitoring + ACP
     health_observer_service: Any = None
 
+    # Nautilus service — Overwatch's model-free detector (ACP+Grok judge)
+    nautilus_service: Any = None
+
+    # Caught by #GR.00000005.UNKNOWNSVC on 2026-09-01: these two were
+    # registered by server.py and silently dropped for want of a field.
+    agenda_tracker: Any = None
+    daemon_registry: Any = None
+
     # X Bookmarks service for syncing X/Twitter bookmarks to KB
     x_bookmarks_service: Any = None
 
@@ -202,7 +210,13 @@ class GrpcServer:
             setattr(self._services, name, service)
             logger.debug(f"Updated service: {name}")
         else:
-            logger.warning(f"Unknown service: {name}")
+            # A dropped registration cost us a daemon on 2026-09-01
+            # (nautilus_service missing from ServiceRegistry) — the old
+            # warning here was too quiet to catch. Loud, with the fix.
+            logger.error(
+                f"#GR.00000005.UNKNOWNSVC update_service({name!r}) dropped: "
+                f"not a ServiceRegistry field — declare it in ServiceRegistry"
+            )
 
     async def start(self) -> None:
         """Start the gRPC server."""

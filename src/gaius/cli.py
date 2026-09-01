@@ -208,6 +208,8 @@ class GaiusCLI:
                     result["data"] = self._run_async(self._cmd_efficacy(args))
                 elif command == "objective":
                     result["data"] = self._run_async(self._cmd_objective(args))
+                elif command == "overwatch":
+                    result["data"] = self._run_async(self._cmd_overwatch(args))
                 # Inference management (high-level)
                 elif command == "inference" or command == "inf":
                     result["data"] = self._run_async(self._cmd_inference(args))
@@ -4053,6 +4055,25 @@ Respond with:
                 "Objective", "verify", {"objective": name}, timeout=180
             )
         return await client.call("Objective", "history", {"limit": 20})
+
+    async def _cmd_overwatch(self, args: str) -> dict:
+        """Overwatch: Nautilus detector + ACP/Grok judge.
+
+        Usage:
+            /overwatch [status]   - detector heartbeat, armed triggers, judge availability
+            /overwatch history    - recent trigger firings + judge verdicts
+        """
+        sub = (args.split()[0].lower() if args else "status")
+        try:
+            client = await self._get_engine_client_cached()
+        except Exception as e:
+            return {
+                "error": f"Failed to connect to engine: {e}",
+                "suggestion": "Run: systemctl restart gaius",
+            }
+        if sub == "history":
+            return await client.call("Overwatch", "history", {"limit": 20})
+        return await client.call("Overwatch", "status", {})
 
     async def _cmd_gpu(self, args: str) -> dict:
         """GPU orchestrator operations.

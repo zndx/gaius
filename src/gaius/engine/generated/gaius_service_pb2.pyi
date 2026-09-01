@@ -5274,6 +5274,72 @@ class RefreshDiscoverLandingResponse(_message.Message):
     error: str
     def __init__(self, accepted: bool = ..., started: bool = ..., refreshed_at: _Optional[str] = ..., error: _Optional[str] = ...) -> None: ...
 
+class OverwatchStatusRequest(_message.Message):
+    __slots__ = ()
+    def __init__(self) -> None: ...
+
+class OverwatchArmedTrigger(_message.Message):
+    __slots__ = ("trigger", "scope")
+    TRIGGER_FIELD_NUMBER: _ClassVar[int]
+    SCOPE_FIELD_NUMBER: _ClassVar[int]
+    trigger: str
+    scope: str
+    def __init__(self, trigger: _Optional[str] = ..., scope: _Optional[str] = ...) -> None: ...
+
+class OverwatchStatusResponse(_message.Message):
+    __slots__ = ("running", "cycles", "firings_recorded", "armed", "autonomy", "judge_agent", "judge_available", "error")
+    RUNNING_FIELD_NUMBER: _ClassVar[int]
+    CYCLES_FIELD_NUMBER: _ClassVar[int]
+    FIRINGS_RECORDED_FIELD_NUMBER: _ClassVar[int]
+    ARMED_FIELD_NUMBER: _ClassVar[int]
+    AUTONOMY_FIELD_NUMBER: _ClassVar[int]
+    JUDGE_AGENT_FIELD_NUMBER: _ClassVar[int]
+    JUDGE_AVAILABLE_FIELD_NUMBER: _ClassVar[int]
+    ERROR_FIELD_NUMBER: _ClassVar[int]
+    running: bool
+    cycles: int
+    firings_recorded: int
+    armed: _containers.RepeatedCompositeFieldContainer[OverwatchArmedTrigger]
+    autonomy: str
+    judge_agent: str
+    judge_available: bool
+    error: str
+    def __init__(self, running: bool = ..., cycles: _Optional[int] = ..., firings_recorded: _Optional[int] = ..., armed: _Optional[_Iterable[_Union[OverwatchArmedTrigger, _Mapping]]] = ..., autonomy: _Optional[str] = ..., judge_agent: _Optional[str] = ..., judge_available: bool = ..., error: _Optional[str] = ...) -> None: ...
+
+class OverwatchHistoryRequest(_message.Message):
+    __slots__ = ("limit",)
+    LIMIT_FIELD_NUMBER: _ClassVar[int]
+    limit: int
+    def __init__(self, limit: _Optional[int] = ...) -> None: ...
+
+class OverwatchEventRow(_message.Message):
+    __slots__ = ("created_at", "trigger_name", "scope", "detail", "judge_invoked", "judge_status", "judge_verdict", "action_taken")
+    CREATED_AT_FIELD_NUMBER: _ClassVar[int]
+    TRIGGER_NAME_FIELD_NUMBER: _ClassVar[int]
+    SCOPE_FIELD_NUMBER: _ClassVar[int]
+    DETAIL_FIELD_NUMBER: _ClassVar[int]
+    JUDGE_INVOKED_FIELD_NUMBER: _ClassVar[int]
+    JUDGE_STATUS_FIELD_NUMBER: _ClassVar[int]
+    JUDGE_VERDICT_FIELD_NUMBER: _ClassVar[int]
+    ACTION_TAKEN_FIELD_NUMBER: _ClassVar[int]
+    created_at: str
+    trigger_name: str
+    scope: str
+    detail: str
+    judge_invoked: bool
+    judge_status: str
+    judge_verdict: str
+    action_taken: str
+    def __init__(self, created_at: _Optional[str] = ..., trigger_name: _Optional[str] = ..., scope: _Optional[str] = ..., detail: _Optional[str] = ..., judge_invoked: bool = ..., judge_status: _Optional[str] = ..., judge_verdict: _Optional[str] = ..., action_taken: _Optional[str] = ...) -> None: ...
+
+class OverwatchHistoryResponse(_message.Message):
+    __slots__ = ("rows", "error")
+    ROWS_FIELD_NUMBER: _ClassVar[int]
+    ERROR_FIELD_NUMBER: _ClassVar[int]
+    rows: _containers.RepeatedCompositeFieldContainer[OverwatchEventRow]
+    error: str
+    def __init__(self, rows: _Optional[_Iterable[_Union[OverwatchEventRow, _Mapping]]] = ..., error: _Optional[str] = ...) -> None: ...
+
 class ObjectiveVerifyRequest(_message.Message):
     __slots__ = ("objective",)
     OBJECTIVE_FIELD_NUMBER: _ClassVar[int]

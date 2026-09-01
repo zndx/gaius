@@ -92,6 +92,7 @@ class GaiusEngine:
 
         # Reconciliation service (FSM-based state observation)
         self._reconciliation_service = None
+        self._nautilus_service = None
 
         # Topology service (temporal dynamics tracking)
         self._topology_service = None
@@ -1116,6 +1117,8 @@ class GaiusEngine:
         # 4. Initialize MetaAgent (OPTIONAL, depends on health_observer for db_pool)
         await self._create_metaagent_daemon()
 
+        await self._create_nautilus_daemon()
+
         # 5. Initialize ThetaAgent (NORMAL, no background loop - passive service)
         await self._create_theta_service()
 
@@ -1139,6 +1142,11 @@ class GaiusEngine:
         if self._metaagent_service:
             self._daemon_registry.register(
                 self._metaagent_service, after=["health_observer"]
+            )
+
+        if self._nautilus_service:
+            self._daemon_registry.register(
+                self._nautilus_service, after=["health_observer"]
             )
 
         if self._scheduled_task_processor:
@@ -1289,6 +1297,26 @@ class GaiusEngine:
             logger.warning(f"Reconciliation service not available: {e}")
         except Exception as e:
             logger.error(f"Failed to create Reconciliation daemon: {e}")
+
+    async def _create_nautilus_daemon(self) -> None:
+        """Create the Nautilus watcher (Overwatch's model-free detector)."""
+        try:
+            from .services.nautilus_service import NautilusService
+
+            await self._ensure_db_pool()
+            if self._db_pool is None:
+                logger.warning("Nautilus skipped: no DB pool")
+                return
+            logger.info("Creating Nautilus daemon (Overwatch detector)...")
+            self._nautilus_service = NautilusService(self._db_pool)
+            if self._grpc_server:
+                self._grpc_server.update_service(
+                    "nautilus_service", self._nautilus_service
+                )
+        except ImportError as e:
+            logger.warning(f"Nautilus service not available: {e}")
+        except Exception as e:
+            logger.error(f"Failed to create Nautilus daemon: {e}")
 
     async def _create_metaagent_daemon(self) -> None:
         """Create MetaAgent daemon instance (doesn't start it).

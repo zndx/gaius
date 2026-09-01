@@ -374,6 +374,12 @@ class GaiusServiceStub:
     """
     ObjectiveHistory: grpc.UnaryUnaryMultiCallable[gaius_service_pb2.ObjectiveHistoryRequest, gaius_service_pb2.ObjectiveHistoryResponse]
     """objective_verifications rows"""
+    OverwatchStatus: grpc.UnaryUnaryMultiCallable[gaius_service_pb2.OverwatchStatusRequest, gaius_service_pb2.OverwatchStatusResponse]
+    """Overwatch (Nautilus detector + ACP/Grok judge)
+    Detector heartbeat, armed triggers, judge availability
+    """
+    OverwatchHistory: grpc.UnaryUnaryMultiCallable[gaius_service_pb2.OverwatchHistoryRequest, gaius_service_pb2.OverwatchHistoryResponse]
+    """overwatch_events rows"""
 
 @typing.type_check_only
 class GaiusServiceAsyncStub(GaiusServiceStub):
@@ -721,6 +727,12 @@ class GaiusServiceAsyncStub(GaiusServiceStub):
     """
     ObjectiveHistory: grpc.aio.UnaryUnaryMultiCallable[gaius_service_pb2.ObjectiveHistoryRequest, gaius_service_pb2.ObjectiveHistoryResponse]  # type: ignore[assignment]
     """objective_verifications rows"""
+    OverwatchStatus: grpc.aio.UnaryUnaryMultiCallable[gaius_service_pb2.OverwatchStatusRequest, gaius_service_pb2.OverwatchStatusResponse]  # type: ignore[assignment]
+    """Overwatch (Nautilus detector + ACP/Grok judge)
+    Detector heartbeat, armed triggers, judge availability
+    """
+    OverwatchHistory: grpc.aio.UnaryUnaryMultiCallable[gaius_service_pb2.OverwatchHistoryRequest, gaius_service_pb2.OverwatchHistoryResponse]  # type: ignore[assignment]
+    """overwatch_events rows"""
 
 class GaiusServiceServicer(metaclass=abc.ABCMeta):
     @abc.abstractmethod
@@ -2019,5 +2031,23 @@ class GaiusServiceServicer(metaclass=abc.ABCMeta):
         context: _ServicerContext,
     ) -> typing.Union[gaius_service_pb2.ObjectiveHistoryResponse, collections.abc.Awaitable[gaius_service_pb2.ObjectiveHistoryResponse]]:
         """objective_verifications rows"""
+
+    @abc.abstractmethod
+    def OverwatchStatus(
+        self,
+        request: gaius_service_pb2.OverwatchStatusRequest,
+        context: _ServicerContext,
+    ) -> typing.Union[gaius_service_pb2.OverwatchStatusResponse, collections.abc.Awaitable[gaius_service_pb2.OverwatchStatusResponse]]:
+        """Overwatch (Nautilus detector + ACP/Grok judge)
+        Detector heartbeat, armed triggers, judge availability
+        """
+
+    @abc.abstractmethod
+    def OverwatchHistory(
+        self,
+        request: gaius_service_pb2.OverwatchHistoryRequest,
+        context: _ServicerContext,
+    ) -> typing.Union[gaius_service_pb2.OverwatchHistoryResponse, collections.abc.Awaitable[gaius_service_pb2.OverwatchHistoryResponse]]:
+        """overwatch_events rows"""
 
 def add_GaiusServiceServicer_to_server(servicer: GaiusServiceServicer, server: typing.Union[grpc.Server, grpc.aio.Server]) -> None: ...
