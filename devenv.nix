@@ -253,7 +253,10 @@
 
   services.varnish = {
     enable = true;
-    listen = "127.0.0.1:6081";
+    # 608x is Ranger territory (6080 HTTP, 6085 Tomcat shutdown socket) —
+    # the varnish lattice lives in the clear 609x decade:
+    # gaius 6091 · signals 6092 · aegir 6093 · atelier 6094.
+    listen = "127.0.0.1:6091";
     # Cached *_origin routes (everything else passes through untouched):
     # - federation/surfaces_origin: the waffle fan-out — the menu is never
     #   empty and never slow.

@@ -210,7 +210,7 @@ async fn discover_api(RawQuery(raw): RawQuery, Query(q): Query<DiscoverQuery>) -
     // cache with background refresh. The hierarchical query path itself is
     // untouched; varnish only fronts the finished HTTP response. Falls back
     // to the live surface when varnish is absent.
-    let vport = std::env::var("VARNISH_PORT").unwrap_or_else(|_| "6081".into());
+    let vport = std::env::var("VARNISH_PORT").unwrap_or_else(|_| "6091".into());
     let qs = raw.map(|s| format!("?{s}")).unwrap_or_default();
     let url = format!("http://127.0.0.1:{vport}/api/gaius/v1/discover_origin{qs}");
     if let Ok(client) = reqwest::Client::builder()
@@ -502,7 +502,7 @@ async fn federation_surfaces_api() -> impl IntoResponse {
     // Varnish proof point: serve the waffle from the cache layer (60s ttl
     // + 6h grace = instant responses, background refresh, never an empty
     // menu). Falls back to the live collector when varnish is absent.
-    let vport = std::env::var("VARNISH_PORT").unwrap_or_else(|_| "6081".into());
+    let vport = std::env::var("VARNISH_PORT").unwrap_or_else(|_| "6091".into());
     let url = format!("http://127.0.0.1:{vport}/api/gaius/v1/federation/surfaces_origin");
     if let Ok(client) = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(6))
