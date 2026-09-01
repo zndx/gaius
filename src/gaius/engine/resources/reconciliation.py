@@ -1217,6 +1217,9 @@ class ReconciliationService(BaseDaemon):
 
         # Drift history for metrics
         self._drift_count = 0
+        # Consecutive failed-probe streaks per endpoint (progress doctrine:
+        # one flapped probe must never kill a serving model).
+        self._unhealthy_streak: dict[str, int] = {}
         self._last_drift_time: Optional[datetime] = None
         self._remediation_count = 0
         self._successful_remediations = 0
@@ -1396,6 +1399,30 @@ class ReconciliationService(BaseDaemon):
         # Reconcile each endpoint
         for name, obs in observations.items():
             actual_state = reconcile_state(obs)
+
+            # Progress doctrine: an alive-but-unresponsive probe result is
+            # evidence of a BUSY server as often as a wedged one (a truly
+            # dead endpoint shows up as ORPHANED/ABSENT via ConnectError +
+            # dead PID and still remediates immediately below). One probe
+            # must never kill a serving model — 2026-09-01: a 5s probe
+            # flapped under TierSettle host load and reconciliation
+            # recycled a healthy thinking 27B every cycle, mid-inference.
+            # Require sustained failure before declaring drift.
+            if (
+                obs.expected_state == EndpointState.HEALTHY
+                and actual_state == EndpointState.UNHEALTHY
+            ):
+                streak = self._unhealthy_streak.get(name, 0) + 1
+                self._unhealthy_streak[name] = streak
+                if streak < 3:
+                    logger.warning(
+                        f"#EN.00000018.PROBEFLAP {name}: health probe failed "
+                        f"({streak}/3 consecutive) — observing, not remediating"
+                    )
+                    continue
+            else:
+                self._unhealthy_streak.pop(name, None)
+
             is_drifted = actual_state != obs.expected_state
 
             result = ReconciliationResult(
@@ -1564,7 +1591,13 @@ class ReconciliationService(BaseDaemon):
         health_tasks = {}
         for name, config in endpoints.items():
             if config["port"]:
-                health_tasks[name] = check_endpoint_health(config["port"])
+                # Generous probe (progress doctrine): a truly-down endpoint
+                # fails FAST with ConnectError regardless of this value —
+                # only a busy-but-alive server rides the timeout, and vLLM's
+                # /health lags many seconds under long-prefill load.
+                health_tasks[name] = check_endpoint_health(
+                    config["port"], timeout_seconds=30.0
+                )
 
         health_results = {}
         if health_tasks:
