@@ -375,9 +375,14 @@ async def emit_publish_brief(
                 "day's totals stay accurate: append this slot's fact "
                 f"line verbatim on its own line: {fact_line}"
             )
-            await incorporate_into_note(existing, fact_task)
-            if merged_any:
-                return None  # merged in place — no upsert
+            facts_applied = await incorporate_into_note(existing, fact_task)
+            if merged_any or facts_applied:
+                # Even facts-only counts: the Brief stays rich and the
+                # day record stays accurate — never fall through to an
+                # upsert that would rewrite what a session just built
+                # (2026-09-02 17:19: the fact session's append was
+                # clobbered seconds later by the fallback).
+                return None
             raise RuntimeError(
                 "incorporation sessions left the note unchanged"
             )
@@ -429,9 +434,11 @@ async def emit_publish_brief(
                 re.MULTILINE | re.DOTALL,
             )
             prior_body = (m.group(1) if m else "").strip()
-            brief_part = prior_body.rsplit("\n---\n", 1)[0].strip()
+            # Keep the WHOLE prior body — brief AND the day's existing
+            # fact lines (2026-09-02 17:19: rsplit dropped the earlier
+            # slots' facts) — and append this slot's fact honestly.
             body = (
-                f"{brief_part}\n\n---\n{fact_line}\n"
+                f"{prior_body}\n{fact_line}\n"
                 f"_Latest slot Brief unavailable: {str(e)[:100]}_\n"
             )
         else:
