@@ -227,16 +227,128 @@ def emit_prospects_update(result: dict[str, Any], root: Path | None = None) -> A
 
 
 def emit_publish_cards(result: dict[str, Any], root: Path | None = None) -> AgendaItem | None:
-    """Brief only when the landing page actually received cards."""
+    """Fact-line publish entry (fallback when no Brief can be written)."""
     published = int(result.get("published_count") or 0)
     if published <= 0:
         return None
     now = datetime.now(timezone.utc)
     slot = result.get("slot") or "unknown"
+    synced = result.get("card_synced_count")
     body = (
         f"Published {published} card(s) to gaius.zndx.org "
-        f"(slot={slot}, kv={result.get('kv_sync_success')}).\n"
+        f"(slot={slot}, card pages synced={synced}).\n"
     )
+    return upsert(
+        kind="note",
+        title="gaius.zndx.org published",
+        body=body,
+        now=now,
+        tags=["publish"],
+        intent="brief",
+        root=root,
+    )
+
+
+async def emit_publish_brief(
+    result: dict[str, Any],
+    pool: Any,
+    root: Path | None = None,
+) -> AgendaItem | None:
+    """Publish entry as a real Brief: Qwen3.8-27B's summary-of-summaries.
+
+    The entry must be USEFUL — tell the reader what they will find when
+    they visit the live collections, with links to the public card
+    pages. The model chooses its own structure (links, a small table,
+    plain prose — its call), within Agenda length norms: long-form would
+    overwhelm the Agenda item view, so the Brief is capped hard.
+
+    Fail-open to the fact-line entry with an honest note — the Agenda is
+    a journal; a missing Brief must never block the publish path.
+    """
+    published = int(result.get("published_count") or 0)
+    if published <= 0:
+        return None
+    now = datetime.now(timezone.utc)
+    slot = result.get("slot") or "unknown"
+    synced = result.get("card_synced_count")
+    fact_line = (
+        f"Published {published} card(s) to gaius.zndx.org "
+        f"(slot={slot}, card pages synced={synced})."
+    )
+
+    try:
+        cards = [
+            c for c in (result.get("published") or []) if c.get("card_id")
+        ]
+        if not cards:
+            raise RuntimeError("no card payloads in publish result")
+
+        # Gather each card's existing summaries — the Brief is a summary
+        # OF the summaries, not fresh analysis from thin air.
+        ids = [c["card_id"] for c in cards]
+        summaries: dict[str, list[tuple[str, str]]] = {}
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT card_id, summary_type, summary_text
+                FROM collections.card_summaries
+                WHERE card_id = ANY($1::text[])
+                """,
+                ids,
+            )
+        for row in rows:
+            summaries.setdefault(row["card_id"], []).append(
+                (row["summary_type"], row["summary_text"] or "")
+            )
+
+        card_blocks = []
+        for c in cards:
+            cid = c["card_id"]
+            block = [
+                f"### {c.get('title', cid)}",
+                f"Public URL: https://gaius.zndx.org/cards/{cid}",
+                f"Source date: {c.get('source_date', 'unknown')}",
+            ]
+            for stype, stext in summaries.get(cid, []):
+                block.append(f"[{stype} summary] {stext[:1200]}")
+            card_blocks.append("\n".join(block))
+
+        from gaius.client.engine_client import Message, get_engine_client
+
+        engine = await get_engine_client()
+        prompt = (
+            "You are writing the Brief for a Gaius Agenda entry announcing "
+            "cards just published to the public research-collections site "
+            "gaius.zndx.org.\n\n"
+            "A Brief is a summary of the summaries: informative enough that "
+            "a reader knows what they will find when they visit the live "
+            "collections. You choose the structure — flowing prose, inline "
+            "links, or a small markdown table are all acceptable; use "
+            "whatever serves these particular cards best. Not required to "
+            "use any of them.\n\n"
+            "Hard constraints:\n"
+            "- Markdown. Link every card title to its public URL.\n"
+            "- 120-200 words TOTAL. The Agenda item view is compact; "
+            "long-form would overwhelm it.\n"
+            "- No headings (the entry already has a title). Bold is fine.\n"
+            "- High signal: what the material covers and why a reader "
+            "would care — no filler, no meta-commentary about this task.\n\n"
+            f"Published this slot:\n\n" + "\n\n".join(card_blocks)
+        )
+        completion = await engine.complete(
+            [Message(role="user", content=prompt)],
+            model="thinking",
+            temperature=0.6,
+            max_tokens=2048,
+        )
+        brief = (completion.content or "").strip()
+        if not brief:
+            raise RuntimeError("thinking returned empty Brief")
+        body = f"{brief}\n\n---\n{fact_line}\n"
+    except Exception as e:  # noqa: BLE001 — journal decoration is fail-open
+        logger.warning(f"#AG.00000002.BRIEFFAIL publish Brief failed: {e}")
+        body = f"{fact_line}\n\n_Brief unavailable: {str(e)[:120]}_\n"
+
     return upsert(
         kind="note",
         title="gaius.zndx.org published",

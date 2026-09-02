@@ -549,9 +549,14 @@ class ScheduledTaskProcessor(BaseDaemon):
                 "card_synced_count": len(card_syncs) - len(card_sync_failed),
                 "card_sync_failed_count": len(card_sync_failed),
             }
-            from gaius.engine.services.agenda_emit import emit_publish_cards
+            # Agenda entry as a real Brief (Qwen3.8-27B summary of the
+            # published cards' summaries, with public links) — fail-open
+            # to the fact line inside emit_publish_brief.
+            from gaius.engine.services.agenda_emit import emit_publish_brief
 
-            emit_publish_cards(published)
+            brief_payload = dict(published)
+            brief_payload["published"] = result.get("published", [])
+            await emit_publish_brief(brief_payload, self._pool)
             # The publish task's own claim, as a scored forecast: "the
             # cards from this slot are publicly served." The
             # site_freshness objective silver-resolves it (3-way compare)
