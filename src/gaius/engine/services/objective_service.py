@@ -61,8 +61,10 @@ OBJECTIVES: dict[str, ObjectiveSpec] = {
         flows=("ArticleCurationFlow",),
         resolves=("slot % cards are publicly served",),
         cadence=timedelta(hours=6),
-        description="Public cards on gaius.zndx.org are fresh and coherent "
-        "across DB, KV, and the live site",
+        description="FINAL SURFACED RESULT: the card links a visitor sees "
+        "on gaius.zndx.org. Fresh and coherent across DB, KV, and the "
+        "live page — DB/KV agreement is the intermediate forecast; the "
+        "live page is what the user receives.",
         verifier="verify_site_freshness",
     ),
     "content_currency": ObjectiveSpec(
@@ -71,11 +73,12 @@ OBJECTIVES: dict[str, ObjectiveSpec] = {
         flows=("ArticleCurationFlow",),
         resolves=("slot % serves current content%",),
         cadence=timedelta(hours=6),
-        description="The INTENT of the publishing schedule: the public "
-        "surface's newly published content tracks the present, not the "
-        "backlog. site_freshness proves cards flow; this proves the "
-        "RIGHT cards flow. (Found 2026-09-01: mechanics green while "
-        "publishing 18-day-old content past 25 fresher pending cards.)",
+        description="The INTENT of the publishing schedule, on the FINAL "
+        "SURFACED RESULT: the content dates a visitor reads on newly "
+        "published cards track the present, not the backlog. "
+        "site_freshness proves cards flow; this proves the RIGHT cards "
+        "flow. (Found 2026-09-01: mechanics green while publishing "
+        "18-day-old content past 25 fresher pending cards.)",
         verifier="verify_content_currency",
         params={
             # 7d = 2x the worst-case weekly curation cadence the health
@@ -88,19 +91,29 @@ OBJECTIVES: dict[str, ObjectiveSpec] = {
         name="prospects_intelligence",
         dag=("prospects_check", "prospects_update"),
         flows=("ProspectsUpdateFlow",),
+        resolves=("%user receives prospect briefs%",),
         cadence=timedelta(hours=36),
-        description="Prospect updates are DELIVERED and SUBSTANTIVE: the "
-        "flow reaches its end step (flow-level truth from Metaflow's own "
-        "store — immune to task-row success lies) and the written "
-        "prospect briefs carry real summaries, not hollow shells. (Found "
-        "2026-09-02: flow died at generate_base_files with the task row "
-        "green and prospect files carrying empty Summary sections.)",
+        description="Defined on the FINAL SURFACED RESULT (doctrine rule "
+        "2): the prospect briefs the user opens are sufficient to the "
+        "task — current, well-formed, and substantively informative per "
+        "an explicit quality rubric whose FINAL CALL is the Overwatch "
+        "ACP+Grok judge (LLM-as-Judge) reasoning about the brief text "
+        "itself. Flow completion, task rows, file writes, and the local "
+        "model's rubric self-score are FORECASTS resolved by that call, "
+        "never gates. (Found 2026-09-02: flow died mid-DAG with a green "
+        "task row and hollow briefs on the user surface.)",
         verifier="verify_prospects_intelligence",
         params={
             # 36h = daily-ish prospects cadence x 1.5 buffer.
             "window_hours": 36,
-            # A real Summary section says something; an empty shell doesn't.
+            # Deterministic rubric floor: a real Summary says something.
             "min_summary_chars": 40,
+            # Title pathology guard: symbol should appear once or twice,
+            # never as a repetition artifact ("(XOM)" x23, 2026-09-02).
+            "max_symbol_repeats": 2,
+            # Rubric final call is the Overwatch ACP+Grok judge
+            # (LLM-as-Judge); at most this many briefs go to it per run.
+            "rubric_sample_max": 3,
         },
     ),
     "skos_labels": ObjectiveSpec(
@@ -394,27 +407,44 @@ class ObjectiveService:
     async def verify_prospects_intelligence(
         self, spec: ObjectiveSpec
     ) -> list[dict[str, Any]]:
-        """Prospect updates delivered AND substantive.
+        """Objective on the FINAL SURFACED RESULT (doctrine rule 2).
 
-        1. flow_completed — the newest ProspectsUpdateFlow run within the
-           window reached its `end` step, judged from Metaflow's OWN
-           store (runs/steps_v3): flow-level ground truth that a lying
-           task row cannot fake.
-        2. updates_substantive — the prospect brief files written in the
-           window carry non-empty Summary sections (an empty shell with
-           a recommendation boilerplate is not intelligence).
-        3. updates_current — briefs were written within the cadence
-           window at all.
+        The user's surface is the prospect briefs they open under
+        kb/scratch/. Every gate evaluates THAT artifact against an
+        explicit quality rubric:
+
+        1. briefs_surfaced — briefs the user can open exist within the
+           cadence window.
+        2. rubric_wellformed — deterministic rubric items per brief:
+           Summary section >= min_summary_chars; title free of
+           repetition artifacts (a symbol repeated more than
+           max_symbol_repeats times is generation pathology, not a
+           title).
+        3. rubric_sufficiency — model-scored rubric on the brief text
+           the reader sees: states what changed, explains why it merits
+           (or doesn't merit) attention, recommendation consistent with
+           the stated evidence, reads as finished prose. Mean score
+           must reach sufficiency_threshold.
+
+        Flow completion is NOT a gate. It is a FORECAST that the user
+        receives the intended result — recorded here from Metaflow's
+        own store (heuristic:prospects.flow_completed) and
+        silver-resolved by this objective's surface verdict via
+        spec.resolves.
         """
         import glob as _glob
+        import json as _json
         import os as _os
         import re as _re
+        import time as _time
 
         window_h = int(spec.params.get("window_hours", 36))
         min_chars = int(spec.params.get("min_summary_chars", 40))
+        max_repeats = int(spec.params.get("max_symbol_repeats", 2))
         gates: list[dict[str, Any]] = []
 
-        # Gate 1 — flow-level truth from the Metaflow store.
+        # FORECAST (not a gate): flow-level delivery claim from
+        # Metaflow's own store. The surface verdict resolves it.
         flow_verdict, flow_evidence = "error", ""
         try:
             import asyncpg
@@ -456,63 +486,235 @@ class ObjectiveService:
                 )
         except Exception as e:  # noqa: BLE001 — honest error verdict
             flow_evidence = f"metaflow store unreachable: {e}"
-        gates.append(
-            {"gate": "flow_completed", "verdict": flow_verdict,
-             "evidence": flow_evidence}
-        )
+        from gaius.engine.fsm import FsmPosition
+        from gaius.engine.services.efficacy_ledger import get_ledger
 
-        # Gates 2+3 — the written briefs themselves.
+        ledger = get_ledger()
+        if ledger is not None:
+            await ledger.record_forecast(
+                observer="heuristic:prospects.flow_completed",
+                observer_kind="heuristic",
+                call_site="objective_service.verify_prospects_intelligence",
+                proposition=(
+                    "user receives prospect briefs from ProspectsUpdateFlow"
+                ),
+                verdict=flow_verdict,
+                evidence={"evidence": flow_evidence},
+                position=FsmPosition(
+                    task_class="prospects_update",
+                    flow_type="ProspectsUpdateFlow",
+                ),
+            )
+
+        # Gate 1 — the surface exists and is current.
         from gaius.engine.services.agenda_notes import kb_root_from_env
 
         kb = kb_root_from_env()
-        import time as _time
-
         cutoff = _time.time() - window_h * 3600
-        files = [
+        files = sorted(
             f
             for f in _glob.glob(str(kb / "scratch" / "*" / "*prospect_*.md"))
             if _os.path.getmtime(f) > cutoff
-        ]
+        )
         if not files:
             gates.append(
-                {"gate": "updates_substantive", "verdict": "inconclusive",
-                 "evidence": "no prospect briefs in window to assess"}
+                {"gate": "briefs_surfaced", "verdict": "fail",
+                 "evidence": f"no prospect briefs written in {window_h}h "
+                 f"(flow forecast: {flow_evidence})"}
             )
             gates.append(
-                {"gate": "updates_current", "verdict": "fail",
-                 "evidence": f"no prospect briefs written in {window_h}h"}
+                {"gate": "rubric_wellformed", "verdict": "inconclusive",
+                 "evidence": "no briefs on the surface to assess"}
+            )
+            gates.append(
+                {"gate": "rubric_sufficiency", "verdict": "inconclusive",
+                 "evidence": "no briefs on the surface to score"}
             )
             return gates
-        hollow = []
-        for f in sorted(files):
+        gates.append(
+            {"gate": "briefs_surfaced", "verdict": "pass",
+             "evidence": f"{len(files)} brief(s) within {window_h}h"}
+        )
+
+        # Gate 2 — deterministic rubric items on each brief.
+        malformed: list[str] = []
+        readable: list[tuple[str, str]] = []  # (basename, text) for gate 3
+        for f in files:
+            base = _os.path.basename(f)
             try:
                 with open(f, encoding="utf-8") as fh:
                     text = fh.read()
-                m = _re.search(
-                    r"^## Summary\s*\n(.*?)(?=^## |\Z)", text,
-                    _re.MULTILINE | _re.DOTALL,
-                )
-                body = (m.group(1) if m else "").strip()
-                if len(body) < min_chars:
-                    hollow.append(_os.path.basename(f))
             except OSError:
-                hollow.append(_os.path.basename(f))
+                malformed.append(f"{base} (unreadable)")
+                continue
+            problems = []
+            m = _re.search(
+                r"^## Summary\s*\n(.*?)(?=^## |\Z)", text,
+                _re.MULTILINE | _re.DOTALL,
+            )
+            body = (m.group(1) if m else "").strip()
+            if len(body) < min_chars:
+                problems.append("empty Summary")
+            title = next(
+                (ln for ln in text.splitlines() if ln.startswith("# ")), ""
+            )
+            symbols = _re.findall(r"\(([A-Z]{1,6})\)", title)
+            worst = max(
+                (symbols.count(s) for s in set(symbols)), default=0
+            )
+            if worst > max_repeats:
+                problems.append(f"title repetition artifact (x{worst})")
+            if problems:
+                malformed.append(f"{base} ({', '.join(problems)})")
+            else:
+                readable.append((base, text))
         gates.append(
             {
-                "gate": "updates_substantive",
-                "verdict": "pass" if not hollow else "fail",
+                "gate": "rubric_wellformed",
+                "verdict": "pass" if not malformed else "fail",
                 "evidence": (
-                    f"{len(files)} brief(s), all substantive"
-                    if not hollow
-                    else f"{len(hollow)}/{len(files)} hollow (empty Summary): "
-                    + ", ".join(hollow[:5])
+                    f"{len(files)} brief(s), all well-formed"
+                    if not malformed
+                    else f"{len(malformed)}/{len(files)} malformed: "
+                    + "; ".join(malformed[:5])
                 ),
             }
         )
-        gates.append(
-            {"gate": "updates_current", "verdict": "pass",
-             "evidence": f"{len(files)} brief(s) within {window_h}h"}
+
+        # Gate 3 — sufficiency per rubric. The LOCAL model's score is a
+        # FORECAST; the FINAL CALL is the Overwatch ACP+Grok judge
+        # (LLM-as-Judge) reasoning about the artifact the reader sees,
+        # from outside the trust boundary (doctrine rule 6). Brier
+        # propagation follows the judge's call. Fail-closed: judge
+        # unavailable => error verdict, never a thinking fallback.
+        if not readable:
+            gates.append(
+                {"gate": "rubric_sufficiency", "verdict": "inconclusive",
+                 "evidence": "no well-formed briefs to score"}
+            )
+            return gates
+        sample = readable[: int(spec.params.get("rubric_sample_max", 3))]
+        rubric = (
+            "1. change: states concretely what changed or is new for the "
+            "prospect.\n"
+            "2. attention: explains why this merits (or does not merit) "
+            "the reader's attention.\n"
+            "3. consistency: any recommendation/conviction is consistent "
+            "with the evidence stated in the brief.\n"
+            "4. finish: reads as finished prose — no placeholder text, "
+            "repetition artifacts, or empty sections.\n"
         )
+        blocks = "\n\n".join(
+            f"--- {base} ---\n{text[:4000]}" for base, text in sample
+        )
+
+        # Internal forecast: thinking self-scores the surface. Recorded,
+        # never load-bearing — its Brier accrues against the judge.
+        fid_local = None
+        local_note = "thinking self-score unavailable"
+        try:
+            from gaius.client.engine_client import Message, get_engine_client
+
+            engine = await get_engine_client()
+            completion = await engine.complete(
+                [Message(role="user", content=(
+                    "Score whether these prospect intelligence briefs, as "
+                    "a set, are sufficient for a reader per this rubric "
+                    "(each item 0 or 1):\n" + rubric +
+                    "\nReply with ONLY a JSON object:\n"
+                    '{"sufficient": true, "items": {"change": 0, '
+                    '"attention": 0, "consistency": 0, "finish": 0}, '
+                    '"note": "<one line>", "confidence": 0.0}\n\n'
+                    f"Briefs:\n\n{blocks}"
+                ))],
+                model="thinking",
+                temperature=0.1,
+                max_tokens=1536,
+            )
+            out = (completion.content or "").strip()
+            jm = _re.search(r"\{.*\}", out, _re.DOTALL)
+            if not jm:
+                raise ValueError("no JSON in thinking self-score")
+            obj = _json.loads(jm.group(0))
+            local_ok = bool(obj.get("sufficient"))
+            conf = max(0.0, min(1.0, float(obj.get("confidence", 0.5))))
+            local_note = (
+                f"thinking forecast: "
+                f"{'sufficient' if local_ok else 'insufficient'} "
+                f"conf={conf:.2f}"
+            )
+            if ledger is not None:
+                fid_local = await ledger.record_forecast(
+                    observer="judge:thinking-rubric",
+                    observer_kind="judge",
+                    call_site=(
+                        "objective_service.verify_prospects_intelligence"
+                    ),
+                    proposition=(
+                        f"{spec.name} surfaced briefs are sufficient "
+                        "per rubric"
+                    ),
+                    verdict="pass" if local_ok else "fail",
+                    p=conf if local_ok else 1.0 - conf,
+                    evidence={
+                        "items": obj.get("items"),
+                        "note": str(obj.get("note", ""))[:200],
+                    },
+                    model_id="thinking",
+                    position=FsmPosition(
+                        task_class="prospects_update",
+                        flow_type="ProspectsUpdateFlow",
+                    ),
+                )
+        except Exception as e:  # noqa: BLE001 — a forecast, not a gate
+            logger.info(f"thinking rubric self-score skipped: {e}")
+
+        # Final call — Overwatch ACP+Grok judge on the same artifacts.
+        from gaius.engine.services.overwatch_judge import get_judge
+
+        result = await get_judge().judge_rubric(
+            objective=spec.name,
+            surface=(
+                f"prospect briefs under kb/scratch "
+                f"({len(sample)}/{len(files)} in window)"
+            ),
+            rubric=rubric,
+            artifacts=sample,
+        )
+        if result.get("status") != "verdict":
+            gates.append(
+                {"gate": "rubric_sufficiency", "verdict": "error",
+                 "evidence": (
+                     f"judge {result.get('status')}: "
+                     f"{str(result.get('reason', ''))[:160]} "
+                     f"(fail-closed, no local fallback; {local_note})"
+                 )}
+            )
+            return gates
+        v = result["verdict"]
+        sufficient = bool(v.get("sufficient"))
+        gates.append(
+            {
+                "gate": "rubric_sufficiency",
+                "verdict": "pass" if sufficient else "fail",
+                "authority": "overwatch-grok",
+                "evidence": (
+                    f"judge FINAL CALL: "
+                    f"{'sufficient' if sufficient else 'insufficient'} "
+                    f"conf={v.get('confidence')} items={v.get('items')} — "
+                    f"{str(v.get('note', ''))[:160]} [{local_note}]"
+                ),
+            }
+        )
+        # The judge's call resolves the local forecast gold — Brier
+        # propagation per doctrine.
+        if ledger is not None and fid_local is not None:
+            await ledger.resolve(
+                fid_local,
+                outcome=sufficient,
+                tier="gold",
+                resolver=f"overwatch-grok-rubric:{spec.name}",
+            )
         return gates
 
     async def _within_days(self, d: Any, days: int) -> bool:
@@ -552,9 +754,17 @@ class ObjectiveService:
         # Ledger: one objective: forecast per gate, at the objective's
         # DAG position. These are ground-truth-adjacent observations —
         # resolved gold-by-construction (the gate IS the measurement).
+        # A gate whose verdict was rendered by the Overwatch ACP+Grok
+        # judge carries independent authority (doctrine rule 6): its
+        # resolutions — and the upstream propagation it anchors — are
+        # GOLD, not silver.
+        judge_backed = any(
+            g.get("authority") == "overwatch-grok" for g in gates
+        )
         ledger = get_ledger()
         if ledger is not None:
             for g in gates:
+                gate_gold = g.get("authority") == "overwatch-grok"
                 fid = await ledger.record_forecast(
                     observer=f"objective:{spec.name}.{g['gate']}",
                     observer_kind="objective",
@@ -568,19 +778,28 @@ class ObjectiveService:
                     await ledger.resolve(
                         fid,
                         outcome=g["verdict"] == "pass",
-                        tier="silver",
-                        resolver=f"objective-measured:{spec.name}",
+                        tier="gold" if gate_gold else "silver",
+                        resolver=(
+                            f"overwatch-grok-rubric:{spec.name}"
+                            if gate_gold
+                            else f"objective-measured:{spec.name}"
+                        ),
                     )
-            # Silver-resolve upstream publish forecasts this verdict proves
-            # or disproves ("the internal probe said the cards were served;
-            # the objective says it did or didn't happen").
+            # Resolve upstream forecasts this verdict proves or disproves
+            # ("the internal probe said the user would receive the result;
+            # the objective says it did or didn't happen"). Gold when the
+            # verdict is anchored by the independent judge, else silver.
             if verdict in ("pass", "fail"):
+                tier = "gold" if judge_backed else "silver"
                 for pattern in spec.resolves:
                     n = await ledger.resolve_matching(
                         pattern,
                         outcome=verdict == "pass",
-                        tier="silver",
-                        resolver=f"objective:{spec.name}:{verdict}",
+                        tier=tier,
+                        resolver=(
+                            f"{'overwatch' if judge_backed else 'objective'}"
+                            f":{spec.name}:{verdict}"
+                        ),
                         window_hours=2 * spec.cadence.total_seconds() / 3600,
                     )
                     if n:

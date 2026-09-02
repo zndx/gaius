@@ -43,7 +43,11 @@ from gaius.engine.services.nautilus_triggers import (
     TriggerFiring,
     evaluate_triggers,
 )
-from gaius.engine.services.overwatch_judge import OverwatchJudge, autonomy_tier
+from gaius.engine.services.overwatch_judge import (
+    OverwatchJudge,
+    autonomy_tier,
+    get_judge,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -60,7 +64,7 @@ class NautilusService(BaseDaemon):
     def __init__(self, db_pool: Any) -> None:
         self._pool = db_pool
         self._cfg = NautilusConfig()
-        self._judge = OverwatchJudge()
+        self._judge = get_judge()
         self._task: asyncio.Task | None = None
         self._running = False
         self._cycles = 0

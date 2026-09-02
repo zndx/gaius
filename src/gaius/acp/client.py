@@ -279,14 +279,20 @@ def resolve_acp_agent(agent: str) -> tuple[str, list[str]]:
 
     if agent == "grok":
         grok_cmd = _grok_bin()
-        # Subscription token (grok login) or API key must be present,
-        # otherwise session/new fails with auth_required deep in the SDK.
+        # SUBSCRIPTION method of execution is REQUIRED for ACP grok.
+        # An XAI_API_KEY is deliberately NOT accepted as credentials:
+        # the CLI prefers an env API key over the stored login token,
+        # which would silently switch every consultation to per-token
+        # API billing. The spawn path strips XAI_* from the child env
+        # for the same reason (see connect()).
         has_token = (Path.home() / ".grok/auth.json").exists()
-        if not has_token and not os.environ.get("XAI_API_KEY"):
+        if not has_token:
             raise ACPConnectionError(
-                "grok CLI has no credentials (#ACP.00000013.GROKAUTH)\n"
-                "  Subscription (QR-friendly): grok login --device-auth\n"
-                "  Or API key: export XAI_API_KEY=...\n"
+                "grok CLI has no subscription credentials "
+                "(#ACP.00000013.GROKAUTH)\n"
+                "  Required: grok login --device-auth (QR-friendly)\n"
+                "  Note: XAI_API_KEY is NOT accepted here — ACP grok runs "
+                "on the subscription, never per-token API billing.\n"
             )
         return grok_cmd, [
             "agent",
@@ -606,6 +612,14 @@ class GaiusACPClient:
 
             # Build environment with MCP config if provided
             env = dict(os.environ)
+            if (self.config.agent or "").strip() == "grok":
+                # Subscription-only execution: the grok CLI prefers an
+                # env API key over the stored login token, so an
+                # inherited XAI_API_KEY would silently switch the judge
+                # to per-token API billing. Strip all XAI_* so the
+                # subscription token is the only credential available.
+                for key in [k for k in env if k.startswith("XAI_")]:
+                    env.pop(key)
             env.update(self.config.agent_env)
 
             if self.config.mcp_config:

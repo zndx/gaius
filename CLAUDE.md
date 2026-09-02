@@ -234,33 +234,47 @@ objectives are its quantitative realization.
    Objective** — declared in `objective_service.OBJECTIVES` with its DAG
    linkage, cadence, and `resolves` patterns. A task class without an
    objective is unfinished work (skeleton specs are acceptable interim).
-2. **The verification system cannot function without explicit success
-   criteria.** Every objective gate states its criterion concretely
-   (threshold, comparison, source column) with the rationale for the
-   threshold in `ObjectiveSpec.params`. "Some cards exist" is not a
-   criterion; "newest source_date within 7d of now" is.
-3. **Capture INTENT objectives, not just mechanics objectives.** For
+2. **The formal Objective is defined on the FINAL SURFACED RESULT, with
+   a quality rubric.** The objective's gates evaluate what the USER
+   actually receives (the public page, the brief they open, the answer
+   they read) against explicit sufficiency criteria — is this output
+   sufficient to the task? Every intermediate check and step completion
+   — "the flow reached end", "the task row is clean", "files were
+   written" — is a FORECAST that the user receives the intended result,
+   recorded in the ledger and resolved by the surface verdict, never a
+   gate of the objective itself. Where sufficiency requires judgment,
+   the FINAL CALL is rendered by Overwatch (ACP+Grok, LLM-as-Judge)
+   reasoning about the surfaced artifact against the rubric — a
+   local-model rubric score is itself a forecast, resolved GOLD by the
+   judge's call, and Brier propagation follows that call. Fail-closed:
+   judge unavailable means an error verdict, never a local fallback.
+3. **The verification system cannot function without explicit success
+   criteria.** Every objective gate and rubric item states its criterion
+   concretely (threshold, comparison, source column, rubric question)
+   with the rationale in `ObjectiveSpec.params`. "Some cards exist" is
+   not a criterion; "newest source_date within 7d of now" is.
+4. **Capture INTENT objectives, not just mechanics objectives.** For
    each surface ask: what did the *schedule* promise? `site_freshness`
    (mechanics: cards flow to the public surface) and `content_currency`
    (intent: the RIGHT cards flow — content tracks the present) are the
    canonical pair; the 2026-09-01 finding was mechanics green for weeks
    while intent failed.
-4. **Every probe, timeout, and heuristic verdict is a FORECAST** in the
+5. **Every probe, timeout, and heuristic verdict is a FORECAST** in the
    efficacy ledger: an affirmative proposition + the observer's implied
    P(true), stamped with the caller's FSM position (one probe function,
    many call sites, one row each). Polarity convention lives at
    `efficacy_ledger.VERDICT_P` — an inversion silently flips every score.
-5. **Outcomes come from objective verification (silver) or independent
+6. **Outcomes come from objective verification (silver) or independent
    authority (gold)** — the human at the CLI, or Overwatch (ACP+Grok)
    checking the PUBLIC result from outside the trust boundary. Internal
    machinery confirming internal machinery is still a forecast, however
    confident.
-6. **Drift is allowed; divergence is surfaced, not punished per-event.**
+7. **Drift is allowed; divergence is surfaced, not punished per-event.**
    A single miss changes a score, not behavior. No probe is auto-disabled,
    no threshold auto-tuned; salt annotates. Nautilus (model-free) watches
    for sustained objective failure/staleness; Overwatch judges what
    determinism cannot settle; the judge itself is Brier-scored.
-7. **When an objective FAILs, the diagnosis names the DAG stage** (which
+8. **When an objective FAILs, the diagnosis names the DAG stage** (which
    gate, which upstream class) so remediation lands on the true cause —
    e.g. content_currency's selection gate pointed past "publishing
    works" to enrichment head-of-line starvation.

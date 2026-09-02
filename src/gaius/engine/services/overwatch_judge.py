@@ -45,7 +45,13 @@ JUDGE_AGENT = "grok"
 
 MAX_JUDGE_INVOCATIONS_PER_DAY = 6
 
+# Objective rubric judgments (LLM-as-Judge on the final surfaced result)
+# have their own budget so they never starve trigger consultations.
+MAX_RUBRIC_JUDGMENTS_PER_DAY = 8
+
 VERDICT_KEYS = {"in_contract", "diagnosis", "recommended_action", "confidence"}
+
+RUBRIC_VERDICT_KEYS = {"sufficient", "items", "note", "confidence"}
 
 ALLOWED_ACTIONS = {
     "none",
@@ -62,14 +68,23 @@ class OverwatchJudge:
 
     def __init__(self) -> None:
         self._invocations_today = 0
+        self._rubric_today = 0
         self._counter_date: date = date.today()
 
-    def _budget_ok(self) -> bool:
+    def _roll_date(self) -> None:
         today = date.today()
         if today != self._counter_date:
             self._counter_date = today
             self._invocations_today = 0
+            self._rubric_today = 0
+
+    def _budget_ok(self) -> bool:
+        self._roll_date()
         return self._invocations_today < MAX_JUDGE_INVOCATIONS_PER_DAY
+
+    def _rubric_budget_ok(self) -> bool:
+        self._roll_date()
+        return self._rubric_today < MAX_RUBRIC_JUDGMENTS_PER_DAY
 
     @staticmethod
     def preflight() -> str | None:
@@ -150,6 +165,161 @@ class OverwatchJudge:
 
         await self._record_forecast(trigger, scope, verdict)
         return {"status": "verdict", "verdict": verdict}
+
+    async def judge_rubric(
+        self,
+        objective: str,
+        surface: str,
+        rubric: str,
+        artifacts: list[tuple[str, str]],
+    ) -> dict[str, Any]:
+        """LLM-as-Judge FINAL CALL on an objective's surfaced result.
+
+        The judge reasons about the artifact the user actually receives,
+        against the objective's explicit quality rubric, and renders the
+        verdict that resolves the forecast chain (Brier propagation
+        follows this call). Fail-closed: unavailable/budget/error never
+        falls back to a local model.
+
+        Outcomes mirror consult():
+            {"status": "verdict", "verdict": {sufficient, items, note,
+             confidence}} | judge_unavailable | judge_error |
+            budget_exhausted
+        """
+        if not self._rubric_budget_ok():
+            logger.warning(
+                "#OW.00000003.BUDGET rubric judge budget exhausted "
+                f"({MAX_RUBRIC_JUDGMENTS_PER_DAY}/day) — objective gate "
+                "records an error verdict, never a default"
+            )
+            return {"status": "budget_exhausted"}
+
+        unavailable = self.preflight()
+        if unavailable is not None:
+            logger.warning(
+                f"#OW.00000001.JUDGEDOWN grok judge unavailable — fail "
+                f"closed, NO thinking fallback: {unavailable}"
+            )
+            return {"status": "judge_unavailable", "reason": unavailable}
+
+        self._rubric_today += 1
+        blocks = "\n\n".join(
+            f"--- {name} ---\n{text[:4000]}" for name, text in artifacts[:5]
+        )
+        prompt = f"""You are the Gaius Overwatch judge — an INDEPENDENT reviewer running
+on Grok, deliberately outside the local model stack. This is an
+OBJECTIVE RUBRIC judgment (LLM-as-Judge): you make the FINAL CALL on
+whether the final surfaced result the user receives is sufficient to
+the task. Internal checks and local-model scores are forecasts that
+will be Brier-scored against your call.
+
+OBJECTIVE: {objective}
+USER SURFACE: {surface}
+
+QUALITY RUBRIC (score each item 0 or 1 over the artifact set):
+{rubric}
+
+ARTIFACTS (verbatim — what the user actually receives):
+{blocks}
+
+Rules:
+- Judge ONLY what is in front of you: the artifact text, never the
+  machinery that produced it.
+- sufficient=true means a reader opening these artifacts is adequately
+  served for the objective's task; hollow, malformed, or padded
+  content is NOT sufficient.
+- Respond with EXACTLY one JSON object and nothing else:
+{{"sufficient": bool, "items": {{"<rubric item>": 0 or 1, ...}},
+ "note": "one line", "confidence": 0.0-1.0}}"""
+
+        try:
+            from gaius.acp import ACPConfig, GaiusACPClient
+
+            async with GaiusACPClient(
+                ACPConfig(
+                    agent=JUDGE_AGENT,
+                    auto_approve_terminal=False,  # judge reads, never mutates
+                    auto_approve_fs=False,
+                    include_gaius_mcp=False,
+                )
+            ) as client:
+                response = await client.prompt(message=prompt)
+        except Exception as e:  # noqa: BLE001 — recorded, never masked
+            logger.warning(f"#OW.00000002.JUDGEERR rubric judgment failed: {e}")
+            return {"status": "judge_error", "reason": str(e)[:500]}
+
+        verdict = self._parse_rubric_verdict(response or "")
+        if verdict is None:
+            logger.warning(
+                "#OW.00000002.JUDGEERR rubric judge returned no parseable "
+                "verdict JSON — error verdict, no default-to-success"
+            )
+            return {
+                "status": "judge_error",
+                "reason": "no parseable rubric verdict JSON",
+                "raw_tail": (response or "")[-400:],
+            }
+
+        await self._record_rubric_forecast(objective, surface, verdict)
+        return {"status": "verdict", "verdict": verdict}
+
+    @staticmethod
+    def _parse_rubric_verdict(response: str) -> dict[str, Any] | None:
+        m = re.search(r"```json\s*(\{.*?\})\s*```", response, re.DOTALL)
+        raw = m.group(1) if m else None
+        if raw is None:
+            m = re.search(
+                r"\{.*\"sufficient\".*\}", response, re.DOTALL
+            )
+            raw = m.group(0) if m else None
+        if raw is None:
+            return None
+        try:
+            verdict = json.loads(raw)
+        except json.JSONDecodeError:
+            return None
+        if not RUBRIC_VERDICT_KEYS.issubset(verdict):
+            return None
+        verdict["sufficient"] = bool(verdict["sufficient"])
+        if not isinstance(verdict.get("items"), dict):
+            verdict["items"] = {}
+        try:
+            verdict["confidence"] = max(0.0, min(1.0, float(verdict["confidence"])))
+        except (TypeError, ValueError):
+            verdict["confidence"] = 0.5
+        return verdict
+
+    @staticmethod
+    async def _record_rubric_forecast(
+        objective: str, surface: str, verdict: dict[str, Any]
+    ) -> None:
+        """The judge's rubric call is itself Brier-scored (resolved gold
+        by the human at the CLI, or by later surface observations)."""
+        try:
+            from gaius.engine.services.efficacy_ledger import get_ledger
+
+            ledger = get_ledger()
+            if ledger is None:
+                return
+            conf = float(verdict["confidence"])
+            await ledger.record_forecast(
+                observer="judge:overwatch-grok",
+                observer_kind="judge",
+                call_site="overwatch_judge.judge_rubric",
+                proposition=(
+                    f"{objective} surfaced result ({surface}) is "
+                    "sufficient per rubric"
+                ),
+                verdict="pass" if verdict["sufficient"] else "fail",
+                p=conf if verdict["sufficient"] else 1.0 - conf,
+                evidence={
+                    "items": verdict.get("items"),
+                    "note": str(verdict.get("note", ""))[:200],
+                },
+                model_id="grok",
+            )
+        except Exception:  # noqa: BLE001 — ledger is fail-open
+            logger.debug("rubric judge forecast record skipped", exc_info=True)
 
     @staticmethod
     def _build_prompt(
@@ -264,6 +434,18 @@ Respond with EXACTLY one JSON object and nothing else:
             )
         except Exception:  # noqa: BLE001 — ledger is fail-open
             logger.debug("judge forecast record skipped", exc_info=True)
+
+
+_JUDGE: OverwatchJudge | None = None
+
+
+def get_judge() -> OverwatchJudge:
+    """Process-wide judge instance — trigger consultations and rubric
+    judgments share one set of daily budget counters."""
+    global _JUDGE
+    if _JUDGE is None:
+        _JUDGE = OverwatchJudge()
+    return _JUDGE
 
 
 _ENV_FLAG = "GAIUS_OVERWATCH_AUTONOMY"
