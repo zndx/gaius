@@ -491,8 +491,9 @@ def _parse_orchestrator_decision(response: str) -> OrchestratorDecision:
 # - Federation to remote nodes when needed
 #
 # Agent aliases used:
-# - "cerebras-glm": Cerebras GLM-4.7 for YAML generation
-# - "xai-grok-fast": XAI Grok-4.1 fast for error diagnosis
+# - "thinking": Qwen3.8-27B for YAML generation, orchestration decisions,
+#   and error diagnosis (external/dedicated models retired 2026-09-02 —
+#   CLT/SAE capabilities are the only dedicated-model use cases)
 
 
 async def _call_generate_base(
@@ -539,25 +540,25 @@ async def _call_generate_base(
         # Check if engine is available
         if not use_engine_proxy():
             raise RuntimeError(
-                "Engine not available for .base generation (intended agent=cerebras-glm).\n"
+                "Engine not available for .base generation (intended agent=thinking).\n"
                 "  Try: just restart-clean"
             )
 
         # Get scheduler proxy for gRPC routing
         scheduler = await get_scheduler_proxy()
 
-        # Call Cerebras via the engine's scheduler (handles budget tracking + exchange capture)
-        # Agent "cerebras-glm" is configured in config/agents.conf with backend="cerebras"
+        # Qwen3.8-27B thinking is the go-to for workflow generation
+        # (2026-09-02); cerebras-glm retired (zai-glm-4.7 archived
+        # upstream) — dedicated models are reserved for CLT/SAE.
         response = await scheduler.complete(
             prompt=user_prompt,
-            agent="cerebras-glm",
+            agent="thinking",
             system_prompt=BASE_GENERATION_SYSTEM_PROMPT,
             temperature=0.2,  # Low temperature for consistent YAML output
-            max_tokens=2048,
+            max_tokens=4096,  # thinking traces count against max_tokens
         )
 
-        # Calculate cost (approximate - Cerebras pricing)
-        cost_usd = (response.input_tokens + response.output_tokens) * 0.0000001  # Very cheap
+        cost_usd = 0.0  # local thinking endpoint
 
         yaml_content = _extract_yaml(response.content)
         validation = validate_base(yaml_content)
@@ -566,7 +567,7 @@ async def _call_generate_base(
 
     except Exception as e:
         raise RuntimeError(
-            f"Prospects .base Complete failed (intended agent=cerebras-glm).\n"
+            f"Prospects .base Complete failed (intended agent=thinking).\n"
             f"  {e}"
         ) from e
 
@@ -601,19 +602,17 @@ async def _call_diagnose_error(
         # Get scheduler proxy for gRPC routing
         scheduler = await get_scheduler_proxy()
 
-        # Call XAI via the engine's scheduler (handles budget tracking + exchange capture)
-        # Agent "xai-grok-fast" is configured in config/agents.conf with backend="xai"
+        # Qwen3.8-27B thinking handles error diagnosis too (2026-09-02);
+        # xai-grok-fast retired from this path — external models are not
+        # part of workflow execution.
         response = await scheduler.complete(
             prompt=prompt,
-            agent="xai-grok-fast",
+            agent="thinking",
             temperature=0.1,
-            max_tokens=500,
+            max_tokens=1536,  # thinking traces count against max_tokens
         )
 
-        # Calculate cost (Grok 4.1 fast pricing: $0.20/M input, $0.50/M output)
-        input_cost = response.input_tokens * 0.0000002
-        output_cost = response.output_tokens * 0.0000005
-        cost_usd = input_cost + output_cost
+        cost_usd = 0.0  # local thinking endpoint
 
         # Parse JSON from response
         try:
@@ -692,8 +691,8 @@ Attempts so far: {len(state.attempts)}
 
         if not use_engine_proxy():
             raise RuntimeError(
-                "Engine not available for orchestrator Complete "
-                "(intended agent=orchestrator). No heuristic fallback."
+                "Engine not available for orchestration Complete "
+                "(intended agent=thinking). No heuristic fallback."
             )
 
         scheduler = await get_scheduler_proxy()
@@ -701,11 +700,13 @@ Attempts so far: {len(state.attempts)}
         # Build the full prompt with system context
         full_prompt = f"{ORCHESTRATOR_SYSTEM_PROMPT}\n\n{observation}"
 
-        # Use scheduler.complete() which routes through engine gRPC
+        # Qwen3.8-27B thinking is the go-to for workflow orchestration
+        # decisions (2026-09-02); Orchestrator-8B is retired from this
+        # path — dedicated models are reserved for CLT/SAE capabilities.
         result = await scheduler.complete(
             prompt=full_prompt,
-            agent="orchestrator",  # Route to orchestrator endpoint
-            max_tokens=512,  # Enough for Qwen3 thinking + JSON response
+            agent="thinking",
+            max_tokens=1536,  # thinking traces count against max_tokens
             temperature=0.2,
         )
 
@@ -713,7 +714,7 @@ Attempts so far: {len(state.attempts)}
 
     except Exception as e:
         raise RuntimeError(
-            f"Orchestrator Complete failed (intended agent=orchestrator): {e}"
+            f"Orchestration Complete failed (intended agent=thinking): {e}"
         ) from e
 
 

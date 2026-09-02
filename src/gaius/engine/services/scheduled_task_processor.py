@@ -742,8 +742,14 @@ class ScheduledTaskProcessor(BaseDaemon):
                 logger.warning("prospects_update task has no symbols in payload")
                 return {"status": "skipped", "reason": "no symbols"}
             symbols_csv = ",".join(symbols)
+            # force=true re-analyzes all extracted filings and
+            # re-synthesizes positions — the recovery lever for
+            # backlog/hollow-content repair (2026-09-02: eight months
+            # of empty theses round-tripped through the reuse path).
+            force = bool(task.payload.get("force", False))
             logger.info(
                 f"Triggering ProspectsUpdateFlow symbols={symbols_csv} "
+                f"force={force} "
                 f"FMP_API_KEY={'present' if 'FMP_API_KEY' in os.environ else 'MISSING'} "
                 f"XAI_API_KEY={'present' if 'XAI_API_KEY' in os.environ else 'MISSING'}"
             )
@@ -754,6 +760,7 @@ class ScheduledTaskProcessor(BaseDaemon):
                     "uv", "run", "python", "-m",
                     "gaius.flows.prospects.update_flow", "run",
                     f"--symbols={symbols_csv}",
+                    *(["--force=True"] if force else []),
                 ],
                 log_prefix="ProspectsUpdate",
                 idle_timeout=3600,

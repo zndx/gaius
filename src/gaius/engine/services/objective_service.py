@@ -98,10 +98,15 @@ OBJECTIVES: dict[str, ObjectiveSpec] = {
         "task — current, well-formed, and substantively informative per "
         "an explicit quality rubric whose FINAL CALL is the Overwatch "
         "ACP+Grok judge (LLM-as-Judge) reasoning about the brief text "
-        "itself. Flow completion, task rows, file writes, and the local "
-        "model's rubric self-score are FORECASTS resolved by that call, "
-        "never gates. (Found 2026-09-02: flow died mid-DAG with a green "
-        "task row and hollow briefs on the user surface.)",
+        "itself. The task: inform a rebalancing BOUNDARY decision under "
+        "switching costs (kb current/prospects/portfolio-theory.md — "
+        "no-trade-region discipline; 'no action warranted' is a "
+        "first-class, supported conclusion, never silence). Flow "
+        "completion, task rows, file writes, and the local model's "
+        "rubric self-score are FORECASTS resolved by that call, never "
+        "gates. (Found 2026-09-02: flow died mid-DAG with a green task "
+        "row and hollow briefs on the user surface; year audit: last "
+        "decision-grade brief 2026-01-11.)",
         verifier="verify_prospects_intelligence",
         params={
             # 36h = daily-ish prospects cadence x 1.5 buffer.
@@ -598,9 +603,13 @@ class ObjectiveService:
             "1. change: states concretely what changed or is new for the "
             "prospect.\n"
             "2. attention: explains why this merits (or does not merit) "
-            "the reader's attention.\n"
-            "3. consistency: any recommendation/conviction is consistent "
-            "with the evidence stated in the brief.\n"
+            "action — 'no action warranted' is a first-class conclusion "
+            "when stated with support (no-trade-region discipline: most "
+            "drift should NOT trigger a trade).\n"
+            "3. consistency: recommendation/conviction is consistent "
+            "with the evidence stated, framed as a rebalancing boundary "
+            "judgment — does this evidence move the position toward or "
+            "across its tolerance band, net of switching costs?\n"
             "4. finish: reads as finished prose — no placeholder text, "
             "repetition artifacts, or empty sections.\n"
         )

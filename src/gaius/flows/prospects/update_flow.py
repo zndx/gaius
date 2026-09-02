@@ -75,18 +75,39 @@ def load_synthesis_from_kb(kb_root: Path, symbol: str) -> PositionSynthesis | No
         return None
 
     try:
+        import re as _re
+
         content = synthesis_path.read_text()
         # Parse YAML frontmatter
         if content.startswith("---"):
             parts = content.split("---", 2)
             if len(parts) >= 3:
                 frontmatter = yaml.safe_load(parts[1])
+                raw_name = str(frontmatter.get("title", symbol)).replace(
+                    " - Investment Synthesis", ""
+                )
+                # Self-heal accreted "(SYM)" echoes: the synthesis writer
+                # appends "({symbol})" to the title it round-trips from
+                # this loader, so the name grew one echo per run
+                # ("(XOM)" x23 by 2026-09-02).
+                company_name = _re.sub(
+                    r"(\s*\(" + _re.escape(symbol) + r"\))+\s*$", "", raw_name
+                ).strip() or symbol
+                # The thesis lives in the body, not the frontmatter —
+                # recover it, or every artifact derived from a reused
+                # synthesis carries an empty Summary.
+                m = _re.search(
+                    r"^## Investment Thesis\s*\n(.*?)(?=^## |\Z)",
+                    parts[2],
+                    _re.MULTILINE | _re.DOTALL,
+                )
                 return PositionSynthesis(
                     symbol=frontmatter.get("symbol", symbol),
-                    company_name=frontmatter.get("title", symbol).replace(" - Investment Synthesis", ""),
+                    company_name=company_name,
                     recommendation=frontmatter.get("recommendation", "hold"),
                     conviction_score=float(frontmatter.get("conviction_score", 0.5)),
                     risk_level=frontmatter.get("risk_level", "medium"),
+                    thesis_summary=(m.group(1).strip() if m else ""),
                     cost_usd=0.0,  # Already paid
                 )
     except Exception as e:
