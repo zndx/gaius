@@ -12,6 +12,7 @@ filings, holders, or news that the clocks did not produce.
 from __future__ import annotations
 
 import logging
+import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -249,6 +250,26 @@ def emit_publish_cards(result: dict[str, Any], root: Path | None = None) -> Agen
     )
 
 
+def _todays_brief_item(root: Path | None, now: datetime) -> Path | None:
+    """Path of today's publish item iff it already carries a rich Brief
+    (public card links present); None when absent or a bare fallback."""
+    try:
+        kb = root or kb_root_from_env()
+        day = now.astimezone(timezone.utc).strftime("%Y-%m-%d")
+        path = find_by_slug(
+            kb, day, skewer("gaius.zndx.org published", "note")
+        )
+        if path is None:
+            return None
+        if "https://gaius.zndx.org/cards/" not in path.read_text(
+            encoding="utf-8"
+        ):
+            return None
+        return path
+    except Exception:  # noqa: BLE001 — probe helper, never load-bearing
+        return None
+
+
 async def emit_publish_brief(
     result: dict[str, Any],
     pool: Any,
@@ -313,6 +334,54 @@ async def emit_publish_brief(
                 block.append(f"[{stype} summary] {stext[:1200]}")
             card_blocks.append("\n".join(block))
 
+        # Multi-turn incorporation: when today's item already carries a
+        # rich Brief, the thinking agent merges this slot's cards into
+        # it via tool-mediated read/edit (agenda_edit) — a later slot
+        # must never clobber an earlier slot's Brief with a rewrite.
+        existing = _todays_brief_item(root, now)
+        if existing is not None:
+            from gaius.engine.services.agenda_edit import (
+                incorporate_into_note,
+            )
+
+            # CHUNKED incorporation: one compact session per card, then
+            # one for the fact line. Sessions with multi-card prompts
+            # and long planning turns fail in the agent lane
+            # (#ACP.00000005 at ~3-5KB tasks, 2026-09-02); single-card
+            # tasks are the proven envelope — and rounds of small edits
+            # against disk truth ARE the multi-turn contract.
+            merged_any = False
+            for c in cards:
+                cid = c["card_id"]
+                summ = ""
+                for _stype, stext in summaries.get(cid, [])[:1]:
+                    summ = stext[:500]
+                task = (
+                    "A new card was published today and must be woven "
+                    "into the existing Brief. Append or integrate ONE "
+                    "short sentence in the prose before the --- "
+                    "separator (same editorial voice), with the card "
+                    "title linked to its public URL. Condense an "
+                    "existing sentence if the Brief grows past ~200 "
+                    "words.\n\n"
+                    f"Card: {c.get('title', cid)}\n"
+                    f"Public URL: https://gaius.zndx.org/cards/{cid}\n"
+                    f"Summary: {summ}"
+                )
+                if await incorporate_into_note(existing, task):
+                    merged_any = True
+            fact_task = (
+                "Update the fact line(s) after the --- separator so the "
+                "day's totals stay accurate: append this slot's fact "
+                f"line verbatim on its own line: {fact_line}"
+            )
+            await incorporate_into_note(existing, fact_task)
+            if merged_any:
+                return None  # merged in place — no upsert
+            raise RuntimeError(
+                "incorporation sessions left the note unchanged"
+            )
+
         from gaius.client.engine_client import Message, get_engine_client
 
         engine = await get_engine_client()
@@ -339,7 +408,7 @@ async def emit_publish_brief(
             [Message(role="user", content=prompt)],
             model="thinking",
             temperature=0.6,
-            max_tokens=2048,
+            max_tokens=6144,  # thinking traces count against max_tokens
         )
         brief = (completion.content or "").strip()
         if not brief:
@@ -347,7 +416,26 @@ async def emit_publish_brief(
         body = f"{brief}\n\n---\n{fact_line}\n"
     except Exception as e:  # noqa: BLE001 — journal decoration is fail-open
         logger.warning(f"#AG.00000002.BRIEFFAIL publish Brief failed: {e}")
-        body = f"{fact_line}\n\n_Brief unavailable: {str(e)[:120]}_\n"
+        prior_item = _todays_brief_item(root, now)
+        if prior_item is not None:
+            # A degraded fallback must never clobber a rich Brief
+            # (2026-09-02: the 12:00 slot's token-starved empty
+            # completion overwrote the 01:18 Brief with a bare fact
+            # line). Keep the Brief; refresh the facts.
+            text = prior_item.read_text(encoding="utf-8")
+            m = re.search(
+                r"^# gaius\.zndx\.org published\s*\n(.*)\Z",
+                text,
+                re.MULTILINE | re.DOTALL,
+            )
+            prior_body = (m.group(1) if m else "").strip()
+            brief_part = prior_body.rsplit("\n---\n", 1)[0].strip()
+            body = (
+                f"{brief_part}\n\n---\n{fact_line}\n"
+                f"_Latest slot Brief unavailable: {str(e)[:100]}_\n"
+            )
+        else:
+            body = f"{fact_line}\n\n_Brief unavailable: {str(e)[:120]}_\n"
 
     return upsert(
         kind="note",

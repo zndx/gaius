@@ -530,8 +530,10 @@ Trigger reason: {trigger_reason}"""
                 "agent": "thinking",
                 # xhigh thinking at ~8 tok/s regularly ate a 2048 budget
                 # entirely inside <think> (no answer text, 2026-08-31);
-                # 4096 gives the answer room; the client deadline scales.
-                "max_tokens": 4096,
+                # 4096 was eaten too (2026-09-02 THINKBURN — third
+                # starvation of the day; traces run longer post-rebuild).
+                # 8192 gives the answer room; the client deadline scales.
+                "max_tokens": 8192,
             },
         )
 
@@ -1681,8 +1683,10 @@ EVALUATION: How to measure success"""
                 "agent": "thinking",
                 # xhigh thinking at ~8 tok/s regularly ate a 2048 budget
                 # entirely inside <think> (no answer text, 2026-08-31);
-                # 4096 gives the answer room; the client deadline scales.
-                "max_tokens": 4096,
+                # 4096 was eaten too (2026-09-02 THINKBURN — third
+                # starvation of the day; traces run longer post-rebuild).
+                # 8192 gives the answer room; the client deadline scales.
+                "max_tokens": 8192,
             },
         )
 
