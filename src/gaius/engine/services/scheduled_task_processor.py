@@ -1384,8 +1384,20 @@ class ScheduledTaskProcessor(BaseDaemon):
             error_msg = None
             if result_status in ("failed", "error", "stalled"):
                 if isinstance(result, dict):
-                    last_lines = result.get("last_lines", [])
-                    error_msg = result.get("error") or (last_lines[-1] if last_lines else f"Handler returned status: {result_status}")
+                    # Blank trailing output lines must not null the error:
+                    # a failed ProspectsUpdateFlow (2026-09-02 01:42) ended
+                    # with an empty line, error_msg became "" → error=NULL
+                    # → every downstream truth check (health cadence
+                    # filter, FSM DONE_OK, landing checks) read the failed
+                    # flow as a clean success.
+                    last_lines = [
+                        ln for ln in result.get("last_lines", []) if ln.strip()
+                    ]
+                    error_msg = (
+                        result.get("error")
+                        or (last_lines[-1] if last_lines else None)
+                        or f"Handler returned status: {result_status}"
+                    )
                 else:
                     error_msg = f"Handler returned status: {result_status}"
                 self._tasks_failed += 1

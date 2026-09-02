@@ -84,6 +84,25 @@ OBJECTIVES: dict[str, ObjectiveSpec] = {
             "window_hours": 24,
         },
     ),
+    "prospects_intelligence": ObjectiveSpec(
+        name="prospects_intelligence",
+        dag=("prospects_check", "prospects_update"),
+        flows=("ProspectsUpdateFlow",),
+        cadence=timedelta(hours=36),
+        description="Prospect updates are DELIVERED and SUBSTANTIVE: the "
+        "flow reaches its end step (flow-level truth from Metaflow's own "
+        "store — immune to task-row success lies) and the written "
+        "prospect briefs carry real summaries, not hollow shells. (Found "
+        "2026-09-02: flow died at generate_base_files with the task row "
+        "green and prospect files carrying empty Summary sections.)",
+        verifier="verify_prospects_intelligence",
+        params={
+            # 36h = daily-ish prospects cadence x 1.5 buffer.
+            "window_hours": 36,
+            # A real Summary section says something; an empty shell doesn't.
+            "min_summary_chars": 40,
+        },
+    ),
     "skos_labels": ObjectiveSpec(
         name="skos_labels",
         dag=("clt_skos_admit", "clt_skos_label"),
@@ -369,6 +388,130 @@ class ObjectiveService:
                 "verdict": "pass" if g3_ok else "fail",
                 "evidence": f"corpus newest source_date = {corpus_newest} ({threshold})",
             }
+        )
+        return gates
+
+    async def verify_prospects_intelligence(
+        self, spec: ObjectiveSpec
+    ) -> list[dict[str, Any]]:
+        """Prospect updates delivered AND substantive.
+
+        1. flow_completed — the newest ProspectsUpdateFlow run within the
+           window reached its `end` step, judged from Metaflow's OWN
+           store (runs/steps_v3): flow-level ground truth that a lying
+           task row cannot fake.
+        2. updates_substantive — the prospect brief files written in the
+           window carry non-empty Summary sections (an empty shell with
+           a recommendation boilerplate is not intelligence).
+        3. updates_current — briefs were written within the cadence
+           window at all.
+        """
+        import glob as _glob
+        import os as _os
+        import re as _re
+
+        window_h = int(spec.params.get("window_hours", 36))
+        min_chars = int(spec.params.get("min_summary_chars", 40))
+        gates: list[dict[str, Any]] = []
+
+        # Gate 1 — flow-level truth from the Metaflow store.
+        flow_verdict, flow_evidence = "error", ""
+        try:
+            import asyncpg
+
+            mf_dsn = _os.environ.get(
+                "GAIUS_METAFLOW_DB_URL",
+                "postgres://signals:signals@127.0.0.1:5455/metaflow",
+            )
+            conn = await asyncpg.connect(mf_dsn, timeout=15)
+            try:
+                row = await conn.fetchrow(
+                    """
+                    SELECT r.run_number,
+                           EXISTS (
+                               SELECT 1 FROM steps_v3 s
+                               WHERE s.flow_id = r.flow_id
+                                 AND s.run_number = r.run_number
+                                 AND s.step_name = 'end'
+                           ) AS reached_end
+                    FROM runs_v3 r
+                    WHERE r.flow_id = 'ProspectsUpdateFlow'
+                      AND to_timestamp(r.ts_epoch / 1000)
+                          > NOW() - INTERVAL '1 hour' * $1
+                    ORDER BY r.ts_epoch DESC
+                    LIMIT 1
+                    """,
+                    window_h,
+                )
+            finally:
+                await conn.close()
+            if row is None:
+                flow_verdict = "fail"
+                flow_evidence = f"no ProspectsUpdateFlow run in {window_h}h"
+            else:
+                flow_verdict = "pass" if row["reached_end"] else "fail"
+                flow_evidence = (
+                    f"run {row['run_number']}: "
+                    + ("reached end" if row["reached_end"] else "died mid-DAG")
+                )
+        except Exception as e:  # noqa: BLE001 — honest error verdict
+            flow_evidence = f"metaflow store unreachable: {e}"
+        gates.append(
+            {"gate": "flow_completed", "verdict": flow_verdict,
+             "evidence": flow_evidence}
+        )
+
+        # Gates 2+3 — the written briefs themselves.
+        from gaius.engine.services.agenda_notes import kb_root_from_env
+
+        kb = kb_root_from_env()
+        import time as _time
+
+        cutoff = _time.time() - window_h * 3600
+        files = [
+            f
+            for f in _glob.glob(str(kb / "scratch" / "*" / "*prospect_*.md"))
+            if _os.path.getmtime(f) > cutoff
+        ]
+        if not files:
+            gates.append(
+                {"gate": "updates_substantive", "verdict": "inconclusive",
+                 "evidence": "no prospect briefs in window to assess"}
+            )
+            gates.append(
+                {"gate": "updates_current", "verdict": "fail",
+                 "evidence": f"no prospect briefs written in {window_h}h"}
+            )
+            return gates
+        hollow = []
+        for f in sorted(files):
+            try:
+                with open(f, encoding="utf-8") as fh:
+                    text = fh.read()
+                m = _re.search(
+                    r"^## Summary\s*\n(.*?)(?=^## |\Z)", text,
+                    _re.MULTILINE | _re.DOTALL,
+                )
+                body = (m.group(1) if m else "").strip()
+                if len(body) < min_chars:
+                    hollow.append(_os.path.basename(f))
+            except OSError:
+                hollow.append(_os.path.basename(f))
+        gates.append(
+            {
+                "gate": "updates_substantive",
+                "verdict": "pass" if not hollow else "fail",
+                "evidence": (
+                    f"{len(files)} brief(s), all substantive"
+                    if not hollow
+                    else f"{len(hollow)}/{len(files)} hollow (empty Summary): "
+                    + ", ".join(hollow[:5])
+                ),
+            }
+        )
+        gates.append(
+            {"gate": "updates_current", "verdict": "pass",
+             "evidence": f"{len(files)} brief(s) within {window_h}h"}
         )
         return gates
 
