@@ -2224,7 +2224,7 @@ created_at: {now.isoformat()}
 
                     wid = ""
                     cmd = [
-                        "uv", "run", "python", "-m", "gaius.flows.article_curation.flow",
+                        "uv", "run", "--no-sync", "python", "-m", "gaius.flows.article_curation.flow",
                         "run",
                     ]
                     if slug:

@@ -650,7 +650,7 @@ class ScheduledTaskProcessor(BaseDaemon):
             return await self._run_spawned_metaflow(
                 kind="article-curate",
                 task=task,
-                argv=["uv", "run", "python", "-m", "gaius.flows.article_curation.flow", "run"],
+                argv=["uv", "run", "--no-sync", "python", "-m", "gaius.flows.article_curation.flow", "run"],
                 log_prefix="ArticleCuration",
             )
 
@@ -757,7 +757,7 @@ class ScheduledTaskProcessor(BaseDaemon):
                 kind="prospects-update",
                 task=task,
                 argv=[
-                    "uv", "run", "python", "-m",
+                    "uv", "run", "--no-sync", "python", "-m",
                     "gaius.flows.prospects.update_flow", "run",
                     f"--symbols={symbols_csv}",
                     *(["--force=True"] if force else []),

@@ -1974,7 +1974,7 @@ Your summary note content"""
         IDLE_TIMEOUT = 300  # 5 minutes without output = stalled
 
         cmd = [
-            "uv", "run", "python", "-m", "gaius.flows.article_curation.flow",
+            "uv", "run", "--no-sync", "python", "-m", "gaius.flows.article_curation.flow",
             "run",
         ]
 

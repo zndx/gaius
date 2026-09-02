@@ -354,7 +354,7 @@ class FlowSchedulerService:
 
         # Build command
         cmd = [
-            "uv", "run", "python", "-m", "gaius.flows.docling.flow", "run",
+            "uv", "run", "--no-sync", "python", "-m", "gaius.flows.docling.flow", "run",
             "--arxiv_url", arxiv_url,
             "--topic_model_type", self.config.topic_model_type,
             "--enable_topics", str(self.config.enable_topics),
@@ -772,7 +772,7 @@ class FlowSchedulerService:
 
         # Build command with parameters
         cmd = [
-            "uv", "run", "python", str(flow_file), "run",
+            "uv", "run", "--no-sync", "python", str(flow_file), "run",
             "--query", query,
             "--session-id", session_id,
             "--pass-number", str(pass_number),
