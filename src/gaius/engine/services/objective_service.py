@@ -602,6 +602,10 @@ class ObjectiveService:
             return gates
         sample = readable[: int(spec.params.get("rubric_sample_max", 3))]
         rubric = (
+            "PRIMARY — classical portfolio optimization (sufficiency "
+            "requires these; the complement below adds credit and can "
+            "tip a borderline call, but cannot rescue a brief that "
+            "fails the primary focus):\n"
             "1. change: states concretely what changed or is new for the "
             "prospect.\n"
             "2. attention: explains why this merits (or does not merit) "
@@ -614,6 +618,19 @@ class ObjectiveService:
             "across its tolerance band, net of switching costs?\n"
             "4. finish: reads as finished prose — no placeholder text, "
             "repetition artifacts, or empty sections.\n"
+            "HETERODOX COMPLEMENT — attention portfolios (generally "
+            "follows the primary analysis rather than replacing it):\n"
+            "5. allocation: translates the finding for a professional "
+            "allocating scarce time, money, and energy (e.g. sales "
+            "activities): whose cadence — daily, weekly, quarterly — "
+            "does this touch, or explicitly nobody's.\n"
+            "6. framing: the structure serves the content. Leading with "
+            "an opportunity is WELCOME when the reasoning supports it — "
+            "credit well-reasoned agent decisions to headline "
+            "opportunities as they present themselves. Judge structural "
+            "and framing diversity on whether the choice is "
+            "well-reasoned, never on conformity to a house template; "
+            "intellectual quality standards are unchanged.\n"
         )
         blocks = "\n\n".join(
             f"--- {base} ---\n{text[:4000]}" for base, text in sample
@@ -634,7 +651,8 @@ class ObjectiveService:
                     "(each item 0 or 1):\n" + rubric +
                     "\nReply with ONLY a JSON object:\n"
                     '{"sufficient": true, "items": {"change": 0, '
-                    '"attention": 0, "consistency": 0, "finish": 0}, '
+                    '"attention": 0, "consistency": 0, "finish": 0, '
+                    '"allocation": 0, "framing": 0}, '
                     '"note": "<one line>", "confidence": 0.0}\n\n'
                     f"Briefs:\n\n{blocks}"
                 ))],
