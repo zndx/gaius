@@ -56,6 +56,21 @@ from gaius.flows.prospects.flow import load_watchlist
 logger = logging.getLogger(__name__)
 
 
+def _as_str_list(v: object) -> list[str]:
+    """Coerce model-shaped JSON variance to a list of strings.
+
+    Stored analysis JSON sometimes carries a dict (or bare string)
+    where a list is expected — 2026-09-02: create_kb_artifacts crashed
+    with KeyError slice(None, 2) slicing a dict risk_factors."""
+    if not v:
+        return []
+    if isinstance(v, dict):
+        return [str(x) for x in v.values()]
+    if isinstance(v, (list, tuple)):
+        return [str(x) for x in v]
+    return [str(v)]
+
+
 def load_synthesis_from_kb(kb_root: Path, symbol: str) -> PositionSynthesis | None:
     """Load an existing synthesis from KB for sitrep generation.
 
@@ -556,9 +571,9 @@ class ProspectsUpdateFlow(TracedFlow, GaiusFlow):
                                 gross_margin=analysis_data.get("metrics", {}).get("gross_margin"),
                                 net_income_yoy_change=analysis_data.get("metrics", {}).get("net_income_yoy_change"),
                                 free_cash_flow=analysis_data.get("metrics", {}).get("free_cash_flow"),
-                                key_highlights=analysis_data.get("insights", {}).get("key_highlights", []),
-                                risk_factors=analysis_data.get("insights", {}).get("risk_factors", []),
-                                guidance_changes=analysis_data.get("insights", {}).get("guidance_changes", []),
+                                key_highlights=_as_str_list(analysis_data.get("insights", {}).get("key_highlights")),
+                                risk_factors=_as_str_list(analysis_data.get("insights", {}).get("risk_factors")),
+                                guidance_changes=_as_str_list(analysis_data.get("insights", {}).get("guidance_changes")),
                                 management_commentary=analysis_data.get("insights", {}).get("management_commentary", ""),
                                 model_used=analysis_data.get("model_metadata", {}).get("model_used", f.analysis_model or ""),
                                 analysis_at=analysis_data.get("model_metadata", {}).get("analysis_at", ""),
@@ -1015,8 +1030,8 @@ class ProspectsUpdateFlow(TracedFlow, GaiusFlow):
         # Build analysis highlights
         analysis_highlights = []
         for a in analyses:
-            highlights = a.key_highlights[:3] if a.key_highlights else []
-            risks = a.risk_factors[:2] if a.risk_factors else []
+            highlights = _as_str_list(a.key_highlights)[:3]
+            risks = _as_str_list(a.risk_factors)[:2]
             if highlights or risks:
                 filing_link = f"[[filings/{safe_filename(a.filing_type)}_{a.filing_date.split()[0] if a.filing_date else 'unknown'}.md|{a.filing_type}]]"
                 analysis_highlights.append(f"\n### {filing_link} ({a.filing_date})")
@@ -1176,15 +1191,15 @@ filing_date: "{analysis.filing_date}"
 
 ## Key Highlights
 
-{chr(10).join(f'- {h}' for h in analysis.key_highlights) if analysis.key_highlights else '- No highlights extracted'}
+{chr(10).join(f'- {h}' for h in _as_str_list(analysis.key_highlights)) if analysis.key_highlights else '- No highlights extracted'}
 
 ## Risk Factors
 
-{chr(10).join(f'- {r}' for r in analysis.risk_factors) if analysis.risk_factors else '- No specific risks noted'}
+{chr(10).join(f'- {r}' for r in _as_str_list(analysis.risk_factors)) if analysis.risk_factors else '- No specific risks noted'}
 
 ## Guidance Changes
 
-{chr(10).join(f'- {g}' for g in analysis.guidance_changes) if analysis.guidance_changes else '- No guidance changes noted'}
+{chr(10).join(f'- {g}' for g in _as_str_list(analysis.guidance_changes)) if analysis.guidance_changes else '- No guidance changes noted'}
 
 ## Management Commentary
 

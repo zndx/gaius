@@ -430,7 +430,12 @@ def _thinking_complete(
         max_tokens=max_tokens,
         temperature=0.3,
         json_schema=json_schema,
-        timeout_s=600.0,
+        # Generous outer net (progress-over-timeouts): a synthesis
+        # across 20 filing analyses legitimately reasons past 10 min
+        # on thinking (2026-09-02: CHTR synthesis DEADLINE_EXCEEDED at
+        # exactly 600s after a clean 3h analysis pass). Real engine
+        # death is caught by vLLM stall supervision, not this deadline.
+        timeout_s=1800.0,
     )
 
 
