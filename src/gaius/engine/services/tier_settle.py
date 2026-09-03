@@ -67,6 +67,13 @@ def _settle_env(root: Path) -> dict[str, str]:
       needs Java 21; a gaius shell can leak JDK11.
     """
     env = dict(os.environ)
+    # NEVER let the gaius project environment leak into the signals tree:
+    # any `uv run` there would then sync SIGNALS' lock INTO THE GAIUS VENV
+    # (2026-09-03: every hourly settle at :20 rewrote ~145 packages — torch
+    # 2.13→2.10, transformers 5.15→5.3 — under the live engine; torchvision
+    # lost its ops and every child importing transformers died).
+    env.pop("UV_PROJECT_ENVIRONMENT", None)
+    env.pop("VIRTUAL_ENV", None)
     kdc = root / ".devenv" / "kdc"
     prof = root / ".devenv" / "profile"
     # signals_kerberos.sh derives KDC_DIR from DEVENV_ROOT/$PWD; a gaius shell
