@@ -117,6 +117,58 @@ assert_tcp_port_free() {
   fi
 }
 
+# Wait until nothing is rewriting the shared venv. devenv's
+# languages.python.uv.sync re-syncs .devenv/state/venv on every environment
+# entry, and an entry that coincides with process startup rewrites torch under
+# a launching vLLM (2026-09-03 18:26: `_C_stable_libtorch.abi3.so: undefined
+# symbol: torch_from_blob`, thinking FAILED, recovered only on retry). Wait
+# for (a) no live `uv sync` / `uv pip install|uninstall` / syncing `uv run`,
+# and (b) site-packages untouched for a few seconds. Outer net only — a
+# dead-looking sync must not hold the boot forever (fail-open with a warning).
+# Usage: wait_for_venv_quiescent [net_seconds]
+# Is uv mutating the venv right now? uv holds an flock on <venv>/.lock for
+# the whole of a sync / pip install ("Failed to acquire environment lock"
+# is its own error text), so a non-blocking flock probe is the precise
+# signal. Process heuristics are NOT: `uv run` supervises its child for
+# the child's lifetime (the signals engine has been `uv run python -m
+# signals.engine` for days), so a live `uv run` says nothing about syncing.
+_uv_venv_mutation() {
+  local venv="$1"
+  [[ -f "$venv/.lock" ]] || return 1
+  if ! flock -n "$venv/.lock" true 2>/dev/null; then
+    echo "uv environment lock held (${venv}/.lock)"
+    return 0
+  fi
+  return 1
+}
+
+wait_for_venv_quiescent() {
+  local net="${1:-300}"
+  local here venv sp waited=0 busy newest
+  here="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+  venv="${here}/.devenv/state/venv"
+  sp="${venv}/lib/python3.12/site-packages"
+  echo "Waiting for venv quiescence (${venv})..."
+  while :; do
+    busy="$(_uv_venv_mutation "$venv" || true)"
+    if [[ -z "$busy" && -d "$sp" ]]; then
+      newest="$(find "$sp" -maxdepth 1 -newermt '-5 seconds' -print -quit 2>/dev/null || true)"
+      [[ -n "$newest" ]] && busy="site-packages changed <5s ago"
+    fi
+    if [[ -z "$busy" ]]; then
+      echo "  venv quiescent (waited ${waited}s)"
+      return 0
+    fi
+    if (( waited >= net )); then
+      echo "WARNING: venv still busy after ${net}s (${busy}) — proceeding (fail-open)"
+      return 0
+    fi
+    (( waited % 15 == 0 )) && echo "  ${busy} — waiting (${waited}s)"
+    sleep 3
+    waited=$(( waited + 3 ))
+  done
+}
+
 # Wait for Aeron media driver (30s timeout)
 # Usage: wait_for_aeron [aeron_dir]
 wait_for_aeron() {

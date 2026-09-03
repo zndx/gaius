@@ -106,6 +106,10 @@ if [[ -f "$GAIUS_DEFER_MARKER" ]]; then
   export GAIUS_AUTO_EVOLUTION=false
 fi
 
+# The engine and the vLLM it launches import from .devenv/state/venv; do not
+# start while devenv's uv sync (environment entry) is still rewriting it.
+wait_for_venv_quiescent
+
 echo "Starting gaius-engine (manages optillm/vLLM dynamically)..."
 export PYTHONPATH=""
 exec .devenv/state/venv/bin/python -m gaius.engine --config config/agents.conf -v
