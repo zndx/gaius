@@ -103,12 +103,16 @@ processes { id: "cron.task-watchdog" kind: PROCESS_KIND_PG_CRON_JOB parent: "dev
 processes { id: "cron.tier-settle-signal" kind: PROCESS_KIND_PG_CRON_JOB parent: "devenv-postgres" restart: RESTART_STRATEGY_NONE observation { source: SOURCE_KIND_PG_CRON locator: "tier-settle-signal" } cadence { cron: "20 * * * *" net_seconds: 900 } }
 processes { id: "cron.objective-verify" kind: PROCESS_KIND_PG_CRON_JOB parent: "devenv-postgres" restart: RESTART_STRATEGY_NONE observation { source: SOURCE_KIND_PG_CRON locator: "objective-verify" } cadence { cron: "38 1,7,13,19 * * *" net_seconds: 900 } }
 
-# ── Metaflow flows (observed in the Signals Metaflow store) ────────────────────
+# ── Peer engines (observe-through-engines: remote stores are read via a face) ──
 
-processes { id: "flow.ProspectsUpdateFlow" kind: PROCESS_KIND_METAFLOW_FLOW parent: "task.prospects_update" restart: RESTART_STRATEGY_NONE observation { source: SOURCE_KIND_METAFLOW_STORE locator: "ProspectsUpdateFlow" poll_seconds: 60 } reports_positions: true cadence { expected_period_seconds: 86400 net_seconds: 14400 } }
-processes { id: "flow.ArticleCurationFlow" kind: PROCESS_KIND_METAFLOW_FLOW parent: "task.article_curate" restart: RESTART_STRATEGY_NONE observation { source: SOURCE_KIND_METAFLOW_STORE locator: "ArticleCurationFlow" poll_seconds: 60 } reports_positions: true cadence { cron: "7 9 * * *" net_seconds: 14400 } }
-processes { id: "flow.CltSkosAdmitFlow" kind: PROCESS_KIND_METAFLOW_FLOW parent: "task.clt_skos_admit" restart: RESTART_STRATEGY_NONE observation { source: SOURCE_KIND_METAFLOW_STORE locator: "CltSkosAdmitFlow" poll_seconds: 60 } cadence { cron: "*/15 * * * *" net_seconds: 2700 } }
-processes { id: "flow.CltSkosLabelFlow" kind: PROCESS_KIND_METAFLOW_FLOW parent: "task.clt_skos_label" restart: RESTART_STRATEGY_NONE observation { source: SOURCE_KIND_METAFLOW_STORE locator: "CltSkosLabelFlow" poll_seconds: 60 } cadence { cron: "*/15 * * * *" net_seconds: 2700 } }
+processes { id: "peer.signals-engine" kind: PROCESS_KIND_EXTERNAL_SERVICE restart: RESTART_STRATEGY_NONE observation { source: SOURCE_KIND_ENGINE_GRPC locator: "127.0.0.1:50551" poll_seconds: 0 } attrs { key: "note" value: "Signals hosts the federation Metaflow service and central Airflow; their stores are read through this face, never by port" } }
+
+# ── Metaflow flows (observed in the Signals Metaflow store, via the peer face) ─
+
+processes { id: "flow.ProspectsUpdateFlow" kind: PROCESS_KIND_METAFLOW_FLOW parent: "task.prospects_update" restart: RESTART_STRATEGY_NONE observation { source: SOURCE_KIND_METAFLOW_STORE locator: "ProspectsUpdateFlow" poll_seconds: 60 via: "peer.signals-engine" } reports_positions: true cadence { expected_period_seconds: 86400 net_seconds: 14400 } }
+processes { id: "flow.ArticleCurationFlow" kind: PROCESS_KIND_METAFLOW_FLOW parent: "task.article_curate" restart: RESTART_STRATEGY_NONE observation { source: SOURCE_KIND_METAFLOW_STORE locator: "ArticleCurationFlow" poll_seconds: 60 via: "peer.signals-engine" } reports_positions: true cadence { cron: "7 9 * * *" net_seconds: 14400 } }
+processes { id: "flow.CltSkosAdmitFlow" kind: PROCESS_KIND_METAFLOW_FLOW parent: "task.clt_skos_admit" restart: RESTART_STRATEGY_NONE observation { source: SOURCE_KIND_METAFLOW_STORE locator: "CltSkosAdmitFlow" poll_seconds: 60 via: "peer.signals-engine" } cadence { cron: "*/15 * * * *" net_seconds: 2700 } }
+processes { id: "flow.CltSkosLabelFlow" kind: PROCESS_KIND_METAFLOW_FLOW parent: "task.clt_skos_label" restart: RESTART_STRATEGY_NONE observation { source: SOURCE_KIND_METAFLOW_STORE locator: "CltSkosLabelFlow" poll_seconds: 60 via: "peer.signals-engine" } cadence { cron: "*/15 * * * *" net_seconds: 2700 } }
 
 # ── Machines: phases, gates, horizons ──────────────────────────────────────────
 # The motivating case: ProspectsUpdateFlow. Four phases, each closed by a gate that
