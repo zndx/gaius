@@ -71,6 +71,13 @@ class TriggerFiring:
     scope: str          # arming key: trigger re-fires only when scope phase changes
     detail: str
     evidence: dict[str, Any]
+    # Phase signature for once-per-phase arming. Must be STABLE while the
+    # condition persists and change only when the scope's position changes
+    # (a new verification, a new incident). Never embed an age or a
+    # duration here — that re-fired T3 every poll (2026-09-02/03 storms:
+    # six judge consults in twenty minutes on one stale objective).
+    # Empty → the service falls back to `detail`.
+    phase: str = ""
 
 
 def evaluate_triggers(
@@ -127,6 +134,7 @@ def evaluate_triggers(
     # stale_factor x cadence.
     for name, (verdict, completed_at, cadence) in snapshot.objectives.items():
         stale_after = cadence * cfg.objective_stale_factor
+        last_sig = completed_at.isoformat() if completed_at else "never"
         if verdict == "fail":
             firings.append(
                 TriggerFiring(
@@ -134,6 +142,7 @@ def evaluate_triggers(
                     scope=f"objective:{name}",
                     detail=f"objective {name} FAILED its last verification",
                     evidence={"verdict": verdict},
+                    phase=f"fail@{last_sig}",
                 )
             )
         elif completed_at is None or (now - completed_at) > stale_after:
@@ -147,6 +156,7 @@ def evaluate_triggers(
                         f"{age or 'ever'} (limit {stale_after}) — "
                         "the verifier itself may be down"
                     ),
+                    phase=f"stale@{last_sig}",
                     evidence={"age_s": age.total_seconds() if age else None},
                 )
             )

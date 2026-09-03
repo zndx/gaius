@@ -59,6 +59,13 @@ POLL_INTERVAL_S = 60.0
 OVERWATCH_TRIGGERS = {"kill_loop", "frozen_incident", "objective_stale"}
 JUDGE_TRIGGERS = OVERWATCH_TRIGGERS  # back-compat alias
 
+# verify_all runs on the objective-verify pg_cron (`38 1,7,13,19 * * *`),
+# so no objective can be re-verified more often than this, whatever its
+# declared cadence. T3 staleness must clock against the verify interval,
+# or a 2h-cadence objective (tier_settle) reads "stale" for two hours of
+# every six — the organic T3 storm of 2026-09-03 18:47–19:06.
+OBJECTIVE_VERIFY_INTERVAL = timedelta(hours=6)
+
 
 class NautilusService(BaseDaemon):
     def __init__(self, db_pool: Any) -> None:
@@ -151,7 +158,10 @@ class NautilusService(BaseDaemon):
         firings = evaluate_triggers(snapshot, self._cfg)
         for firing in firings:
             key = (firing.trigger, firing.scope)
-            phase_sig = firing.detail  # phase change ≈ detail change
+            # Stable phase signature (falls back to detail for triggers
+            # that have not declared one). Details that embed an age
+            # re-armed every poll — the 2026-09-03 T3 storm.
+            phase_sig = firing.phase or firing.detail
             if self._armed.get(key) == phase_sig:
                 continue  # armed once per phase — anti-storm
             self._armed[key] = phase_sig
@@ -241,11 +251,11 @@ class NautilusService(BaseDaemon):
             objectives[name] = (
                 row["verdict"],
                 row["completed_at"],
-                spec.cadence if spec else timedelta(hours=6),
+                max(spec.cadence if spec else timedelta(hours=6), OBJECTIVE_VERIFY_INTERVAL),
             )
         for name, spec in OBJECTIVES.items():
             if name not in seen:
-                objectives[name] = (None, None, spec.cadence)
+                objectives[name] = (None, None, max(spec.cadence, OBJECTIVE_VERIFY_INTERVAL))
 
         return NautilusSnapshot(
             now=now,

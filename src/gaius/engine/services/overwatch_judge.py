@@ -33,7 +33,6 @@ from __future__ import annotations
 import json
 import logging
 import os
-import re
 from datetime import date
 from typing import Any
 from gaius.core.budgets import JUDGE_CONSULTS_PER_DAY, RUBRIC_JUDGMENTS_PER_DAY
@@ -156,7 +155,8 @@ class OverwatchJudge:
         if verdict is None:
             logger.warning(
                 "#OW.00000002.JUDGEERR judge returned no parseable verdict "
-                "JSON — no action, no default-to-success"
+                "JSON — no action, no default-to-success; reply tail: %r",
+                (response or "")[-400:],
             )
             return {
                 "status": "judge_error",
@@ -411,20 +411,23 @@ Respond with EXACTLY one JSON object and nothing else:
 {{"in_contract": bool, "diagnosis": "one paragraph",
  "recommended_action": "<action>", "confidence": 0.0-1.0}}"""
 
-    @staticmethod
-    def _parse_verdict(response: str) -> dict[str, Any] | None:
-        m = re.search(r"```json\s*(\{.*?\})\s*```", response, re.DOTALL)
-        raw = m.group(1) if m else None
-        if raw is None:
-            m = re.search(r"\{[^{}]*\"in_contract\"[^{}]*\}", response, re.DOTALL)
-            raw = m.group(0) if m else None
-        if raw is None:
-            return None
-        try:
-            verdict = json.loads(raw)
-        except json.JSONDecodeError:
-            return None
-        if not VERDICT_KEYS.issubset(verdict):
+    @classmethod
+    def _parse_verdict(cls, response: str) -> dict[str, Any] | None:
+        # Same discipline as the rubric parser: scan balanced top-level
+        # objects and take the LAST one carrying the verdict keys. The
+        # previous `\{[^{}]*"in_contract"[^{}]*\}` could not match a verdict
+        # whose diagnosis contained braces, and a fenced block earlier in
+        # the reply (a draft) beat the final answer (2026-09-03 19:01 miss).
+        verdict = None
+        for raw in reversed(cls._candidate_json_objects(response or "")):
+            try:
+                obj = json.loads(raw)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(obj, dict) and VERDICT_KEYS.issubset(obj):
+                verdict = obj
+                break
+        if verdict is None:
             return None
         action = str(verdict.get("recommended_action", "")).strip()
         if action not in ALLOWED_ACTIONS:
