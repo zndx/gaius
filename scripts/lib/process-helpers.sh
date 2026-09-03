@@ -169,6 +169,34 @@ wait_for_venv_quiescent() {
   done
 }
 
+# Converge the venv to uv.lock BEFORE the engine imports from it, so every
+# later sync (devenv re-evaluates ~120 s into `devenv up` when its daemon
+# start times out — 2026-09-03 18:26 and 22:20 — and on every shell entry)
+# is a write-free audit instead of a rewrite under a launching vLLM.
+# --frozen: never touch the lock. --inexact: keep the hand-installed
+# extras (impyla, kerberos, h5py, pyluxcore, signals…) a strict sync would
+# prune. Fail-open with a loud warning: a sync that cannot run (network,
+# cache) must not hold the boot when the venv may already be fine — the
+# engine's own imports fail fast if it is not.
+# Usage: converge_venv [net_seconds]
+converge_venv() {
+  local net="${1:-600}" here rc out
+  here="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+  if ! command -v uv >/dev/null 2>&1; then
+    echo "WARNING: uv not on PATH — venv not converged (#EN.00000019.VENVSYNC)"
+    return 0
+  fi
+  echo "Converging venv to uv.lock (frozen, inexact)..."
+  out="$(cd "$here" && timeout "$net" uv sync --inexact --frozen 2>&1)"; rc=$?
+  if (( rc == 0 )); then
+    echo "  $(printf '%s\n' "$out" | grep -E 'Audited|Installed|Uninstalled|Resolved' | tr '\n' ' ')"
+  else
+    echo "WARNING: uv sync --inexact --frozen exited $rc — proceeding (#EN.00000019.VENVSYNC)"
+    printf '%s\n' "$out" | tail -5
+  fi
+  return 0
+}
+
 # Wait for Aeron media driver (30s timeout)
 # Usage: wait_for_aeron [aeron_dir]
 wait_for_aeron() {

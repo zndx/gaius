@@ -107,8 +107,12 @@ if [[ -f "$GAIUS_DEFER_MARKER" ]]; then
 fi
 
 # The engine and the vLLM it launches import from .devenv/state/venv; do not
-# start while devenv's uv sync (environment entry) is still rewriting it.
+# start while another sync is rewriting it, then converge it to the lock
+# ourselves so devenv's later re-evaluation (≈120 s into `devenv up`) finds
+# nothing to rewrite.
 wait_for_venv_quiescent
+converge_venv
+wait_for_venv_quiescent 60
 
 echo "Starting gaius-engine (manages optillm/vLLM dynamically)..."
 export PYTHONPATH=""
