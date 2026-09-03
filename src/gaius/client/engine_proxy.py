@@ -329,10 +329,14 @@ class SchedulerProxy:
         Returns:
             CompletionResult
         """
-        # Wall-clock safety net. The real timeout protection is the idle-timeout
-        # in OptillmController that monitors vLLM metrics for forward progress.
-        # A 24B model with cot_reflection can take 120-300s for complex prompts.
-        inference_timeout = timeout or 600.0
+        # Outer net only — the engine supervises token progress. Pass the
+        # caller's timeout through unchanged: None lets grpc_client.
+        # resolve_timeout scale the deadline to max_tokens. A flat 600 s here
+        # defeated that scaling and killed a 32k-budget prospects .base
+        # generation mid-reasoning (2026-09-03 22:54, "Request
+        # Scheduler.complete timed out") — a minute-scale cap on an agent
+        # path, exactly the class gaius.core.budgets exists to end.
+        inference_timeout = timeout
 
         result = await self._client.call(
             "Scheduler",
@@ -443,7 +447,7 @@ class SchedulerProxy:
                 "max_tokens": REASONING_MAX_TOKENS,
                 "temperature": 0.5,
             },
-            timeout=180.0,
+            timeout=None,  # scaled to max_tokens by resolve_timeout
         )
 
         return CompletionResult(

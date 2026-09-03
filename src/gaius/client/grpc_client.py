@@ -13,7 +13,7 @@ import os
 import time
 from dataclasses import dataclass
 from typing import Any, AsyncIterator, Callable, Optional
-from gaius.core.budgets import EXPLAIN_MAX_TOKENS
+from gaius.core.budgets import EXPLAIN_MAX_TOKENS, REASONING_MAX_TOKENS
 
 # Suppress gRPC fork warnings before importing grpc
 # These messages spam stdout when gRPC is used with asyncio
@@ -409,7 +409,7 @@ class GrpcEngineClient:
             # token-progress stall detection (#VLLM.00000005.STALLED) — a
             # generation that keeps producing is never killed. This deadline
             # exists solely for a dead/unreachable engine, so it is generous.
-            max_tokens = int((params or {}).get("max_tokens") or 2048)
+            max_tokens = int((params or {}).get("max_tokens") or REASONING_MAX_TOKENS)
             return max(self.config.inference_timeout, max_tokens / 4 + 240)
         return self.config.timeout
 
