@@ -130,7 +130,7 @@ def _signals_python(root: Path) -> list[str]:
     venv_py = root / ".devenv" / "state" / "venv" / "bin" / "python"
     if venv_py.is_file():
         return [str(venv_py)]
-    return ["uv", "run", "python"]
+    return ["uv", "run", "--no-sync", "python"]
 
 
 def _review_env(root: Path, environ: Mapping[str, str] | None) -> dict[str, str]:

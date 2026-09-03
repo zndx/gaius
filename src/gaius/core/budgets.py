@@ -47,6 +47,14 @@ EXPLAIN_MAX_TOKENS = 4096
 # contention.
 ACP_CONNECTION_TIMEOUT_S = 60.0
 
+# grok-build's inference_idle_timeout_secs for the thinking lane. Its
+# default (600) killed every long weave turn: the façade advertises
+# stream=true but Engine/Complete is unary, so the agent sees NO chunks
+# until the whole reasoning trace is done — "idle" here means "still
+# thinking". The engine supervises token progress itself
+# (GAIUS_INFERENCE_STALL_S); this is a dead-lane outer net only.
+ACP_INFERENCE_IDLE_TIMEOUT_S = 7200
+
 # Overwatch judge (ACP+Grok, subscription). Daily caps guard against
 # trigger storms, not spend; legitimate load is 4 objective verifies/day
 # plus Nautilus escalations.

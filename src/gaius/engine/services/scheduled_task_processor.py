@@ -919,6 +919,7 @@ class ScheduledTaskProcessor(BaseDaemon):
             argv = [
                 "uv",
                 "run",
+                "--no-sync",
                 "python",
                 "-m",
                 "gaius.flows.summary.flow",
@@ -964,6 +965,7 @@ class ScheduledTaskProcessor(BaseDaemon):
                 argv=[
                     "uv",
                     "run",
+                    "--no-sync",
                     "python",
                     "-m",
                     "gaius.engine.services.tier_settle",
@@ -1027,6 +1029,7 @@ class ScheduledTaskProcessor(BaseDaemon):
                 argv=[
                     "uv",
                     "run",
+                    "--no-sync",
                     "python",
                     "-m",
                     "gaius.flows.clt_skos.admit",
@@ -1044,6 +1047,7 @@ class ScheduledTaskProcessor(BaseDaemon):
                 argv=[
                     "uv",
                     "run",
+                    "--no-sync",
                     "python",
                     "-m",
                     "gaius.flows.clt_skos.label",

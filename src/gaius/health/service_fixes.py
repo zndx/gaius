@@ -343,7 +343,7 @@ print("Checking endpoint status...")
 # Get orchestrator status via /gpu status (has endpoint info)
 try:
     result = subprocess.run(
-        ["uv", "run", "gaius-cli", "--cmd", "/gpu status", "--format", "json"],
+        ["uv", "run", "--no-sync", "gaius-cli", "--cmd", "/gpu status", "--format", "json"],
         capture_output=True, text=True, timeout=30
     )
     if result.returncode == 0:
@@ -414,7 +414,7 @@ print("Checking for orphaned vLLM processes...")
 tracked_pids = set()
 try:
     result = subprocess.run(
-        ["uv", "run", "gaius-cli", "--cmd", "/gpu status", "--format", "json"],
+        ["uv", "run", "--no-sync", "gaius-cli", "--cmd", "/gpu status", "--format", "json"],
         capture_output=True, text=True, timeout=30
     )
     if result.returncode == 0:
@@ -503,7 +503,7 @@ print("Checking for endpoints needing restart...")
 # Get endpoint status via /gpu status
 try:
     result = subprocess.run(
-        ["uv", "run", "gaius-cli", "--cmd", "/gpu status", "--format", "json"],
+        ["uv", "run", "--no-sync", "gaius-cli", "--cmd", "/gpu status", "--format", "json"],
         capture_output=True, text=True, timeout=30
     )
     if result.returncode != 0:
@@ -523,7 +523,7 @@ try:
             if ep_status == "stopping":
                 print(f"  Force stopping stuck endpoint: {name}")
                 cmd_result = subprocess.run(
-                    ["uv", "run", "gaius-cli", "--cmd", f"/gpu stop {name}", "--format", "json"],
+                    ["uv", "run", "--no-sync", "gaius-cli", "--cmd", f"/gpu stop {name}", "--format", "json"],
                     capture_output=True, text=True, timeout=60
                 )
                 if cmd_result.returncode == 0:
@@ -535,12 +535,12 @@ try:
             elif ep_status == "starting":
                 print(f"  Resetting stuck endpoint: {name}")
                 subprocess.run(
-                    ["uv", "run", "gaius-cli", "--cmd", f"/gpu stop {name}", "--format", "json"],
+                    ["uv", "run", "--no-sync", "gaius-cli", "--cmd", f"/gpu stop {name}", "--format", "json"],
                     capture_output=True, text=True, timeout=60
                 )
                 time.sleep(2)
                 cmd_result = subprocess.run(
-                    ["uv", "run", "gaius-cli", "--cmd", f"/gpu start {name}", "--format", "json"],
+                    ["uv", "run", "--no-sync", "gaius-cli", "--cmd", f"/gpu start {name}", "--format", "json"],
                     capture_output=True, text=True, timeout=60
                 )
                 if cmd_result.returncode == 0:
@@ -550,7 +550,7 @@ try:
             elif ep_status in ("unhealthy", "failed"):
                 print(f"  Restarting unhealthy endpoint: {name}")
                 cmd_result = subprocess.run(
-                    ["uv", "run", "gaius-cli", "--cmd", f"/gpu restart {name}", "--format", "json"],
+                    ["uv", "run", "--no-sync", "gaius-cli", "--cmd", f"/gpu restart {name}", "--format", "json"],
                     capture_output=True, text=True, timeout=60
                 )
                 if cmd_result.returncode == 0:
@@ -596,7 +596,7 @@ print("\\nVerifying endpoint health:")
 
 try:
     result = subprocess.run(
-        ["uv", "run", "gaius-cli", "--cmd", "/gpu status", "--format", "json"],
+        ["uv", "run", "--no-sync", "gaius-cli", "--cmd", "/gpu status", "--format", "json"],
         capture_output=True, text=True, timeout=30
     )
     if result.returncode == 0:
@@ -809,7 +809,7 @@ time.sleep(8)
 
 print("Verifying DatasetService...")
 result = subprocess.run(
-    ["uv", "run", "python", "-c", """
+    ["uv", "run", "--no-sync", "python", "-c", """
 import grpc
 from gaius.engine.generated import gaius_service_pb2_grpc, GetDatasetJobRequest
 channel = grpc.insecure_channel('localhost:50051')
@@ -1466,7 +1466,7 @@ print("Restarting optillm via engine...")
 # Use CLI to trigger optillm restart through the engine
 try:
     result = subprocess.run(
-        ["uv", "run", "gaius-cli", "--cmd", "/gpu status", "--format", "json"],
+        ["uv", "run", "--no-sync", "gaius-cli", "--cmd", "/gpu status", "--format", "json"],
         capture_output=True, text=True, timeout=30
     )
     if result.returncode == 0:
@@ -1518,7 +1518,7 @@ print("Verifying optillm health...")
 
 try:
     result = subprocess.run(
-        ["uv", "run", "gaius-cli", "--cmd", "/health", "--format", "json"],
+        ["uv", "run", "--no-sync", "gaius-cli", "--cmd", "/health", "--format", "json"],
         capture_output=True, text=True, timeout=30
     )
     if result.returncode == 0:
@@ -2196,7 +2196,7 @@ class GPUMemoryFixStrategy(ServiceFixStrategy):
             import json
             
             result = subprocess.run(
-                ["uv", "run", "gaius-cli", "--cmd", "/gpu", "status", "--format", "json"],
+                ["uv", "run", "--no-sync", "gaius-cli", "--cmd", "/gpu", "status", "--format", "json"],
                 capture_output=True, text=True, timeout=30
             )
             
@@ -2291,7 +2291,7 @@ class GPUMemoryFixStrategy(ServiceFixStrategy):
             logger.info(f"Tier 1: Restarting endpoint {endpoint}")
             try:
                 result = subprocess.run(
-                    ["uv", "run", "gaius-cli", "--cmd", f"/gpu restart {endpoint}", "--format", "json"],
+                    ["uv", "run", "--no-sync", "gaius-cli", "--cmd", f"/gpu restart {endpoint}", "--format", "json"],
                     capture_output=True, text=True, timeout=60
                 )
                 return result.returncode == 0
@@ -2303,7 +2303,7 @@ class GPUMemoryFixStrategy(ServiceFixStrategy):
             logger.info(f"Tier 2: Clean start for endpoint {endpoint}")
             try:
                 result = subprocess.run(
-                    ["uv", "run", "gaius-cli", "--cmd", f"/gpu clean-start {endpoint}", "--format", "json"],
+                    ["uv", "run", "--no-sync", "gaius-cli", "--cmd", f"/gpu clean-start {endpoint}", "--format", "json"],
                     capture_output=True, text=True, timeout=120
                 )
                 return result.returncode == 0
@@ -2316,7 +2316,7 @@ class GPUMemoryFixStrategy(ServiceFixStrategy):
             try:
                 # Find the PID for this endpoint
                 result = subprocess.run(
-                    ["uv", "run", "gaius-cli", "--cmd", "/gpu status", "--format", "json"],
+                    ["uv", "run", "--no-sync", "gaius-cli", "--cmd", "/gpu status", "--format", "json"],
                     capture_output=True, text=True, timeout=30
                 )
                 if result.returncode == 0:
@@ -2368,7 +2368,7 @@ class GPUMemoryFixStrategy(ServiceFixStrategy):
         try:
             # Check endpoint status
             result = subprocess.run(
-                ["uv", "run", "gaius-cli", "--cmd", "/gpu status", "--format", "json"],
+                ["uv", "run", "--no-sync", "gaius-cli", "--cmd", "/gpu status", "--format", "json"],
                 capture_output=True, text=True, timeout=30
             )
             
@@ -2488,7 +2488,7 @@ except Exception as e:
 # Get endpoint mapping
 try:
     result = subprocess.run(
-        ["uv", "run", "gaius-cli", "--cmd", "/gpu", "status", "--format", "json"],
+        ["uv", "run", "--no-sync", "gaius-cli", "--cmd", "/gpu", "status", "--format", "json"],
         capture_output=True, text=True, timeout=30
     )
     if result.returncode == 0:
@@ -2599,7 +2599,7 @@ async def apply_remediation(endpoint, tier):
         print(f"  TIER 1: Restarting {endpoint}")
         try:
             result = subprocess.run(
-                ["uv", "run", "gaius-cli", "--cmd", f"/gpu restart {endpoint}", "--format", "json"],
+                ["uv", "run", "--no-sync", "gaius-cli", "--cmd", f"/gpu restart {endpoint}", "--format", "json"],
                 capture_output=True, text=True, timeout=60
             )
             return result.returncode == 0
@@ -2610,7 +2610,7 @@ async def apply_remediation(endpoint, tier):
         print(f"  TIER 2: Clean start for {endpoint}")
         try:
             result = subprocess.run(
-                ["uv", "run", "gaius-cli", "--cmd", f"/gpu clean-start {endpoint}", "--format", "json"],
+                ["uv", "run", "--no-sync", "gaius-cli", "--cmd", f"/gpu clean-start {endpoint}", "--format", "json"],
                 capture_output=True, text=True, timeout=120
             )
             return result.returncode == 0
@@ -2621,7 +2621,7 @@ async def apply_remediation(endpoint, tier):
         print(f"  TIER 3: Force killing {endpoint}")
         try:
             result = subprocess.run(
-                ["uv", "run", "gaius-cli", "--cmd", "/gpu status", "--format", "json"],
+                ["uv", "run", "--no-sync", "gaius-cli", "--cmd", "/gpu status", "--format", "json"],
                 capture_output=True, text=True, timeout=30
             )
             if result.returncode == 0:
@@ -2677,7 +2677,7 @@ try:
                     gpu_memory[idx] = {"used": used, "total": total, "pct": mem_pct}
 
     result = subprocess.run(
-        ["uv", "run", "gaius-cli", "--cmd", "/gpu status", "--format", "json"],
+        ["uv", "run", "--no-sync", "gaius-cli", "--cmd", "/gpu status", "--format", "json"],
         capture_output=True, text=True, timeout=30
     )
     if result.returncode == 0:
@@ -2802,7 +2802,7 @@ except Exception as e:
 # Check endpoint health
 try:
     result = subprocess.run(
-        ["uv", "run", "gaius-cli", "--cmd", "/gpu status", "--format", "json"],
+        ["uv", "run", "--no-sync", "gaius-cli", "--cmd", "/gpu status", "--format", "json"],
         capture_output=True, text=True, timeout=30
     )
     if result.returncode == 0:
@@ -2976,7 +2976,7 @@ class GPUMemoryPressureFixStrategy(ServiceFixStrategy):
         mapping = {}
         try:
             result = subprocess.run(
-                ["uv", "run", "gaius-cli", "--cmd", "/gpu", "status", "--format", "json"],
+                ["uv", "run", "--no-sync", "gaius-cli", "--cmd", "/gpu", "status", "--format", "json"],
                 capture_output=True, text=True, timeout=30
             )
             
@@ -3103,7 +3103,7 @@ except Exception as e:
 # Get endpoint mapping
 try:
     result = subprocess.run(
-        ["uv", "run", "gaius-cli", "--cmd", "/gpu", "status", "--format", "json"],
+        ["uv", "run", "--no-sync", "gaius-cli", "--cmd", "/gpu", "status", "--format", "json"],
         capture_output=True, text=True, timeout=30
     )
     if result.returncode == 0:
@@ -3123,7 +3123,7 @@ for gpu_id, status in gpu_status.items():
         # Find endpoints on this GPU
         try:
             result = subprocess.run(
-                ["uv", "run", "gaius-cli", "--cmd", "/gpu", "status", "--format", "json"],
+                ["uv", "run", "--no-sync", "gaius-cli", "--cmd", "/gpu", "status", "--format", "json"],
                 capture_output=True, text=True, timeout=30
             )
             if result.returncode == 0:
@@ -3237,7 +3237,7 @@ print(f"Affected GPUs: {affected_gpus}")
 endpoints_on_gpus = {}
 try:
     result = subprocess.run(
-        ["uv", "run", "gaius-cli", "--cmd", "/gpu", "status", "--format", "json"],
+        ["uv", "run", "--no-sync", "gaius-cli", "--cmd", "/gpu", "status", "--format", "json"],
         capture_output=True, text=True, timeout=30
     )
     if result.returncode == 0:
@@ -3261,7 +3261,7 @@ for gpu_id, endpoints in endpoints_on_gpus.items():
             print(f"  Restarting endpoint: {endpoint} (on GPU {gpu_id})")
             try:
                 result = subprocess.run(
-                    ["uv", "run", "gaius-cli", "--cmd", "/engine", "restart", endpoint],
+                    ["uv", "run", "--no-sync", "gaius-cli", "--cmd", "/engine", "restart", endpoint],
                     capture_output=True, text=True, timeout=60
                 )
                 if result.returncode == 0:
@@ -3332,7 +3332,7 @@ print(f"Affected GPUs: {affected_gpus}")
 endpoints_on_gpus = {}
 try:
     result = subprocess.run(
-        ["uv", "run", "gaius-cli", "--cmd", "/gpu", "status", "--format", "json"],
+        ["uv", "run", "--no-sync", "gaius-cli", "--cmd", "/gpu", "status", "--format", "json"],
         capture_output=True, text=True, timeout=30
     )
     if result.returncode == 0:
@@ -3376,7 +3376,7 @@ for gpu_id, endpoints in endpoints_on_gpus.items():
         # Step 3: Clean start
         try:
             result = subprocess.run(
-                ["uv", "run", "gaius-cli", "--cmd", "/engine", "clean-start", endpoint],
+                ["uv", "run", "--no-sync", "gaius-cli", "--cmd", "/engine", "clean-start", endpoint],
                 capture_output=True, text=True, timeout=120
             )
             if result.returncode == 0:
@@ -3469,7 +3469,7 @@ except Exception as e:
 print("  Step 3: Clean starting all endpoints...")
 try:
     result = subprocess.run(
-        ["uv", "run", "gaius-cli", "--cmd", "/engine", "clean-start", "all"],
+        ["uv", "run", "--no-sync", "gaius-cli", "--cmd", "/engine", "clean-start", "all"],
         capture_output=True, text=True, timeout=180
     )
     if result.returncode == 0:
@@ -3549,7 +3549,7 @@ except Exception as e:
 # Check endpoint health
 try:
     result = subprocess.run(
-        ["uv", "run", "gaius-cli", "--cmd", "/gpu", "status", "--format", "json"],
+        ["uv", "run", "--no-sync", "gaius-cli", "--cmd", "/gpu", "status", "--format", "json"],
         capture_output=True, text=True, timeout=30
     )
     if result.returncode == 0:

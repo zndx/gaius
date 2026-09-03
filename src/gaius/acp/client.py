@@ -39,7 +39,12 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Awaitable
-from gaius.core.budgets import AGENT_TURN_MAX_TOKENS, THINKING_CONTEXT_WINDOW, ACP_CONNECTION_TIMEOUT_S
+from gaius.core.budgets import (
+    ACP_CONNECTION_TIMEOUT_S,
+    ACP_INFERENCE_IDLE_TIMEOUT_S,
+    AGENT_TURN_MAX_TOKENS,
+    THINKING_CONTEXT_WINDOW,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -131,6 +136,7 @@ api_key = "gaius"
 api_backend = "chat_completions"
 context_window = {THINKING_CONTEXT_WINDOW}
 max_completion_tokens = {AGENT_TURN_MAX_TOKENS}
+inference_idle_timeout_secs = {ACP_INFERENCE_IDLE_TIMEOUT_S}
 max_retries = 2
 system_prompt_label = "Qwen3.8-27B on Gaius Engine"
 
@@ -661,7 +667,7 @@ class GaiusACPClient:
                         mcp_servers.append(McpServerStdio(
                             name="gaius",
                             command="uv",
-                            args=["run", "python", "-m", "gaius.mcp_server"],
+                            args=["run", "--no-sync", "python", "-m", "gaius.mcp_server"],
                             cwd=self.config.working_directory,  # type: ignore[unknown-argument] - SDK stubs missing cwd kwarg
                             env=[],  # Empty list, not None
                         ))

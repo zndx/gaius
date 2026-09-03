@@ -220,7 +220,7 @@ async def _fallback_evict_endpoints(required_memory_mb: int) -> tuple[bool, list
                 # Also try via gaius-cli
                 stop_result = subprocess.run(
                     [
-                        "uv", "run", "gaius-cli",
+                        "uv", "run", "--no-sync", "gaius-cli",
                         "--cmd", f"/orch stop {endpoint_name}",
                         "--format", "json",
                     ],

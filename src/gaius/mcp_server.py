@@ -4471,7 +4471,7 @@ Domain: {domain or 'general'}
                 cmd_args += " --save"
 
             # Run CLI via subprocess (completely isolated)
-            cmd = ["uv", "run", "gaius-cli", "--cmd", f"/explain {cmd_args}", "--format", "json"]
+            cmd = ["uv", "run", "--no-sync", "gaius-cli", "--cmd", f"/explain {cmd_args}", "--format", "json"]
 
             loop = asyncio.get_running_loop()
             result = await loop.run_in_executor(
