@@ -96,6 +96,7 @@ import json
 import os
 from datetime import datetime
 from pathlib import Path
+from gaius.core.budgets import REASONING_MAX_TOKENS
 
 try:
     from mcp.server.fastmcp import FastMCP
@@ -1304,7 +1305,7 @@ def create_server() -> "FastMCP":
     async def ask_local(
         question: str,
         technique: str = "",
-        max_tokens: int = 2048,
+        max_tokens: int = REASONING_MAX_TOKENS,
     ) -> str:
         """Query local LLM via optillm.
 
@@ -1884,7 +1885,7 @@ Domain: {domain or 'general'}
     async def ask_reasoning(
         question: str,
         system_prompt: str = "",
-        max_tokens: int = 4096,
+        max_tokens: int = REASONING_MAX_TOKENS,
     ) -> str:
         """Query the reasoning model for complex analysis.
 
@@ -2578,7 +2579,7 @@ Domain: {domain or 'general'}
         prompt: str,
         model: str = "",
         priority: str = "normal",
-        max_tokens: int = 1024,
+        max_tokens: int = REASONING_MAX_TOKENS,
     ) -> str:
         """Submit an inference job to the scheduler.
 
@@ -2620,7 +2621,7 @@ Domain: {domain or 'general'}
         prompt: str,
         model: str = "",
         priority: str = "normal",
-        max_tokens: int = 1024,
+        max_tokens: int = REASONING_MAX_TOKENS,
     ) -> str:
         """Submit a job for background execution (non-blocking).
 

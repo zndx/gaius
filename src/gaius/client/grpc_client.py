@@ -13,6 +13,7 @@ import os
 import time
 from dataclasses import dataclass
 from typing import Any, AsyncIterator, Callable, Optional
+from gaius.core.budgets import EXPLAIN_MAX_TOKENS
 
 # Suppress gRPC fork warnings before importing grpc
 # These messages spam stdout when gRPC is used with asyncio
@@ -1420,7 +1421,7 @@ class GrpcEngineClient:
         x: int,
         y: int,
         save_to_kb: bool = False,
-        max_tokens: int = 800,
+        max_tokens: int = EXPLAIN_MAX_TOKENS,
         client_id: str = "cli",
     ) -> "ExplainResponse":
         """Explain a grid position via Engine gRPC.

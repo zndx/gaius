@@ -10,6 +10,7 @@ import time
 from typing import Any, Optional
 
 from .base import ExternalBackend, ExternalResponse, ToolCall
+from gaius.core.budgets import EXTERNAL_MAX_TOKENS
 
 logger = logging.getLogger(__name__)
 
@@ -67,7 +68,7 @@ class XAIBackend(ExternalBackend):
         messages: list[dict[str, str]],
         model: Optional[str] = None,
         temperature: float = 0.7,
-        max_tokens: int = 4096,
+        max_tokens: int = EXTERNAL_MAX_TOKENS,
         **kwargs: Any,
     ) -> ExternalResponse:
         """Execute completion via XAI API.

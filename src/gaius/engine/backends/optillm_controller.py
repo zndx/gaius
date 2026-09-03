@@ -30,6 +30,7 @@ import httpx
 
 from ..config import EngineConfig, OptillmConfig
 from .gunicorn_config import GunicornConfigGenerator, GunicornSettings
+from gaius.core.budgets import REASONING_MAX_TOKENS
 
 logger = logging.getLogger(__name__)
 
@@ -103,7 +104,7 @@ class OptillmRequest:
     model: str
     technique: OptillmTechnique = OptillmTechnique.COT_REFLECTION
     temperature: float = 0.7
-    max_tokens: int = 2048
+    max_tokens: int = REASONING_MAX_TOKENS
     agent_alias: Optional[str] = None
 
 
@@ -1174,7 +1175,7 @@ class OptillmController:
         technique: OptillmTechnique | str | None = None,
         system_prompt: Optional[str] = None,
         temperature: float = 0.7,
-        max_tokens: int = 2048,
+        max_tokens: int = REASONING_MAX_TOKENS,
     ) -> OptillmResponse:
         """Convenience method for simple completions.
 

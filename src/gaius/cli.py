@@ -23,6 +23,7 @@ Usage:
 
 # Configure parallelism BEFORE any imports
 import os
+from gaius.core.budgets import REASONING_MAX_TOKENS
 
 # Configure joblib to use threading instead of multiprocessing
 # This avoids fork() conflicts with gRPC while preserving parallelism.
@@ -2477,7 +2478,7 @@ for name, obj in list(locals().items()):
         system_prompt: str | None = None,
         technique: str | None = None,
         temperature: float = 0.7,
-        max_tokens: int = 2048,
+        max_tokens: int = REASONING_MAX_TOKENS,
     ) -> dict | None:
         """Complete a prompt via engine scheduler.
 

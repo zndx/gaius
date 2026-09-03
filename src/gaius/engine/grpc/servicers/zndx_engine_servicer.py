@@ -17,6 +17,7 @@ from grpc import aio
 
 from ...generated.zndx.engine.v1 import engine_pb2 as zpb
 from ...generated.zndx.engine.v1 import engine_pb2_grpc as zpb_grpc
+from gaius.core.budgets import REASONING_MAX_TOKENS
 
 if TYPE_CHECKING:
     from ..server import ServiceRegistry
@@ -462,7 +463,7 @@ class GaiusZndxEngineServicer(zpb_grpc.EngineServicer):
         # caller left temperature/max_tokens unset (parity with the proxied
         # technique).
         default_temperature = 0.7
-        default_max_tokens = 2048
+        default_max_tokens = REASONING_MAX_TOKENS
         if plan is not None and plan.method:
             from ...capabilities import (
                 METHOD_DEFAULT_MAX_TOKENS,

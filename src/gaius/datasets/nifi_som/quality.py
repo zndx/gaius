@@ -27,6 +27,7 @@ from .prompts.quality import (
     get_calibration_prompt,
     parse_calibration_response,
 )
+from gaius.core.budgets import EXTERNAL_MAX_TOKENS
 
 if TYPE_CHECKING:
     from ...models.tiered_evaluation import EvalBudget
@@ -78,7 +79,7 @@ class InstructionQualityScorer:
         print(f"Clarity: {score.clarity:.2f}")
     """
 
-    def __init__(self, temperature: float = 0.5, max_tokens: int = 512):
+    def __init__(self, temperature: float = 0.5, max_tokens: int = EXTERNAL_MAX_TOKENS):
         """Initialize the scorer.
 
         Args:

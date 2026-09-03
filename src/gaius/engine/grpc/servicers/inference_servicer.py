@@ -33,6 +33,7 @@ from ...generated import (
     # Servicer base class
     GRPCInferenceServiceServicer,
 )
+from gaius.core.budgets import REASONING_MAX_TOKENS
 
 if TYPE_CHECKING:
     from ..server import ServiceRegistry
@@ -238,7 +239,7 @@ class InferenceServicer(GRPCInferenceServiceServicer):
         # Extract prompt from inputs
         prompt = ""
         system_prompt = ""
-        max_tokens = 2048
+        max_tokens = REASONING_MAX_TOKENS
         temperature = 0.7
 
         for input_tensor in request.inputs:

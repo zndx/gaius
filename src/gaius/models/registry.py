@@ -18,6 +18,7 @@ Usage:
 from dataclasses import dataclass, field
 from enum import Enum, auto
 from typing import Any
+from gaius.core.budgets import REASONING_MAX_TOKENS
 
 
 class ModelCapability(Enum):
@@ -216,7 +217,7 @@ class ModelSpec:
 
     # Inference settings
     default_temperature: float = 0.7
-    default_max_tokens: int = 2048
+    default_max_tokens: int = REASONING_MAX_TOKENS
 
     # Endpoint configuration
     endpoint_url: str | None = None

@@ -18,6 +18,7 @@ Each role contributes a unique perspective to multi-agent analysis.
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Literal
+from gaius.core.budgets import REASONING_MAX_TOKENS
 
 
 class AgentRole(Enum):
@@ -66,7 +67,7 @@ class RoleDefinition:
 
     # Behavioral parameters
     temperature: float = 0.7
-    max_tokens: int = 1024
+    max_tokens: int = REASONING_MAX_TOKENS
 
     # Model affinity - preferred model characteristics
     preferred_model_id: str | None = None  # Explicit model preference

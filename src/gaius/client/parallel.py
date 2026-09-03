@@ -21,6 +21,7 @@ import asyncio
 import logging
 from dataclasses import dataclass
 from typing import Any
+from gaius.core.budgets import REASONING_MAX_TOKENS
 
 # Engine-First, no bypass: completions go through Engine/Complete (see
 # complete()); this client keeps only the endpoint lifecycle bookkeeping.
@@ -129,7 +130,7 @@ class ParallelInferenceClient:
         self,
         messages: list[dict[str, str]],
         temperature: float = 0.7,
-        max_tokens: int = 1024,
+        max_tokens: int = REASONING_MAX_TOKENS,
     ) -> ParallelResult:
         """Complete a single request using next available endpoint."""
         # Engine-First, no bypass: the completion goes through Engine/Complete;
@@ -169,7 +170,7 @@ class ParallelInferenceClient:
         self,
         messages_list: list[list[dict[str, str]]],
         temperature: float = 0.7,
-        max_tokens: int = 1024,
+        max_tokens: int = REASONING_MAX_TOKENS,
     ) -> list[ParallelResult]:
         """Complete multiple requests in parallel across all endpoints.
 

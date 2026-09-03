@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 from typing import Any
+from gaius.core.budgets import REASONING_MAX_TOKENS
 
 logger = logging.getLogger(__name__)
 
@@ -61,7 +62,7 @@ async def mcp_call(operation: str, params: dict[str, Any] | None = None) -> dict
 async def ask_reasoning(
     question: str,
     system_prompt: str = "",
-    max_tokens: int = 4096,
+    max_tokens: int = REASONING_MAX_TOKENS,
 ) -> dict:
     """Query the reasoning model for complex analysis.
 

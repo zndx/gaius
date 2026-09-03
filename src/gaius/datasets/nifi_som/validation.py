@@ -13,6 +13,7 @@ from .prompts.validation import (
     parse_alignment_response,
     get_trajectory_alignment_prompt,
 )
+from gaius.core.budgets import EXTERNAL_MAX_TOKENS
 
 logger = logging.getLogger(__name__)
 
@@ -57,7 +58,7 @@ class InstructionValidator:
             print("Instruction is valid")
     """
 
-    def __init__(self, temperature: float = 0.3, max_tokens: int = 512):
+    def __init__(self, temperature: float = 0.3, max_tokens: int = EXTERNAL_MAX_TOKENS):
         """Initialize the validator.
 
         Args:

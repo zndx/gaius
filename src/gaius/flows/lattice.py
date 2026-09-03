@@ -15,6 +15,7 @@ import json
 import os
 from dataclasses import dataclass
 from typing import Any
+from gaius.core.budgets import REASONING_MAX_TOKENS
 
 GURU_NOLATTICE = "#GR.00000002.NOLATTICE"
 GURU_NOCAP = "#GR.00000003.NOCAP"
@@ -60,12 +61,12 @@ def complete(
     capability: str = DEFAULT_CAPABILITY,
     capabilities: list[str] | None = None,
     system_prompt: str = "",
-    max_tokens: int = 2048,
+    max_tokens: int = REASONING_MAX_TOKENS,
     temperature: float = 0.7,
     json_schema: dict[str, Any] | str | None = None,
     tools: list[dict[str, Any]] | str | None = None,
     tool_choice: str = "",
-    timeout_s: float = 300.0,
+    timeout_s: float | None = None,
     target: str | None = None,
 ) -> LatticeComplete:
     """Blocking Complete for Metaflow steps (sync FlowSpec).
@@ -82,6 +83,12 @@ def complete(
     from gaius.engine.generated.zndx.engine.v1 import engine_pb2 as zpb
     from gaius.engine.generated.zndx.engine.v1 import engine_pb2_grpc as zpb_grpc
 
+    if timeout_s is None:
+        # Outer net for a dead lane, sized from the budget (progress
+        # doctrine): ~8 tok/s floor + 3 min slack, never a flat deadline.
+        # Reasoning traces count against max_tokens, so a 300 s constant
+        # killed long thinking completions mid-progress.
+        timeout_s = float(max(420, int(max_tokens) // 8 + 180))
     addr = target or engine_target()
     schema = ""
     if json_schema is not None:

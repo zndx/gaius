@@ -22,6 +22,7 @@ from ..resources import ResourceManager
 from .optillm_controller import OptillmController, OptillmRequest, OptillmResponse, OptillmTechnique
 from .vllm_controller import VLLMController, VLLMProcess, VLLMRequest, VLLMResponse
 from .external.router import ExternalInferenceRouter, get_external_router
+from gaius.core.budgets import REASONING_MAX_TOKENS
 
 logger = logging.getLogger(__name__)
 
@@ -42,7 +43,7 @@ class InferenceRequest:
     messages: list[dict[str, Any]]
     agent_alias: str
     temperature: float = 0.7
-    max_tokens: int = 2048
+    max_tokens: int = REASONING_MAX_TOKENS
     technique: Optional[str] = None
     # Dual-constraint fulfilment plan (a gaius.engine.capabilities
     # CapabilityPlan from a capabilities[] request); None = legacy routing.
@@ -613,7 +614,7 @@ class BackendRouter:
         agent_alias: str,
         system_prompt: Optional[str] = None,
         temperature: float = 0.7,
-        max_tokens: int = 2048,
+        max_tokens: int = REASONING_MAX_TOKENS,
         technique: Optional[str] = None,
         plan: Optional[Any] = None,
         source_context: Optional[dict[str, Any]] = None,

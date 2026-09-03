@@ -16,6 +16,7 @@ from .budget import ExternalBudget, get_external_budget
 from .xai_backend import XAIBackend
 from .cerebras_backend import CerebrasBackend
 from .bytez_backend import BytezBackend
+from gaius.core.budgets import EXTERNAL_MAX_TOKENS
 
 logger = logging.getLogger(__name__)
 
@@ -143,7 +144,7 @@ class ExternalInferenceRouter:
         provider: Optional[str] = None,
         model: Optional[str] = None,
         temperature: float = 0.7,
-        max_tokens: int = 4096,
+        max_tokens: int = EXTERNAL_MAX_TOKENS,
         source_context: Optional[dict[str, Any]] = None,
         emit_lineage: bool = True,
         **kwargs: Any,

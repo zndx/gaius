@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from pyhocon import ConfigFactory, ConfigTree
+from gaius.core.budgets import REASONING_MAX_TOKENS
 
 
 # Default config paths
@@ -127,7 +128,7 @@ class InferenceConfig:
     phase_models: PhaseModels = field(default_factory=PhaseModels)
     offline_mode: bool = False
     timeout: float = 60.0
-    max_tokens: int = 2048
+    max_tokens: int = REASONING_MAX_TOKENS
 
 
 @dataclass

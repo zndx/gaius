@@ -311,7 +311,7 @@ class SchedulerProxy:
         agent: str = "thinking",
         system_prompt: Optional[str] = None,
         temperature: float = 0.7,
-        max_tokens: int = 2048,
+        max_tokens: int = REASONING_MAX_TOKENS,
         technique: Optional[str] = None,
         timeout: Optional[float] = None,
     ) -> CompletionResult:
@@ -365,7 +365,7 @@ class SchedulerProxy:
         *,
         agent: str = "thinking",
         system_prompt: Optional[str] = None,
-        max_tokens: int = 1024,
+        max_tokens: int = REASONING_MAX_TOKENS,
         temperature: float = 0.7,
         priority: str = "normal",
         wait: bool = True,

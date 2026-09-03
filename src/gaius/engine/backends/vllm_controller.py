@@ -25,6 +25,7 @@ from ..resources import (
     ResourceManager,
     ResourceUnavailable,
 )
+from gaius.core.budgets import REASONING_MAX_TOKENS
 
 _NIX_GCC_MARKERS = ("gcc-wrapper", "/gcc-", "gcc-15")
 _REAL_CUDA_HOME = Path("/usr/local/cuda")
@@ -281,7 +282,7 @@ class VLLMRequest:
     messages: list[dict[str, Any]]
     model: str
     temperature: float = 0.7
-    max_tokens: int = 2048
+    max_tokens: int = REASONING_MAX_TOKENS
     agent_alias: Optional[str] = None
     enable_thinking: bool = True
     reasoning_effort: str = "xhigh"

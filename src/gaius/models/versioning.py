@@ -31,6 +31,7 @@ from datetime import datetime
 from typing import Any
 import hashlib
 import json
+from gaius.core.budgets import REASONING_MAX_TOKENS
 
 
 @dataclass
@@ -41,7 +42,7 @@ class AgentConfig:
     system_prompt: str
     model: str = "Qwen/Qwen3-Coder-30B-A3B-Instruct"
     temperature: float = 0.7
-    max_tokens: int = 2048
+    max_tokens: int = REASONING_MAX_TOKENS
 
     # Optional settings
     top_p: float = 0.9

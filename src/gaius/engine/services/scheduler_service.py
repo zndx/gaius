@@ -24,6 +24,7 @@ from ..backends import (
     OptillmTechnique,
 )
 from ..config import EngineConfig
+from gaius.core.budgets import REASONING_MAX_TOKENS
 
 logger = logging.getLogger(__name__)
 
@@ -501,7 +502,7 @@ class SchedulerService:
         agent_alias: str,
         system_prompt: Optional[str] = None,
         temperature: float = 0.7,
-        max_tokens: int = 2048,
+        max_tokens: int = REASONING_MAX_TOKENS,
         technique: Optional[str] = None,
         priority: JobPriority = JobPriority.NORMAL,
     ) -> InferenceResponse:

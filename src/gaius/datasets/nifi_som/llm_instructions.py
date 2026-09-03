@@ -23,6 +23,7 @@ from .prompts.generation import (
     get_connection_prompt,
     get_trajectory_prompt,
 )
+from gaius.core.budgets import EXTERNAL_MAX_TOKENS
 
 if TYPE_CHECKING:
     from .calibration import CalibrationOrchestrator, LocalScoreInput
@@ -88,7 +89,7 @@ class LLMInstructionGenerator:
         self,
         n_candidates: int = 5,
         temperature: float = 0.8,
-        max_tokens: int = 256,
+        max_tokens: int = EXTERNAL_MAX_TOKENS,
     ):
         """Initialize the generator.
 

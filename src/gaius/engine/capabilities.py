@@ -22,6 +22,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from typing import Any, Optional
+from gaius.core.budgets import REASONING_MAX_TOKENS
 
 GURU_NOMIX = "#EP.00000020.NOMIX"
 GURU_METHODTRACE = "#EP.00000021.METHODTRACE"
@@ -56,7 +57,7 @@ DEFAULT_MODEL_CAPABILITY = "thinking"
 # optillm's own request defaults for technique calls (cot_reflection.py) —
 # used for parity when a capabilities[] request leaves them unset.
 METHOD_DEFAULT_TEMPERATURE = 0.6
-METHOD_DEFAULT_MAX_TOKENS = 4096
+METHOD_DEFAULT_MAX_TOKENS = REASONING_MAX_TOKENS
 
 
 class CapabilityMixError(ValueError):
