@@ -228,7 +228,9 @@ Rules:
 - sufficient=true means a reader opening these artifacts is adequately
   served for the objective's task; hollow, malformed, or padded
   content is NOT sufficient.
-- Respond with EXACTLY one JSON object and nothing else:
+- Your FINAL message must be exactly one JSON object and nothing after it
+  — no prose, no code fence, no trailing commentary. Reasoning before it
+  is fine; the object must be last and complete:
 {{"sufficient": bool, "items": {{"<rubric item>": 0 or 1, ...}},
  "note": "one line", "confidence": 0.0-1.0}}"""
 
@@ -252,7 +254,8 @@ Rules:
         if verdict is None:
             logger.warning(
                 "#OW.00000002.JUDGEERR rubric judge returned no parseable "
-                "verdict JSON — error verdict, no default-to-success"
+                "verdict JSON — error verdict, no default-to-success; "
+                f"reply tail: {(response or '')[-600:]!r}"
             )
             return {
                 "status": "judge_error",
@@ -264,21 +267,55 @@ Rules:
         return {"status": "verdict", "verdict": verdict}
 
     @staticmethod
-    def _parse_rubric_verdict(response: str) -> dict[str, Any] | None:
-        m = re.search(r"```json\s*(\{.*?\})\s*```", response, re.DOTALL)
-        raw = m.group(1) if m else None
-        if raw is None:
-            m = re.search(
-                r"\{.*\"sufficient\".*\}", response, re.DOTALL
-            )
-            raw = m.group(0) if m else None
-        if raw is None:
-            return None
-        try:
-            verdict = json.loads(raw)
-        except json.JSONDecodeError:
-            return None
-        if not RUBRIC_VERDICT_KEYS.issubset(verdict):
+    def _candidate_json_objects(text: str) -> list[str]:
+        """Every balanced top-level {...} span in text, in order.
+
+        A greedy `\\{.*\\}` across a long agent reply swallows everything
+        between the first and last brace and never parses (2026-09-03:
+        a 30-minute rubric consultation lost to "no parseable verdict").
+        Brace-match instead and let the caller pick the LAST object that
+        carries the verdict keys."""
+        out: list[str] = []
+        depth = 0
+        start = -1
+        in_str = False
+        esc = False
+        for i, ch in enumerate(text):
+            if in_str:
+                if esc:
+                    esc = False
+                elif ch == "\\":
+                    esc = True
+                elif ch == '"':
+                    in_str = False
+                continue
+            if ch == '"':
+                in_str = True
+            elif ch == "{":
+                if depth == 0:
+                    start = i
+                depth += 1
+            elif ch == "}" and depth > 0:
+                depth -= 1
+                if depth == 0 and start >= 0:
+                    out.append(text[start : i + 1])
+                    start = -1
+        return out
+
+    @classmethod
+    def _parse_rubric_verdict(cls, response: str) -> dict[str, Any] | None:
+        verdict: dict[str, Any] | None = None
+        # Prefer the LAST well-formed object carrying the verdict keys — the
+        # agent's final answer, after any tool chatter or reasoning.
+        for raw in reversed(cls._candidate_json_objects(response or "")):
+            try:
+                obj = json.loads(raw)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(obj, dict) and RUBRIC_VERDICT_KEYS.issubset(obj):
+                verdict = obj
+                break
+        if verdict is None:
             return None
         verdict["sufficient"] = bool(verdict["sufficient"])
         if not isinstance(verdict.get("items"), dict):

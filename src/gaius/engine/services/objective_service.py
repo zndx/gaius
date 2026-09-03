@@ -658,7 +658,7 @@ class ObjectiveService:
                 ))],
                 model="thinking",
                 temperature=0.1,
-                max_tokens=1536,
+                max_tokens=4096,  # 3 briefs of context + a thinking trace
             )
             out = (completion.content or "").strip()
             jm = _re.search(r"\{.*\}", out, _re.DOTALL)
