@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 from typing import Optional
+from gaius.core.budgets import REASONING_MAX_TOKENS
 
 logger = logging.getLogger(__name__)
 
@@ -337,7 +338,7 @@ class CurriculumAgent:
             result = await client.complete(
                 [Message(role="user", content=prompt)],
                 temperature=0.8,  # Creative
-                max_tokens=500,
+                max_tokens=REASONING_MAX_TOKENS,
             )
 
             # Parse response into task

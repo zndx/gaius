@@ -29,6 +29,7 @@ from typing import Any, Optional
 from gaius.workers.config import WorkerConfig
 from gaius.workers.db import Database
 from gaius.workers.models import ContentItem
+from gaius.core.budgets import REASONING_MAX_TOKENS
 
 logger = logging.getLogger(__name__)
 
@@ -259,7 +260,7 @@ Respond with JSON only:
         result = await client.complete_simple(
             prompt=prompt,
             temperature=0.1,
-            max_tokens=500,
+            max_tokens=REASONING_MAX_TOKENS,
         )
         content = result.content or ""
         scores = self._parse_assessment(content)

@@ -24,6 +24,7 @@ from .evaluation import (
     DimensionScore,
     XAIEvaluator,
 )
+from gaius.core.budgets import REASONING_MAX_TOKENS
 
 logger = logging.getLogger(__name__)
 
@@ -157,7 +158,7 @@ class LocalEvaluator:
             result = await scheduler.complete(
                 prompt=prompt,
                 system_prompt=self._system_prompt(),
-                max_tokens=1024,
+                max_tokens=REASONING_MAX_TOKENS,
             )
 
             content = result.content

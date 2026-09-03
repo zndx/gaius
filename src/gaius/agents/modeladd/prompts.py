@@ -6,6 +6,8 @@ Contains prompts for:
 - Code critique (XAI Grok quality review)
 """
 
+from gaius.core.budgets import REASONING_MAX_TOKENS
+
 # =============================================================================
 # Orchestrator System Prompt
 # =============================================================================
@@ -130,7 +132,7 @@ MISTRAL_7B = ModelSpec(
     context_length=32768,
     parameters_b=7.2,
     default_temperature=0.7,
-    default_max_tokens=2048,
+    default_max_tokens=REASONING_MAX_TOKENS,
     default_port=8085,
     vllm_config=VLLMConfig(
         tensor_parallel_size=1,

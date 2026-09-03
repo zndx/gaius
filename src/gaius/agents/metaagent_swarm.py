@@ -54,6 +54,7 @@ from .roles import (
     get_role,
     METAAGENT_ANALYST_ROLES,
 )
+from gaius.core.budgets import REASONING_MAX_TOKENS
 
 logger = logging.getLogger(__name__)
 
@@ -904,7 +905,7 @@ Error: {insight.error}
                 prompt=user,
                 system_prompt=system,
                 temperature=temperature,
-                max_tokens=2048,
+                max_tokens=REASONING_MAX_TOKENS,
             )
             return response.text
         except Exception as e:

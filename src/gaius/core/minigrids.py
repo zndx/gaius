@@ -23,6 +23,7 @@ import numpy as np
 from .projection import GridData
 from .state import IsoMode
 from .tda import TDAFeatures
+from gaius.core.budgets import REASONING_MAX_TOKENS
 
 if TYPE_CHECKING:
     from .iso_features import IsoFeatures
@@ -458,7 +459,7 @@ Be concise, spatial, and focused on helping the user understand the topology."""
 
         from ..flows.lattice import complete as lattice_complete
 
-        response = lattice_complete(prompt, max_tokens=200, timeout_s=60.0).text
+        response = lattice_complete(prompt, max_tokens=REASONING_MAX_TOKENS).text
         return response.strip()
 
     except Exception as e:

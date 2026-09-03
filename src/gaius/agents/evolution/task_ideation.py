@@ -42,6 +42,7 @@ from .task_authoring import (
     TaskAuthor,
     get_task_author,
 )
+from gaius.core.budgets import REASONING_MAX_TOKENS
 
 logger = logging.getLogger(__name__)
 
@@ -329,7 +330,7 @@ Requirements:
                 result = await ask_reasoning(
                     question=prompt,
                     system_prompt="You are designing LLM reasoning benchmarks.",
-                    max_tokens=2048,
+                    max_tokens=REASONING_MAX_TOKENS,
                 )
                 content = result.get("content", "")
 
@@ -498,7 +499,7 @@ Requirements:
             result = await ask_reasoning(
                 question=prompt,
                 system_prompt="You are creating high-quality LLM reasoning benchmark examples.",
-                max_tokens=4096,
+                max_tokens=REASONING_MAX_TOKENS,
             )
 
             content = result.get("content", "")

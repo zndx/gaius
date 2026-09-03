@@ -34,6 +34,7 @@ from typing import Any, Callable
 import asyncio
 import json
 import random
+from gaius.core.budgets import REASONING_MAX_TOKENS
 
 
 class OptimizationStrategy(Enum):
@@ -895,7 +896,7 @@ Output ONLY the new system prompt."""
             system_prompt=config.system_prompt,
             temperature=config.temperature,
             model=effective_model,
-            max_tokens=1024,
+            max_tokens=REASONING_MAX_TOKENS,
             optillm_technique=config.technique,
             technique_params=config.technique_params,
         )
@@ -1035,7 +1036,7 @@ Output ONLY the new system prompt."""
         generate_results = await client.parallel_complete(
             generate_messages,
             temperature=config.temperature,
-            max_tokens=1024,
+            max_tokens=REASONING_MAX_TOKENS,
         )
 
         # Phase 2: Score outputs using heuristics (no LLM self-eval)

@@ -23,7 +23,7 @@ Usage:
 
 # Configure parallelism BEFORE any imports
 import os
-from gaius.core.budgets import REASONING_MAX_TOKENS
+from gaius.core.budgets import EXPLAIN_MAX_TOKENS, REASONING_MAX_TOKENS
 
 # Configure joblib to use threading instead of multiprocessing
 # This avoids fork() conflicts with gRPC while preserving parallelism.
@@ -1860,7 +1860,7 @@ MISTRAL_7B = ModelSpec(
     context_length=32768,
     parameters_b=7.2,
     default_temperature=0.7,
-    default_max_tokens=2048,
+    default_max_tokens=REASONING_MAX_TOKENS,
     default_port=8085,
     vllm_config=VLLMConfig(
         tensor_parallel_size=1,
@@ -2029,7 +2029,7 @@ Use UPPERCASE_WITH_UNDERSCORES for the variable name.
                 system_prompt=self._MODELSPEC_SYSTEM_PROMPT,
                 model="thinking",
                 temperature=0.3,
-                max_tokens=2000,
+                max_tokens=REASONING_MAX_TOKENS,
             )
             code = res.content or ""
         except Exception as engine_err:
@@ -5027,7 +5027,7 @@ Respond with:
             return _lattice.complete(
                 prompt,
                 capability="thinking",
-                max_tokens=768,
+                max_tokens=REASONING_MAX_TOKENS,
                 temperature=0.2,
                 tools=tools,
                 tool_choice=tool_choice,
@@ -5418,7 +5418,7 @@ Respond with:
             x=cx,
             y=cy,
             save_to_kb=save_to_kb,
-            max_tokens=800,
+            max_tokens=EXPLAIN_MAX_TOKENS,
         )
 
         if not response.success:

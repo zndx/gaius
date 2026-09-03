@@ -48,6 +48,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from enum import Enum
 from typing import Any
+from gaius.core.budgets import REASONING_MAX_TOKENS
 
 logger = logging.getLogger(__name__)
 
@@ -419,7 +420,7 @@ Be concise and decisive. The system should make steady progress without human in
                 prompt=obs_text,
                 system_prompt=self.ORCHESTRATOR_SYSTEM_PROMPT,
                 model=self.orchestrator_endpoint,
-                max_tokens=1500,  # Enough for thinking + JSON response
+                max_tokens=REASONING_MAX_TOKENS,
                 temperature=0.3,  # More deterministic for operational decisions
             )
 

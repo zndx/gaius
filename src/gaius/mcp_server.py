@@ -96,7 +96,7 @@ import json
 import os
 from datetime import datetime
 from pathlib import Path
-from gaius.core.budgets import REASONING_MAX_TOKENS
+from gaius.core.budgets import EXTERNAL_MAX_TOKENS, REASONING_MAX_TOKENS
 
 try:
     from mcp.server.fastmcp import FastMCP
@@ -5194,7 +5194,7 @@ Domain: {domain or 'general'}
                 response = await router.complete(
                     messages=messages,
                     provider="xai",
-                    max_tokens=4096,
+                    max_tokens=EXTERNAL_MAX_TOKENS,
                     temperature=0.3,
                 )
 
@@ -5227,7 +5227,7 @@ Domain: {domain or 'general'}
                 result = await scheduler.complete(
                     prompt=prompt_text,
                     system_prompt="You are an expert evaluator. Provide a brief assessment.",
-                    max_tokens=2048,
+                    max_tokens=REASONING_MAX_TOKENS,
                 )
 
                 return json.dumps(

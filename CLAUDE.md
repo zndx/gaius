@@ -295,9 +295,16 @@ ceiling, generation stops at the closing token — it fails silently
   `LONG_FORM_MAX_TOKENS` 32768, `AGENT_TURN_MAX_TOKENS` 65536,
   `EXTERNAL_MAX_TOKENS` 8192, …). Never a bare literal on a thinking-lane
   or agent path.
-- Audit: `grep -rnE "max_tokens[=:] *[0-9]{3,4}\b" src/gaius/engine src/gaius/client`
-  returns only deliberate exceptions (connectivity probes `max_tokens=5`,
-  scalar reward parses, bytez bench calls).
+- Audit (both patterns — annotated defaults escape the first):
+  ```bash
+  grep -rnE "max_tokens[=:] *[0-9]{3,4}\b|max_tokens: *int *= *[0-9]+|MAX_TOKENS *= *[0-9]+|default_max_tokens *= *[0-9]+" src/gaius --include=*.py
+  ```
+  returns only deliberate exceptions: connectivity probes (`max_tokens=5`),
+  the scalar reward parse, CLT scalar probes, bytez bench calls, the
+  dedicated CLT/SAE labeler, and per-model metadata in `models/registry.py`.
+- A flat read deadline on a reasoning completion is a naive timeout:
+  derive it from the budget (`max(420, max_tokens // 8 + 180)`, the
+  `cognition_buffer` / `flows.lattice` formula).
 - Nets on agent sessions are outer nets for a dead lane (progress
   doctrine), sized in minutes-to-hours, never deadlines.
 

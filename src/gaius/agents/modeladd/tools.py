@@ -18,6 +18,7 @@ import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
+from gaius.core.budgets import REASONING_MAX_TOKENS
 
 if TYPE_CHECKING:
     import httpx
@@ -360,7 +361,7 @@ async def generate_modelspec_code(
             system_prompt=system_prompt,
             model="coding",
             temperature=0.3,
-            max_tokens=2000,
+            max_tokens=REASONING_MAX_TOKENS,
         )
         code = res.content or ""
         model_used, endpoint_used = res.model or "coding", "engine"

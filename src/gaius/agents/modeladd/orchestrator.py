@@ -43,6 +43,7 @@ from .tools import (
     check_coding_endpoint,
     critique_modelspec_code,
 )
+from gaius.core.budgets import REASONING_MAX_TOKENS
 
 logger = logging.getLogger(__name__)
 
@@ -238,7 +239,7 @@ class ModelAddOrchestrator:
             result = await scheduler.complete(
                 prompt=full_prompt,
                 agent=self.orchestrator_endpoint,
-                max_tokens=1000,
+                max_tokens=REASONING_MAX_TOKENS,
                 temperature=0.3,
             )
 

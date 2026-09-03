@@ -11,6 +11,7 @@ Usage:
 # Suppress warnings BEFORE any imports that might trigger them
 import asyncio
 import os
+from gaius.core.budgets import EXPLAIN_MAX_TOKENS
 
 # Suppress huggingface tokenizers parallelism warnings
 # These warnings occur when tokenizers are used after process forking
@@ -2117,7 +2118,7 @@ class GaiusApp(App):
                     x=cx,
                     y=cy,
                     save_to_kb=save_to_kb,
-                    max_tokens=800,
+                    max_tokens=EXPLAIN_MAX_TOKENS,
                     client_id="tui",
                 )
 

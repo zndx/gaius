@@ -31,6 +31,7 @@ from typing import Any
 
 from .engine import TaskItem, Trajectory
 from .objective_generator import ObjectiveTask
+from gaius.core.budgets import REASONING_MAX_TOKENS
 
 logger = logging.getLogger(__name__)
 
@@ -328,7 +329,7 @@ Rate on a scale of 0-10:
 
 Respond with just a JSON object: {{"clarity": N, "accuracy": N, "completeness": N}}"""
 
-            response = await ask_local(assessment_prompt, max_tokens=100)
+            response = await ask_local(assessment_prompt, max_tokens=REASONING_MAX_TOKENS)
 
             # Parse response
             import json
@@ -384,7 +385,7 @@ Rate on a scale of 0-10:
 
 Respond with just a JSON object: {{"relevance": N, "quality": N, "completeness": N}}"""
 
-            response = await ask_local(assessment_prompt, max_tokens=100)
+            response = await ask_local(assessment_prompt, max_tokens=REASONING_MAX_TOKENS)
 
             # Parse response
             import json
