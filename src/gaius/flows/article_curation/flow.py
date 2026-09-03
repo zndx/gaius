@@ -973,6 +973,12 @@ Respond with JSON:
                         metadata={
                             "authors": [a.get("name", "") for a in entry.get("authors", [])],
                             "categories": [t.get("term", "") for t in entry.get("tags", [])],
+                            # Publication date rides to the source file and on to
+                            # the card's source_date — the content_currency intent
+                            # objective was blind to curated cards without it
+                            # (2026-09-03: 374 cards, every curation batch, NULL).
+                            "published": entry.get("published", ""),
+                            "updated": entry.get("updated", ""),
                         },
                     ))
 
@@ -1165,6 +1171,9 @@ Respond with JSON:
                         summary=entry.get("description", "")[:500],
                         metadata={
                             "age": entry.get("age", ""),
+                            # ISO page date when Brave has one — the precise
+                            # source_date signal; `age` is the coarse fallback.
+                            "page_age": entry.get("page_age", ""),
                             "language": entry.get("language", "en"),
                             "family_friendly": entry.get("family_friendly", True),
                         },
@@ -2220,12 +2229,29 @@ Be concise - each summary should be 1-2 sentences max."""
                 # KB path to the source file on disk
                 source_kb_path = f"current/articles/{zettle_slug}/sources/{ref.source_id}.md"
 
+                # Carry the source's publication date onto the card. The
+                # content_currency intent objective reads source_date; every
+                # curation batch before 2026-09-03 left it NULL and the
+                # objective could not see curated inflow at all.
+                source_date = None
+                try:
+                    from gaius.flows.article_curation.common import (
+                        _parse_frontmatter,
+                        source_date_from_frontmatter,
+                    )
+
+                    src_text = (get_kb_root() / source_kb_path).read_text(encoding="utf-8")
+                    source_date = source_date_from_frontmatter(_parse_frontmatter(src_text))
+                except Exception as e:  # noqa: BLE001 — a date is metadata; the card still lands
+                    print(f"  {ref.ref_id}: source_date unavailable ({e}); leaving NULL")
+
                 card = await service.add_card(
                     collection_id=self.collection_id,
                     title=card_title,
                     summary=brief_summary,
                     source_url=source_url,
                     source_type=source_type,
+                    source_date=source_date,
                     article_id=self.article_id,
                     kb_path=source_kb_path,
                     zettle_slug=zettle_slug,

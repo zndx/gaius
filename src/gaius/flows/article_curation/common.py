@@ -14,7 +14,7 @@ import hashlib
 import os
 import re
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import date, datetime
 from enum import Enum
 from pathlib import Path
 from typing import Any, Optional
@@ -425,6 +425,71 @@ def _parse_frontmatter(content: str) -> dict[str, Any]:
         return yaml.safe_load(yaml_content) or {}
     except yaml.YAMLError:
         return {}
+
+
+_MONTHS = {m: i for i, m in enumerate(
+    ["january", "february", "march", "april", "may", "june", "july",
+     "august", "september", "october", "november", "december"], start=1)}
+
+
+def source_date_from_frontmatter(fm: dict[str, Any]) -> Optional[date]:
+    """Best honest publication date for a source file's frontmatter.
+
+    Precedence (most to least precise), never inventing freshness:
+      1. metadata.published / metadata.updated (arXiv ISO, from the API)
+      2. metadata.page_age (Brave ISO page date)
+      3. metadata.age — Brave's coarse string: absolute ("October 8, 2025")
+         or relative ("3 days ago", subtracted from fetched_at — only ever
+         OLDER than the fetch, never fresher)
+      4. arXiv id month from traceable_id (arxiv://YYMM.NNNNN → first of
+         that month: a lower bound on freshness, never an overstatement)
+    Returns None when nothing trustworthy exists — a NULL is honest; a
+    fetched_at masquerading as a publication date is not.
+    """
+    from datetime import date as _date, datetime as _dt, timedelta as _td
+    import re as _re
+
+    meta = fm.get("metadata") or {}
+    if not isinstance(meta, dict):
+        meta = {}
+
+    def _iso(v: Any) -> Optional[_date]:
+        if not v or not isinstance(v, str):
+            return None
+        try:
+            return _dt.fromisoformat(v.replace("Z", "+00:00")).date()
+        except ValueError:
+            m = _re.match(r"^(\d{4})-(\d{2})-(\d{2})", v)
+            return _date(int(m[1]), int(m[2]), int(m[3])) if m else None
+
+    for key in ("published", "updated", "page_age"):
+        d = _iso(meta.get(key))
+        if d:
+            return d
+
+    age = meta.get("age")
+    if isinstance(age, str) and age.strip():
+        a = age.strip()
+        m = _re.match(r"^([A-Za-z]+)\s+(\d{1,2}),\s*(\d{4})$", a)
+        if m and m[1].lower() in _MONTHS:
+            try:
+                return _date(int(m[3]), _MONTHS[m[1].lower()], int(m[2]))
+            except ValueError:
+                pass
+        fetched = _iso(fm.get("fetched_at")) if isinstance(fm.get("fetched_at"), str) else None
+        m = _re.match(r"^(\d+)\s+(minute|hour|day|week|month|year)s?\s+ago$", a)
+        if m and fetched:
+            n, unit = int(m[1]), m[2]
+            days = {"minute": 0, "hour": 0, "day": 1, "week": 7, "month": 30, "year": 365}[unit]
+            return fetched - _td(days=n * days)
+
+    tid = str(fm.get("traceable_id") or "")
+    m = _re.match(r"^arxiv://(\d{2})(\d{2})\.\d{4,5}", tid)
+    if m:
+        yy, mm = int(m[1]), int(m[2])
+        if 1 <= mm <= 12:
+            return _date(2000 + yy, mm, 1)
+    return None
 
 
 def _extract_h1_title(content: str) -> Optional[str]:
