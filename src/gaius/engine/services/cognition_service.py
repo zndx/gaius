@@ -50,6 +50,7 @@ from .base_daemon import (
     DaemonHealth,
     DaemonStartupError,
 )
+from gaius.core.budgets import LONG_FORM_MAX_TOKENS
 
 logger = logging.getLogger(__name__)
 
@@ -1695,7 +1696,7 @@ Your summary note content"""
                     "system_prompt": f"You are a research assistant advancing an ongoing investigation into {topic} in the {domain} domain.",
                     "agent": "thinking",
                     "technique": "cot_reflection",
-                    "max_tokens": 2048,
+                    "max_tokens": LONG_FORM_MAX_TOKENS,
                 },
             )
             synthesis_content = synthesis.get("content", "")

@@ -14,6 +14,7 @@ from datetime import datetime
 from typing import Any, AsyncIterator, Callable, Optional
 
 from .grpc_client import GrpcEngineClient, get_grpc_client
+from gaius.core.budgets import REASONING_MAX_TOKENS
 
 logger = logging.getLogger(__name__)
 
@@ -439,7 +440,7 @@ class SchedulerProxy:
             {
                 "prompt": prompt,
                 "agent": "xai" if force_xai else "thinking",
-                "max_tokens": 2048,
+                "max_tokens": REASONING_MAX_TOKENS,
                 "temperature": 0.5,
             },
             timeout=180.0,

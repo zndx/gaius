@@ -436,6 +436,7 @@ from ...generated import (
 )
 
 from ...metrics import record_exception_caught
+from gaius.core.budgets import REASONING_MAX_TOKENS, EXPLAIN_MAX_TOKENS
 
 if TYPE_CHECKING:
     from ..server import ServiceRegistry
@@ -921,7 +922,7 @@ class GaiusServicer(GaiusServiceServicer):
                 agent_alias=request.agent_alias or "thinking",
                 system_prompt=request.system_prompt,
                 temperature=request.temperature or 0.7,
-                max_tokens=request.max_tokens or 2048,
+                max_tokens=request.max_tokens or REASONING_MAX_TOKENS,
                 technique=request.technique or None,
                 task_type="scheduler_complete",
             )
@@ -984,7 +985,7 @@ class GaiusServicer(GaiusServiceServicer):
             messages=messages,
             agent_alias=request.agent_alias or "thinking",
             temperature=request.temperature or 0.7,
-            max_tokens=request.max_tokens or 2048,
+            max_tokens=request.max_tokens or REASONING_MAX_TOKENS,
         )
 
         job_id = await sched.submit_async(
@@ -3327,7 +3328,7 @@ class GaiusServicer(GaiusServiceServicer):
         start_time = time.time()
         kb_root = request.kb_root or "build/dev"
         cx, cy = request.x, request.y
-        max_tokens = request.max_tokens or 800
+        max_tokens = request.max_tokens or EXPLAIN_MAX_TOKENS
 
         # Convert to Go notation
         col = chr(ord("A") + cx + (1 if cx >= 8 else 0))  # Skip 'I'
@@ -5041,10 +5042,10 @@ class GaiusServicer(GaiusServiceServicer):
                 if self._services.backend_router:
                     result = await self._services.backend_router.complete(
                         prompt=user,
-                        agent_alias="orchestrator",  # Use orchestrator for multi-agent reasoning
+                        agent_alias="thinking",  # Orchestrator-8B retired 2026-09-02
                         system_prompt=system,
                         temperature=temperature,
-                        max_tokens=4096,
+                        max_tokens=REASONING_MAX_TOKENS,
                         task_type="metaagent_query",
                     )
                     return result.content or ""
@@ -5140,10 +5141,10 @@ class GaiusServicer(GaiusServiceServicer):
                 if self._services.backend_router:
                     result = await self._services.backend_router.complete(
                         prompt=user,
-                        agent_alias="orchestrator",  # Use orchestrator for multi-agent reasoning
+                        agent_alias="thinking",  # Orchestrator-8B retired 2026-09-02
                         system_prompt=system,
                         temperature=temperature,
-                        max_tokens=4096,
+                        max_tokens=REASONING_MAX_TOKENS,
                         task_type="metaagent_query_stream",
                     )
                     return result.content or ""

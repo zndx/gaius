@@ -38,6 +38,7 @@ from gaius.flows import register_flow
 from gaius.flows.base import GaiusFlow, safe_filename
 from gaius.flows.config import apply_metaflow_config
 from gaius.hx.lineage.events import Dataset
+from gaius.core.budgets import REASONING_MAX_TOKENS, EXTERNAL_MAX_TOKENS
 
 logger = logging.getLogger(__name__)
 
@@ -394,7 +395,7 @@ Provide a clear, well-structured response that synthesizes information from all 
                     "system_prompt": "You are a research assistant. Synthesize search results into a coherent response. Reference sources using [[wikilinks]] for KB docs and [Markdown links](url) for web sources.",
                     "agent": "thinking",
                     "technique": "cot_reflection",
-                    "max_tokens": 2048,
+                    "max_tokens": REASONING_MAX_TOKENS,
                 },
             )
 
@@ -468,7 +469,7 @@ Provide a thorough analysis that:
             response = await backend.complete(
                 messages=messages,
                 model="grok-4-1-fast",
-                max_tokens=2048,
+                max_tokens=EXTERNAL_MAX_TOKENS,
             )
 
             return {

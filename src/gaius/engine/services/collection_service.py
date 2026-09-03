@@ -41,6 +41,7 @@ from datetime import date, datetime, timezone
 from typing import Any, AsyncIterator
 
 import asyncpg
+from gaius.core.budgets import REASONING_MAX_TOKENS, EXTERNAL_MAX_TOKENS
 
 logger = logging.getLogger(__name__)
 
@@ -2435,7 +2436,7 @@ created_at: {now.isoformat()}
                 messages,
                 model="grok-4-1-fast",
                 temperature=0.7,
-                max_tokens=4096,
+                max_tokens=EXTERNAL_MAX_TOKENS,
             )
             model_label = "frontier model"
         elif summary_type == "open_weights":
@@ -2449,7 +2450,7 @@ created_at: {now.isoformat()}
                 [EngMsg(role="user", content=prompt)],
                 model="thinking",
                 temperature=0.7,
-                max_tokens=4096,
+                max_tokens=EXTERNAL_MAX_TOKENS,
             )
             # Wrap in ExternalResponse-compatible shape
             from gaius.engine.backends.external.base import ExternalResponse
@@ -2473,7 +2474,7 @@ created_at: {now.isoformat()}
                 messages,
                 provider="cerebras",
                 temperature=0.7,
-                max_tokens=4096,
+                max_tokens=EXTERNAL_MAX_TOKENS,
             )
             model_label = "cerebras thinking"
 
@@ -2735,7 +2736,7 @@ created_at: {now.isoformat()}
                 [Message(role="user", content=prompt)],
                 model="thinking",
                 temperature=0.7,
-                max_tokens=4096,
+                max_tokens=REASONING_MAX_TOKENS,
             )
 
             if not result.content:
@@ -2776,7 +2777,7 @@ created_at: {now.isoformat()}
                 [{"role": "user", "content": prompt}],
                 provider="cerebras",
                 temperature=0.7,
-                max_tokens=4096,
+                max_tokens=EXTERNAL_MAX_TOKENS,
             )
 
             if not response.success:

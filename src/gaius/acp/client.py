@@ -39,6 +39,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Awaitable
+from gaius.core.budgets import AGENT_TURN_MAX_TOKENS, THINKING_CONTEXT_WINDOW, ACP_CONNECTION_TIMEOUT_S
 
 logger = logging.getLogger(__name__)
 
@@ -128,8 +129,8 @@ base_url = "{base}"
 name = "Gaius thinking (Engine/Complete)"
 api_key = "gaius"
 api_backend = "chat_completions"
-context_window = 262144
-max_completion_tokens = 8192
+context_window = {THINKING_CONTEXT_WINDOW}
+max_completion_tokens = {AGENT_TURN_MAX_TOKENS}
 max_retries = 2
 system_prompt_label = "Qwen3.8-27B on Gaius Engine"
 
@@ -346,7 +347,7 @@ class ACPConfig:
     agent_args: list[str] | None = None
     agent_env: dict[str, str] = field(default_factory=dict)
     working_directory: str = field(default_factory=lambda: os.getcwd())
-    connection_timeout: float = 30.0
+    connection_timeout: float = ACP_CONNECTION_TIMEOUT_S
     prompt_timeout: float | None = None  # None = no timeout, let the agent run to completion
     auto_approve_fs: bool = True  # Trust the agent with KB files
     auto_approve_terminal: bool = True  # Allow gh CLI for issue management

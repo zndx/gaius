@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any
 
 import yaml
+from gaius.core.budgets import REASONING_MAX_TOKENS
 
 logger = logging.getLogger(__name__)
 
@@ -291,8 +292,8 @@ async def score_paper(
 
     if rubric.model_preference == "ensemble" and use_local and use_remote:
         # Score twice and average (both via Engine/Complete)
-        local_result = await engine.complete_simple(prompt, max_tokens=1024)
-        remote_result = await engine.complete_simple(prompt, max_tokens=2048, temperature=0.5)
+        local_result = await engine.complete_simple(prompt, max_tokens=REASONING_MAX_TOKENS)
+        remote_result = await engine.complete_simple(prompt, max_tokens=REASONING_MAX_TOKENS, temperature=0.5)
 
         # Extract content from CompletionResult objects
         local_content = local_result.content if hasattr(local_result, 'content') else str(local_result)
@@ -313,7 +314,7 @@ async def score_paper(
         model_used = "ensemble"
 
     elif use_remote:
-        result = await engine.complete_simple(prompt, max_tokens=2048, temperature=0.5)
+        result = await engine.complete_simple(prompt, max_tokens=REASONING_MAX_TOKENS, temperature=0.5)
         # Extract content from CompletionResult object
         content = result.content if hasattr(result, 'content') else str(result)
         parsed = _parse_scoring_response(content)
@@ -324,7 +325,7 @@ async def score_paper(
 
     else:
         # Default to local
-        result = await engine.complete_simple(prompt, max_tokens=1024)
+        result = await engine.complete_simple(prompt, max_tokens=REASONING_MAX_TOKENS)
         # Extract content from CompletionResult object
         content = result.content if hasattr(result, 'content') else str(result)
         parsed = _parse_scoring_response(content)

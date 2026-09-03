@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any
 
 from gaius.core.synthesis import ZettelkastenNote
+from gaius.core.budgets import EXTERNAL_MAX_TOKENS
 
 
 @dataclass
@@ -387,7 +388,7 @@ class SynthesisEvaluator:
             def call_anthropic():
                 response = client.messages.create(
                     model=self.judge_model,
-                    max_tokens=2048,
+                    max_tokens=EXTERNAL_MAX_TOKENS,
                     messages=[{"role": "user", "content": prompt}],
                 )
                 return response.content[0].text
@@ -399,7 +400,7 @@ class SynthesisEvaluator:
             def call_openai_compatible():
                 response = client.chat.completions.create(
                     model=self.judge_model,
-                    max_tokens=2048,
+                    max_tokens=EXTERNAL_MAX_TOKENS,
                     messages=[{"role": "user", "content": prompt}],
                 )
                 return response.choices[0].message.content

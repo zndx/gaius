@@ -43,6 +43,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Optional
 from uuid import uuid4
+from gaius.core.budgets import REASONING_MAX_TOKENS
 
 logger = logging.getLogger(__name__)
 
@@ -533,7 +534,7 @@ Trigger reason: {trigger_reason}"""
                 # 4096 was eaten too (2026-09-02 THINKBURN — third
                 # starvation of the day; traces run longer post-rebuild).
                 # 8192 gives the answer room; the client deadline scales.
-                "max_tokens": 8192,
+                "max_tokens": REASONING_MAX_TOKENS,
             },
         )
 
@@ -1287,7 +1288,7 @@ SALIENCE: 0.0-1.0"""
                 "system_prompt": "You are analyzing an AI system's thought patterns "
                     "to identify blind spots and improvement areas.",
                 "agent": "thinking",
-                "max_tokens": 1024,
+                "max_tokens": REASONING_MAX_TOKENS,
             },
         )
 
@@ -1686,7 +1687,7 @@ EVALUATION: How to measure success"""
                 # 4096 was eaten too (2026-09-02 THINKBURN — third
                 # starvation of the day; traces run longer post-rebuild).
                 # 8192 gives the answer room; the client deadline scales.
-                "max_tokens": 8192,
+                "max_tokens": REASONING_MAX_TOKENS,
             },
         )
 
@@ -1897,7 +1898,7 @@ Generated: {datetime.now().isoformat()}
                             "Add brief insights about the activity level.",
                         "system_prompt": "You are generating a brief activity summary.",
                         "agent": "thinking",
-                        "max_tokens": 512,
+                        "max_tokens": REASONING_MAX_TOKENS,
                     },
                 )
                 # Validate and extract response fields with schema drift detection

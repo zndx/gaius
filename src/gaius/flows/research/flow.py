@@ -64,6 +64,7 @@ from gaius.flows.research.memory import (
 )
 from gaius.flows.research.progress import emit_progress
 from gaius.flows.research.reward import compute_reward
+from gaius.core.budgets import EXTERNAL_MAX_TOKENS
 
 logger = logging.getLogger(__name__)
 
@@ -982,7 +983,7 @@ Use [[wikilinks]] to reference KB documents and [Markdown links](url) for web so
             response = await backend.complete(
                 messages=messages,
                 model="grok-4-1-fast",
-                max_tokens=4096,
+                max_tokens=EXTERNAL_MAX_TOKENS,
             )
 
             return response.content
@@ -1205,7 +1206,7 @@ Write in a clear, authoritative tone suitable for professional research output."
             response = await backend.complete(
                 messages=messages,
                 model="grok-4-1-fast",
-                max_tokens=8192,  # Larger limit for comprehensive report
+                max_tokens=EXTERNAL_MAX_TOKENS,
             )
 
             return response.content

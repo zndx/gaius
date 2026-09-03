@@ -282,6 +282,25 @@ objectives are its quantitative realization.
 CLI surfaces: `/objective verify|history`, `/efficacy [report|recent|resolve]`,
 `/nautilus`, `/overwatch`.
 
+## Token Budgets at Agent Integrations (DOCTRINE)
+
+**Minute token budgets are anachronistic.** The thinking endpoint serves
+Qwen3.8-27B at a 262k window and its reasoning traces count against
+`max_tokens`; a tight cap does not save anything — `max_tokens` is a
+ceiling, generation stops at the closing token — it fails silently
+(empty Briefs at 2048, THINKBURN at 4096, no rubric JSON at 1536).
+
+- Every `max_tokens`, agent-turn cap, daily judge cap and ACP net imports
+  from `gaius.core.budgets` (`REASONING_MAX_TOKENS` 16384,
+  `LONG_FORM_MAX_TOKENS` 32768, `AGENT_TURN_MAX_TOKENS` 65536,
+  `EXTERNAL_MAX_TOKENS` 8192, …). Never a bare literal on a thinking-lane
+  or agent path.
+- Audit: `grep -rnE "max_tokens[=:] *[0-9]{3,4}\b" src/gaius/engine src/gaius/client`
+  returns only deliberate exceptions (connectivity probes `max_tokens=5`,
+  scalar reward parses, bytez bench calls).
+- Nets on agent sessions are outer nets for a dead lane (progress
+  doctrine), sized in minutes-to-hours, never deadlines.
+
 ## Fail-Fast Policy (MANDATORY)
 
 **Fail-fast is an iron-clad design principle in this codebase.** All code must surface errors immediately with actionable remediation paths. Never silently degrade, fall back to placeholders, or continue with partial functionality.

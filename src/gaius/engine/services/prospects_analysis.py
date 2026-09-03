@@ -31,6 +31,7 @@ from gaius.flows.prospects.filing_preprocessor import (
 )
 from gaius.flows.prospects.tables import detect_tables, tables_text
 from gaius.flows.prospects.windows import admitted_text, scan_windows
+from gaius.core.budgets import LONG_FORM_MAX_TOKENS
 
 logger = logging.getLogger(__name__)
 
@@ -639,7 +640,7 @@ class ProspectsAnalyzer:
             user_content,
             system_prompt=SYNTHESIS_SYSTEM_PROMPT,
             json_schema=None,
-            max_tokens=8192,
+            max_tokens=LONG_FORM_MAX_TOKENS,
         )
         data = _parse_json_object(response.text)
         synthesis = PositionSynthesis(

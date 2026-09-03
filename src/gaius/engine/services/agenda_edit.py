@@ -35,13 +35,13 @@ from __future__ import annotations
 import asyncio
 import logging
 from pathlib import Path
+from gaius.core.budgets import INCORPORATION_NET_S
 
 logger = logging.getLogger(__name__)
 
 # Generous outer net only (progress doctrine): the agent loop is
 # supervised by Engine/Complete's own token-progress machinery; this
 # deadline exists for a dead facade, not a slow merge.
-INCORPORATION_NET_S = 1200.0
 
 
 async def incorporate_into_note(

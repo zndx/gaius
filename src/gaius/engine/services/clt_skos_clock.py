@@ -263,9 +263,9 @@ def require_extracted(doc: Any, *, kb_root: Any) -> tuple[str, str]:
 
 
 def _iceberg_body(iceberg_id: str) -> str:
-    from gaius.hx.reader import ContentReader
+    from gaius.hx.reader import IcebergContentReader
 
-    item = ContentReader().get_by_id(iceberg_id)
+    item = IcebergContentReader().get_by_id(iceberg_id)
     if item is None:
         return ""
     return str(getattr(item, "raw_content", None) or "")

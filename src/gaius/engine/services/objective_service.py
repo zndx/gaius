@@ -29,6 +29,7 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import timedelta
 from typing import Any
+from gaius.core.budgets import REASONING_MAX_TOKENS
 
 logger = logging.getLogger(__name__)
 
@@ -658,7 +659,7 @@ class ObjectiveService:
                 ))],
                 model="thinking",
                 temperature=0.1,
-                max_tokens=4096,  # 3 briefs of context + a thinking trace
+                max_tokens=REASONING_MAX_TOKENS,
             )
             out = (completion.content or "").strip()
             jm = _re.search(r"\{.*\}", out, _re.DOTALL)

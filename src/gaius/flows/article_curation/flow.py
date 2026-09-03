@@ -80,6 +80,7 @@ from gaius.flows.article_curation.progress import (
     emit_summarize,
     generate_run_id,
 )
+from gaius.core.budgets import EXTERNAL_MAX_TOKENS
 
 logger = logging.getLogger(__name__)
 
@@ -352,7 +353,7 @@ Create a comprehensive research summary that will guide article development."""
             ],
             model="grok-4-1-fast",
             temperature=0.3,
-            max_tokens=4096,
+            max_tokens=EXTERNAL_MAX_TOKENS,
         )
 
         if not response.success:
@@ -1760,7 +1761,7 @@ IMPORTANT: In References, include <!-- ref_start:N ref_end:M --> comments with t
             ],
             model="grok-4-1-fast",
             temperature=0.6,
-            max_tokens=8192,
+            max_tokens=EXTERNAL_MAX_TOKENS,
         )
 
         if not response.success:
@@ -2055,7 +2056,7 @@ Be concise - each summary should be 1-2 sentences max."""
                 ],
                 model="grok-4-1-fast",
                 temperature=0.3,
-                max_tokens=2048,
+                max_tokens=EXTERNAL_MAX_TOKENS,
             )
 
             if not response.success or not response.content:

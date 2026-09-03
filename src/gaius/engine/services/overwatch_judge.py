@@ -36,6 +36,7 @@ import os
 import re
 from datetime import date
 from typing import Any
+from gaius.core.budgets import JUDGE_CONSULTS_PER_DAY, RUBRIC_JUDGMENTS_PER_DAY
 
 logger = logging.getLogger(__name__)
 
@@ -43,11 +44,11 @@ logger = logging.getLogger(__name__)
 # reach (the PROVIDER_AFFECTING_KEYS discipline from Atelier).
 JUDGE_AGENT = "grok"
 
-MAX_JUDGE_INVOCATIONS_PER_DAY = 6
+MAX_JUDGE_INVOCATIONS_PER_DAY = JUDGE_CONSULTS_PER_DAY
 
 # Objective rubric judgments (LLM-as-Judge on the final surfaced result)
 # have their own budget so they never starve trigger consultations.
-MAX_RUBRIC_JUDGMENTS_PER_DAY = 8
+MAX_RUBRIC_JUDGMENTS_PER_DAY = RUBRIC_JUDGMENTS_PER_DAY
 
 VERDICT_KEYS = {"in_contract", "diagnosis", "recommended_action", "confidence"}
 

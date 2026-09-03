@@ -38,6 +38,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
 import asyncpg
+from gaius.core.budgets import EXTERNAL_MAX_TOKENS
 
 if TYPE_CHECKING:
     from gaius.engine.backends.external.base import ExternalResponse
@@ -1680,7 +1681,7 @@ class MetaAgentDebateCoordinator:
                 {"role": "user", "content": f"Analyze this operational data:\n\n{formatted_data}"},
             ],
             provider="cerebras",
-            max_tokens=4096,
+            max_tokens=EXTERNAL_MAX_TOKENS,
             temperature=0.3,
             source_context=self._get_source_context(
                 agent_alias="metaagent_analyst",
@@ -1720,7 +1721,7 @@ class MetaAgentDebateCoordinator:
                 {"role": "user", "content": f"Critique these findings:\n\n{findings}"},
             ],
             provider="xai",  # Always XAI for skeptic (Quality-First)
-            max_tokens=4096,
+            max_tokens=EXTERNAL_MAX_TOKENS,
             temperature=0.3,
             source_context=self._get_source_context(
                 agent_alias="metaagent_skeptic",
@@ -1760,7 +1761,7 @@ class MetaAgentDebateCoordinator:
                 {"role": "user", "content": f"Validate actionability of recommendations in:\n\n{findings}"},
             ],
             provider="cerebras",
-            max_tokens=4096,
+            max_tokens=EXTERNAL_MAX_TOKENS,
             temperature=0.2,  # Very deterministic for commands
             source_context=self._get_source_context(
                 agent_alias="metaagent_critic",
@@ -1830,7 +1831,7 @@ class MetaAgentDebateCoordinator:
             response = await router.complete(
                 messages=messages,
                 provider="xai",  # Always XAI for judge (Quality-First)
-                max_tokens=4096,
+                max_tokens=EXTERNAL_MAX_TOKENS,
                 temperature=0.4,
                 tools=AGENTIC_JUDGE_TOOLS,
                 source_context=self._get_source_context(

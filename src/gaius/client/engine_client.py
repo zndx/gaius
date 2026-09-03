@@ -18,6 +18,7 @@ Usage:
 import logging
 from dataclasses import dataclass
 from typing import Optional
+from gaius.core.budgets import REASONING_MAX_TOKENS
 
 logger = logging.getLogger(__name__)
 
@@ -71,7 +72,7 @@ class EngineInferenceClient:
         messages: list[Message],
         model: Optional[str] = None,
         temperature: float = 0.7,
-        max_tokens: int = 2048,
+        max_tokens: int = REASONING_MAX_TOKENS,
         technique: Optional[str] = None,
         timeout: Optional[float] = None,
     ) -> CompletionResult:
@@ -146,7 +147,7 @@ class EngineInferenceClient:
         model: Optional[str] = None,
         system_prompt: Optional[str] = None,
         temperature: float = 0.7,
-        max_tokens: int = 2048,
+        max_tokens: int = REASONING_MAX_TOKENS,
         technique: Optional[str] = None,
         timeout: Optional[float] = None,
     ) -> CompletionResult:
@@ -283,7 +284,7 @@ def use_engine_client() -> bool:
 async def ask_local(
     question: str,
     technique: str = "",
-    max_tokens: int = 2048,
+    max_tokens: int = REASONING_MAX_TOKENS,
 ) -> str:
     """Query the local LLM via the gRPC engine (Engine-First).
 

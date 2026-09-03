@@ -31,6 +31,7 @@ from typing import Any, Literal
 from gaius.agents.tool_registry import ToolRegistry, create_prospects_registry
 from gaius.engine.services.prospects_analysis import FilingAnalysis, PositionSynthesis
 from gaius.kb.base_validator import validate_base, ValidationResult
+from gaius.core.budgets import REASONING_MAX_TOKENS, LONG_FORM_MAX_TOKENS
 
 logger = logging.getLogger(__name__)
 
@@ -555,7 +556,7 @@ async def _call_generate_base(
             agent="thinking",
             system_prompt=BASE_GENERATION_SYSTEM_PROMPT,
             temperature=0.2,  # Low temperature for consistent YAML output
-            max_tokens=4096,  # thinking traces count against max_tokens
+            max_tokens=LONG_FORM_MAX_TOKENS,
         )
 
         cost_usd = 0.0  # local thinking endpoint
@@ -609,7 +610,7 @@ async def _call_diagnose_error(
             prompt=prompt,
             agent="thinking",
             temperature=0.1,
-            max_tokens=1536,  # thinking traces count against max_tokens
+            max_tokens=REASONING_MAX_TOKENS,
         )
 
         cost_usd = 0.0  # local thinking endpoint
@@ -706,7 +707,7 @@ Attempts so far: {len(state.attempts)}
         result = await scheduler.complete(
             prompt=full_prompt,
             agent="thinking",
-            max_tokens=1536,  # thinking traces count against max_tokens
+            max_tokens=REASONING_MAX_TOKENS,
             temperature=0.2,
         )
 

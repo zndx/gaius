@@ -26,6 +26,7 @@ from gaius.engine.services.agenda_notes import (
     skewer,
     update_item,
 )
+from gaius.core.budgets import LONG_FORM_MAX_TOKENS
 
 logger = logging.getLogger(__name__)
 
@@ -413,7 +414,7 @@ async def emit_publish_brief(
             [Message(role="user", content=prompt)],
             model="thinking",
             temperature=0.6,
-            max_tokens=6144,  # thinking traces count against max_tokens
+            max_tokens=LONG_FORM_MAX_TOKENS,
         )
         brief = (completion.content or "").strip()
         if not brief:
