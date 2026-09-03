@@ -314,10 +314,19 @@ class ProspectsService:
         self._ingest_task = None
         if task is not None:
             task.cancel()
-            try:
-                await task
-            except asyncio.CancelledError:
-                pass
+            # The roll loop's compaction step is a blocking thread
+            # (asyncio.to_thread → sync Engine/Complete with an hours-long
+            # net); cancellation cannot interrupt it, and awaiting it here
+            # held a prospects_check task open for 40+ minutes after its
+            # work was done (2026-09-03 22:26→). Bounded wait, then detach:
+            # the thread finishes on its own and its result is irrelevant
+            # to a service that is stopping.
+            done, _pending = await asyncio.wait({task}, timeout=15.0)
+            if not done:
+                logger.warning(
+                    "ProspectsService ingest loop still busy after cancel "
+                    "(blocking compaction thread) — detaching; it will end on its own"
+                )
 
     async def ingest_market_buffer(self) -> dict[str, Any]:
         """Pull market-wide FMP streams into the RAM FIFO (not just watchlist)."""
