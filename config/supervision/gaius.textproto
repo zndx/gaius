@@ -1,0 +1,217 @@
+# proto-file: zndx/supervision/v1/supervision.proto
+# proto-message: zndx.supervision.v1.Supervisor
+#
+# Gaius supervision instance — derived from the 2026-09-02 self-observation audit
+# (docs/notes/2026-09-02/001900_ops_sweep_log.md, 23:10 entry). This is the only
+# place "gaius", a flow name, or a rubric appears; the grammar lives in the shared
+# protocol. Every restart strategy is NONE for the read-only adoption phase
+# (nautilus_supervision.md §9): observe, stamp, score, escalate — never actuate —
+# until the supervisor's own Brier record earns promotion per scope.
+
+project: "gaius"
+spec_version: "2026-09-03.1"
+engine_build: "trunk"            # replaced by the deployed build id at launch; with
+                                 # spec_version this is the scoring epoch
+engine_grpc: "127.0.0.1:50051"
+
+budgets {
+  recycle_k: 3
+  recycle_window_seconds: 3600
+  recycle_cooldown_seconds: 240
+  judge_consults_per_day: 6
+  rubric_judgments_per_day: 8
+}
+
+# ── Host units (root of the tree) ──────────────────────────────────────────────
+
+processes {
+  id: "gaius.service"
+  kind: PROCESS_KIND_SYSTEMD_UNIT
+  restart: RESTART_STRATEGY_NONE          # promote to ONE_FOR_ALL after read-only phase
+  observation { source: SOURCE_KIND_SYSTEMD locator: "gaius.service" poll_seconds: 15 }
+  warmup_seconds: 330                     # engine + 27B load; matches declared thinking warmup
+  attrs { key: "control_plane" value: "systemd oneshot -> just up (devenv process-compose)" }
+}
+processes {
+  id: "engine"
+  kind: PROCESS_KIND_EXTERNAL_SERVICE     # the zndx.engine.v1 face on :50051
+  parent: "gaius.service"
+  restart: RESTART_STRATEGY_NONE
+  observation { source: SOURCE_KIND_ENGINE_GRPC locator: "127.0.0.1:50051" poll_seconds: 0 }
+  warmup_seconds: 120
+  reports_positions: true
+}
+processes {
+  id: "devenv-postgres"
+  kind: PROCESS_KIND_EXTERNAL_SERVICE
+  parent: "gaius.service"
+  restart: RESTART_STRATEGY_NONE
+  observation { source: SOURCE_KIND_HTTP_PROBE locator: "tcp://127.0.0.1:5444" poll_seconds: 30 }
+  attrs { key: "note" value: "supervisor bookkeeping target; write-ahead buffer covers its absence" }
+}
+
+# ── Serving endpoints (WatchWorkload intents) ──────────────────────────────────
+
+processes {
+  id: "endpoint.thinking"
+  kind: PROCESS_KIND_SERVING_ENDPOINT
+  parent: "engine"
+  restart: RESTART_STRATEGY_NONE
+  observation { source: SOURCE_KIND_ENGINE_GRPC locator: "thinking" }
+  warmup_seconds: 330
+  depends_on: "engine"
+  attrs { key: "model" value: "Qwen/Qwen3.8-27B" }
+  attrs { key: "gpus" value: "0-3" }
+}
+
+# ── In-engine daemons ──────────────────────────────────────────────────────────
+
+processes { id: "daemon.scheduled_task_processor" kind: PROCESS_KIND_ENGINE_DAEMON parent: "engine" restart: RESTART_STRATEGY_NONE observation { source: SOURCE_KIND_ENGINE_GRPC locator: "scheduled_task_processor" } depends_on: "devenv-postgres" }
+processes { id: "daemon.health_observer" kind: PROCESS_KIND_ENGINE_DAEMON parent: "engine" restart: RESTART_STRATEGY_NONE observation { source: SOURCE_KIND_ENGINE_GRPC locator: "health_observer" } }
+processes { id: "daemon.cognition" kind: PROCESS_KIND_ENGINE_DAEMON parent: "engine" restart: RESTART_STRATEGY_NONE observation { source: SOURCE_KIND_ENGINE_GRPC locator: "cognition" } depends_on: "endpoint.thinking" }
+processes { id: "daemon.theta" kind: PROCESS_KIND_ENGINE_DAEMON parent: "engine" restart: RESTART_STRATEGY_NONE observation { source: SOURCE_KIND_ENGINE_GRPC locator: "theta" } }
+processes { id: "daemon.metaagent" kind: PROCESS_KIND_ENGINE_DAEMON parent: "engine" restart: RESTART_STRATEGY_NONE observation { source: SOURCE_KIND_ENGINE_GRPC locator: "metaagent" } }
+processes { id: "daemon.reconciliation" kind: PROCESS_KIND_ENGINE_DAEMON parent: "engine" restart: RESTART_STRATEGY_NONE observation { source: SOURCE_KIND_ENGINE_GRPC locator: "reconciliation" } attrs { key: "note" value: "30s endpoint probe + 3-strike PROBEFLAP gate; the only site stamping momentum" } }
+# daemon.nautilus (in-engine) is deliberately absent: retired by this design.
+
+# ── Scheduled task classes (claimed by the processor; enqueued by pg_cron) ─────
+# cadence.cron mirrors the pg_cron job that enqueues the class; net_seconds is the
+# generous outer net (progress-over-timeouts), NOT a kill deadline.
+
+processes { id: "task.publish_cards" kind: PROCESS_KIND_SCHEDULED_TASK parent: "daemon.scheduled_task_processor" restart: RESTART_STRATEGY_NONE observation { source: SOURCE_KIND_TASK_QUEUE locator: "publish_cards" } cadence { cron: "0 2,12,17,21 * * *" net_seconds: 14400 } depends_on: "endpoint.thinking" attrs { key: "singleton" value: "true" } }
+processes { id: "task.article_curate" kind: PROCESS_KIND_SCHEDULED_TASK parent: "daemon.scheduled_task_processor" restart: RESTART_STRATEGY_NONE observation { source: SOURCE_KIND_TASK_QUEUE locator: "article_curate" } cadence { cron: "7 9 * * *" net_seconds: 14400 } attrs { key: "singleton" value: "true" } }
+processes { id: "task.prospects_check" kind: PROCESS_KIND_SCHEDULED_TASK parent: "daemon.scheduled_task_processor" restart: RESTART_STRATEGY_NONE observation { source: SOURCE_KIND_TASK_QUEUE locator: "prospects_check" } cadence { cron: "0 7 * * *" net_seconds: 2700 } attrs { key: "gate" value: "meta.should_run_prospects_check() >= 24h" } }
+processes { id: "task.prospects_update" kind: PROCESS_KIND_SCHEDULED_TASK parent: "daemon.scheduled_task_processor" restart: RESTART_STRATEGY_NONE observation { source: SOURCE_KIND_TASK_QUEUE locator: "prospects_update" } cadence { expected_period_seconds: 86400 net_seconds: 14400 } depends_on: "endpoint.thinking" attrs { key: "enqueued_by" value: "task.prospects_check when filings warrant" } }
+processes { id: "task.objective_verify" kind: PROCESS_KIND_SCHEDULED_TASK parent: "daemon.scheduled_task_processor" restart: RESTART_STRATEGY_NONE observation { source: SOURCE_KIND_TASK_QUEUE locator: "objective_verify" } cadence { cron: "38 1,7,13,19 * * *" net_seconds: 2700 } }
+processes { id: "task.tier_settle" kind: PROCESS_KIND_SCHEDULED_TASK parent: "daemon.scheduled_task_processor" restart: RESTART_STRATEGY_NONE observation { source: SOURCE_KIND_TASK_QUEUE locator: "tier_settle" } cadence { cron: "20 * * * *" net_seconds: 2700 } attrs { key: "singleton" value: "true" } }
+processes { id: "task.clt_skos_admit" kind: PROCESS_KIND_SCHEDULED_TASK parent: "daemon.scheduled_task_processor" restart: RESTART_STRATEGY_NONE observation { source: SOURCE_KIND_TASK_QUEUE locator: "clt_skos_admit" } cadence { cron: "*/15 * * * *" net_seconds: 2700 } }
+processes { id: "task.clt_skos_label" kind: PROCESS_KIND_SCHEDULED_TASK parent: "daemon.scheduled_task_processor" restart: RESTART_STRATEGY_NONE observation { source: SOURCE_KIND_TASK_QUEUE locator: "clt_skos_label" } cadence { cron: "*/15 * * * *" net_seconds: 2700 } }
+processes { id: "task.feature_probe" kind: PROCESS_KIND_SCHEDULED_TASK parent: "daemon.scheduled_task_processor" restart: RESTART_STRATEGY_NONE observation { source: SOURCE_KIND_TASK_QUEUE locator: "feature_probe" } cadence { cron: "*/5 * * * *" net_seconds: 2700 } }
+processes { id: "task.board_reindex" kind: PROCESS_KIND_SCHEDULED_TASK parent: "daemon.scheduled_task_processor" restart: RESTART_STRATEGY_NONE observation { source: SOURCE_KIND_TASK_QUEUE locator: "board_reindex" } cadence { cron: "* * * * *" net_seconds: 2700 } }
+processes { id: "task.heuristic_triage" kind: PROCESS_KIND_SCHEDULED_TASK parent: "daemon.scheduled_task_processor" restart: RESTART_STRATEGY_NONE observation { source: SOURCE_KIND_TASK_QUEUE locator: "heuristic_triage" } cadence { cron: "5 * * * *" net_seconds: 2700 } }
+processes { id: "task.engine_audit" kind: PROCESS_KIND_SCHEDULED_TASK parent: "daemon.scheduled_task_processor" restart: RESTART_STRATEGY_NONE observation { source: SOURCE_KIND_TASK_QUEUE locator: "engine_audit" } cadence { cron: "30 * * * *" net_seconds: 2700 } }
+processes { id: "task.content_processing" kind: PROCESS_KIND_SCHEDULED_TASK parent: "daemon.scheduled_task_processor" restart: RESTART_STRATEGY_NONE observation { source: SOURCE_KIND_TASK_QUEUE locator: "content_processing" } cadence { cron: "45 */2 * * *" net_seconds: 2700 } }
+processes { id: "task.cognition_cycle" kind: PROCESS_KIND_SCHEDULED_TASK parent: "daemon.scheduled_task_processor" restart: RESTART_STRATEGY_NONE observation { source: SOURCE_KIND_TASK_QUEUE locator: "cognition_cycle" } cadence { cron: "43 0,4,8,12,16,20 * * *" net_seconds: 2700 } depends_on: "endpoint.thinking" }
+processes { id: "task.llm_triage" kind: PROCESS_KIND_SCHEDULED_TASK parent: "daemon.scheduled_task_processor" restart: RESTART_STRATEGY_NONE observation { source: SOURCE_KIND_TASK_QUEUE locator: "llm_triage" } cadence { cron: "35 0,4,8,12,16,20 * * *" net_seconds: 2700 } depends_on: "endpoint.thinking" }
+processes { id: "task.feed_check" kind: PROCESS_KIND_SCHEDULED_TASK parent: "daemon.scheduled_task_processor" restart: RESTART_STRATEGY_NONE observation { source: SOURCE_KIND_TASK_QUEUE locator: "feed_check" } cadence { cron: "17 */4 * * *" net_seconds: 2700 } }
+processes { id: "task.evolution_cycle" kind: PROCESS_KIND_SCHEDULED_TASK parent: "daemon.scheduled_task_processor" restart: RESTART_STRATEGY_NONE observation { source: SOURCE_KIND_TASK_QUEUE locator: "evolution_cycle" } cadence { expected_period_seconds: 43200 net_seconds: 2700 } }
+processes { id: "task.content_diversity_check" kind: PROCESS_KIND_SCHEDULED_TASK parent: "daemon.scheduled_task_processor" restart: RESTART_STRATEGY_NONE observation { source: SOURCE_KIND_TASK_QUEUE locator: "content_diversity_check" } cadence { cron: "0 6,18 * * *" net_seconds: 2700 } }
+
+# ── pg_cron jobs that act directly (not via the task queue) ────────────────────
+
+processes { id: "cron.task-watchdog" kind: PROCESS_KIND_PG_CRON_JOB parent: "devenv-postgres" restart: RESTART_STRATEGY_NONE observation { source: SOURCE_KIND_PG_CRON locator: "task-watchdog" } cadence { cron: "10,25,40,55 * * * *" net_seconds: 900 } attrs { key: "note" value: "resets stale claims: 45m default, 4h for publish/curate/prospects; forecast captured in-statement" } }
+processes { id: "cron.tier-settle-signal" kind: PROCESS_KIND_PG_CRON_JOB parent: "devenv-postgres" restart: RESTART_STRATEGY_NONE observation { source: SOURCE_KIND_PG_CRON locator: "tier-settle-signal" } cadence { cron: "20 * * * *" net_seconds: 900 } }
+processes { id: "cron.objective-verify" kind: PROCESS_KIND_PG_CRON_JOB parent: "devenv-postgres" restart: RESTART_STRATEGY_NONE observation { source: SOURCE_KIND_PG_CRON locator: "objective-verify" } cadence { cron: "38 1,7,13,19 * * *" net_seconds: 900 } }
+
+# ── Metaflow flows (observed in the Signals Metaflow store) ────────────────────
+
+processes { id: "flow.ProspectsUpdateFlow" kind: PROCESS_KIND_METAFLOW_FLOW parent: "task.prospects_update" restart: RESTART_STRATEGY_NONE observation { source: SOURCE_KIND_METAFLOW_STORE locator: "ProspectsUpdateFlow" poll_seconds: 60 } reports_positions: true cadence { expected_period_seconds: 86400 net_seconds: 14400 } }
+processes { id: "flow.ArticleCurationFlow" kind: PROCESS_KIND_METAFLOW_FLOW parent: "task.article_curate" restart: RESTART_STRATEGY_NONE observation { source: SOURCE_KIND_METAFLOW_STORE locator: "ArticleCurationFlow" poll_seconds: 60 } reports_positions: true cadence { cron: "7 9 * * *" net_seconds: 14400 } }
+processes { id: "flow.CltSkosAdmitFlow" kind: PROCESS_KIND_METAFLOW_FLOW parent: "task.clt_skos_admit" restart: RESTART_STRATEGY_NONE observation { source: SOURCE_KIND_METAFLOW_STORE locator: "CltSkosAdmitFlow" poll_seconds: 60 } cadence { cron: "*/15 * * * *" net_seconds: 2700 } }
+processes { id: "flow.CltSkosLabelFlow" kind: PROCESS_KIND_METAFLOW_FLOW parent: "task.clt_skos_label" restart: RESTART_STRATEGY_NONE observation { source: SOURCE_KIND_METAFLOW_STORE locator: "CltSkosLabelFlow" poll_seconds: 60 } cadence { cron: "*/15 * * * *" net_seconds: 2700 } }
+
+# ── Machines: phases, gates, horizons ──────────────────────────────────────────
+# The motivating case: ProspectsUpdateFlow. Four phases, each closed by a gate that
+# resolves only the forecasts made inside it. "The flow reached end" is a phase-4
+# claim; the OBJECTIVE resolves that claim against the surfaced briefs.
+
+machines {
+  id: "prospects_update"
+  process: "flow.ProspectsUpdateFlow"
+  surfaced_result: "prospect briefs under kb/scratch/<day>/*prospect_*.md and current/prospects/<sym>/synthesis.md"
+  default_horizon { window_seconds: 14400 resolve_within_phase_only: true }
+  phases {
+    id: "acquire" order: 1
+    steps: "start" steps: "fetch_comprehensive_data" steps: "sync_filings" steps: "extract_filings"
+    gate { name: "filings_synced" kind: GATE_KIND_FLOW_REACHED_STEP tier: TIER_SILVER
+           params { key: "step" value: "extract_filings" }
+           rationale: "FMP fetch + EDGAR sync + docling extraction landed for the watchlist" }
+    horizon { window_seconds: 3600 resolve_within_phase_only: true }
+  }
+  phases {
+    id: "analyze" order: 2
+    steps: "analyze_filings"
+    gate { name: "analyses_persisted" kind: GATE_KIND_FOOTPRINT_ADVANCED tier: TIER_SILVER
+           params { key: "source" value: "edgar_filings analyzed_at within run" } params { key: "min" value: "1" }
+           rationale: "per-filing analyses written back to the edgar_filings product; the 2026-09-02 rebuild persisted ~116" }
+    horizon { window_seconds: 14400 resolve_within_phase_only: true }
+  }
+  phases {
+    id: "synthesize" order: 3
+    steps: "synthesize_position"
+    gate { name: "positions_synthesized" kind: GATE_KIND_FLOW_REACHED_STEP tier: TIER_SILVER
+           params { key: "step" value: "create_kb_artifacts" }
+           rationale: "a synthesis across 20 analyses reasons past 10 min on thinking — 1800s Complete net" }
+    horizon { window_seconds: 7200 resolve_within_phase_only: true }
+  }
+  phases {
+    id: "surface" order: 4
+    steps: "create_kb_artifacts" steps: "generate_base_files" steps: "create_sitrep" steps: "end"
+    gate { name: "briefs_wellformed" kind: GATE_KIND_SURFACE_WELLFORMED tier: TIER_SILVER
+           params { key: "glob" value: "scratch/*/*prospect_*.md" } params { key: "section" value: "## Summary" }
+           params { key: "min_chars" value: "40" } params { key: "max_symbol_repeats" value: "2" }
+           rationale: "empty Summary and (SYM)x23 title echoes were the 8-month hollow-brief signature" }
+    horizon { window_seconds: 14400 resolve_within_phase_only: false }   # the objective closes this phase's claim
+  }
+}
+
+machines {
+  id: "article_curation"
+  process: "flow.ArticleCurationFlow"
+  surfaced_result: "published cards on gaius.zndx.org"
+  default_horizon { window_seconds: 43200 resolve_within_phase_only: true }
+  phases { id: "select" order: 1 steps: "grok_research_summary" steps: "select_article"
+           gate { name: "article_selected" kind: GATE_KIND_FLOW_REACHED_STEP tier: TIER_SILVER params { key: "step" value: "acquire_external" } rationale: "an article with keywords/news_queries was chosen" } }
+  phases { id: "acquire" order: 2 steps: "acquire_external" steps: "join_fetchers" steps: "update_manifest"
+           gate { name: "sources_acquired" kind: GATE_KIND_FLOW_REACHED_STEP tier: TIER_SILVER params { key: "step" value: "sync_grok_collection" } rationale: "external fetchers joined; manifest updated" } }
+  phases { id: "draft" order: 3 steps: "sync_grok_collection" steps: "create_draft" steps: "create_base"
+           gate { name: "draft_written" kind: GATE_KIND_FLOW_REACHED_STEP tier: TIER_SILVER params { key: "step" value: "create_cards" } rationale: "draft + .base exist" } }
+  phases { id: "publish" order: 4 steps: "create_cards" steps: "enrich_cards" steps: "publish_batch" steps: "end"
+           gate { name: "cards_public" kind: GATE_KIND_PROBE_PASS tier: TIER_SILVER params { key: "probe" value: "probe:publish.cards_public" } rationale: "cards synced to KV and served on the live page" }
+           horizon { window_seconds: 43200 resolve_within_phase_only: false } }
+}
+
+# ── Objectives on the final surfaced result ────────────────────────────────────
+
+objectives {
+  name: "site_freshness"
+  surfaced_result: "the card links a visitor sees on gaius.zndx.org (DB vs KV read-back vs live page)"
+  machines: "article_curation"
+  cadence_cron: "38 1,7,13,19 * * *"
+  gates { name: "db_fresh" kind: GATE_KIND_FRESHNESS_WITHIN tier: TIER_SILVER params { key: "source" value: "collections.cards max(published_at)" } params { key: "within_seconds" value: "86400" } rationale: "cards published within a day" }
+  gates { name: "kv_coherent" kind: GATE_KIND_PROBE_PASS tier: TIER_SILVER params { key: "probe" value: "kv published_cards read-back == db id-set" } rationale: "the public KV agrees with the DB" }
+  gates { name: "live_coherent" kind: GATE_KIND_PROBE_PASS tier: TIER_SILVER params { key: "probe" value: "live page card ids == kv" } rationale: "what the user sees agrees with KV" }
+  horizon { window_seconds: 43200 }
+  resolves: "slot % cards are publicly served"
+}
+objectives {
+  name: "content_currency"
+  surfaced_result: "the content dates a visitor reads on newly published cards — the schedule's INTENT: content tracks the present"
+  machines: "article_curation"
+  cadence_cron: "38 1,7,13,19 * * *"
+  gates { name: "published_content_current" kind: GATE_KIND_FRESHNESS_WITHIN tier: TIER_SILVER params { key: "source" value: "newest source_date among last-24h publishes" } params { key: "within_seconds" value: "604800" } rationale: "7d: mechanics green while serving 18-day-old content past 25 fresher cards (2026-09-01)" }
+  gates { name: "selection_favors_current" kind: GATE_KIND_PROBE_PASS tier: TIER_SILVER params { key: "probe" value: "pending cards with current source_date are selected before older" } rationale: "inconclusive when nothing current is pending — blame inflow" }
+  gates { name: "curation_inflow_current" kind: GATE_KIND_FRESHNESS_WITHIN tier: TIER_SILVER params { key: "source" value: "corpus newest source_date" } params { key: "within_seconds" value: "604800" } rationale: "2026-09-03: inflow itself went stale (Aug-27) — the DAG stage named" }
+  horizon { window_seconds: 43200 }
+  resolves: "slot % serves current content%"
+}
+objectives {
+  name: "prospects_intelligence"
+  surfaced_result: "the prospect briefs the user opens — sufficient to a rebalancing BOUNDARY decision under switching costs, for capital or a professional's scarce time/money/energy (kb current/prospects/portfolio-theory.md)"
+  machines: "prospects_update"
+  cadence_cron: "38 1,7,13,19 * * *"
+  gates { name: "briefs_surfaced" kind: GATE_KIND_FRESHNESS_WITHIN tier: TIER_SILVER params { key: "source" value: "scratch/*/*prospect_*.md mtime" } params { key: "within_seconds" value: "129600" } rationale: "daily promise x 1.5" }
+  gates { name: "rubric_wellformed" kind: GATE_KIND_SURFACE_WELLFORMED tier: TIER_SILVER params { key: "glob" value: "scratch/*/*prospect_*.md" } params { key: "min_chars" value: "40" } params { key: "max_symbol_repeats" value: "2" } rationale: "deterministic rubric floor" }
+  gates { name: "rubric_sufficiency" kind: GATE_KIND_JUDGE_RUBRIC judge_final_call: true tier: TIER_GOLD
+          params { key: "sample_max" value: "3" }
+          params { key: "rubric" value: "PRIMARY (required): change|attention|consistency|finish. HETERODOX COMPLEMENT (credit, can tip borderline, never rescues): allocation|framing. See objective_service rubric text." }
+          rationale: "Overwatch (ACP+Grok) renders the final call on the artifact the reader sees; local self-score is a forecast resolved gold by that call" }
+  horizon { window_seconds: 259200 }
+  resolves: "%user receives prospect briefs%"
+}
+objectives { name: "cognition" surfaced_result: "new thoughts in cognition_thoughts" machines: "" cadence_cron: "38 1,7,13,19 * * *"
+  gates { name: "footprint_advanced" kind: GATE_KIND_FOOTPRINT_ADVANCED tier: TIER_SILVER params { key: "sql" value: "SELECT count(*) FROM cognition_thoughts WHERE created_at > NOW() - INTERVAL '8 hours'" } params { key: "min" value: "1" } rationale: "skeleton: caught the 2026-09-02 THINKBURN drought (cycle green, zero thoughts)" } }
+objectives { name: "tier_settle" surfaced_result: "settled rows queryable in signal_tier1" cadence_cron: "38 1,7,13,19 * * *"
+  gates { name: "footprint_advanced" kind: GATE_KIND_FOOTPRINT_ADVANCED tier: TIER_SILVER params { key: "sql" value: "settle rows in window" } params { key: "min" value: "1" } rationale: "skeleton" } }
+objectives { name: "skos_labels" surfaced_result: "SKOS labels landed in the KB" cadence_cron: "38 1,7,13,19 * * *"
+  gates { name: "footprint_advanced" kind: GATE_KIND_FOOTPRINT_ADVANCED tier: TIER_SILVER params { key: "sql" value: "labels in window" } params { key: "min" value: "1" } rationale: "skeleton" } }
