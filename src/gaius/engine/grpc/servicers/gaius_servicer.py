@@ -1982,8 +1982,17 @@ class GaiusServicer(GaiusServiceServicer):
             try:
                 status = cognition.get_status()
                 last_cycle_ms = 0
-                if status.get("last_cycle_at"):
-                    last_cycle_ms = int(status["last_cycle_at"].timestamp() * 1000)
+                last = status.get("last_cycle_at")
+                if last:
+                    # get_status() reports an ISO string; the first completed
+                    # cycle after boot made ".timestamp()" raise here and the
+                    # handler answered running=False for a running daemon
+                    # (2026-09-04 09:06→, health "Cognition Daemon not running").
+                    if isinstance(last, str):
+                        from datetime import datetime as _dt
+
+                        last = _dt.fromisoformat(last)
+                    last_cycle_ms = int(last.timestamp() * 1000)
                 return CognitionStatusResponse(
                     running=status.get("running", False),
                     cycles_completed=status.get("cycles_completed", 0),
@@ -1991,9 +2000,19 @@ class GaiusServicer(GaiusServiceServicer):
                     current_task=status.get("current_task") or "",
                 )
             except Exception as e:
+                # Never answer "not running" for a status we could not read:
+                # that is a forecast dressed as a fact. Fail loudly instead.
                 logger.warning(f"Failed to get cognition status: {e}")
+                context.set_code(grpc.StatusCode.INTERNAL)
+                context.set_details(
+                    f"CognitionStatus failed: {e}\n  Guru: #COG.00000033.STATUSFAIL"
+                )
+                return CognitionStatusResponse(running=False)
 
-        # Fallback: check if we have thoughts (indicates cognition is working)
+        context.set_code(grpc.StatusCode.UNAVAILABLE)
+        context.set_details(
+            "CognitionService not initialized\n  Guru: #COG.00000034.SVCNOTINIT"
+        )
         return CognitionStatusResponse(running=False)
 
     async def GetRecentThoughts(
