@@ -2488,6 +2488,23 @@ class OrchestratorService:
             else:
                 proc.consecutive_failures += 1
                 if proc.consecutive_failures >= 3:
+                    # (2026-09-04) Three timed-out async probes are also what an
+                    # event-loop stall looks like from inside the loop: the CLT
+                    # probe's synchronous IPC starved every probe for 30–60 s and
+                    # this branch restarted a serving 27B twice (06:05, 06:11).
+                    # Corroborate from a thread before touching the endpoint —
+                    # an independent observer, the doctrine's second opinion.
+                    if await asyncio.to_thread(self._vllm.check_health_sync, proc):
+                        logger.warning(
+                            "#EN.00000020.LOOPSTALL %s: %d async health probes failed while a "
+                            "threaded probe passed — event-loop starvation, not an unhealthy "
+                            "endpoint; no restart. Find the on-loop blocker.",
+                            alias,
+                            proc.consecutive_failures,
+                        )
+                        proc.consecutive_failures = 0
+                        proc.status = ProcessStatus.HEALTHY
+                        continue
                     proc.status = ProcessStatus.UNHEALTHY
                     # Attempt auto-restart if enabled
                     await self._maybe_restart_endpoint(alias)

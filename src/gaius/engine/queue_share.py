@@ -289,9 +289,15 @@ def _wait_applied(
     transitions: list[str] = []
     final = "UNSEEN"
     apply_ms = 0
+    # Bound the arbiter's work per poll: the record we wait for was just
+    # recorded, so an hour-wide, capped listing is enough. An unbounded list
+    # over thousands of SUPERSEDED records took >1.5 s server-side; each poll
+    # timed out client-side while the server kept working on the abandoned
+    # call, and the Scheduler's thread pool saturated (06:04–06:12).
+    since = time.time_ns() - 3_600 * 1_000_000_000
     while time.monotonic() - t0 < net_s:
         rec = None
-        for r in list_queue_share_requests(queue=queue):
+        for r in list_queue_share_requests(queue=queue, since_ns=since, limit=500):
             if r.request.request_id == request_id:
                 rec = r
                 break
@@ -359,6 +365,31 @@ def request_queue_share(kind: str, rc: ResourceClass) -> bool:
     if resp.accepted and int(getattr(rc, "gpu_tokens", 0)):
         # GPU occupancy: gate on the queue actually being promoted before we let the
         # pod race YuniKorn admission. Zero-floor (ends) don't need to wait.
+        # (2026-09-04) Never block the engine's event loop with this wait: a
+        # caller on the loop gets its request recorded and moves on, loudly.
+        try:
+            import asyncio as _aio
+
+            _aio.get_running_loop()
+            on_loop = True
+        except RuntimeError:
+            on_loop = False
+        if on_loop:
+            log.warning(
+                "#YK.00000011.ONLOOP request_queue_share(%s) called on the event loop — "
+                "APPLIED wait skipped (would stall every async probe); run admission "
+                "via asyncio.to_thread",
+                kind,
+            )
+            LAST_APPLY_WAIT[kind.replace("_", "-")] = {
+                "request_id": req.request_id,
+                "queue": rc.queue,
+                "elapsed_s": 0.0,
+                "final_state": "UNWAITED_ONLOOP",
+                "apply_ms": 0,
+                "transitions": [],
+            }
+            return True
         _wait_applied(req.request_id, queue=rc.queue, kind=kind)
     return bool(resp.accepted)
 

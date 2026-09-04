@@ -947,6 +947,17 @@ class VLLMController:
         except Exception:
             return False
 
+    def check_health_sync(self, proc: VLLMProcess) -> bool:
+        """The same probe from a worker thread — independent of the engine's
+        event loop, so a stalled loop cannot make a serving endpoint look dead."""
+        try:
+            import httpx
+
+            response = httpx.get(f"http://localhost:{proc.port}/v1/models", timeout=5)
+            return response.status_code == 200
+        except Exception:
+            return False
+
     async def stop_endpoint(
         self, agent_alias: str, timeout: float = 30.0
     ) -> bool:

@@ -837,8 +837,14 @@ class ObjectiveService:
         gate_names = ("records_settled", "floors_applied", "intents_honoured")
 
         try:
+            # Live records are hours old at most (the engine restarts daily);
+            # a 48 h window bounds the arbiter's work per call.
             records = await asyncio.to_thread(
-                qs.list_queue_share_requests, peer=qs.PEER, limit=1000, timeout_s=10.0
+                qs.list_queue_share_requests,
+                peer=qs.PEER,
+                since_ns=time.time_ns() - 48 * 3_600 * 1_000_000_000,
+                limit=2000,
+                timeout_s=10.0,
             )
         except Exception as e:  # noqa: BLE001 — an error verdict, never a guess
             ev = f"ListQueueShareRequests: {e}"

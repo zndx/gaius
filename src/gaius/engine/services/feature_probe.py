@@ -79,15 +79,21 @@ async def run_probe_batch(pool: Any, *, gpu_index: int = 4) -> dict[str, Any]:
     if not gpu_start_allowed(wid):
         raise RuntimeError(GURU_NOSTART)
 
+    # (2026-09-04) Everything that talks to the CLT worker is synchronous IPC
+    # (pipe round-trips of several seconds per item) and the source-text
+    # extraction reads files. Run all of it OFF the event loop: on-loop, one
+    # probe tick starved every async health probe for 30–60 s and the
+    # orchestrator restarted a serving thinking twice (06:05, 06:11).
     svc = get_clt_service(gpu_index=gpu_index)
-    svc.ensure_loaded()
+    await _aio.to_thread(svc.ensure_loaded)
 
     since = datetime.now(timezone.utc) - WINDOW
     items = await pick_unprobed_inflow(pool, since=since, limit=BATCH)
     probed = 0
     rows_written = 0
     worker = f"gpu{gpu_index}"
-    for row in items:
+
+    def _source_text(row: Any) -> str:
         from gaius.engine.services.clt_skos_admit import extracted_source_text
         from gaius.ingest.htmlplain import to_plain_text
 
@@ -99,9 +105,13 @@ async def run_probe_batch(pool: Any, *, gpu_index: int = 4) -> dict[str, Any]:
             )
         except RuntimeError:
             text = to_plain_text(f"{row['title']}\n\n{row['body']}")
-        text = text[:4000]
+        return text[:4000]
+
+    for row in items:
+        text = await _aio.to_thread(_source_text, row)
         event_id = f"inflow:{row['id']}"
-        resp = svc._send_command(
+        resp = await _aio.to_thread(
+            svc._send_command,
             {"method": "extract", "params": {"text": text, "top_k": 32}},
             timeout=180.0,
         )
