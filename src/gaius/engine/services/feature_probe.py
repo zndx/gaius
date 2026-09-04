@@ -70,7 +70,11 @@ async def run_probe_batch(pool: Any, *, gpu_index: int = 4) -> dict[str, Any]:
     import asyncio as _aio
 
     try:
-        await _aio.to_thread(apply_and_admit, wid, KIND)  # off-loop: never block the engine
+        # A probe on a 5-min cadence must never wait longer than its cadence:
+        # with the default 600 s admit net, ticks stacked two-deep while a
+        # prospects run held every token (08:25–10:15, 19 deferrals). The
+        # next tick is the retry; 120 s covers YuniKorn placement latency.
+        await _aio.to_thread(apply_and_admit, wid, KIND, timeout_s=120.0)  # off-loop
     except Exception as e:  # noqa: BLE001 — classify, never mask
         if "#YK.00000002.NOTADMITTED" in str(e):
             return {"status": "deferred", "reason": "yk_admission", "probed": 0,
