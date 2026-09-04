@@ -902,8 +902,17 @@ class GaiusEngine:
                 config=config,
             )
 
-            await self._prospects_service.start()
-            logger.info("Prospects/Stewardship service started")
+            # GAIUS_PROSPECTS_ROLL=0 starts the service without its FMP roll /
+            # compaction loop — an engine-internal model workload on its own
+            # timer, vestigial and slated for migration to a Metaflow flow on
+            # pg_cron/Airflow (user, 2026-09-04). Interim control for the
+            # resource-intent implementation window.
+            roll = (os.environ.get("GAIUS_PROSPECTS_ROLL", "1").strip() or "1") != "0"
+            await self._prospects_service.start(roll=roll)
+            logger.info(
+                "Prospects/Stewardship service started (fmp roll loop %s)",
+                "on" if roll else "OFF — GAIUS_PROSPECTS_ROLL=0",
+            )
 
             # Update gRPC service registry
             if self._grpc_server:
