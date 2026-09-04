@@ -9517,10 +9517,13 @@ class GaiusServicer(GaiusServiceServicer):
             service = ObjectiveService(
                 pool, collection_service=CollectionService(pool)
             )
+            # Shielded: a client that gives up (deadline, ^C) must not abort a
+            # verification mid-consult — the ledger row is the product, and a
+            # cancelled judge consult leaves no record (2026-09-04 11:05).
             if request.objective:
-                results = [await service.verify(request.objective)]
+                results = [await asyncio.shield(service.verify(request.objective))]
             else:
-                results = await service.verify_all()
+                results = await asyncio.shield(service.verify_all())
             return ObjectiveVerifyResponse(
                 results=[
                     ObjectiveResult(

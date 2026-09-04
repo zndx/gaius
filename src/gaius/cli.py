@@ -4052,10 +4052,18 @@ Respond with:
             }
         if sub == "verify":
             name = parts[1] if len(parts) > 1 else ""
-            # Objective verification does live HTTP + KV round-trips;
-            # give it a generous outer net, never a snappy default.
+            # Objective verification does live HTTP + KV round-trips and, for
+            # judged objectives, an Overwatch consult over the surfaced set
+            # (prospects_intelligence: 20+ briefs, minutes). 180 s cut the
+            # 11:05 consult short ("Request Objective.verify timed out"). The
+            # net follows the reasoning budget, like every judge-lane deadline.
+            from gaius.core.budgets import REASONING_MAX_TOKENS
+
             return await client.call(
-                "Objective", "verify", {"objective": name}, timeout=180
+                "Objective",
+                "verify",
+                {"objective": name},
+                timeout=max(600, REASONING_MAX_TOKENS // 8 + 180),
             )
         return await client.call("Objective", "history", {"limit": 20})
 
