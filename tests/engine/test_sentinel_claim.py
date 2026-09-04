@@ -639,3 +639,116 @@ def test_embedding_cuda_skips_thinking_gpus(monkeypatch: pytest.MonkeyPatch) -> 
     )
     with pytest.raises(YkAdmitError, match=GURU_GPUCOLLIDE):
         embedding_cuda_device()
+
+
+# ── (2026-09-04) shared Pending claim + intra-leaf arbitration ──────────────
+
+
+def test_class_rank_orders_buckets() -> None:
+    from gaius.engine.sentinel_claim import _class_rank
+
+    assert _class_rank("zndx-gpu-standing") > _class_rank("zndx-gpu-high")
+    assert _class_rank("zndx-gpu-high") > _class_rank("zndx-gpu-normal")
+    assert _class_rank("zndx-gpu-normal") > _class_rank("zndx-gpu-low")
+    assert _class_rank("zndx-gpu-low") > _class_rank("")
+    assert _class_rank("") == _class_rank("bogus") == -1
+
+
+def _admit_scaffold(monkeypatch: pytest.MonkeyPatch, *, pending_class: str, mine: str | None):
+    calls: dict[str, list] = {"apply": [], "delete": [], "yield": []}
+    monkeypatch.setattr("gaius.engine.sentinel_claim.sentinels_enabled", lambda: True)
+    monkeypatch.setattr("gaius.engine.sentinel_claim.federation_required", lambda: True)
+    monkeypatch.setattr("gaius.engine.sentinel_claim.assert_host_envelope", lambda **_k: None)
+    monkeypatch.setattr("gaius.engine.queue_share.notify_admit", lambda *_a, **_k: True)
+    monkeypatch.setattr("gaius.engine.sentinel_claim._pod_phase", lambda _wid: "Pending")
+    monkeypatch.setattr("gaius.engine.sentinel_claim._pod_priority_class", lambda _wid: pending_class)
+    monkeypatch.setattr("gaius.engine.sentinel_claim.priority_class_for", lambda _k, owner=None: mine)
+    monkeypatch.setattr("gaius.engine.sentinel_claim._priority_class_line", lambda _k: "")
+    monkeypatch.setattr("gaius.engine.sentinel_claim._delete_pod", lambda wid: calls["delete"].append(wid))
+    monkeypatch.setattr("gaius.engine.sentinel_claim._wait_gone", lambda _wid, timeout_s=30.0: True)
+    monkeypatch.setattr("gaius.engine.sentinel_claim._wait_running", lambda *_a, **_k: True)
+
+    class Ok:
+        returncode = 0
+        stdout = "created"
+        stderr = ""
+
+    def _run(argv, **_k):
+        if argv[:2] == ["kubectl", "apply"]:
+            calls["apply"].append(argv)
+        return Ok()
+
+    monkeypatch.setattr("gaius.engine.sentinel_claim.subprocess.run", _run)
+    return calls
+
+
+def test_pending_shared_claim_is_reused_when_class_not_higher(monkeypatch: pytest.MonkeyPatch) -> None:
+    from gaius.engine.sentinel_claim import _ADMITTED, _MU, apply_and_admit
+
+    calls = _admit_scaffold(monkeypatch, pending_class="zndx-gpu-low", mine="zndx-gpu-low")
+    try:
+        row = apply_and_admit("gaius-embedding", "embedding", timeout_s=1.0)
+        assert row.admitted is True
+        assert calls["apply"] == []      # priorityClassName is immutable: never re-apply in place
+        assert calls["delete"] == []
+    finally:
+        with _MU:
+            _ADMITTED.pop("gaius-embedding", None)
+
+
+def test_pending_shared_claim_is_raised_when_class_higher(monkeypatch: pytest.MonkeyPatch) -> None:
+    from gaius.engine.sentinel_claim import _ADMITTED, _MU, apply_and_admit
+
+    calls = _admit_scaffold(monkeypatch, pending_class="zndx-gpu-low", mine="zndx-gpu-normal")
+    try:
+        row = apply_and_admit("gaius-embedding", "embedding", timeout_s=1.0)
+        assert row.admitted is True
+        assert calls["delete"] == ["gaius-embedding"]   # unplaced pod dropped …
+        assert len(calls["apply"]) == 1                  # … and re-applied under the higher class
+    finally:
+        with _MU:
+            _ADMITTED.pop("gaius-embedding", None)
+
+
+def test_intra_leaf_yields_lowest_lower_priority_holder(monkeypatch: pytest.MonkeyPatch) -> None:
+    from gaius.engine.sentinel_claim import LIGHT, _yield_lower_priority_holder
+
+    prios = {"embedding": 40, "clt-probe": 10, "clt-skos-admit": 20, "mystery": None}
+    monkeypatch.setattr(
+        "gaius.engine.sentinel_claim.declared_priority_for", lambda k, owner=None: prios.get(k)
+    )
+    monkeypatch.setattr(
+        "gaius.engine.sentinel_claim._leaf_holders",
+        lambda _rc, _ex: [
+            ("clt-skos-admit-1", "Running", "clt-skos-admit"),
+            ("gaius-clt", "Running", "clt-probe"),
+            ("gaius-mystery", "Running", "mystery"),
+            ("gaius-other", "Pending", "clt-probe"),
+        ],
+    )
+    yielded: list[str] = []
+    monkeypatch.setattr(
+        "gaius.engine.sentinel_claim._request_yield",
+        lambda wid, reason="": (yielded.append(wid), True)[1],
+    )
+    assert _yield_lower_priority_holder(LIGHT, "gaius-embedding", "embedding") == "gaius-clt"
+    assert yielded == ["gaius-clt"]              # lowest declared priority, Running, below mine
+
+
+def test_intra_leaf_never_yields_equal_or_undeclared(monkeypatch: pytest.MonkeyPatch) -> None:
+    from gaius.engine.sentinel_claim import LIGHT, _yield_lower_priority_holder
+
+    prios = {"embedding": 20, "clt-skos-admit": 20}
+    monkeypatch.setattr(
+        "gaius.engine.sentinel_claim.declared_priority_for", lambda k, owner=None: prios.get(k)
+    )
+    monkeypatch.setattr(
+        "gaius.engine.sentinel_claim._leaf_holders",
+        lambda _rc, _ex: [("clt-skos-admit-1", "Running", "clt-skos-admit")],
+    )
+    monkeypatch.setattr(
+        "gaius.engine.sentinel_claim._request_yield", lambda *_a, **_k: pytest.fail("must not yield")
+    )
+    assert _yield_lower_priority_holder(LIGHT, "gaius-embedding", "embedding") is None
+    # An undeclared requester never arbitrates.
+    assert _yield_lower_priority_holder(LIGHT, "x", "article-curate-legacy-kind") is None

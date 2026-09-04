@@ -611,6 +611,147 @@ def _priority_class_line(kind: str) -> str:
     return f"\n  priorityClassName: {name}"
 
 
+def declared_priority_for(kind: str, owner: str | None = None) -> int | None:
+    """The supervision instance's numeric priority for (owner kind, workload),
+    or None when nothing is declared (legacy: never arbitrated)."""
+    try:
+        from gaius.engine.supervision_spec import intent_for
+    except Exception as e:  # noqa: BLE001 — surfaced, never masked
+        log.warning("supervision_spec unavailable for priority lookup: %s", e)
+        return None
+    own = (owner or os.environ.get("GAIUS_YK_KIND") or kind).replace("_", "-")
+    it = intent_for(own, kind)
+    return None if it is None else int(it.priority)
+
+
+def _class_rank(name: str) -> int:
+    """standing 3 > high 2 > normal 1 > low 0; unknown/none -1."""
+    order = [n for _, n in reversed(_PRIORITY_BUCKETS)]  # low..standing
+    try:
+        return order.index(name)
+    except ValueError:
+        return -1
+
+
+def _pod_priority_class(workload_id: str) -> str:
+    if not shutil.which("kubectl"):
+        return ""
+    r = subprocess.run(
+        ["kubectl", "-n", _NS, "get", "pod", workload_id, "-o",
+         "jsonpath={.spec.priorityClassName}"],
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+    return (r.stdout or "").strip()
+
+
+def _wait_gone(workload_id: str, timeout_s: float = 30.0) -> bool:
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        if _pod_phase(workload_id) == "":
+            return True
+        time.sleep(1.0)
+    return _pod_phase(workload_id) == ""
+
+
+# ── Intra-leaf arbitration (2026-09-04) ──────────────────────────────────────
+# YuniKorn preempts ACROSS queues (a leaf over its guarantee gives way to one
+# under it); it never preempts within a leaf. So when the light leaf is full
+# of lower-priority holders (CLT probe @10, an admit flow @20) and a higher
+# declared intent (ambient's embedding @40, a prospects run @60) cannot
+# place, nothing in the scheduler moves — the 06:00 collision after the
+# resume: gaius-embedding Pending, ambient synthesis failed. The engine is
+# the intra-leaf arbiter: after a short placement grace it Yields the
+# lowest-priority holder whose declared priority is below the requester's,
+# through the same C2 last-gasp the preStop hook uses. Undeclared kinds are
+# never victims and never preemptors; equal priority waits.
+INTRA_LEAF_ARBITRATION_GRACE_S = 20.0
+GURU_INTRALEAF = "#YK.00000010.INTRALEAF"
+
+
+def _leaf_holders(rc: ResourceClass, exclude: str) -> list[tuple[str, str, str]]:
+    """(workload_id, phase, kind) of this project's sentinels on rc's leaf."""
+    if not shutil.which("kubectl"):
+        return []
+    r = subprocess.run(
+        [
+            "kubectl", "-n", _NS, "get", "pods",
+            "-l", f"federation.project=gaius,federation.resource_class={rc.name}",
+            "-o",
+            'jsonpath={range .items[*]}{.metadata.name} {.status.phase} '
+            '{.metadata.labels.federation\\.kind}{"\\n"}{end}',
+        ],
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+    out: list[tuple[str, str, str]] = []
+    for line in (r.stdout or "").splitlines():
+        parts = line.split()
+        if len(parts) >= 2 and parts[0] != exclude:
+            out.append((parts[0], parts[1], parts[2] if len(parts) > 2 else ""))
+    return out
+
+
+def _request_yield(workload_id: str, *, reason: str) -> bool:
+    """Ask C2 to Yield a sentinel's workload (what its preStop hook would send)."""
+    import json as _json
+    import urllib.request
+
+    body = _json.dumps(
+        {
+            "workload_id": workload_id,
+            "project": "gaius",
+            "phase": "preempted",
+            "sentinel_id": workload_id,
+            "reason": reason,
+        }
+    ).encode()
+    req = urllib.request.Request(
+        f"{_C2}/c2-protocol/last-gasp",
+        data=body,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        urllib.request.urlopen(req, timeout=10)
+        return True
+    except Exception as e:  # noqa: BLE001 — surfaced, admission wait continues
+        log.warning("%s Yield request for %s failed: %s", GURU_INTRALEAF, workload_id, e)
+        return False
+
+
+def _yield_lower_priority_holder(rc: ResourceClass, workload_id: str, kind: str) -> str | None:
+    """If a lower-declared-priority holder occupies rc's leaf, Yield it and
+    return its workload id; else None (and say why)."""
+    mine = declared_priority_for(kind)
+    if mine is None:
+        log.info(
+            "%s %s (%s) waits on %s: no declared priority — never arbitrates",
+            GURU_INTRALEAF, workload_id, kind, rc.queue,
+        )
+        return None
+    holders = [(h, k) for h, phase, k in _leaf_holders(rc, workload_id) if phase == "Running"]
+    ranked: list[tuple[int, str, str]] = []
+    for h, k in holders:
+        p = declared_priority_for(k, owner=k) if k else None
+        if p is not None and p < mine:
+            ranked.append((p, h, k))
+    if not ranked:
+        log.info(
+            "%s %s@%d waits on %s (holders=%s): no lower-priority holder to Yield",
+            GURU_INTRALEAF, kind, mine, rc.queue,
+            [(h, k, declared_priority_for(k, owner=k)) for h, k in holders],
+        )
+        return None
+    ranked.sort()
+    p, victim, vkind = ranked[0]
+    reason = f"intra-leaf arbitration: {kind}@{mine} needs {rc.queue}; {vkind}@{p} yields"
+    log.info("%s %s", GURU_INTRALEAF, reason)
+    return victim if _request_yield(victim, reason=reason) else None
+
+
 def application_yaml(workload_id: str, kind: str) -> str:
     """Pod manifest. Annotation queue is what YK ``provided`` placement reads."""
     rc = resource_class_for(kind)
@@ -800,35 +941,74 @@ def apply_and_admit(
         )
         return row
 
-    yaml_body = application_yaml(workload_id, kind)
-    # (2026-09-04) The explicit "preempt ask-sae" nudge is retired: extract's
-    # admission is YuniKorn's guaranteed-share preemption of light, steered by
-    # the declared floors and priorities the supervision instance emits. A
-    # hard-coded victim was the historical squatter, not today's.
-    r = subprocess.run(
-        ["kubectl", "apply", "-f", "-"],
-        input=yaml_body,
-        text=True,
-        capture_output=True,
-        timeout=30,
-    )
-    if r.returncode != 0:
-        detail = (r.stderr or r.stdout or "")[:400]
-        row = AdmittedApplication(
-            workload_id=workload_id,
-            resource_class=rc,
-            namespace=_NS,
-            admitted=False,
-            required=required,
-            error=detail,
-            kind=kind,
-        )
-        if required:
-            raise YkAdmitError(GURU_NOADMIT, f"kubectl apply {workload_id}: {detail}")
-        log.warning("sentinel apply %s: %s", workload_id, detail)
-        return row
+    # A shared claim (gaius-embedding) may already exist Pending under another
+    # consumer's class. priorityClassName is immutable, so never re-apply in
+    # place (the 06:00 collision: "kubectl apply" rejected, synthesis failed).
+    # Reuse it — or, when this requester's declared class is higher, delete the
+    # unplaced pod and re-apply under the higher class (nothing runs on a
+    # Pending pod; the other waiter keeps polling the same name).
+    apply_needed = True
+    if _pod_phase(workload_id) == "Pending":
+        current = _pod_priority_class(workload_id)
+        mine = priority_class_for(kind) or ""
+        if _class_rank(mine) > _class_rank(current):
+            log.info(
+                "%s raising shared claim %s: Pending as %s, %s (%s) declares %s — re-apply",
+                GURU_INTRALEAF, workload_id, current or "(none)", kind,
+                os.environ.get("GAIUS_YK_KIND") or kind, mine,
+            )
+            _delete_pod(workload_id)
+            if not _wait_gone(workload_id):
+                log.warning("%s Pending pod %s did not go away; reusing it", GURU_INTRALEAF, workload_id)
+                apply_needed = False
+        else:
+            log.info(
+                "reusing Pending Application %s kind=%s (class %s >= %s; skip kubectl apply)",
+                workload_id, kind, current or "(none)", mine or "(none)",
+            )
+            apply_needed = False
 
-    if not _wait_running(workload_id, timeout_s):
+    if apply_needed:
+        yaml_body = application_yaml(workload_id, kind)
+        r = subprocess.run(
+            ["kubectl", "apply", "-f", "-"],
+            input=yaml_body,
+            text=True,
+            capture_output=True,
+            timeout=30,
+        )
+        if r.returncode != 0:
+            detail = (r.stderr or r.stdout or "")[:400]
+            row = AdmittedApplication(
+                workload_id=workload_id,
+                resource_class=rc,
+                namespace=_NS,
+                admitted=False,
+                required=required,
+                error=detail,
+                kind=kind,
+            )
+            if required:
+                raise YkAdmitError(GURU_NOADMIT, f"kubectl apply {workload_id}: {detail}")
+            log.warning("sentinel apply %s: %s", workload_id, detail)
+            return row
+
+    # Placement: a free token places in seconds. Past the grace the leaf is
+    # full — arbitrate within it by declared priority, then keep waiting under
+    # the admit net (YK Blocked is the queue; a deferral is not a failure).
+    grace = min(INTRA_LEAF_ARBITRATION_GRACE_S, timeout_s)
+    placed = _wait_running(workload_id, grace)
+    if not placed and rc.gpu_tokens > 0:
+        victim = _yield_lower_priority_holder(rc, workload_id, kind)
+        if victim:
+            log.info(
+                "%s Yield requested for %s; %s keeps waiting for %s under the %.0fs net",
+                GURU_INTRALEAF, victim, workload_id, rc.queue, timeout_s,
+            )
+    if not placed:
+        placed = _wait_running(workload_id, max(0.0, timeout_s - grace))
+
+    if not placed:
         # Unplaced claim occupies the YK Application id. STZ it so the
         # next process can admit — do not leak Pending pause pods.
         log.error(
