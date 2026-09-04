@@ -58,11 +58,15 @@ async def run_probe_batch(pool: Any, *, gpu_index: int = 4) -> dict[str, Any]:
     # one; a prospects extract or a CLT/SKOS admit may hold the last): a
     # deferral, not a failure — the probe runs every 5 min and takes the
     # next free slot. Raising here booked an error row per miss.
-    if not light_wait_available():
+    # Standing CLT worker process ↔ gaius-clt: a LIGHT claim (one GPU token,
+    # like embedding). The free-slot gate applies only while our own claim is
+    # not yet admitted — once gaius-clt holds its token, light_wait_available
+    # would count it (and an in-engine embedding claim) as the two slots and
+    # defer the probe against itself.
+    wid = capability_workload_id("clt")
+    if not gpu_start_allowed(wid) and not light_wait_available():
         return {"status": "deferred", "reason": "no light YK slot", "probed": 0,
                 "rows_written": 0, "remaining_hint": True}
-    # Standing CLT worker process ↔ gaius-clt. Not a per-batch extract claim.
-    wid = capability_workload_id("clt")
     import asyncio as _aio
 
     try:

@@ -291,8 +291,14 @@ _KIND_CLASS: dict[str, ResourceClass] = {
     "ambient": COMPUTE,
     "ambient-compact": COMPUTE,
     "ambient_compact": COMPUTE,
-    "clt-probe": COMPUTE,
-    "clt_probe": COMPUTE,
+    # The CLT worker (gaius-clt) is a GPU model — 6.6 GB resident on GPU 4 —
+    # and feature_probe gates its admission on a free LIGHT slot. Mapped to
+    # COMPUTE (0 tokens) since 2026-08-20 it ran a GPU with no token, so
+    # YuniKorn's accounting understated physical use by one GPU. Honest
+    # budget: thinking 4 + clt 1 + embedding 1 = 6; extract queues behind
+    # embedding's release. (Corrected 2026-09-04 at the user's insistence.)
+    "clt-probe": LIGHT,
+    "clt_probe": LIGHT,
     "clt-skos-eval": COMPUTE,
     "clt_skos_eval": COMPUTE,
     "clt-skos-label": COMPUTE,
