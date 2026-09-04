@@ -269,12 +269,17 @@ _KIND_CLASS: dict[str, ResourceClass] = {
     "article_curate": EXTRACT,
     "article-curation": EXTRACT,
     "article_curation": EXTRACT,
-    # Prospects runs no CUDA of its own: filings extraction is CPU, analysis
-    # and synthesis go to thinking (its own standing heavy claim), embeddings
-    # to the standing gaius-embedding claim. An extract token here was pure
-    # double counting and the other half of the 2026-09-04 02:48 starvation.
-    "prospects-update": COMPUTE,
-    "prospects_update": COMPUTE,
+    # Prospects runs NEED a GPU token (user, 2026-09-04): the engine-side
+    # ProspectsService admits `prospects-update` itself (prospects_service.py
+    # apply_and_admit) and Signals' publish contract stamps every prospects run
+    # on the extract leaf (flows/prospects/publish.py yk_queue=EXTRACT.queue).
+    # Briefly mapped to COMPUTE on 2026-09-04 — a regression, reverted. The
+    # 02:48 starvation is solved without touching this: the skos admit flow
+    # (pure Yield bookkeeping) no longer takes a light token, and
+    # gaius-embedding is a standing claim from boot, so budget during a
+    # prospects run is thinking 4 + embedding 1 + extract 1 = 6, no deadlock.
+    "prospects-update": EXTRACT,
+    "prospects_update": EXTRACT,
     # Metaflow / host Python ticks are compute. EXTRACT is the Docling GPU
     # process only (article-curate), not the wrapping flow.
     "docling": COMPUTE,
