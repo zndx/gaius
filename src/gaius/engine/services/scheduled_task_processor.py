@@ -169,6 +169,8 @@ class ScheduledTaskProcessor(BaseDaemon):
             workload_id_for,
         )
         from gaius.engine.sentinel_claim import (
+            GURU_ENVELOPE,
+            GURU_NOTADMITTED,
             YkAdmitError,
             apply_and_admit,
             bind_workload_id,
@@ -177,8 +179,26 @@ class ScheduledTaskProcessor(BaseDaemon):
 
         proposed = workload_id_for(kind, task.id)
         try:
-            wid = bind_workload_id(kind, proposed)
+            # Off-loop: the bind may Yield a lower-priority holder (C2 round
+            # trip) when the leaf is at cap.
+            wid = await asyncio.to_thread(bind_workload_id, kind, proposed)
         except YkAdmitError as e:
+            if GURU_ENVELOPE in str(e):
+                # (2026-09-04) The leaf is full and every holder outranks us:
+                # YuniKorn backpressure. A deferral, not a failure — the
+                # cadence retries (07:00: clt_skos_admit errored in 1 s
+                # against the CLT probe + an ambient run's embedding).
+                logger.warning(
+                    "%s deferred: %s's leaf at cap, no lower-priority holder to yield — "
+                    "next cadence tick retries (%s)",
+                    log_prefix, kind, str(e)[:160].replace("\n", " "),
+                )
+                return {
+                    "status": "deferred",
+                    "reason": "yk_envelope",
+                    "error": str(e)[:300],
+                    "workload_id": proposed,
+                }
             logger.error(f"{log_prefix} YK bind failed: {e}")
             return {"status": "error", "error": str(e), "workload_id": proposed}
         minted = True
@@ -243,6 +263,15 @@ class ScheduledTaskProcessor(BaseDaemon):
                     )
             except Exception:  # noqa: BLE001 — ledger is fail-open
                 logger.debug("ledger record for YK admit skipped", exc_info=True)
+            if GURU_NOTADMITTED in str(e) or GURU_ENVELOPE in str(e):
+                # Not placed within the admit net / leaf at cap: YK backpressure
+                # is a deferral (the cadence retries), never a failure row.
+                return {
+                    "status": "deferred",
+                    "reason": "yk_admission",
+                    "error": str(e)[:300],
+                    "workload_id": wid,
+                }
             return {"status": "error", "error": str(e), "workload_id": wid}
         # Efficacy ledger: the Signals arbiter's apply latency is itself a
         # forecast — "share APPLIED within QUEUE_SHARE_APPLY_EXPECTED_S" —

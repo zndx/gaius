@@ -1170,6 +1170,22 @@ def bind_workload_id(kind: str, proposed: str) -> str:
     if proposed in live:
         return proposed
     if len(live) >= rc.max_applications:
+        # (2026-09-04) A full leaf is where declared priority decides, not a
+        # hard stop: 07:00 the light leaf held the CLT probe (@10) and an
+        # ambient run's embedding (@40) when the admit flow (@20) arrived, and
+        # this pre-check errored the task before YuniKorn or the intra-leaf
+        # arbiter ever saw it. Yield the lowest holder below us and let
+        # apply_and_admit wait for the freed token; with no lower holder, the
+        # leaf really is full — ENVELOPE, which the processor records as a
+        # deferral (the cadence retries), never a failure.
+        if rc.gpu_tokens > 0:
+            victim = _yield_lower_priority_holder(rc, proposed, kind)
+            if victim:
+                log.info(
+                    "%s %s at cap %d: %s yields to %s; admission proceeds to the wait",
+                    GURU_INTRALEAF, rc.queue, rc.max_applications, victim, proposed,
+                )
+                return proposed
         raise YkAdmitError(
             GURU_ENVELOPE,
             f"{rc.queue} at cap {rc.max_applications}: {live}; "
