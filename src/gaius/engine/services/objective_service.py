@@ -35,6 +35,62 @@ logger = logging.getLogger(__name__)
 
 PUBLIC_SITE = "https://gaius.zndx.org"
 
+# ── the published surface as a visitor reads it (2026-09-04) ───────────────
+# The landing page renders each card as <a href="/cards/<id>" class="card">…
+# <span class="card-date">Sep 3</span> — year-less for the current year,
+# "Sep 27, 2025" otherwise. Pure functions, pinned by tests: the first parse
+# of this page matched only dated years and misread 176 of 200 cards.
+_CARD_RX = None
+_DATE_RX = None
+_MONTHS = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
+
+
+def parse_card_date(text: str, today):
+    """'Sep 3' → this year (or last, if that would be in the future);
+    'Sep 27, 2025' → as written. None when unparseable."""
+    import re as _re
+    from datetime import date as _date
+
+    global _DATE_RX
+    if _DATE_RX is None:
+        _DATE_RX = _re.compile(
+            r"^\s*(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.?\s+(\d{1,2})(?:,\s*(\d{4}))?\s*$"
+        )
+    m = _DATE_RX.match(text or "")
+    if not m:
+        return None
+    month = _MONTHS.index(m.group(1)) + 1
+    day = int(m.group(2))
+    try:
+        if m.group(3):
+            return _date(int(m.group(3)), month, day)
+        d = _date(today.year, month, day)
+        return d if d <= today else _date(today.year - 1, month, day)
+    except ValueError:
+        return None
+
+
+def surface_cards(html: str, today) -> list[tuple[str, Any]]:
+    """Ordered (card_id, visible_date|None) for every card on the landing
+    page, first occurrence wins — page order IS what the visitor sees."""
+    import re as _re
+
+    global _CARD_RX
+    if _CARD_RX is None:
+        _CARD_RX = _re.compile(
+            r'<a href="/cards/(card_[0-9a-f]{12})" class="card">(.*?)</a>', _re.S
+        )
+    out: list[tuple[str, Any]] = []
+    seen: set[str] = set()
+    for m in _CARD_RX.finditer(html or ""):
+        cid = m.group(1)
+        if cid in seen:
+            continue
+        seen.add(cid)
+        dm = _re.search(r'<span class="card-date">([^<]*)</span>', m.group(2))
+        out.append((cid, parse_card_date(dm.group(1), today) if dm else None))
+    return out
+
 
 @dataclass(frozen=True)
 class ObjectiveSpec:
@@ -74,18 +130,39 @@ OBJECTIVES: dict[str, ObjectiveSpec] = {
         flows=("ArticleCurationFlow",),
         resolves=("slot % serves current content%",),
         cadence=timedelta(hours=6),
-        description="The INTENT of the publishing schedule, on the FINAL "
-        "SURFACED RESULT: the content dates a visitor reads on newly "
-        "published cards track the present, not the backlog. "
-        "site_freshness proves cards flow; this proves the RIGHT cards "
-        "flow. (Found 2026-09-01: mechanics green while publishing "
-        "18-day-old content past 25 fresher pending cards.)",
+        description="The INTENT of the publishing schedule, measured on the "
+        "PUBLISHED SURFACE against the current date: the card dates a "
+        "visitor reads at gaius.zndx.org today track the present, the top "
+        "of the page is mostly current, and the surface refreshed within "
+        "the slot cadence. Thresholds are what pg_cron promises (daily "
+        "curate 09:07 UTC; slots 12/17/21/02 UTC); Airflow runs no gaius "
+        "surface DAG (2026-09-04). site_freshness proves cards flow; this "
+        "proves the RIGHT cards flow — as seen, not as stored. (2026-09-01: "
+        "mechanics green while publishing 18-day-old content past 25 "
+        "fresher pending cards. 2026-09-04: the DB-side selection gate could "
+        "only ever be inconclusive — the curate publishes its own cards — "
+        "so the gates moved to the surface.)",
         verifier="verify_content_currency",
         params={
-            # 7d = 2x the worst-case weekly curation cadence the health
-            # checker documents (~4-5 curations/week). Tunable per spec.
+            # What the visitor reads is compared to TODAY. Rationale (rule 3):
+            # newest_days: article-curate-daily (09:07 UTC) promises new content
+            #   every day; source dates are day-granular and lag the fetch by up
+            #   to a day → the newest visible date must be within 2 days.
+            "newest_days": 2,
+            # current_days: 7d = 2x the worst-case weekly curation cadence the
+            #   health checker documents (~4-5 curations/week).
             "current_days": 7,
-            "window_hours": 24,
+            # band: one day's intended publishes = ~20 curate + (3+1+1+1) slot
+            #   cards — the set a day's visitor is offered at the top.
+            "band": 26,
+            # min_current_share: the intended mix is ≈ 20 current : 6 slot
+            #   (0.77); the gate floor is half of that — below 0.5 the slots are
+            #   outweighing the curate or the curate did not run.
+            "min_current_share": 0.5,
+            # refresh_hours: slots at 12/17/21/02 UTC → longest gap 10 h
+            #   (02→12); the next Fibonacci hour is 13.
+            "refresh_hours": 13,
+            "surface_url": "https://gaius.zndx.org/",
         },
     ),
     "prospects_intelligence": ObjectiveSpec(
@@ -405,92 +482,148 @@ class ObjectiveService:
         return gates
 
     async def verify_content_currency(self, spec: ObjectiveSpec) -> list[dict[str, Any]]:
-        """The schedule's INTENT: published content tracks the present.
+        """The schedule's INTENT, measured on the PUBLISHED SURFACE.
 
-        Three gates, all against `collections.cards.source_date` (the
-        content's own date, e.g. arXiv submission), never `published_at`
-        (our push time — that is site_freshness's axis, and measuring it
-        alone let mechanics stay green while the surface aged):
-        1. published_content_current — newest source_date among the
-           window's publishes is within current_days.
-        2. selection_favors_current — when the pending backlog CONTAINS
-           current content, the window's publishes include some of it
-           (the publisher must not starve fresh content while it exists).
-        3. curation_inflow_current — the corpus's newest source_date is
-           within current_days (is curation even ingesting the present?).
+        (2026-09-04, user reframe) What a visitor sees at gaius.zndx.org
+        today is the basis for currency; the thresholds are what the
+        schedules PROMISE (pg_cron: article-curate-daily 09:07 UTC;
+        publish-cards at 12/17/21/02 UTC. Airflow runs no gaius surface
+        DAG as of this date). Every gate parses the live landing page —
+        the ordered cards and the `card-date` each renders (year-less for
+        the current year, "Mon D, YYYY" otherwise) — against the current
+        date. Nothing here reads `collections.cards` to decide currency;
+        the DB is consulted once, to date the surface's own top card.
+
+        1. surface_newest_current — the newest date a visitor can read is
+           within `newest_days` of today (daily curate + day-granular
+           source dates ⇒ 2).
+        2. surface_band_current — of the first `band` cards (one day's
+           intended publishes: ~20 curate + 3+1+1+1 slots = 26), at least
+           `min_current_share` are dated within `current_days`.
+        3. surface_refreshed_within_intent — the top card was published
+           within `refresh_hours` (the slots' longest gap is 10 h, 02→12
+           UTC; the next Fibonacci hour is 13). A top card unknown to the
+           DB is a surface/DB incoherence and fails.
+
+        The former `selection_favors_current` gate is gone: with the curate
+        publishing its own cards there is never current pending content,
+        so it could only ever return inconclusive. Selection now shows up
+        where visitors see it — in gate 2's band share. Corpus inflow is
+        reported as diagnosis (rule 8: name the DAG stage), not a gate.
         """
-        current_days = int(spec.params.get("current_days", 7))
-        window_hours = int(spec.params.get("window_hours", 24))
-        gates: list[dict[str, Any]] = []
-        async with self._pool.acquire() as conn:
-            row = await conn.fetchrow(
-                """
-                SELECT
-                  (SELECT max(source_date) FROM collections.cards
-                    WHERE published_at > NOW() - INTERVAL '1 hour' * $1)
-                    AS pub_newest,
-                  (SELECT count(*) FROM collections.cards
-                    WHERE published_at > NOW() - INTERVAL '1 hour' * $1
-                      AND source_date > NOW() - INTERVAL '1 day' * $2)
-                    AS pub_current,
-                  (SELECT count(*) FROM collections.cards
-                    WHERE status = 'pending'
-                      AND source_date > NOW() - INTERVAL '1 day' * $2)
-                    AS pending_current,
-                  (SELECT max(source_date) FROM collections.cards)
-                    AS corpus_newest
-                """,
-                window_hours,
-                current_days,
-            )
-        pub_newest = row["pub_newest"]
-        pub_current = int(row["pub_current"] or 0)
-        pending_current = int(row["pending_current"] or 0)
-        corpus_newest = row["corpus_newest"]
+        import aiohttp
 
-        threshold = f"within {current_days}d"
-        g1_ok = pub_newest is not None and (
-            await self._within_days(pub_newest, current_days)
-        )
+        today = await self._today()
+        newest_days = int(spec.params.get("newest_days", 2))
+        current_days = int(spec.params.get("current_days", 7))
+        band = int(spec.params.get("band", 26))
+        min_share = float(spec.params.get("min_current_share", 0.5))
+        refresh_hours = int(spec.params.get("refresh_hours", 13))
+        url = str(spec.params.get("surface_url") or f"{PUBLIC_SITE}/")
+        gates: list[dict[str, Any]] = []
+
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(
+                    url, timeout=aiohttp.ClientTimeout(total=30)
+                ) as resp:
+                    status = resp.status
+                    html = await resp.text()
+            if status != 200:
+                raise RuntimeError(f"GET {url} -> {status}")
+            cards = surface_cards(html, today)
+            if not cards:
+                raise RuntimeError(f"no cards parsed from {url} ({len(html)} bytes)")
+        except Exception as e:  # noqa: BLE001 — honest error verdict on every gate
+            ev = f"surface unreadable: {e}"
+            return [
+                {"gate": g, "verdict": "error", "evidence": ev}
+                for g in (
+                    "surface_newest_current",
+                    "surface_band_current",
+                    "surface_refreshed_within_intent",
+                )
+            ]
+
+        # Diagnosis text (upstream DAG stage), attached to gate 1's evidence.
+        async with self._pool.acquire() as conn:
+            corpus_newest = await conn.fetchval(
+                "SELECT max(source_date) FROM collections.cards"
+            )
+            top_id = cards[0][0]
+            top_pub = await conn.fetchval(
+                "SELECT published_at FROM collections.cards WHERE card_id = $1",
+                top_id,
+            )
+            now_ts = await conn.fetchval("SELECT NOW()")
+
+        dated = [d for _, d in cards if d is not None]
+        newest = max(dated) if dated else None
+        g1_ok = newest is not None and (today - newest).days <= newest_days
         gates.append(
             {
-                "gate": "published_content_current",
+                "gate": "surface_newest_current",
                 "verdict": "pass" if g1_ok else "fail",
                 "evidence": (
-                    f"newest source_date in last {window_hours}h publishes = "
-                    f"{pub_newest} ({threshold} required)"
+                    f"newest visible card date = {newest} (today {today}; within "
+                    f"{newest_days}d required: daily curate + day-granular source "
+                    f"dates); {len(dated)}/{len(cards)} cards dated; corpus newest "
+                    f"source_date = {corpus_newest}"
+                    + ("" if g1_ok or corpus_newest is None or (today - corpus_newest).days <= current_days
+                       else " — DAG stage: curation inflow (article_curate) is stale")
                 ),
             }
         )
-        if pending_current == 0:
-            # No current content available — the publisher cannot be
-            # blamed for selection; the failure (if any) is inflow's.
-            g2_verdict = "inconclusive"
-            g2_evidence = "no current pending content to select from"
+
+        head = cards[:band]
+        head_current = sum(
+            1 for _, d in head if d is not None and (today - d).days <= current_days
+        )
+        share = head_current / len(head) if head else 0.0
+        g2_ok = share >= min_share
+        gates.append(
+            {
+                "gate": "surface_band_current",
+                "verdict": "pass" if g2_ok else "fail",
+                "evidence": (
+                    f"{head_current}/{len(head)} of the first {band} cards dated within "
+                    f"{current_days}d (share {share:.2f}; ≥ {min_share:.2f} required — "
+                    f"intent ≈ 20 curate : 6 slot publishes per day)"
+                    + ("" if g2_ok else " — DAG stage: article_curate's own selection "
+                       "returned mostly non-current sources (2026-09-04: 10 of its 20 "
+                       "were within 7d), or publish_cards' pool picks are outweighing "
+                       "it, or the curate did not run")
+                ),
+            }
+        )
+
+        if top_pub is None:
+            g3_verdict, g3_ev = "fail", (
+                f"top card {top_id} on the surface is unknown to the DB — "
+                "surface/DB incoherence (DAG stage: publish_cards KV sync)"
+            )
         else:
-            g2_verdict = "pass" if pub_current > 0 else "fail"
-            g2_evidence = (
-                f"{pending_current} current card(s) pending; "
-                f"{pub_current} current card(s) published in window"
+            age_h = (now_ts - top_pub).total_seconds() / 3600.0
+            g3_verdict = "pass" if age_h <= refresh_hours else "fail"
+            g3_ev = (
+                f"top card {top_id} published {age_h:.1f}h ago (≤ {refresh_hours}h "
+                f"required: slots at 12/17/21/02 UTC, longest gap 10h → next "
+                f"Fibonacci hour 13)"
+                + ("" if g3_verdict == "pass" else " — DAG stage: publish_cards slot "
+                   "missed or deferred")
             )
         gates.append(
             {
-                "gate": "selection_favors_current",
-                "verdict": g2_verdict,
-                "evidence": g2_evidence,
-            }
-        )
-        g3_ok = corpus_newest is not None and (
-            await self._within_days(corpus_newest, current_days)
-        )
-        gates.append(
-            {
-                "gate": "curation_inflow_current",
-                "verdict": "pass" if g3_ok else "fail",
-                "evidence": f"corpus newest source_date = {corpus_newest} ({threshold})",
+                "gate": "surface_refreshed_within_intent",
+                "verdict": g3_verdict,
+                "evidence": g3_ev,
             }
         )
         return gates
+
+    async def _today(self):
+        async with self._pool.acquire() as conn:
+            return await conn.fetchval("SELECT (NOW() AT TIME ZONE 'UTC')::date")
 
     async def verify_prospects_intelligence(
         self, spec: ObjectiveSpec
