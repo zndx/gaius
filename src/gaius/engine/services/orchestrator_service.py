@@ -1209,8 +1209,10 @@ class OrchestratorService:
                 gpu_index=gpu,
             )
 
-            # Pre-load the model (starts subprocess worker)
-            clt_service.ensure_loaded()
+            # Pre-load the model (starts the subprocess worker; ~30 s while the
+            # 6.6 GB CLT loads). Off the event loop — synchronous here it
+            # starved every async health probe (06:41:25→06:41:55).
+            await asyncio.to_thread(clt_service.ensure_loaded)
 
             # Track the CLT capability
             self._clt_capability = (clt_service, gpu)
