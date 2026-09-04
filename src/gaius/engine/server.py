@@ -412,6 +412,30 @@ class GaiusEngine:
         )
         logger.info("Orchestrator service initialized")
 
+        # Standing gaius-embedding claim (light, one GPU token), established
+        # at boot like thinking's rather than lazily by the first flow that
+        # needs ColBERT. After a restart tears the sentinels down, two flows
+        # racing to recreate it while holding their own tokens starved it
+        # for 600 s each (2026-09-04 02:47–03:00). Background task: never
+        # holds the boot; flows still admit lazily if this is late.
+        async def _standing_embedding_claim() -> None:
+            try:
+                from gaius.engine.sentinel_claim import (
+                    ensure_embedding_claim,
+                    federation_required,
+                )
+                if not federation_required():
+                    return
+                await asyncio.to_thread(ensure_embedding_claim)
+                logger.info("Standing gaius-embedding claim established at boot")
+            except Exception as e:  # noqa: BLE001 — flows retry on demand
+                logger.warning(
+                    "Standing gaius-embedding claim not established at boot "
+                    "(flows will admit it on demand): %s", e
+                )
+
+        asyncio.create_task(_standing_embedding_claim(), name="standing-embedding-claim")
+
     async def _autonomous_clean_start(self) -> None:
         """Perform autonomous clean start: cleanup stale processes and preload endpoints."""
         logger.info("Performing autonomous clean start...")

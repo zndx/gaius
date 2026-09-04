@@ -269,8 +269,12 @@ _KIND_CLASS: dict[str, ResourceClass] = {
     "article_curate": EXTRACT,
     "article-curation": EXTRACT,
     "article_curation": EXTRACT,
-    "prospects-update": EXTRACT,
-    "prospects_update": EXTRACT,
+    # Prospects runs no CUDA of its own: filings extraction is CPU, analysis
+    # and synthesis go to thinking (its own standing heavy claim), embeddings
+    # to the standing gaius-embedding claim. An extract token here was pure
+    # double counting and the other half of the 2026-09-04 02:48 starvation.
+    "prospects-update": COMPUTE,
+    "prospects_update": COMPUTE,
     # Metaflow / host Python ticks are compute. EXTRACT is the Docling GPU
     # process only (article-curate), not the wrapping flow.
     "docling": COMPUTE,
@@ -327,8 +331,16 @@ _KIND_CLASS: dict[str, ResourceClass] = {
     "colbert": LIGHT,
     "aperture": LIGHT,
     "maxsim": LIGHT,
-    "clt-skos-admit": LIGHT,
-    "clt_skos_admit": LIGHT,
+    # The admit flow's GPU work IS the gaius-embedding claim (ColBERT loads
+    # on embedding_cuda_device() behind ensure_embedding_claim). Its own
+    # sentinel is Yield bookkeeping only — giving it a light token too made
+    # every admit need TWO of the cluster's six tokens, and with thinking's
+    # four standing, one concurrent flow was enough to starve the embedding
+    # sentinel it then waited 600 s for (YK: "does not fit in queue
+    # root.internal.inference.light", 2026-09-04 02:48 — 44 false failures
+    # in 48 h).
+    "clt-skos-admit": COMPUTE,
+    "clt_skos_admit": COMPUTE,
 }
 
 
