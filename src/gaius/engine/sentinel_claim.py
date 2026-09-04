@@ -546,10 +546,78 @@ def disk_paths_for(kind: str) -> tuple[str, ...]:
     return ("/", "/raid")
 
 
+# ── pod priority from the supervision instance (2026-09-04) ──────────────
+# YuniKorn preempts tasks of lower-or-equal priority in queues above their
+# guaranteed share; the pod's PriorityClass is where that number enters.
+# A small set of classes (infra/k8s/zndx-gpu-priorityclasses.yaml) buckets
+# the instance's numeric priority so victim choice follows the declaration:
+# extract (@50, normal) may take the CLT probe (@10, low) or an admit's
+# embedding (@20, low) but never prospects' own embedding (@60, high).
+_PRIORITY_BUCKETS: tuple[tuple[int, str], ...] = (
+    (95, "zndx-gpu-standing"),
+    (55, "zndx-gpu-high"),
+    (25, "zndx-gpu-normal"),
+    (0, "zndx-gpu-low"),
+)
+_PRIORITY_CLASSES_SEEN: dict[str, bool] = {}
+GURU_NOPRIOCLASS = "#YK.00000009.NOPRIOCLASS"
+
+
+def priority_class_for(kind: str, owner: str | None = None) -> str | None:
+    """PriorityClass name for this kind's declared intent, or None when the
+    instance declares nothing for it (legacy: cluster default priority 0)."""
+    try:
+        from gaius.engine.supervision_spec import intent_for
+    except Exception as e:  # noqa: BLE001 — surfaced, never masked
+        log.warning("supervision_spec unavailable for priority lookup: %s", e)
+        return None
+    own = (owner or os.environ.get("GAIUS_YK_KIND") or kind).replace("_", "-")
+    it = intent_for(own, kind)
+    if it is None:
+        return None
+    for at_least, name in _PRIORITY_BUCKETS:
+        if it.priority >= at_least:
+            return name
+    return None
+
+
+def _priority_class_exists(name: str) -> bool:
+    known = _PRIORITY_CLASSES_SEEN.get(name)
+    if known is not None:
+        return known
+    if not shutil.which("kubectl"):
+        return False
+    r = subprocess.run(
+        ["kubectl", "get", "priorityclass", name, "-o", "name"],
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+    ok = r.returncode == 0
+    if not ok:
+        log.warning(
+            "%s PriorityClass %s is not in the cluster — pod priority omitted "
+            "(YK victim choice falls back to queue order). "
+            "Fix: kubectl apply -f infra/k8s/zndx-gpu-priorityclasses.yaml",
+            GURU_NOPRIOCLASS,
+            name,
+        )
+    _PRIORITY_CLASSES_SEEN[name] = ok
+    return ok
+
+
+def _priority_class_line(kind: str) -> str:
+    name = priority_class_for(kind)
+    if not name or not _priority_class_exists(name):
+        return ""
+    return f"\n  priorityClassName: {name}"
+
+
 def application_yaml(workload_id: str, kind: str) -> str:
     """Pod manifest. Annotation queue is what YK ``provided`` placement reads."""
     rc = resource_class_for(kind)
     phase = yk_phase_for(kind)
+    prio_line = _priority_class_line(kind)
     gpu_req = ""
     gpu_lim = ""
     if rc.gpu_tokens > 0:
@@ -577,7 +645,7 @@ metadata:
     federation.zndx.org/envelope: "apps=1,gpu={rc.gpu_tokens},mem={ENVELOPE_MEMORY},cpu={ENVELOPE_CPU}"
     federation.zndx.org/phase: "{phase}"
 spec:
-  restartPolicy: Never
+  restartPolicy: Never{prio_line}
   hostNetwork: true
   containers:
     - name: sentinel
@@ -735,12 +803,10 @@ def apply_and_admit(
         return row
 
     yaml_body = application_yaml(workload_id, kind)
-    if rc == EXTRACT:
-        # Standing ask-sae (medium) may still occupy tokens extract needs.
-        # YK custom-resource preemption may not victim it; C2 last-gasp
-        # Yields the host vLLM so extract can place. Same process must not
-        # gRPC-Yield itself (deadlock).
-        _request_preempt_yield()
+    # (2026-09-04) The explicit "preempt ask-sae" nudge is retired: extract's
+    # admission is YuniKorn's guaranteed-share preemption of light, steered by
+    # the declared floors and priorities the supervision instance emits. A
+    # hard-coded victim was the historical squatter, not today's.
     r = subprocess.run(
         ["kubectl", "apply", "-f", "-"],
         input=yaml_body,
@@ -827,30 +893,6 @@ def delete_flow_sentinel(workload_id: str) -> None:
         except Exception as e:
             log.warning("RequestQueueShare end skipped: %s", e)
     _delete_pod(workload_id)
-
-
-def _request_preempt_yield() -> None:
-    """Ask C2 to Yield standing medium (ask-sae) so extract can admit."""
-    import urllib.request
-
-    for wid in ("gaius-ask-sae",):
-        if _pod_phase(wid) != "Running":
-            continue
-        body = (
-            '{"workload_id":"%s","project":"gaius","phase":"preempted",'
-            '"sentinel_id":"%s"}' % (wid, wid)
-        ).encode()
-        req = urllib.request.Request(
-            f"{_C2}/c2-protocol/last-gasp",
-            data=body,
-            headers={"Content-Type": "application/json"},
-            method="POST",
-        )
-        try:
-            urllib.request.urlopen(req, timeout=5)
-            log.info("requested preempt Yield of %s for extract", wid)
-        except Exception as e:
-            log.warning("preempt Yield of %s failed: %s", wid, e)
 
 
 def _delete_pod(workload_id: str) -> None:
@@ -1109,7 +1151,8 @@ _pinned_light_device: str | None = None
 
 
 def reset_light_device_pin() -> None:
-    """Tests only — next placement may pick again."""
+    """Forget the light GPU pin (tests, and the embedding Yield path) — the
+    next placement picks again against what is free then."""
     global _pinned_light_device
     _pinned_light_device = None
 

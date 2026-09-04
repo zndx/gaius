@@ -1,0 +1,55 @@
+# PriorityClasses for federation sentinel pods (zndx.supervision.v1 intents).
+#
+# The supervision instance (config/supervision/gaius.textproto) declares a
+# numeric priority per ResourceIntent; gaius.engine.sentinel_claim buckets it
+# into one of these classes on the sentinel pod. YuniKorn's preemption takes
+# victims of lower-or-equal task priority from queues above their guaranteed
+# share, so the declared ordering (thinking > prospects' embedding > extract
+# > admit/CLT probe) is what the scheduler enforces.
+#
+# preemptionPolicy: Never keeps kube-scheduler's own preemption out of it —
+# YuniKorn is the arbiter for these pods. Cluster-scoped; apply once:
+#   kubectl apply -f infra/k8s/zndx-gpu-priorityclasses.yaml
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: zndx-gpu-low
+  labels:
+    federation.zndx.org/tier: low
+value: 100
+globalDefault: false
+preemptionPolicy: Never
+description: "Intent priority 0-24: CLT probe, admit-time embedding. First victims."
+---
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: zndx-gpu-normal
+  labels:
+    federation.zndx.org/tier: normal
+value: 500
+globalDefault: false
+preemptionPolicy: Never
+description: "Intent priority 25-54: extract phases (prospects acquire/analyze/synthesize/surface)."
+---
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: zndx-gpu-high
+  labels:
+    federation.zndx.org/tier: high
+value: 1000
+globalDefault: false
+preemptionPolicy: Never
+description: "Intent priority 55-94: a run's own protected companions (prospects' embedding during analyze)."
+---
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: zndx-gpu-standing
+  labels:
+    federation.zndx.org/tier: standing
+value: 2000
+globalDefault: false
+preemptionPolicy: Never
+description: "Intent priority 95+: standing fenced capacity (thinking endpoint). Never a victim."

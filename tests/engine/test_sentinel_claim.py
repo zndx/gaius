@@ -398,9 +398,10 @@ def test_extract_requests_preempt_yield_before_wait(
     monkeypatch.setattr(
         "gaius.engine.sentinel_claim._delete_pod", lambda _wid: None
     )
+    # 2026-09-04: no hard-coded preempt nudge — YuniKorn preempts by the
+    # declared floors/priorities; nothing else must be poked on NOTADMITTED.
     monkeypatch.setattr(
-        "gaius.engine.sentinel_claim._request_preempt_yield",
-        lambda: yielded.append(1),
+        "gaius.engine.sentinel_claim._priority_class_line", lambda _k: ""
     )
 
     class Ok:
@@ -413,7 +414,7 @@ def test_extract_requests_preempt_yield_before_wait(
     )
     with pytest.raises(YkAdmitError):
         apply_and_admit("article-curate-yield", "article-curate", timeout_s=0.1)
-    assert yielded == [1]
+    assert yielded == []
 
 
 def test_docling_flow_is_compute_not_extract() -> None:

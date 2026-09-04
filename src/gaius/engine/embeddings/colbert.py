@@ -199,3 +199,34 @@ def reset_colbert_embedder() -> None:
     global _embedder
     with _embedder_lock:
         _embedder = None
+
+
+def release_colbert_embedder() -> bool:
+    """Yield path (2026-09-04): drop the resident ColBERT so its GPU is free
+    for the workload YuniKorn preempted us for.
+
+    Returns True when a model was resident. An in-flight MaxSim window keeps
+    its own reference and finishes (progress is never killed); the next
+    ``get_colbert_embedder`` reloads on whatever device the light claim is
+    granted then — the caller resets the device pin.
+    """
+    global _embedder
+    with _embedder_lock:
+        had = _embedder is not None
+        _embedder = None
+    if had:
+        import gc
+
+        gc.collect()
+        try:
+            import torch
+
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except Exception as e:  # noqa: BLE001 — surfaced, never masked
+            import logging as _logging
+
+            _logging.getLogger(__name__).warning(
+                "torch.cuda.empty_cache after ColBERT release: %s", e
+            )
+    return had

@@ -13,6 +13,7 @@ from gaius.engine.flow_processes import flow_processes
 from gaius.engine.generated.zndx.engine.v1 import engine_pb2 as zpb
 from gaius.engine.sentinel_claim import (
     AMBIENT_WORKLOAD_ID,
+    EMBEDDING_WORKLOAD_ID,
     OPTILLM_WORKLOAD_ID,
     capability_workload_id,
     delete_flow_sentinel,
@@ -94,6 +95,32 @@ async def yield_workload(services: Any, request: zpb.YieldRequest) -> zpb.YieldR
             process_ended=True,
             restore_started=False,
             message=f"stopped optillm {wid}",
+        )
+
+    if wid in (EMBEDDING_WORKLOAD_ID, "embedding", "colbert", "aperture"):
+        # (2026-09-04) YuniKorn preempted the on-demand light claim (a higher
+        # priority phase — extract, or another owner's embedding intent — needs
+        # the token). Free the model, forget the GPU pin, retire the sentinel
+        # (delete_flow_sentinel zero-floors the share on the way out). The next
+        # embed call re-admits and re-pins wherever the light claim lands.
+        import asyncio as _aio
+
+        from gaius.engine.embeddings.colbert import release_colbert_embedder
+        from gaius.engine.sentinel_claim import reset_light_device_pin
+
+        unloaded = await _aio.to_thread(release_colbert_embedder)
+        reset_light_device_pin()
+        await _aio.to_thread(delete_flow_sentinel, EMBEDDING_WORKLOAD_ID)  # off-loop
+        logging.getLogger("gaius.engine.sentinel_yield").info(
+            "Yield %s: ColBERT unloaded=%s, light pin reset, sentinel retired",
+            wid,
+            unloaded,
+        )
+        return zpb.YieldResponse(
+            ok=True,
+            process_ended=True,
+            restore_started=False,
+            message=f"released embedding {wid} (model_unloaded={unloaded})",
         )
 
     alias = alias_for_workload(wid)
