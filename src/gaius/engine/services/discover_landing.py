@@ -318,7 +318,10 @@ async def refresh_landing_strip(db_pool: Any) -> None:
     global _strip_workflows, _strip_thoughts, _strip_cognition_tokens
     global _strip_salience_peak
     try:
-        _refresh_lens_counts()
+        # (2026-09-04) KB scans (7k+ documents) and term/agenda stats are
+        # synchronous file/DB work; on the loop they starved every async
+        # health probe for ~30 s per refresh (06:31:14→06:31:40).
+        await asyncio.to_thread(_refresh_lens_counts)
     except Exception:
         logger.exception("discover strip lens counts failed")
     await _scrape_watts_safe()
