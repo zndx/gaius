@@ -1327,8 +1327,68 @@ async def delete_flow_sentinel_async(workload_id: str) -> None:
     await asyncio.to_thread(delete_flow_sentinel, workload_id)
 
 
+def own_gpu_application() -> tuple[str, str] | None:
+    """(workload_id, kind) of THIS process's own admitted GPU-token Application,
+    or None. A flow the processor spawned carries its sentinel in
+    GAIUS_YK_APPLICATION_ID / GAIUS_YK_KIND; when that kind's class holds a
+    GPU token, the token is the flow's — the CUDA it runs in-process (the
+    admit flow's ColBERT-Zero MaxSim) is what the token is FOR.
+
+    (2026-09-04 15:41) Every admit tick since 09:00 (28 rows) deferred: the
+    flow held its own light token, then loaded ColBERT behind the SHARED
+    gaius-embedding claim (a second light token), then needed the CLT worker
+    (a third) on a two-token leaf — and the arbiter had just yielded that
+    worker to the flow's own embedding request. Three tokens for two GPUs is
+    not contention, it is double-counting: the flow's own token backs its
+    ColBERT; the shared claim is for processes that hold no token of their
+    own (the engine, the compute-class ambient flow).
+    """
+    wid = (os.environ.get("GAIUS_YK_APPLICATION_ID") or "").strip()
+    kind = (os.environ.get("GAIUS_YK_KIND") or "").strip()
+    if not wid or not kind:
+        return None
+    try:
+        rc = resource_class_for(kind)
+    except YkAdmitError:
+        return None
+    if rc.gpu_tokens < 1:
+        return None
+    return (wid, kind)
+
+
+_OWN_TOKEN_LOGGED: set[str] = set()
+
+
 def ensure_embedding_claim() -> None:
-    """Admit ``gaius-embedding`` before any ColBERT CUDA load."""
+    """Admit ``gaius-embedding`` before any ColBERT CUDA load — unless this
+    process already holds a GPU token of its own (see own_gpu_application):
+    then that token backs the load and no shared claim is made."""
+    own = own_gpu_application()
+    if own is not None:
+        wid, kind = own
+        # The processor admitted this sentinel before the spawn, by the same
+        # criterion _wait_running uses: bound to the node (YuniKorn allocated
+        # the token) or Running. The pause container itself starts seconds
+        # later (16:00:06 admitted, container Started 16:00:20) — so wait on
+        # that criterion here too, never on phase == Running alone, and let
+        # an expiry be the deferral class the processor books as such.
+        rc = resource_class_for(kind)
+        if not gpu_start_allowed(wid) and not _wait_running(wid, GPU_ADMIT_TIMEOUT_S):
+            raise YkAdmitError(
+                GURU_NOTADMITTED,
+                f"pod {wid} not Running on {rc.queue} within {GPU_ADMIT_TIMEOUT_S:.0f}s "
+                f"(this process's own token backs its ColBERT; no "
+                f"{EMBEDDING_WORKLOAD_ID} claim is made).\n"
+                f"  Try: kubectl -n {_NS} get pod {wid}",
+            )
+        if wid not in _OWN_TOKEN_LOGGED:
+            _OWN_TOKEN_LOGGED.add(wid)
+            log.info(
+                "ColBERT backed by this process's own token %s (%s, gpu=%d) — "
+                "no shared %s claim",
+                wid, kind, resource_class_for(kind).gpu_tokens, EMBEDDING_WORKLOAD_ID,
+            )
+        return
     if federation_required():
         apply_and_admit(EMBEDDING_WORKLOAD_ID, "embedding")
     if not gpu_start_allowed(EMBEDDING_WORKLOAD_ID):

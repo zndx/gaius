@@ -231,10 +231,12 @@ machines {
                        rationale: "publishing writes files and KV; nothing here needs a GPU" } }
 }
 # The 15-minute CLT/SKOS admit: a light claim of its own (admit.py gpu_tokens=1)
-# plus the shared embedding claim while it embeds. Both fully preemptible and
-# low priority — a 15-minute cadence can always wait for the next tick — but
-# above the CLT probe, so an admit that has started finishes before the probe
-# reclaims GPU 4.
+# that backs the ColBERT-Zero MaxSim the flow runs in-process (sentinel_claim.
+# own_gpu_application — no shared gaius-embedding claim from a token holder),
+# plus the CLT worker's token for positional extraction. Two tokens = the light
+# leaf. Fully preemptible and low priority — a 15-minute cadence can always
+# wait for the next tick — but above the CLT probe, so an admit that has
+# started finishes before the probe reclaims GPU 4.
 machines {
   id: "clt_skos_admit"
   process: "flow.CltSkosAdmitFlow"
@@ -257,9 +259,10 @@ machines {
            params { key: "step" value: "end" }
            rationale: "batch admitted; extraction of new windows lands in the tape" }
     horizon { window_seconds: 1800 resolve_within_phase_only: true }
-    resources { leaf: "root.internal.inference.light" workload: "clt-skos-admit" occupancy: 1 floor: 0 priority: 20 }
-    resources { leaf: "root.internal.inference.light" workload: "embedding" occupancy: 1 floor: 0 priority: 20
-                rationale: "ColBERT behind the shared claim; preemptible by a prospects run (priority 60)" }
+    resources { leaf: "root.internal.inference.light" workload: "clt-skos-admit" occupancy: 1 floor: 0 priority: 20
+                rationale: "the flow's own token backs its in-process ColBERT-Zero MaxSim — it makes no shared embedding claim (2026-09-04: declaring embedding here too was a third token on a two-token leaf; 28 consecutive deferrals)" }
+    resources { leaf: "root.internal.inference.light" workload: "clt-probe" occupancy: 1 floor: 0 priority: 20
+                rationale: "positional CLT extraction runs on the CLT worker's token (gaius-clt): reused when resident, placed at the run's priority when not — the admit phase's true demand is exactly the light leaf" }
   }
 }
 

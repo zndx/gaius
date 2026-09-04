@@ -641,6 +641,88 @@ def test_embedding_cuda_skips_thinking_gpus(monkeypatch: pytest.MonkeyPatch) -> 
         embedding_cuda_device()
 
 
+# ── (2026-09-04 15:41) a GPU-token holder backs its own ColBERT ─────────────
+# 28 consecutive admit deferrals: the light flow held its token, then claimed
+# the shared gaius-embedding too, then needed gaius-clt — three on a leaf of two.
+
+
+def test_own_gpu_token_backs_colbert_without_shared_claim(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from gaius.engine import sentinel_claim as sc
+
+    monkeypatch.setenv("GAIUS_YK_APPLICATION_ID", "clt-skos-admit-1")
+    monkeypatch.setenv("GAIUS_YK_KIND", "clt-skos-admit")
+    monkeypatch.setattr(sc, "federation_required", lambda: True)
+    monkeypatch.setattr(
+        sc, "_pod_phase", lambda wid: "Running" if wid == "clt-skos-admit-1" else ""
+    )
+    calls: list[tuple] = []
+    monkeypatch.setattr(sc, "apply_and_admit", lambda *a, **k: calls.append(a))
+    sc._OWN_TOKEN_LOGGED.clear()
+
+    assert sc.own_gpu_application() == ("clt-skos-admit-1", "clt-skos-admit")
+    sc.ensure_embedding_claim()
+    assert calls == []  # the flow's own token is the ColBERT token
+
+
+def test_own_gpu_token_waits_for_binding_then_defers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The processor admits on node binding; the pause container starts
+    seconds later. The own-token path waits on the same criterion (16:00:06
+    admitted / 16:00:20 Started: a phase==Running check failed the run)."""
+    from gaius.engine import sentinel_claim as sc
+
+    monkeypatch.setenv("GAIUS_YK_APPLICATION_ID", "clt-skos-admit-2")
+    monkeypatch.setenv("GAIUS_YK_KIND", "clt-skos-admit")
+    monkeypatch.setattr(sc, "federation_required", lambda: True)
+    monkeypatch.setattr(sc, "_pod_phase", lambda wid: "Pending")
+    monkeypatch.setattr(
+        sc, "apply_and_admit", lambda *a, **k: pytest.fail("shared claim made")
+    )
+    waited: list[tuple[str, float]] = []
+
+    def _bound(wid: str, timeout_s: float) -> bool:
+        waited.append((wid, timeout_s))
+        return True
+
+    monkeypatch.setattr(sc, "_wait_running", _bound)
+    sc.ensure_embedding_claim()  # bound to the node ⇒ the token is ours
+    assert waited == [("clt-skos-admit-2", sc.GPU_ADMIT_TIMEOUT_S)]
+
+    monkeypatch.setattr(sc, "_wait_running", lambda wid, t: False)
+    with pytest.raises(sc.YkAdmitError, match=sc.GURU_NOTADMITTED):
+        sc.ensure_embedding_claim()  # expiry is the deferral class, not NOAPP
+
+
+def test_compute_flow_and_engine_still_use_the_shared_claim(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from gaius.engine import sentinel_claim as sc
+
+    calls: list[tuple] = []
+    monkeypatch.setattr(sc, "federation_required", lambda: True)
+    monkeypatch.setattr(sc, "apply_and_admit", lambda *a, **k: calls.append(a))
+    monkeypatch.setattr(
+        sc, "_pod_phase", lambda wid: "Running" if wid == sc.EMBEDDING_WORKLOAD_ID else ""
+    )
+    # the compute-class ambient flow holds no GPU token of its own
+    monkeypatch.setenv("GAIUS_YK_APPLICATION_ID", "ambient-synthesis-7")
+    monkeypatch.setenv("GAIUS_YK_KIND", "ambient-synthesis")
+    assert sc.own_gpu_application() is None
+    sc.ensure_embedding_claim()
+    # the engine process carries no spawn env at all
+    monkeypatch.delenv("GAIUS_YK_APPLICATION_ID")
+    monkeypatch.delenv("GAIUS_YK_KIND")
+    assert sc.own_gpu_application() is None
+    sc.ensure_embedding_claim()
+    assert calls == [
+        (sc.EMBEDDING_WORKLOAD_ID, "embedding"),
+        (sc.EMBEDDING_WORKLOAD_ID, "embedding"),
+    ]
+
+
 # ── (2026-09-04) shared Pending claim + intra-leaf arbitration ──────────────
 
 

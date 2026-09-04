@@ -130,9 +130,14 @@ OBJECTIVES: dict[str, ObjectiveSpec] = {
         flows=("CltSkosAdmitFlow", "CltSkosLabelFlow"),
         cadence=timedelta(hours=6),
         description="SKOS labeling advances the labeled corpus",
+        # (2026-09-04 16:17) `error IS NULL` counted DEFERRED ticks as work
+        # done: the admit flow deferred 28 times in a row from 09:00 and this
+        # skeleton passed throughout. A deferral is a clean row that did
+        # nothing; only a completed run advances the corpus.
         skeleton_check=(
             "SELECT count(*) FROM scheduled_tasks WHERE task_type IN "
             "('clt_skos_admit','clt_skos_label') AND error IS NULL "
+            "AND result->>'status' = 'completed' "
             "AND completed_at > NOW() - INTERVAL '6 hours'"
         ),
     ),

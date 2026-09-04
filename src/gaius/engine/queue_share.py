@@ -573,7 +573,12 @@ def _release_idle_shared_claims() -> None:
             continue
         wid = sc.EMBEDDING_WORKLOAD_ID if workload == "embedding" else f"gaius-{workload}"
         phase = sc._pod_phase(wid)
-        if phase not in ("Running", "Pending"):
+        # Running only. A Pending shared pod always has a live waiter — the
+        # process that applied it is inside apply_and_admit polling for it
+        # (15:45:34: the admit flow's start step lost its embedding claim this
+        # way and burned its 600 s net) — and a waiter's phase intent may not
+        # be emitted yet. The leak this retires is a Running token nobody uses.
+        if phase != "Running":
             continue
         log.info(
             "shared claim %s idle (%s, no live phase intent for %s): retiring it so "
