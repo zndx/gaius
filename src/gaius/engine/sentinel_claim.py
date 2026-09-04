@@ -342,16 +342,13 @@ _KIND_CLASS: dict[str, ResourceClass] = {
     "colbert": LIGHT,
     "aperture": LIGHT,
     "maxsim": LIGHT,
-    # The admit flow's GPU work IS the gaius-embedding claim (ColBERT loads
-    # on embedding_cuda_device() behind ensure_embedding_claim). Its own
-    # sentinel is Yield bookkeeping only — giving it a light token too made
-    # every admit need TWO of the cluster's six tokens, and with thinking's
-    # four standing, one concurrent flow was enough to starve the embedding
-    # sentinel it then waited 600 s for (YK: "does not fit in queue
-    # root.internal.inference.light", 2026-09-04 02:48 — 44 false failures
-    # in 48 h).
-    "clt-skos-admit": COMPUTE,
-    "clt_skos_admit": COMPUTE,
+    # The admit flow declares itself a one-token GPU claim (admit.py
+    # `gpu_tokens = 1`: it runs ColBERT CUDA on its gpu-index in-process),
+    # and sentinel_claim's consistency guard refuses a flow whose declared
+    # class differs from this map (#YK.00000001.NOADMIT). Mapped to COMPUTE
+    # for ~1 h on 2026-09-04 — every admit failed at start; reverted.
+    "clt-skos-admit": LIGHT,
+    "clt_skos_admit": LIGHT,
 }
 
 
