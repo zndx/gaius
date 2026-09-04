@@ -68,19 +68,22 @@ async def yield_workload(services: Any, request: zpb.YieldRequest) -> zpb.YieldR
         )
 
     if wid == AMBIENT_WORKLOAD_ID:
+        # (2026-09-04) Ambient is a scheduled flow now; its runs carry their own
+        # sentinel (ambient-synthesis-<task>) and are Yielded through the flow
+        # table above. A Yield of the legacy standing id records the preempt
+        # and retires any stale pod; nothing in-engine is running to stop.
         ambient = getattr(services, "ambient_service", None)
         if ambient is not None:
             await ambient.pause_gpu(f"yield:{wid}")
-            release_kind("ambient")
-            await ambient.stop_daemon()
-            await ambient._set_operator_disabled(False)
-            await ambient._set_preempted(True)
-            return zpb.YieldResponse(
-                ok=True,
-                process_ended=True,
-                restore_started=False,
-                message=f"ended ambient {wid}",
-            )
+        import asyncio as _aio
+
+        await _aio.to_thread(release_kind, "ambient")  # off-loop
+        return zpb.YieldResponse(
+            ok=True,
+            process_ended=True,
+            restore_started=False,
+            message=f"ambient is scheduled (no standing claim); retired {wid}",
+        )
 
     if wid in (OPTILLM_WORKLOAD_ID, "optillm") or alias_for_workload(wid) == "optillm":
         orch = getattr(services, "orchestrator_service", None)

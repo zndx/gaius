@@ -7299,7 +7299,7 @@ class GaiusServicer(GaiusServiceServicer):
             # Use _run_varied_cycle which includes all phases:
             # FETCH_CONTENT, BUFFER_ANALYSIS, SUMMARIZATION
             baseline_only = request.skip_reasoning
-            async for event in service._run_varied_cycle(baseline_only):
+            async for event in service.run_scheduled_cycle(baseline_only):
                 yield event
 
         except Exception as e:

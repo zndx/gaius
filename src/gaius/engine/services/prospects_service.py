@@ -216,23 +216,19 @@ class ProspectsService:
         self._last_check_at: datetime | None = None
         self._cached_candidates: dict[str, CandidateInfo] = {}
         self._cached_strategies: dict[str, StrategyInfo] = {}
-        self._ingest_task: asyncio.Task[None] | None = None
 
         # FMP client (created on start)
         self._fmp_client: FMPClient | None = None
-        from gaius.engine.services.prospects_buffer import ProspectsBuffer
+        # (2026-09-04) The prospects FIFO is durable (buffer_entries) and
+        # written by the fmp_roll flow on pg_cron; this instance is the
+        # engine's read-through view (Discover token counts, synthesis
+        # slices). pool=None (tests) keeps the RAM behaviour.
+        from gaius.engine.services.buffer_store import DurableBuffer
 
-        self._buffer = ProspectsBuffer(max_bytes=256 * 1024)
+        self._buffer = DurableBuffer(pool, "prospects", 256 * 1024)
 
-    async def start(self, *, roll: bool = True) -> None:
-        """Start the prospects service.
-
-        ``roll=False`` skips the FMP buffer roll loop: an ephemeral service
-        built for one prospects_check must not run a second compaction
-        thread beside the engine's long-lived one (duplicate thinking
-        work, and a blocking thread that held stop() for 40 min on
-        2026-09-03).
-        """
+    async def start(self) -> None:
+        """Start the prospects service (watchlist sync + state load + buffer view)."""
         if self._running:
             return
 
@@ -250,201 +246,24 @@ class ProspectsService:
             await self._load_state_from_db()
 
         self._running = True
-        if roll:
-            self._ingest_task = asyncio.create_task(
-                self._roll_fmp_buffer(), name="fmp-buffer-roll"
-            )
+        self._buffer.start_refresh()
         logger.info(
             f"ProspectsService started with {len(self._cached_candidates)} candidates"
         )
 
-    async def _roll_fmp_buffer(self) -> None:
-        """Keep the live FMP FIFO rolling. Discover reads this instance."""
-        while self._running:
-            try:
-                result = await self.ingest_market_buffer()
-                ingested = int(result.get("ingested") or 0)
-                errors = result.get("errors") or []
-                if errors:
-                    logger.error(
-                        "FMP buffer ingest errors.\n"
-                        "  Guru: #PS.00000003.FMPFAIL\n"
-                        "  %s",
-                        "; ".join(str(e) for e in errors[:6]),
-                    )
-                if ingested <= 0:
-                    logger.error(
-                        "FMP buffer ingest wrote 0 entries.\n"
-                        "  Guru: #PS.00000007.FMPEMPTY\n"
-                        "  Try: /prospects status"
-                    )
-                else:
-                    logger.info(
-                        "FMP buffer rolled ingested=%s bytes=%s",
-                        ingested,
-                        result.get("buffer_bytes"),
-                    )
-                    try:
-                        compacted = await self.compact_buffer()
-                        if not compacted.get("skipped"):
-                            logger.info(
-                                "FMP buffer compacted dropped=%s bytes=%s",
-                                compacted.get("dropped"),
-                                compacted.get("bytes"),
-                            )
-                    except Exception as e:
-                        msg = str(e)
-                        if "#EP.00000016.NOTREADY" in msg or "has no sentinel" in msg:
-                            # Thinking is loading (boot) or not yet placed: a
-                            # deferral, not a failure — the next roll retries.
-                            # Logged at ERROR this was 3–5 rows per boot with
-                            # nothing to fix (2026-09-03).
-                            logger.info(
-                                "FMP compaction deferred: thinking not serving yet "
-                                "(retry next roll)"
-                            )
-                        else:
-                            logger.error(
-                                "FMP compaction failed (thinking path).\n"
-                                "  Guru: #BUF.00000001.COMPACTFAIL\n"
-                                "  Try: /health fix endpoints\n"
-                                "  %s",
-                                e,
-                            )
-            except asyncio.CancelledError:
-                raise
-            except Exception:
-                logger.exception(
-                    "FMP buffer roll failed.\n  Guru: #PS.00000003.FMPFAIL"
-                )
-            for _ in range(60):
-                if not self._running:
-                    return
-                await asyncio.sleep(1)
-
     async def stop(self) -> None:
-        """Stop the prospects service."""
+        """Stop the prospects service (the buffer view's refresh task)."""
         if not self._running:
             return
 
         logger.info("Stopping ProspectsService")
         self._running = False
-        task = self._ingest_task
-        self._ingest_task = None
-        if task is not None:
-            task.cancel()
-            # The roll loop's compaction step is a blocking thread
-            # (asyncio.to_thread → sync Engine/Complete with an hours-long
-            # net); cancellation cannot interrupt it, and awaiting it here
-            # held a prospects_check task open for 40+ minutes after its
-            # work was done (2026-09-03 22:26→). Bounded wait, then detach:
-            # the thread finishes on its own and its result is irrelevant
-            # to a service that is stopping.
-            done, _pending = await asyncio.wait({task}, timeout=15.0)
-            if not done:
-                logger.warning(
-                    "ProspectsService ingest loop still busy after cancel "
-                    "(blocking compaction thread) — detaching; it will end on its own"
-                )
+        await self._buffer.stop_refresh()
 
-    async def ingest_market_buffer(self) -> dict[str, Any]:
-        """Pull market-wide FMP streams into the RAM FIFO (not just watchlist)."""
-        from gaius.engine.services.prospects_buffer import ProspectsRole, entry
-
-        added = 0
-        errors: list[str] = []
-        watch = set(self._cached_candidates.keys())
-        async with FMPClient(FMPClientConfig(capture_enabled=False)) as fmp:
-            pulls: list[tuple[str, list[dict], str]] = []
-            try:
-                pulls.append(("stock-news", await fmp.get_latest_stock_news(limit=15), "news"))
-            except Exception as e:
-                errors.append(f"stock-news: {e}")
-            try:
-                pulls.append(("general-news", await fmp.get_latest_general_news(limit=8), "news"))
-            except Exception as e:
-                errors.append(f"general-news: {e}")
-            try:
-                pulls.append(("fmp-articles", await fmp.get_fmp_articles(limit=8), "article"))
-            except Exception as e:
-                errors.append(f"fmp-articles: {e}")
-            try:
-                pulls.append(("8k", await fmp.get_latest_8k(days=7, limit=20), "8-K"))
-            except Exception as e:
-                errors.append(f"8k: {e}")
-            try:
-                pulls.append(("insider", await fmp.get_latest_insider(limit=15), "insider"))
-            except Exception as e:
-                errors.append(f"insider: {e}")
-            try:
-                pulls.append(("ma", await fmp.get_latest_mergers(limit=10), "m&a"))
-            except Exception as e:
-                errors.append(f"ma: {e}")
-            try:
-                pulls.append(("congress", await fmp.get_latest_congress(limit=8), "congress"))
-            except Exception as e:
-                errors.append(f"congress: {e}")
-
-        for stream, rows, kind in pulls:
-            for row in rows:
-                text = _format_market_row(kind, row)
-                if not text:
-                    continue
-                symbol = str(row.get("symbol") or row.get("ticker") or "")
-                rec = entry(
-                    ProspectsRole.FMP,
-                    text,
-                    stream=stream,
-                    kind=kind,
-                    symbol=symbol,
-                    primary=symbol in watch,
-                    title=str(row.get("title") or row.get("companyName") or symbol),
-                )
-                await self._buffer.add_entry(rec)
-                added += 1
-
-        stats = self._buffer.get_stats()
-        return {
-            "ingested": added,
-            "errors": errors,
-            "buffer_bytes": stats.get("current_bytes"),
-            "buffer_entries": stats.get("entry_count"),
-        }
-
-    async def compact_buffer(self) -> dict[str, Any]:
-        """Pi-style compaction. Thinking down is an error, not a skip."""
-        from gaius.engine.services.buffer_compaction import GURU
-        from gaius.flows.lattice import complete
-        from gaius.engine.sentinel_claim import capability_workload_id, gpu_start_allowed
-
-        think_id = capability_workload_id("thinking")
-        if not gpu_start_allowed(think_id):
-            raise RuntimeError(f"{GURU}\n  thinking has no sentinel")
-
-        async def _summarize(prompt: str) -> str:
-            from gaius.engine.services.cognition_buffer import (
-                thinking_output_tokens,
-                thinking_read_timeout_s,
-            )
-
-            max_tok = thinking_output_tokens(prompt)
-            result = await asyncio.to_thread(
-                complete,
-                prompt,
-                max_tokens=max_tok,
-                temperature=0.2,
-                timeout_s=thinking_read_timeout_s(max_tok),
-            )
-            text = (result.text or result.reasoning_content or "").strip()
-            if not text:
-                raise RuntimeError("empty thinking compaction")
-            return text
-
-        try:
-            return await self._buffer.compact_if_needed(_summarize)
-        except Exception as e:
-            logger.error("FMP buffer compaction failed.\n  %s", e)
-            raise
+    # (2026-09-04) _roll_fmp_buffer / ingest_market_buffer / compact_buffer moved
+    # to gaius.flows.prospects.market_buffer_flow (FmpMarketBufferFlow on
+    # pg_cron 'fmp-roll'); the market feed itself is
+    # gaius.flows.prospects.market_feed.fetch_market_entries.
 
     async def _load_watchlist(self) -> list[str]:
         """Load prospect watchlist from HOCON config.
@@ -870,8 +689,17 @@ class ProspectsService:
 
         reason = ", ".join(reasons) if reasons else "System converged - no pending work"
 
-        market = await self.ingest_market_buffer()
-        compact = await self.compact_buffer()
+        # (2026-09-04) The check no longer rolls the market FIFO itself — the
+        # fmp_roll flow owns ingest + compaction. Report the durable buffer's
+        # live state so the check output keeps its shape honestly.
+        market: dict[str, Any] = {"ingested": 0, "errors": [], "owner": "flow:FmpMarketBufferFlow"}
+        if self._pool is not None:
+            from gaius.engine.services.buffer_store import live_stats
+
+            stats = await live_stats(self._pool, "prospects")
+            market["buffer_bytes"] = stats["bytes"]
+            market["buffer_entries"] = stats["count"]
+        compact = {"skipped": True, "reason": "compaction owned by the fmp_roll flow"}
 
         return {
             "update_recommended": update_recommended,

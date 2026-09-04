@@ -133,6 +133,11 @@ processes { id: "flow.ProspectsUpdateFlow" kind: PROCESS_KIND_METAFLOW_FLOW pare
 processes { id: "flow.ArticleCurationFlow" kind: PROCESS_KIND_METAFLOW_FLOW parent: "task.article_curate" restart: RESTART_STRATEGY_NONE observation { source: SOURCE_KIND_METAFLOW_STORE locator: "ArticleCurationFlow" poll_seconds: 60 via: "peer.signals-engine" } reports_positions: true cadence { cron: "7 9 * * *" net_seconds: 14400 } }
 processes { id: "flow.CltSkosAdmitFlow" kind: PROCESS_KIND_METAFLOW_FLOW parent: "task.clt_skos_admit" restart: RESTART_STRATEGY_NONE observation { source: SOURCE_KIND_METAFLOW_STORE locator: "CltSkosAdmitFlow" poll_seconds: 60 via: "peer.signals-engine" } cadence { cron: "*/15 * * * *" net_seconds: 2700 } }
 processes { id: "flow.CltSkosLabelFlow" kind: PROCESS_KIND_METAFLOW_FLOW parent: "task.clt_skos_label" restart: RESTART_STRATEGY_NONE observation { source: SOURCE_KIND_METAFLOW_STORE locator: "CltSkosLabelFlow" poll_seconds: 60 via: "peer.signals-engine" } cadence { cron: "*/15 * * * *" net_seconds: 2700 } }
+# ── (2026-09-04) The engine's private model timers, now flows on pg_cron ──────
+processes { id: "task.fmp_roll" kind: PROCESS_KIND_SCHEDULED_TASK parent: "daemon.scheduled_task_processor" restart: RESTART_STRATEGY_NONE observation { source: SOURCE_KIND_TASK_QUEUE locator: "fmp_roll" } cadence { cron: "7,37 * * * *" net_seconds: 1800 } }
+processes { id: "flow.FmpMarketBufferFlow" kind: PROCESS_KIND_METAFLOW_FLOW parent: "task.fmp_roll" restart: RESTART_STRATEGY_NONE observation { source: SOURCE_KIND_METAFLOW_STORE locator: "FmpMarketBufferFlow" poll_seconds: 60 via: "peer.signals-engine" } reports_positions: true cadence { cron: "7,37 * * * *" net_seconds: 1800 } }
+processes { id: "task.ambient_synthesis" kind: PROCESS_KIND_SCHEDULED_TASK parent: "daemon.scheduled_task_processor" restart: RESTART_STRATEGY_NONE observation { source: SOURCE_KIND_TASK_QUEUE locator: "ambient_synthesis" } cadence { cron: "*/20 * * * *" net_seconds: 3600 } }
+processes { id: "flow.AmbientSynthesisFlow" kind: PROCESS_KIND_METAFLOW_FLOW parent: "task.ambient_synthesis" restart: RESTART_STRATEGY_NONE observation { source: SOURCE_KIND_METAFLOW_STORE locator: "AmbientSynthesisFlow" poll_seconds: 60 via: "peer.signals-engine" } reports_positions: true cadence { cron: "*/20 * * * *" net_seconds: 3600 } }
 
 # ── Machines: phases, gates, horizons ──────────────────────────────────────────
 # The motivating case: ProspectsUpdateFlow. Four phases, each closed by a gate that
@@ -242,6 +247,74 @@ machines {
   }
 }
 
+# (2026-09-04) FMP roll: was ProspectsService's 60 s in-engine loop. Rate-metered
+# external pull, compaction through Engine/Complete on thinking's standing claim.
+# No GPU intent of its own — the only resource it contends for is the thinking
+# lane, which is fenced heavy capacity.
+machines {
+  id: "fmp_roll"
+  process: "flow.FmpMarketBufferFlow"
+  surfaced_result: "live prospects rows in buffer_entries newer than the cadence, compacted under the FIFO budget"
+  default_horizon { window_seconds: 1800 resolve_within_phase_only: true }
+  phases {
+    id: "ingest" order: 1
+    steps: "start" steps: "ingest"
+    gate { name: "market_rows_appended" kind: GATE_KIND_FOOTPRINT_ADVANCED tier: TIER_SILVER
+           params { key: "sql" value: "SELECT count(*) FROM buffer_entries WHERE buffer='prospects' AND writer='flow:FmpMarketBufferFlow' AND created_at > NOW() - INTERVAL '1 hour'" }
+           params { key: "min" value: "1" }
+           rationale: "seven FMP streams; zero new rows across all of them is the FMPEMPTY failure, not a quiet market" }
+    horizon { window_seconds: 900 resolve_within_phase_only: true }
+  }
+  phases {
+    id: "compact" order: 2
+    steps: "compact" steps: "end"
+    gate { name: "fifo_under_budget" kind: GATE_KIND_FLOW_REACHED_STEP tier: TIER_SILVER
+           params { key: "step" value: "end" }
+           rationale: "compaction ran (or was under budget) — thinking down is an error here, never a skip" }
+    horizon { window_seconds: 1800 resolve_within_phase_only: true }
+  }
+}
+
+# (2026-09-04) Ambient synthesis: was AmbientWorkloadService's continuous in-engine
+# cycle (HN fetch, compaction, cognition synthesis, plus a synthetic reasoning
+# workload that evicted endpoints — dropped: that GPU juggling is what the
+# declared intents replace). Synthesis admits Aperture windows by ColBERT
+# MaxSim, so the synthesize phase carries the SHARED embedding claim above the
+# CLT probe (10) and the admit flow (20), below a prospects run (60).
+machines {
+  id: "ambient_synthesis"
+  process: "flow.AmbientSynthesisFlow"
+  surfaced_result: "a thinking synthesis episode in cognition_buffer with its agenda notes in the KB"
+  default_horizon { window_seconds: 3600 resolve_within_phase_only: true }
+  phases {
+    id: "fetch" order: 1
+    steps: "start" steps: "fetch"
+    gate { name: "buffers_refreshed" kind: GATE_KIND_FLOW_REACHED_STEP tier: TIER_SILVER
+           params { key: "step" value: "compact" }
+           rationale: "HN and publishing rows appended (dedupe by content); a dark HN is an error, an unchanged publishing set is not" }
+    horizon { window_seconds: 600 resolve_within_phase_only: true }
+  }
+  phases {
+    id: "compact" order: 2
+    steps: "compact"
+    gate { name: "fifos_under_budget" kind: GATE_KIND_FLOW_REACHED_STEP tier: TIER_SILVER
+           params { key: "step" value: "synthesize" }
+           rationale: "ambient + publishing compacted through Engine/Complete when over the 90% target" }
+    horizon { window_seconds: 1800 resolve_within_phase_only: true }
+  }
+  phases {
+    id: "synthesize" order: 3
+    steps: "synthesize" steps: "end"
+    gate { name: "episode_persisted" kind: GATE_KIND_FOOTPRINT_ADVANCED tier: TIER_SILVER
+           params { key: "sql" value: "SELECT count(*) FROM cognition_buffer WHERE kind='synthesis' AND created_at > NOW() - INTERVAL '1 hour'" }
+           params { key: "min" value: "1" }
+           rationale: "the synthesis row IS the product; slices without a synthesis row are a half-run" }
+    horizon { window_seconds: 3600 resolve_within_phase_only: true }
+    resources { leaf: "root.internal.inference.light" workload: "embedding" occupancy: 1 floor: 1 priority: 40
+                rationale: "MaxSim admission of the three axes needs the shared ColBERT claim for the phase; protected above probes, yields to a prospects run" }
+  }
+}
+
 # ── Objectives on the final surfaced result ────────────────────────────────────
 
 objectives {
@@ -286,3 +359,7 @@ objectives { name: "tier_settle" surfaced_result: "settled rows queryable in sig
   gates { name: "footprint_advanced" kind: GATE_KIND_FOOTPRINT_ADVANCED tier: TIER_SILVER params { key: "sql" value: "settle rows in window" } params { key: "min" value: "1" } rationale: "skeleton" } }
 objectives { name: "skos_labels" surfaced_result: "SKOS labels landed in the KB" cadence_cron: "38 1,7,13,19 * * *"
   gates { name: "footprint_advanced" kind: GATE_KIND_FOOTPRINT_ADVANCED tier: TIER_SILVER params { key: "sql" value: "labels in window" } params { key: "min" value: "1" } rationale: "skeleton" } }
+objectives { name: "market_buffer" surfaced_result: "live prospects rows in buffer_entries newer than 2h" machines: "fmp_roll" cadence_cron: "38 1,7,13,19 * * *"
+  gates { name: "footprint_advanced" kind: GATE_KIND_FOOTPRINT_ADVANCED tier: TIER_SILVER params { key: "sql" value: "SELECT count(*) FROM buffer_entries WHERE buffer='prospects' AND compacted_at IS NULL AND created_at > NOW() - INTERVAL '2 hours'" } params { key: "min" value: "1" } rationale: "skeleton: the FIFO tracks the market" } }
+objectives { name: "ambient_synthesis" surfaced_result: "a thinking synthesis episode in cognition_buffer within 2h" machines: "ambient_synthesis" cadence_cron: "38 1,7,13,19 * * *"
+  gates { name: "footprint_advanced" kind: GATE_KIND_FOOTPRINT_ADVANCED tier: TIER_SILVER params { key: "sql" value: "SELECT count(*) FROM cognition_buffer WHERE kind='synthesis' AND created_at > NOW() - INTERVAL '2 hours'" } params { key: "min" value: "1" } rationale: "skeleton: synthesis lands on schedule" } }

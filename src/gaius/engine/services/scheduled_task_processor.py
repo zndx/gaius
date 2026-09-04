@@ -75,7 +75,7 @@ TaskHandler = Callable[[ScheduledTask], Awaitable[dict[str, Any]]]
 # 15m reset of publish_cards while LuxCore was still rendering left
 # the listen loop blocked and duplicate restore rows unclaimed.
 SINGLETON_TASK_TYPES = frozenset(
-    {"publish_cards", "article_curate", "tier_settle"}
+    {"publish_cards", "article_curate", "tier_settle", "fmp_roll", "ambient_synthesis"}
 )
 
 
@@ -764,11 +764,7 @@ class ScheduledTaskProcessor(BaseDaemon):
             kb_root = os.environ.get("GAIUS_KB_ROOT", "build/dev")
             config = ProspectsConfig(kb_root=kb_root)
             service = ProspectsService(pool=self._pool, config=config)
-            # roll=False: the engine's long-lived ProspectsService already
-            # rolls/compacts the FMP buffer; a second loop here duplicated
-            # thinking work and its blocking compaction thread held this
-            # task open for 40 min after the check was done (2026-09-03).
-            await service.start(roll=False)
+            await service.start()
 
             try:
                 result = await service.run_check(force=force)
@@ -1043,6 +1039,67 @@ class ScheduledTaskProcessor(BaseDaemon):
         self.register_handler("board_reindex", handle_board_reindex)
         self.register_handler("weekly_signals_summary", handle_weekly_signals_summary)
         self.register_handler("knowledge_summary", handle_knowledge_summary)
+
+        # (2026-09-04) The engine's three private model timers — FMP roll +
+        # compaction, ambient synthesis cycle, publishing axis roll — became
+        # two flows on pg_cron. Both reach thinking through Engine/Complete
+        # and write the durable buffers (buffer_entries); the engine reads
+        # through. Metaflow mode "platform": the Signals store is the record.
+        async def handle_fmp_roll(task: ScheduledTask) -> dict[str, Any]:
+            """FmpMarketBufferFlow: market-wide FMP streams → prospects buffer, compact."""
+            return await self._run_spawned_metaflow(
+                kind="fmp-roll",
+                task=task,
+                argv=[
+                    "uv",
+                    "run",
+                    "--no-sync",
+                    "python",
+                    "-m",
+                    "gaius.flows.prospects.market_buffer_flow",
+                    "run",
+                ],
+                log_prefix="FmpRoll",
+                idle_timeout=1800,
+                metaflow_mode="platform",
+            )
+
+        async def handle_ambient_synthesis(task: ScheduledTask) -> dict[str, Any]:
+            """AmbientSynthesisFlow: HN + publishing refresh → compact → cognition synthesis.
+
+            The operator switch (/ambient stop) lives in ambient_daemon_state;
+            a disabled schedule skips honestly instead of failing.
+            """
+            if self._pool is not None:
+                async with self._pool.acquire() as conn:
+                    disabled = await conn.fetchval(
+                        "SELECT operator_disabled FROM ambient_daemon_state WHERE id = 1"
+                    )
+                if disabled:
+                    return {
+                        "status": "skipped",
+                        "reason": "operator_disabled",
+                        "message": "ambient synthesis is operator-disabled (/ambient start to resume)",
+                    }
+            return await self._run_spawned_metaflow(
+                kind="ambient-synthesis",
+                task=task,
+                argv=[
+                    "uv",
+                    "run",
+                    "--no-sync",
+                    "python",
+                    "-m",
+                    "gaius.flows.ambient.synthesis_flow",
+                    "run",
+                ],
+                log_prefix="AmbientSynthesis",
+                idle_timeout=3600,
+                metaflow_mode="platform",
+            )
+
+        self.register_handler("fmp_roll", handle_fmp_roll)
+        self.register_handler("ambient_synthesis", handle_ambient_synthesis)
 
         # gpu_metrics settle retired 2026-08-28: superseded by the product-generic
         # tier_settle (signal_tier0 carries the DCGM families now). gpu_metrics_tier1

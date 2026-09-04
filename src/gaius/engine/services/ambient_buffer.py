@@ -263,6 +263,12 @@ class AmbientBuffer:
                 matches = matches[-limit:]
             return list(matches)
 
+    def load(self, entries: list[BufferEntry]) -> None:
+        """Replace the FIFO contents (durable store hydration). Sync: callers
+        hold no lock yet — used on a fresh or quiescent instance."""
+        self._entries = deque(entries)
+        self._current_bytes = sum(e.content_bytes for e in entries)
+
     async def snapshot(self) -> list[BufferEntry]:
         async with self._lock:
             return list(self._entries)

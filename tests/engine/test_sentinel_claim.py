@@ -43,11 +43,17 @@ def test_optillm_is_compute_not_a_gpu_claim() -> None:
 
 
 def test_article_and_prospects_map_to_extract() -> None:
+    from gaius.engine.sentinel_claim import RATE_METERED, YkAdmitError
+
     assert resource_class_for("article-curate") == EXTRACT
     assert resource_class_for("prospects-update") == EXTRACT
-    assert resource_class_for("prospects-compact") == HEAVY
-    assert resource_class_for("prospects-summary") == HEAVY
-    assert resource_class_for("ambient-summarize") == HEAVY
+    # (2026-09-04) Compaction / summarization are no longer kinds: the flows
+    # reach thinking through Engine/Complete on its standing claim.
+    assert resource_class_for("fmp-roll") == RATE_METERED
+    assert resource_class_for("ambient-synthesis") == COMPUTE
+    for retired in ("prospects-compact", "prospects-summary", "ambient-summarize"):
+        with pytest.raises(YkAdmitError):
+            resource_class_for(retired)
     assert EXTRACT.queue == "root.internal.inference.extract"
     assert EXTRACT.gpu_tokens == 1
     assert EXTRACT.max_applications == 2
@@ -71,13 +77,13 @@ def test_ambient_phases_split_cpu_from_gpu() -> None:
 
     assert yk_phase_for("ambient") == "buffer"
     assert resource_class_for("ambient") == COMPUTE
-    assert yk_phase_for("ambient-summarize") == "summarize"
-    assert resource_class_for("ambient-summarize") == HEAVY
-    assert yk_phase_for("ambient-compact") == "compact"
-    assert resource_class_for("ambient-compact") == COMPUTE
+    # (2026-09-04) The scheduled flows that replaced the in-engine loops.
+    assert yk_phase_for("ambient-synthesis") == "synthesize"
+    assert resource_class_for("ambient-synthesis") == COMPUTE
+    assert yk_phase_for("fmp-roll") == "ingest"
+    assert resource_class_for("fmp-roll").gpu_tokens == 0
     assert yk_phase_for("prospects-update") == "extract"
-    assert yk_phase_for("prospects-compact") == "compact"
-    assert yk_phase_for("prospects-summary") == "summarize"
+    assert resource_class_for("thinking") == HEAVY
     assert resource_class_for("ask-agent") == LIGHT
     assert resource_class_for("ask-agent").gpu_tokens == 1
     assert resource_class_for("ask-sae") == MEDIUM
@@ -87,8 +93,9 @@ def test_ambient_phases_split_cpu_from_gpu() -> None:
     buf = yaml.safe_load(application_yaml("gaius-ambient", "ambient"))
     assert buf["metadata"]["labels"]["federation.phase"] == "buffer"
     assert "federation.zndx.org/gpu" not in buf["spec"]["containers"][0]["resources"]["requests"]
-    sm = yaml.safe_load(application_yaml("gaius-thinking", "ambient-summarize"))
-    assert sm["metadata"]["annotations"]["federation.zndx.org/phase"] == "summarize"
+    # The heavy claim is thinking's own; compaction/summarization Complete
+    # against it and never mint a heavy manifest of their own.
+    sm = yaml.safe_load(application_yaml("gaius-thinking", "thinking"))
     assert sm["metadata"]["annotations"]["yunikorn.apache.org/queue"] == (
         "root.internal.inference.heavy"
     )
@@ -271,16 +278,14 @@ def test_bind_does_not_cross_queues(monkeypatch: pytest.MonkeyPatch) -> None:
     try:
         assert bind_workload_id("prospects-check", "gaius-fmp-1") == "gaius-fmp-1"
         assert bind_workload_id("ambient", "gaius-ambient") == "gaius-ambient"
-        # Summarize is heavy — must not reuse a Pending extract article-curate.
-        assert bind_workload_id("ambient-summarize", "gaius-thinking") == (
-            "gaius-thinking"
-        )
+        # Thinking is heavy — must not reuse a Pending extract article-curate.
+        assert bind_workload_id("thinking", "gaius-thinking") == "gaius-thinking"
     finally:
         with _MU:
             _ADMITTED.pop(row.workload_id, None)
 
 
-def test_summarize_reuses_standing_thinking(
+def test_second_heavy_is_envelope_backpressure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from gaius.engine.sentinel_claim import (
@@ -311,12 +316,11 @@ def test_summarize_reuses_standing_thinking(
         from gaius.engine.sentinel_claim import GURU_ENVELOPE, YkAdmitError
 
         # Standing thinking is this process. A second heavy Application is
-        # envelope backpressure, not reuse.
-        assert bind_workload_id("ambient-summarize", "gaius-thinking") == (
-            "gaius-thinking"
-        )
+        # envelope backpressure, not reuse. (Compaction/summarization no
+        # longer bind a kind of their own — they Complete against this claim.)
+        assert bind_workload_id("thinking", "gaius-thinking") == "gaius-thinking"
         with pytest.raises(YkAdmitError, match=GURU_ENVELOPE):
-            bind_workload_id("ambient-summarize", "gaius-thinking-extra")
+            bind_workload_id("thinking", "gaius-thinking-extra")
     finally:
         with _MU:
             _ADMITTED.pop(row.workload_id, None)

@@ -288,9 +288,17 @@ _KIND_CLASS: dict[str, ResourceClass] = {
     "prospects-check": RATE_METERED,
     "prospects_check": RATE_METERED,
     "fmp": RATE_METERED,
+    # (2026-09-04) The engine's private timers became flows on pg_cron. The
+    # FMP roll pulls a rate-metered external API and compacts through
+    # Engine/Complete (thinking's own standing claim): 0 tokens, metered leaf.
+    "fmp-roll": RATE_METERED,
+    "fmp_roll": RATE_METERED,
+    # Ambient synthesis fetches HN, compacts and synthesizes through
+    # Engine/Complete; its MaxSim admission uses the SHARED embedding claim
+    # (declared as a phase intent in config/supervision), not its own token.
+    "ambient-synthesis": COMPUTE,
+    "ambient_synthesis": COMPUTE,
     "ambient": COMPUTE,
-    "ambient-compact": COMPUTE,
-    "ambient_compact": COMPUTE,
     # The CLT worker (gaius-clt) is a GPU model — 6.6 GB resident on GPU 4 —
     # and feature_probe gates its admission on a free LIGHT slot. Mapped to
     # COMPUTE (0 tokens) since 2026-08-20 it ran a GPU with no token, so
@@ -316,16 +324,10 @@ _KIND_CLASS: dict[str, ResourceClass] = {
     "ask-sae": MEDIUM,
     "ask_sae": MEDIUM,
     "ask-medium": MEDIUM,
-    # Qwen3.8 thinking. Ambient summarize / prospects compact Complete
-    # reuse gaius-thinking (heavy cap 1) — thinking channel is CLT/SAE input.
+    # Qwen3.8 thinking (heavy, fenced). Buffer compaction and synthesis reach
+    # it through Engine/Complete and never carry a class of their own.
     "thinking": HEAVY,
     "gaius-thinking": HEAVY,
-    "ambient-summarize": HEAVY,
-    "ambient_summarize": HEAVY,
-    "prospects-compact": HEAVY,
-    "prospects_compact": HEAVY,
-    "prospects-summary": HEAVY,
-    "prospects_summary": HEAVY,
     # gunicorn proxy. 0 extra GPU — bind a provided vLLM; demand one
     # via zndx.engine.v1 only when none is healthy.
     "optillm": COMPUTE,
@@ -425,18 +427,14 @@ def _signals_scheduler_present() -> bool:
 # Phase is what YK/operators see. Summarize is heavy thinking, not extract.
 _KIND_PHASE: dict[str, str] = {
     "ambient": "buffer",
-    "ambient-summarize": "summarize",
-    "ambient_summarize": "summarize",
-    "ambient-compact": "compact",
-    "ambient_compact": "compact",
+    "ambient-synthesis": "synthesize",
+    "ambient_synthesis": "synthesize",
+    "fmp-roll": "ingest",
+    "fmp_roll": "ingest",
     "article-curate": "extract",
     "article_curate": "extract",
     "prospects-update": "extract",
     "prospects_update": "extract",
-    "prospects-compact": "compact",
-    "prospects_compact": "compact",
-    "prospects-summary": "summarize",
-    "prospects_summary": "summarize",
     "prospects-check": "ingest",
     "prospects_check": "ingest",
     "fmp": "ingest",
@@ -523,6 +521,7 @@ def disk_paths_for(kind: str) -> tuple[str, ...]:
         "docling",
         "article-curate",
         "clt-probe",
+        "ambient-synthesis",  # agenda notes land in the KB
     } or k.startswith("prospects-"):
         return ("/raid",)
     if rc.queue in (HEAVY.queue, LIGHT.queue, MEDIUM.queue):
@@ -530,7 +529,6 @@ def disk_paths_for(kind: str) -> tuple[str, ...]:
         return ()
     if k in {
         "ambient",
-        "ambient-compact",
         "clt-skos-label",
         "optillm",
         "gaius-optillm",

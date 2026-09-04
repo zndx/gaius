@@ -156,6 +156,30 @@ OBJECTIVES: dict[str, ObjectiveSpec] = {
             "WHERE created_at > NOW() - INTERVAL '8 hours'"
         ),
     ),
+    # (2026-09-04) The two flows that replaced the engine's private timers.
+    "market_buffer": ObjectiveSpec(
+        name="market_buffer",
+        dag=("fmp_roll",),
+        flows=("FmpMarketBufferFlow",),
+        cadence=timedelta(hours=2),
+        description="The prospects FIFO tracks the market: live FMP rows newer than 2h",
+        skeleton_check=(
+            "SELECT count(*) FROM buffer_entries "
+            "WHERE buffer = 'prospects' AND compacted_at IS NULL "
+            "AND created_at > NOW() - INTERVAL '2 hours'"
+        ),
+    ),
+    "ambient_synthesis": ObjectiveSpec(
+        name="ambient_synthesis",
+        dag=("ambient_synthesis",),
+        flows=("AmbientSynthesisFlow",),
+        cadence=timedelta(hours=2),
+        description="Ambient synthesis lands: a thinking synthesis episode in cognition_buffer within 2h",
+        skeleton_check=(
+            "SELECT count(*) FROM cognition_buffer "
+            "WHERE kind = 'synthesis' AND created_at > NOW() - INTERVAL '2 hours'"
+        ),
+    ),
 }
 
 

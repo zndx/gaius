@@ -902,17 +902,11 @@ class GaiusEngine:
                 config=config,
             )
 
-            # GAIUS_PROSPECTS_ROLL=0 starts the service without its FMP roll /
-            # compaction loop — an engine-internal model workload on its own
-            # timer, vestigial and slated for migration to a Metaflow flow on
-            # pg_cron/Airflow (user, 2026-09-04). Interim control for the
-            # resource-intent implementation window.
-            roll = (os.environ.get("GAIUS_PROSPECTS_ROLL", "1").strip() or "1") != "0"
-            await self._prospects_service.start(roll=roll)
-            logger.info(
-                "Prospects/Stewardship service started (fmp roll loop %s)",
-                "on" if roll else "OFF — GAIUS_PROSPECTS_ROLL=0",
-            )
+            # (2026-09-04) No FMP roll loop in-engine any more: the fmp_roll
+            # flow (pg_cron 7,37 * * * *) ingests and compacts the prospects
+            # buffer in buffer_entries; this service reads through.
+            await self._prospects_service.start()
+            logger.info("Prospects/Stewardship service started (prospects buffer read-through)")
 
             # Update gRPC service registry
             if self._grpc_server:
@@ -960,10 +954,10 @@ class GaiusEngine:
                 self._ambient_service.attach_publishing_axis(
                     self._collection_service._axis
                 )
-                self._collection_service._axis.attach_summarize(
-                    self._ambient_service._summarize_compaction
-                )
-            logger.info("Collections service initialized (publishing axis rolling)")
+            # (2026-09-04) The axis no longer rolls or compacts in-engine; the
+            # ambient_synthesis flow (pg_cron) writes buffer_entries and this
+            # axis is the read-through view.
+            logger.info("Collections service initialized (publishing axis read-through)")
 
             # Update gRPC service registry
             if self._grpc_server:
