@@ -125,16 +125,42 @@ def share_for_class(
             footprint=zpb.ResourceFootprint(gpu=tokens),
         ),
     )
+    # Declared intent (zndx.supervision.v1 ResourceIntent, config/supervision):
+    # the FLOOR the arbiter must protect is what the spec says for this owner and
+    # workload — not the tokens resident. The owner is the flow/task kind that
+    # runs this process (GAIUS_YK_KIND in flow children), else the kind itself.
+    # A legacy request (no intent declared) leaves `floor` ABSENT, so the arbiter
+    # keeps footprint-derived protection for it.
+    reason = (
+        f"{kind} ended on {rc.queue} (zero floor)"
+        if tokens == 0
+        else f"{kind} occupies {rc.queue} (guarantee gpu={tokens})"
+    )
+    if tokens > 0:
+        try:
+            from gaius.engine.supervision_spec import intent_for
+
+            owner = (os.environ.get("GAIUS_YK_KIND") or kind).replace("_", "-")
+            it = intent_for(owner, kind)
+        except Exception as e:  # noqa: BLE001 — spec problems are logged by the loader
+            log.debug("intent lookup skipped for %s: %s", kind, e)
+            it = None
+        if it is not None:
+            floor = max(0, min(int(it.floor), tokens))
+            share.guaranteed.quantities[GPU_KEY] = floor
+            wrk.floor = floor
+            wrk.priority = int(it.priority)
+            reason = (
+                f"{kind} occupies {rc.queue}: declared floor gpu={floor} of {tokens} "
+                f"priority={it.priority} ({it.owner}{'/' + it.phase if it.phase else ''})"
+            )
+            log.info("queue share intent %s: %s", kind, reason)
     return spb.QueueShareRequest(
         peer=PEER,
         request_id=mint_uuid7(),
         valid_from_ns=time.time_ns(),
         valid_until_ns=int(valid_until_ns),
-        reason=(
-            f"{kind} ended on {rc.queue} (zero floor)"
-            if tokens == 0
-            else f"{kind} occupies {rc.queue} (guarantee gpu={tokens})"
-        ),
+        reason=reason,
         supersedes_request_id=supersedes_request_id,
         workloads=[wrk],
         shares=[share],

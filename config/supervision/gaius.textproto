@@ -62,6 +62,26 @@ processes {
   depends_on: "engine"
   attrs { key: "model" value: "Qwen/Qwen3.8-27B" }
   attrs { key: "gpus" value: "0-3" }
+  # Standing occupancy: four of the host's six tokens, never preempted (heavy is
+  # fenced). Everything else on the box contends for the remaining two.
+  resources { leaf: "root.internal.inference.heavy" workload: "thinking" occupancy: 4 floor: 4 priority: 100
+              rationale: "Qwen3.8-27B TP=4 is the thinking lane every workload consumes; cold reload is ~2.5 min" }
+}
+# The resident CLT worker (gaius-clt on GPU 4): a GPU consumer with NO floor — it
+# is the preemption victim of choice when a flow needs the light token, and the
+# 5-minute probe cadence re-admits it afterwards. Priority below every flow.
+processes {
+  id: "worker.clt"
+  kind: PROCESS_KIND_SERVING_ENDPOINT
+  parent: "engine"
+  restart: RESTART_STRATEGY_NONE
+  observation { source: SOURCE_KIND_ENGINE_GRPC locator: "gaius-clt" }
+  warmup_seconds: 120
+  depends_on: "engine"
+  attrs { key: "model" value: "bluelightai/clt-qwen3-1.7b" }
+  attrs { key: "gpus" value: "4" }
+  resources { leaf: "root.internal.inference.light" workload: "clt-probe" occupancy: 1 floor: 0 priority: 10
+              rationale: "a probe that runs every 5 min can wait; it must never hold a token a run needs" }
 }
 
 # ── In-engine daemons ──────────────────────────────────────────────────────────
@@ -131,6 +151,10 @@ machines {
            params { key: "step" value: "extract_filings" }
            rationale: "FMP fetch + EDGAR sync + docling extraction landed for the watchlist" }
     horizon { window_seconds: 3600 resolve_within_phase_only: true }
+    # The run's own extract token, protected for the run's duration (the Signals
+    # publish contract stamps prospects runs on the extract leaf).
+    resources { leaf: "root.internal.inference.extract" workload: "prospects-update" occupancy: 1 floor: 1 priority: 50
+                rationale: "daily FMP chain; its token is the run's identity on the extract leaf" }
   }
   phases {
     id: "analyze" order: 2
@@ -139,6 +163,11 @@ machines {
            params { key: "source" value: "edgar_filings analyzed_at within run" } params { key: "min" value: "1" }
            rationale: "per-filing analyses written back to the edgar_filings product; the 2026-09-02 rebuild persisted ~116" }
     horizon { window_seconds: 14400 resolve_within_phase_only: true }
+    resources { leaf: "root.internal.inference.extract" workload: "prospects-update" occupancy: 1 floor: 1 priority: 50 }
+    # Analysis embeds filings through the shared ColBERT claim: PROTECT it for this
+    # phase, above the CLT probe (priority 10) — the run is what needs the GPU.
+    resources { leaf: "root.internal.inference.light" workload: "embedding" occupancy: 1 floor: 1 priority: 60
+                rationale: "the 02:48 starvation: the run waited 600 s on embedding while a probe held light" }
   }
   phases {
     id: "synthesize" order: 3
@@ -147,6 +176,9 @@ machines {
            params { key: "step" value: "create_kb_artifacts" }
            rationale: "a synthesis across 20 analyses reasons past 10 min on thinking — 1800s Complete net" }
     horizon { window_seconds: 7200 resolve_within_phase_only: true }
+    # Synthesis is thinking-lane work (the standing heavy claim); the run keeps
+    # its extract identity but no longer needs the embedding claim.
+    resources { leaf: "root.internal.inference.extract" workload: "prospects-update" occupancy: 1 floor: 1 priority: 50 }
   }
   phases {
     id: "surface" order: 4
@@ -156,6 +188,9 @@ machines {
            params { key: "min_chars" value: "40" } params { key: "max_symbol_repeats" value: "2" }
            rationale: "empty Summary and (SYM)x23 title echoes were the 8-month hollow-brief signature" }
     horizon { window_seconds: 14400 resolve_within_phase_only: false }   # the objective closes this phase's claim
+    # Surfacing writes files and renders .base; the token is held (the pod is the
+    # run's identity) but fully preemptible — nothing here needs a GPU.
+    resources { leaf: "root.internal.inference.extract" workload: "prospects-update" occupancy: 1 floor: 0 priority: 30 }
   }
 }
 
@@ -173,6 +208,38 @@ machines {
   phases { id: "publish" order: 4 steps: "create_cards" steps: "enrich_cards" steps: "publish_batch" steps: "end"
            gate { name: "cards_public" kind: GATE_KIND_PROBE_PASS tier: TIER_SILVER params { key: "probe" value: "probe:publish.cards_public" } rationale: "cards synced to KV and served on the live page" }
            horizon { window_seconds: 43200 resolve_within_phase_only: false } }
+}
+# The 15-minute CLT/SKOS admit: a light claim of its own (admit.py gpu_tokens=1)
+# plus the shared embedding claim while it embeds. Both fully preemptible and
+# low priority — a 15-minute cadence can always wait for the next tick — but
+# above the CLT probe, so an admit that has started finishes before the probe
+# reclaims GPU 4.
+machines {
+  id: "clt_skos_admit"
+  process: "flow.CltSkosAdmitFlow"
+  surfaced_result: "admitted inbound docs and their CLT activations in the feature tape"
+  default_horizon { window_seconds: 1800 resolve_within_phase_only: true }
+  phases {
+    id: "start" order: 1
+    steps: "start"
+    gate { name: "claim_admitted" kind: GATE_KIND_FLOW_REACHED_STEP tier: TIER_SILVER
+           params { key: "step" value: "admit" }
+           rationale: "the flow's own YK claim placed (its guard refuses a class that disagrees with the map)" }
+    horizon { window_seconds: 900 resolve_within_phase_only: true }
+    resources { leaf: "root.internal.inference.light" workload: "clt-skos-admit" occupancy: 1 floor: 0 priority: 20
+                rationale: "15-min cadence: a deferral costs one tick, never a failure row" }
+  }
+  phases {
+    id: "admit" order: 2
+    steps: "admit" steps: "end"
+    gate { name: "docs_admitted" kind: GATE_KIND_FLOW_REACHED_STEP tier: TIER_SILVER
+           params { key: "step" value: "end" }
+           rationale: "batch admitted; extraction of new windows lands in the tape" }
+    horizon { window_seconds: 1800 resolve_within_phase_only: true }
+    resources { leaf: "root.internal.inference.light" workload: "clt-skos-admit" occupancy: 1 floor: 0 priority: 20 }
+    resources { leaf: "root.internal.inference.light" workload: "embedding" occupancy: 1 floor: 0 priority: 20
+                rationale: "ColBERT behind the shared claim; preemptible by a prospects run (priority 60)" }
+  }
 }
 
 # ── Objectives on the final surfaced result ────────────────────────────────────
