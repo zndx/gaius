@@ -213,7 +213,8 @@ class NautilusService(BaseDaemon):
             objective_rows = await conn.fetch(
                 """
                 SELECT DISTINCT ON (objective_name)
-                       objective_name, verdict, completed_at
+                       objective_name, verdict, completed_at,
+                       (gate_results::text ILIKE '%judge FINAL CALL%') AS judge_rendered
                 FROM objective_verifications
                 ORDER BY objective_name, started_at DESC
                 """
@@ -256,6 +257,11 @@ class NautilusService(BaseDaemon):
         for name, spec in OBJECTIVES.items():
             if name not in seen:
                 objectives[name] = (None, None, max(spec.cadence, OBJECTIVE_VERIFY_INTERVAL))
+        judge_rendered_fails = {
+            r["objective_name"]
+            for r in objective_rows
+            if r["verdict"] == "fail" and r["judge_rendered"]
+        }
 
         return NautilusSnapshot(
             now=now,
@@ -266,6 +272,7 @@ class NautilusService(BaseDaemon):
                 for r in side_effects
             ],
             objectives=objectives,
+            judge_rendered_fails=judge_rendered_fails,
             healing_sequences=[
                 (r["sequence_id"], r["endpoint"] or "", r["last_event_at"], r["is_open"])
                 for r in open_sequences
@@ -288,7 +295,13 @@ class NautilusService(BaseDaemon):
             f"{firing.detail}"
         )
         judge_payload: dict[str, Any] = {"status": "not_invoked"}
-        if firing.trigger in OVERWATCH_TRIGGERS:
+        report_only = bool(firing.evidence.get("report_only"))
+        consult = firing.trigger in OVERWATCH_TRIGGERS and not report_only
+        if report_only:
+            # The FAIL is the judge's own FINAL CALL; it already names the
+            # gaps. Record the trigger, do not ask Overwatch about itself.
+            judge_payload = {"status": "report_only"}
+        if consult:
             judge_payload = await self._judge.consult(
                 trigger=firing.trigger,
                 scope=firing.scope,
@@ -317,7 +330,7 @@ class NautilusService(BaseDaemon):
                     firing.scope,
                     firing.detail,
                     json.dumps(firing.evidence, default=str),
-                    firing.trigger in OVERWATCH_TRIGGERS,
+                    consult,
                     judge_payload.get("status"),
                     json.dumps(verdict, default=str) if verdict else None,
                     action,

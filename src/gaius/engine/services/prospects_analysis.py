@@ -209,6 +209,14 @@ class PositionSynthesis:
     # Valuation notes
     valuation_notes: str = ""
 
+    # Rubric-bearing fields (prospects_intelligence objective, judge items
+    # 'change' and 'allocation' — 0/1 on every verification 2026-09-02/03):
+    # what moved since the prior brief, the rebalancing/allocation call
+    # under switching costs, and the evidence the synthesis lacked.
+    change_since_prior: str = ""
+    rebalancing_call: dict[str, Any] = field(default_factory=dict)
+    input_gaps: list[str] = field(default_factory=list)
+
     # Model metadata
     model_used: str = ""
     synthesis_at: str = ""
@@ -353,6 +361,20 @@ Include:
 4. Key catalysts to watch
 5. Risk assessment
 6. Valuation perspective
+7. WHAT CHANGED since the prior thesis (you are given the brief the reader last
+   saw): name the concrete deltas — new filings, metrics that moved, catalysts
+   that fired or lapsed. "No material change since <date>" is a first-class,
+   supported answer; never restate the old thesis as if it were news.
+8. THE REBALANCING CALL. The reader manages a portfolio under switching costs
+   (transaction costs, taxes, attention). State an explicit allocation decision:
+   action (hold-in-band | add | trim | exit | watch), the band or no-trade
+   region that decision sits in, the review cadence (when to look again and
+   what event would justify looking earlier), and the switching-cost-aware
+   rationale. "No action warranted; stay inside the band" is a fully supported
+   conclusion — silence is not.
+9. INPUT GAPS. If the evidence is thin (no recent filings, no holders data,
+   stale news), say so explicitly and keep the call proportionate; never fill a
+   gap with generic prose.
 
 Be specific and actionable. Support conclusions with evidence from the filings."""
 
@@ -367,6 +389,9 @@ SYNTHESIS_USER_TEMPLATE = """Synthesize these filing analyses for {symbol} ({com
 ## Institutional Holders Context:
 {holders_context}
 
+## Prior Thesis (the brief the reader last saw — compute deltas against THIS):
+{prior_thesis}
+
 Use both the GLM analyses AND the original filing content to produce a comprehensive synthesis.
 The original content has specific numbers and details that may not be in the GLM summaries.
 
@@ -380,8 +405,30 @@ Produce a synthesis as JSON with this structure:
     "key_catalysts": ["catalyst 1", ...],
     "risk_level": "<low|medium|high>",
     "key_risks": ["risk 1", "risk 2", ...],
-    "valuation_notes": "<brief valuation perspective with specific multiples if available>"
+    "valuation_notes": "<brief valuation perspective with specific multiples if available>",
+    "change_since_prior": "<concrete deltas vs the prior thesis, or 'No material change since <date>: ...'>",
+    "rebalancing_call": {{
+        "action": "<hold-in-band|add|trim|exit|watch>",
+        "band": "<target weight range or no-trade region, e.g. 'hold 2-3% of book; no trade inside'>",
+        "review_cadence": "<when to re-evaluate and which event justifies looking earlier>",
+        "rationale": "<switching-cost-aware reasoning in 1-2 sentences>"
+    }},
+    "input_gaps": ["<evidence that was missing or stale>", ...]
 }}"""
+
+
+def _as_str_list_local(v: object) -> list[str]:
+    """Coerce a model-emitted list-ish value to list[str] (never raise)."""
+    if v is None:
+        return []
+    if isinstance(v, str):
+        return [v] if v.strip() else []
+    if isinstance(v, dict):
+        return [f"{k}: {val}" for k, val in v.items()]
+    try:
+        return [str(x) for x in v if str(x).strip()]  # type: ignore[union-attr]
+    except TypeError:
+        return [str(v)]
 
 
 def _parse_json_object(raw: str) -> dict[str, Any]:
@@ -576,8 +623,14 @@ class ProspectsAnalyzer:
         company_name: str,
         filing_analyses: list[FilingAnalysis],
         holders_context: str = "",
+        prior_thesis: str = "",
     ) -> PositionSynthesis:
-        """Synthesize filing analyses into position thesis using XAI Grok.
+        """Synthesize filing analyses into a position thesis (thinking lane).
+
+        ``prior_thesis`` is the brief the reader last saw; the synthesis
+        computes its "what changed" against it and makes an explicit
+        rebalancing call under switching costs (rubric items 'change' and
+        'allocation').
 
         Args:
             symbol: Stock symbol.
@@ -628,6 +681,7 @@ class ProspectsAnalyzer:
             analyses_json=analyses_json,
             filing_content=filing_content,
             holders_context=holders_context or "No institutional holder data available.",
+            prior_thesis=prior_thesis or "No prior brief on record — this is the first thesis; say so.",
         )
 
         logger.info(
@@ -655,6 +709,12 @@ class ProspectsAnalyzer:
             risk_level=data.get("risk_level", "medium"),
             key_risks=data.get("key_risks", []),
             valuation_notes=data.get("valuation_notes", ""),
+            change_since_prior=str(data.get("change_since_prior") or ""),
+            rebalancing_call=(
+                dict(data["rebalancing_call"])
+                if isinstance(data.get("rebalancing_call"), dict) else {}
+            ),
+            input_gaps=_as_str_list_local(data.get("input_gaps")),
             model_used=response.model or "thinking",
             synthesis_at=datetime.now(timezone.utc).isoformat(),
             input_tokens=response.prompt_tokens,

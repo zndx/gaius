@@ -2464,19 +2464,27 @@ created_at: {now.isoformat()}
             model_label = "open-weights reasoning model"
 
         else:
-            # cerebras — use Cerebras GLM-4.7 via external router
-            from gaius.engine.backends.external.router import ExternalInferenceRouter
-
-            router = ExternalInferenceRouter(
-                capture_exchanges=self._capture_exchanges_enabled(),
-            )
-            response = await router.complete(
-                messages,
-                provider="cerebras",
+            # "cerebras" variant (key kept for stored summaries): the thinking-
+            # trace summary. Cerebras GLM-4.7 was archived upstream (404 on
+            # every card since 2026-09-02); Qwen3.8-27B thinking is the go-to
+            # (user, 2026-09-02) — dedicated models are reserved for CLT/SAE.
+            from gaius.client.engine_client import get_engine_client, Message as EngMsg
+            engine = await get_engine_client()
+            result = await engine.complete(
+                [EngMsg(role="user", content=prompt)],
+                model="thinking",
                 temperature=0.7,
-                max_tokens=EXTERNAL_MAX_TOKENS,
+                max_tokens=REASONING_MAX_TOKENS,
             )
-            model_label = "cerebras thinking"
+            from gaius.engine.backends.external.base import ExternalResponse
+            response = ExternalResponse(
+                content=result.content,
+                model=result.model,
+                provider=result.backend or "local-engine",
+                input_tokens=result.input_tokens,
+                output_tokens=result.output_tokens,
+            )
+            model_label = "thinking trace (Qwen3.8-27B)"
 
         latency_ms = int(_time.time() * 1000) - start_ms
 

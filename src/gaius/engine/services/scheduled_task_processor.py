@@ -303,6 +303,27 @@ class ScheduledTaskProcessor(BaseDaemon):
                     "returncode": 0,
                     "last_lines": output_lines[-10:],
                 }
+            # YuniKorn admission timeout is a DEFERRAL, not a failure: the
+            # cluster has one spare GPU token beside thinking's four and the
+            # embedding sentinel's one, so a light/extract claim that arrives
+            # while another holds it simply waits its turn. Booking that as
+            # `error` produced 44 false failure rows in 48 h (2026-09-02/03)
+            # and hid nothing real — the next cadence tick re-runs the flow.
+            # Timeout doctrine: inconclusive about the work, a theory about
+            # the queue; the D6 ledger row is recorded at the admit site.
+            tail = "\n".join(output_lines[-40:])
+            if "#YK.00000002.NOTADMITTED" in tail or "#CLT.00000002.NOLIGHT" in tail:
+                logger.warning(
+                    f"{log_prefix} deferred: YK admission not granted in time "
+                    f"(queue busy) — next cadence tick retries"
+                )
+                return {
+                    "status": "deferred",
+                    "reason": "yk_admission",
+                    "workload_id": wid,
+                    "returncode": retcode,
+                    "last_lines": output_lines[-10:],
+                }
             logger.error(f"{log_prefix} failed (exit {retcode})")
             return {
                 "status": "failed",
@@ -670,7 +691,11 @@ class ScheduledTaskProcessor(BaseDaemon):
             kb_root = os.environ.get("GAIUS_KB_ROOT", "build/dev")
             config = ProspectsConfig(kb_root=kb_root)
             service = ProspectsService(pool=self._pool, config=config)
-            await service.start()
+            # roll=False: the engine's long-lived ProspectsService already
+            # rolls/compacts the FMP buffer; a second loop here duplicated
+            # thinking work and its blocking compaction thread held this
+            # task open for 40 min after the check was done (2026-09-03).
+            await service.start(roll=False)
 
             try:
                 result = await service.run_check(force=force)

@@ -55,6 +55,11 @@ class NautilusSnapshot:
     objectives: dict[str, tuple[str | None, datetime | None, timedelta]] = field(
         default_factory=dict
     )
+    # Objectives whose latest FAIL was rendered by the Overwatch judge's own
+    # FINAL CALL. Escalating those back to the judge asks Overwatch to
+    # consult about its own verdict — the FAIL already carries the
+    # diagnosis, so T3 records it report-only.
+    judge_rendered_fails: set[str] = field(default_factory=set)
     # healing sequences: [(sequence_id, endpoint, last_event_at, open)]
     healing_sequences: list[tuple[str, str, datetime, bool]] = field(
         default_factory=list
@@ -141,7 +146,10 @@ def evaluate_triggers(
                     trigger=T3_OBJECTIVE_STALE,
                     scope=f"objective:{name}",
                     detail=f"objective {name} FAILED its last verification",
-                    evidence={"verdict": verdict},
+                    evidence={
+                        "verdict": verdict,
+                        "report_only": name in snapshot.judge_rendered_fails,
+                    },
                     phase=f"fail@{last_sig}",
                 )
             )

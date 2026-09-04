@@ -224,8 +224,15 @@ class ProspectsService:
 
         self._buffer = ProspectsBuffer(max_bytes=256 * 1024)
 
-    async def start(self) -> None:
-        """Start the prospects service."""
+    async def start(self, *, roll: bool = True) -> None:
+        """Start the prospects service.
+
+        ``roll=False`` skips the FMP buffer roll loop: an ephemeral service
+        built for one prospects_check must not run a second compaction
+        thread beside the engine's long-lived one (duplicate thinking
+        work, and a blocking thread that held stop() for 40 min on
+        2026-09-03).
+        """
         if self._running:
             return
 
@@ -243,9 +250,10 @@ class ProspectsService:
             await self._load_state_from_db()
 
         self._running = True
-        self._ingest_task = asyncio.create_task(
-            self._roll_fmp_buffer(), name="fmp-buffer-roll"
-        )
+        if roll:
+            self._ingest_task = asyncio.create_task(
+                self._roll_fmp_buffer(), name="fmp-buffer-roll"
+            )
         logger.info(
             f"ProspectsService started with {len(self._cached_candidates)} candidates"
         )
@@ -285,13 +293,24 @@ class ProspectsService:
                                 compacted.get("bytes"),
                             )
                     except Exception as e:
-                        logger.error(
-                            "FMP compaction failed (thinking path).\n"
-                            "  Guru: #BUF.00000001.COMPACTFAIL\n"
-                            "  Try: /health fix endpoints\n"
-                            "  %s",
-                            e,
-                        )
+                        msg = str(e)
+                        if "#EP.00000016.NOTREADY" in msg or "has no sentinel" in msg:
+                            # Thinking is loading (boot) or not yet placed: a
+                            # deferral, not a failure — the next roll retries.
+                            # Logged at ERROR this was 3–5 rows per boot with
+                            # nothing to fix (2026-09-03).
+                            logger.info(
+                                "FMP compaction deferred: thinking not serving yet "
+                                "(retry next roll)"
+                            )
+                        else:
+                            logger.error(
+                                "FMP compaction failed (thinking path).\n"
+                                "  Guru: #BUF.00000001.COMPACTFAIL\n"
+                                "  Try: /health fix endpoints\n"
+                                "  %s",
+                                e,
+                            )
             except asyncio.CancelledError:
                 raise
             except Exception:

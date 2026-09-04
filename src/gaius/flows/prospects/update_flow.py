@@ -761,12 +761,32 @@ class ProspectsUpdateFlow(TracedFlow, GaiusFlow):
 
                 print(f"  {symbol}: Synthesizing {len(analyses)} analyses...")
 
+                # The brief the reader last saw: the synthesis computes its
+                # "what changed" against it (rubric item 'change', 0 on every
+                # judged verification 2026-09-02/03 because nothing carried
+                # the prior thesis into the prompt).
+                prior_thesis = ""
+                try:
+                    prior = load_synthesis_from_kb(self.kb_root, symbol)
+                    if prior is not None and (prior.thesis_summary or "").strip():
+                        prior_thesis = (
+                            f"Recommendation {prior.recommendation} at conviction "
+                            f"{prior.conviction_score:.2f}"
+                            + (f" (as of {prior.synthesis_at})" if prior.synthesis_at else "")
+                            + f": {prior.thesis_summary}"
+                        )
+                        if prior.rebalancing_call:
+                            prior_thesis += f"\nPrior rebalancing call: {prior.rebalancing_call}"
+                except Exception as e:  # noqa: BLE001 — a missing prior is not an error
+                    print(f"    prior thesis unavailable ({e}); synthesizing as first brief")
+
                 try:
                     synthesis = await analyzer.synthesize_position(
                         symbol=symbol,
                         company_name=company_name,
                         filing_analyses=analyses,
                         holders_context=holders_context,
+                        prior_thesis=prior_thesis,
                     )
                     self.syntheses[symbol] = synthesis
                     print(
@@ -1065,6 +1085,8 @@ risk_level: "{synthesis.risk_level}"
 
 {synthesis.thesis_summary}
 
+{self._rubric_sections(synthesis)}
+
 ## Bull Case
 
 {chr(10).join(f'- {point}' for point in synthesis.bull_case) if synthesis.bull_case else '- No bull case identified'}
@@ -1096,8 +1118,8 @@ risk_level: "{synthesis.risk_level}"
 
 **Metadata:**
 - Filings analyzed: {len(analyses)}
-- Analysis model: Cerebras GLM 4.7
-- Synthesis model: XAI Grok
+- Analysis model: thinking (Qwen3.8-27B)
+- Synthesis model: {synthesis.model_used or 'thinking'}
 - Last updated: {now.strftime('%Y-%m-%d %H:%M:%S')}
 """
 
@@ -1226,6 +1248,36 @@ filing_date: "{analysis.filing_date}"
 - [[../agenda|Action Items]]
 """
 
+    @staticmethod
+    def _rubric_sections(synthesis: PositionSynthesis) -> str:
+        """The decision-bearing sections the prospects_intelligence rubric
+        scores on the brief the reader opens: what changed since the prior
+        brief ('change'), the explicit rebalancing/allocation call under
+        switching costs ('allocation'), and the evidence gaps that bound
+        the call. A missing field renders as an honest statement, never as
+        silence — 'no action warranted' is a first-class conclusion."""
+        rc = synthesis.rebalancing_call or {}
+        change = (synthesis.change_since_prior or "").strip() or (
+            "No prior brief on record; this is the first thesis for this position."
+        )
+        action = str(rc.get("action") or "watch")
+        band = str(rc.get("band") or "no band stated — treat as watch-only until the next filing")
+        cadence = str(rc.get("review_cadence") or "re-evaluate at the next filing or material event")
+        rationale = str(rc.get("rationale") or "").strip()
+        gaps = [g for g in (synthesis.input_gaps or []) if str(g).strip()]
+        gaps_md = "\n".join(f"- {g}" for g in gaps) if gaps else "- None material; the evidence above supports the call."
+        return (
+            "## What Changed Since the Prior Brief\n\n"
+            f"{change}\n\n"
+            "## Rebalancing Call\n\n"
+            f"- **Action:** {action}\n"
+            f"- **Band / no-trade region:** {band}\n"
+            f"- **Review cadence:** {cadence}\n"
+            + (f"- **Rationale:** {rationale}\n" if rationale else "")
+            + "\n## Input Gaps\n\n"
+            f"{gaps_md}\n"
+        )
+
     def _create_scratch_note(
         self, symbol: str, company_name: str, synthesis: PositionSynthesis,
         prospect_dir: str, now: datetime
@@ -1247,6 +1299,8 @@ symbol: "{symbol}"
 ## Summary
 
 {synthesis.thesis_summary}
+
+{self._rubric_sections(synthesis)}
 
 ## Curated Content
 

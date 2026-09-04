@@ -54,13 +54,24 @@ async def run_probe_batch(pool: Any, *, gpu_index: int = 4) -> dict[str, Any]:
     )
 
     await ensure_tape(pool)
+    # No light GPU token free (thinking holds four, the embedding sentinel
+    # one; a prospects extract or a CLT/SKOS admit may hold the last): a
+    # deferral, not a failure — the probe runs every 5 min and takes the
+    # next free slot. Raising here booked an error row per miss.
     if not light_wait_available():
-        raise RuntimeError(GURU_NOLIGHT)
+        return {"status": "deferred", "reason": "no light YK slot", "probed": 0,
+                "rows_written": 0, "remaining_hint": True}
     # Standing CLT worker process ↔ gaius-clt. Not a per-batch extract claim.
     wid = capability_workload_id("clt")
     import asyncio as _aio
 
-    await _aio.to_thread(apply_and_admit, wid, KIND)  # off-loop: never block the engine
+    try:
+        await _aio.to_thread(apply_and_admit, wid, KIND)  # off-loop: never block the engine
+    except Exception as e:  # noqa: BLE001 — classify, never mask
+        if "#YK.00000002.NOTADMITTED" in str(e):
+            return {"status": "deferred", "reason": "yk_admission", "probed": 0,
+                    "rows_written": 0, "remaining_hint": True}
+        raise
     if not gpu_start_allowed(wid):
         raise RuntimeError(GURU_NOSTART)
 
