@@ -56,27 +56,43 @@ def channel_for_level(level: int) -> int:
 
 def rows_to_response(rows: list[dict[str, Any]], *, project: str, as_of_ms: int, epoch: str,
                      supervisor_connected: bool, include_ok: bool) -> sv.BacklogResponse:
-    """Pure: latest cell per (workflow, slot) → one BacklogRow per workflow."""
-    by_wf: dict[str, dict[str, Any]] = {}
+    """Pure: latest cell per (item_key, slot) → one BacklogRow per ITEM.
+
+    Items are keyed by (workflow, failure mode) — `task.x/deferred` and
+    `task.x/missed` are two ladders and must not be merged into one row (the
+    2026-09-04 first fill showed a verifier row climbing to L5 from two items'
+    cells). A workflow's healthy marker — its latest `ok` at slot 0 — RESOLVES
+    every item of that workflow whose last cell is older: the resident writes
+    that marker only when no item is open, so it is the honest "healthy since"
+    even across a resident restart or a spec change that retired the item.
+    """
+    by_item: dict[str, dict[str, Any]] = {}
+    healthy_since: dict[str, int] = {}  # workflow → latest ok slot-0 filled_ms
     for r in rows:
         wf = str(r["workflow"])
         slot = int(r["slot"])
-        d = by_wf.setdefault(wf, {"cells": {}, "category": str(r.get("category") or ""), "item_key": str(r.get("item_key") or wf),
-                                  "first_miss": 0, "horizon": 0, "horizon_slot": 0, "resolved": 0})
-        prev = d["cells"].get(slot)
+        item = str(r.get("item_key") or wf)
         ts_ns = int(r.get("ts_ns") or 0)
+        filled = int(r.get("filled_ms") or (ts_ns // 1_000_000))
+        if slot == 0 and str(r.get("state") or "") == "ok" and item == wf:
+            healthy_since[wf] = max(healthy_since.get(wf, 0), filled)
+        d = by_item.setdefault(item, {"workflow": wf, "cells": {}, "category": str(r.get("category") or ""), "item_key": item,
+                                      "first_miss": 0, "horizon": 0, "horizon_slot": 0, "resolved": 0, "last_cell": 0})
+        prev = d["cells"].get(slot)
         if prev is None or ts_ns > prev["ts_ns"]:
             d["cells"][slot] = {"ts_ns": ts_ns, "state": str(r.get("state") or ""), "window_start": int(r.get("window_start_ms") or 0),
-                                "filled": int(r.get("filled_ms") or (ts_ns // 1_000_000)), "evidence": r.get("evidence") or ""}
+                                "filled": filled, "evidence": r.get("evidence") or ""}
             d["first_miss"] = max(d["first_miss"], int(r.get("first_miss_ms") or 0))
             d["horizon"] = max(d["horizon"], int(r.get("horizon_ms") or 0))
             d["horizon_slot"] = max(d["horizon_slot"], int(r.get("horizon_slot") or 0))
+            d["last_cell"] = max(d["last_cell"], filled)
             if r.get("resolved"):
-                d["resolved"] = max(d["resolved"], d["cells"][slot]["filled"])
+                d["resolved"] = max(d["resolved"], filled)
     last_tick = 0
     out_rows: list[sv.BacklogRow] = []
-    for wf in sorted(by_wf):
-        d = by_wf[wf]
+    for item in sorted(by_item):
+        d = by_item[item]
+        wf = d["workflow"]
         slots = []
         level = 0
         for s in range(10):
@@ -91,13 +107,18 @@ def rows_to_response(rows: list[dict[str, Any]], *, project: str, as_of_ms: int,
             ev = c["evidence"]
             slots.append(sv.BacklogSlot(slot=s, state=st, window_start_unix_ms=c["window_start"], filled_unix_ms=c["filled"],
                                         evidence_json=ev if isinstance(ev, str) else json.dumps(ev, default=str)))
+        resolved = d["resolved"]
+        healthy = healthy_since.get(wf, 0)
+        if item != wf and healthy > d["last_cell"]:
+            resolved = max(resolved, healthy)  # a healthy tick after the item's last cell closes it
+            level = 0
         if not include_ok and level == 0 and not d["cells"]:
             continue
         out_rows.append(sv.BacklogRow(
             workflow=wf, category=_CATEGORY.get(d["category"].lower(), sv.EXPECTATION_CATEGORY_UNSPECIFIED),
             horizon_slot=d["horizon_slot"], slots=slots, escalation_level=level, channel=channel_for_level(level),
             item_key=d["item_key"], first_miss_unix_ms=d["first_miss"], horizon_unix_ms=d["horizon"],
-            resolved_unix_ms=d["resolved"],
+            resolved_unix_ms=resolved,
         ))
     if not include_ok:
         out_rows = [r for r in out_rows if r.escalation_level > 0]
@@ -105,7 +126,33 @@ def rows_to_response(rows: list[dict[str, Any]], *, project: str, as_of_ms: int,
                               supervisor_connected=supervisor_connected, epoch=epoch, rows=out_rows)
 
 
-async def read_backlog(pool: Any, request: sv.BacklogRequest, *, epoch: str, supervisor_connected: bool) -> sv.BacklogResponse:
+def declared_workflows(spec: Any) -> set[str] | None:
+    """The Backlog workflows the CURRENT instance declares: cadenced processes with
+    an expectation (pg_cron jobs excluded — the stream carries no job_run_details,
+    so the resident does not fill them) plus `objective.<name>` for objectives with
+    an expectation. None when the spec is unavailable (no filtering)."""
+    sup = getattr(spec, "supervisor", None)
+    if sup is None:
+        return None
+    out: set[str] = set()
+    for p in getattr(sup, "processes", []):
+        cad = getattr(p, "cadence", None)
+        if cad is None or (not cad.cron and not cad.expected_period_seconds):
+            continue
+        if not p.HasField("expectation") if hasattr(p, "HasField") else getattr(p, "expectation", None) is None:
+            continue
+        if p.kind == sv.PROCESS_KIND_PG_CRON_JOB:
+            continue
+        out.add(p.id)
+    for o in getattr(sup, "objectives", []):
+        has = o.HasField("expectation") if hasattr(o, "HasField") else getattr(o, "expectation", None) is not None
+        if has:
+            out.add(f"objective.{o.name}")
+    return out
+
+
+async def read_backlog(pool: Any, request: sv.BacklogRequest, *, epoch: str, supervisor_connected: bool,
+                       declared: set[str] | None = None) -> sv.BacklogResponse:
     as_of_ms = int(request.as_of_unix_ms or int(time.time() * 1000))
     project = request.project or "gaius"
     since_hour = as_of_ms // 3_600_000 - WINDOW_HOURS - 1
@@ -125,6 +172,11 @@ async def read_backlog(pool: Any, request: sv.BacklogRequest, *, epoch: str, sup
             "  The Backlog is not filling, or the FDW DDL is not applied to this database.\n"
             "  Try: devenv processes restart nautilus; just warehouse-fdw; /nautilus status"
         ) from e
+    if declared is not None:
+        # Rows for workflows the instance no longer declares (or never should have:
+        # the pg_cron enqueuers of 2026-09-04) stay in the store as history but are
+        # not the CURRENT state table.
+        recs = [r for r in recs if r["workflow"] in declared or r["workflow"] == "engine"]
     rows = [{
         "workflow": r["workflow"], "slot": r["slot"], "ts_ns": r["ts_ns"], "state": r["state"], "category": r["category"],
         "item_key": r["item_key"], "window_start_ms": int(r["epoch_hour"]) * 3_600_000, "filled_ms": int(r["ts_ns"]) // 1_000_000,

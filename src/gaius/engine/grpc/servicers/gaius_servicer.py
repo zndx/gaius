@@ -9575,17 +9575,20 @@ class GaiusServicer(GaiusServiceServicer):
             except Exception:  # noqa: BLE001
                 live = False
             epoch = ""
+            declared = None
             try:
+                from gaius.engine.services.backlog_read import declared_workflows
                 from gaius.engine.supervision_spec import load_spec
 
                 spec = load_spec()
                 epoch = spec.spec_version if spec is not None else ""
+                declared = declared_workflows(spec) if spec is not None else None
             except Exception:  # noqa: BLE001
                 pass
             resp = await read_backlog(
                 pool,
                 sv.BacklogRequest(workflow=request.workflow or "", include_ok=True),
-                epoch=epoch, supervisor_connected=live,
+                epoch=epoch, supervisor_connected=live, declared=declared,
             )
 
             def _iso(ms: int) -> str:

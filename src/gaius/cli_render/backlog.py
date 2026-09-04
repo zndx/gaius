@@ -49,9 +49,9 @@ def pending_slot(row: dict[str, Any], as_of: datetime) -> int | None:
 
 def render_backlog(rows: list[dict[str, Any]], *, as_of: datetime | None = None, filled_at: str = "", supervisor_connected: bool | None = None) -> str:
     as_of = as_of or datetime.now(timezone.utc)
-    header = f"{'workflow':<30} {'cat':<9} " + " ".join(f"{h:>3}" for h in FIB_HOURS) + "   level"
+    header = f"{'workflow / item':<40} {'cat':<9} " + " ".join(f"{h:>3}" for h in FIB_HOURS) + "   level"
     lines = [header, "-" * len(header)]
-    for r in sorted(rows, key=lambda r: (-int(r.get("escalation_level") or 0), str(r.get("workflow")))):
+    for r in sorted(rows, key=lambda r: (-int(r.get("escalation_level") or 0), str(r.get("item_key") or r.get("workflow")))):
         cells = {int(s["slot"]): str(s.get("state") or "") for s in r.get("slots", [])}
         up = pending_slot(r, as_of)
         glyphs = []
@@ -62,7 +62,10 @@ def render_backlog(rows: list[dict[str, Any]], *, as_of: datetime | None = None,
             glyphs.append(f"{g:>3}")
         level = int(r.get("escalation_level") or 0)
         tail = f"L{level} {r.get('channel') or ''}".strip() if level else ""
-        lines.append(f"{str(r.get('workflow'))[:30]:<30} {CAT_SHORT.get(str(r.get('category') or ''), str(r.get('category') or ''))[:9]:<9} " + " ".join(glyphs) + (f"   {tail}" if tail else ""))
+        if r.get("resolved_at") and any(cells.get(k) not in ("", "ok") for k in range(1, 10)):
+            tail = (tail + " resolved").strip()
+        name = str(r.get("item_key") or r.get("workflow"))
+        lines.append(f"{name[:40]:<40} {CAT_SHORT.get(str(r.get('category') or ''), str(r.get('category') or ''))[:9]:<9} " + " ".join(glyphs) + (f"   {tail}" if tail else ""))
     if not rows:
         lines.append("(no backlog rows in the window — Nautilus has not filled, or the FDW view is absent)")
     foot = []
