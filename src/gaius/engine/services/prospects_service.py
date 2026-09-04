@@ -39,42 +39,8 @@ from .fmp_client import FMPClient, FMPClientConfig, SECFiling, InstitutionalHold
 logger = logging.getLogger(__name__)
 
 
-def _format_market_row(kind: str, row: dict[str, Any]) -> str:
-    """Turn one FMP market row into FIFO prose."""
-    symbol = str(row.get("symbol") or row.get("ticker") or "")
-    title = str(
-        row.get("title")
-        or row.get("companyName")
-        or row.get("targetedCompanyName")
-        or row.get("reportingName")
-        or symbol
-    )
-    when = str(
-        row.get("publishedDate")
-        or row.get("filingDate")
-        or row.get("transactionDate")
-        or row.get("acceptedDate")
-        or row.get("date")
-        or ""
-    )
-    body = str(
-        row.get("text")
-        or row.get("content")
-        or row.get("snippet")
-        or row.get("description")
-        or row.get("formType")
-        or row.get("transactionType")
-        or ""
-    )
-    extra = ""
-    if row.get("formType"):
-        extra = f" form={row.get('formType')}"
-    if row.get("chamber"):
-        extra += f" chamber={row.get('chamber')}"
-    if row.get("link") or row.get("url") or row.get("finalLink"):
-        extra += f" {row.get('finalLink') or row.get('link') or row.get('url')}"
-    text = f"{kind} {symbol} {when}\n{title}{extra}\n{body}".strip()
-    return text[:2500]
+# (2026-09-04) FIFO prose formatting lives in gaius.flows.prospects.market_feed
+# (format_market_row) with the fmp_roll flow that owns the pull.
 
 
 class ProspectsError(Exception):

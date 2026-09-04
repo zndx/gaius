@@ -29,7 +29,7 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import timedelta
 from typing import Any
-from gaius.core.budgets import REASONING_MAX_TOKENS
+from gaius.core.budgets import QUEUE_SHARE_APPLY_NET_S, REASONING_MAX_TOKENS
 
 logger = logging.getLogger(__name__)
 
@@ -179,6 +179,41 @@ OBJECTIVES: dict[str, ObjectiveSpec] = {
             "SELECT count(*) FROM cognition_buffer "
             "WHERE kind = 'synthesis' AND created_at > NOW() - INTERVAL '2 hours'"
         ),
+    ),
+    # (2026-09-04) The arbiter objective (resource-intents step 10). Every
+    # declared phase intent is a FORECAST that the federation's arbiter will
+    # apply it; this objective resolves those against what YuniKorn actually
+    # guarantees. Silver from Signals' records + the cluster ConfigMap (both
+    # outside the emitter's bookkeeping); a sustained FAIL is what Nautilus
+    # escalates to Overwatch. Not task-bearing (dag=()): it verifies a
+    # protocol, not a flow.
+    "queue_share_arbitration": ObjectiveSpec(
+        name="queue_share_arbitration",
+        dag=(),
+        cadence=timedelta(hours=2),
+        description=(
+            "Applied YuniKorn floors match the live declared intents: no record stuck "
+            "short of APPLIED past the apply net; guaranteed GPU per leaf == merge of "
+            "live declared floors; every held phase intent has an APPLIED record"
+        ),
+        verifier="verify_queue_share_arbitration",
+        params={
+            "apply_net_s": QUEUE_SHARE_APPLY_NET_S,
+            "gpu_key": "federation.zndx.org/gpu",
+            "namespace": "yunikorn",
+            "configmap": "yunikorn-configs",
+            "leaves": [
+                "root.internal.inference.heavy",
+                "root.internal.inference.light",
+                "root.internal.inference.medium",
+                "root.internal.inference.extract",
+            ],
+            "rationale": (
+                "merge semantics mirror signals.engine.queue_share.merge_floors: declared "
+                "floor when present, else the record's share guaranteed; max per leaf across "
+                "live APPLIED records; leaves with no live record expect 0"
+            ),
+        },
     ),
 }
 
@@ -769,6 +804,189 @@ class ObjectiveService:
                 tier="gold",
                 resolver=f"overwatch-grok-rubric:{spec.name}",
             )
+        return gates
+
+    async def verify_queue_share_arbitration(
+        self, spec: ObjectiveSpec
+    ) -> list[dict[str, Any]]:
+        """The arbiter is honest — three gates against sources outside the
+        emitter's own bookkeeping:
+
+        1. records_settled — no LIVE record (valid, not superseded/rejected) is
+           stuck in RECORDED/APPLYING past the apply net.
+        2. floors_applied — YuniKorn's guaranteed GPU per leaf (the cluster
+           ConfigMap) equals the merge of live APPLIED declared floors (max per
+           leaf; legacy records fall back to their share's guaranteed).
+        3. intents_honoured — every phase intent this engine still holds
+           (queue_share._PHASE_SHARES) has a live APPLIED record.
+        """
+        import asyncio
+        import subprocess
+        import time
+
+        import yaml
+
+        from gaius.engine import queue_share as qs
+        from gaius.engine.generated.zndx.scheduler.v1 import scheduler_pb2 as spb
+
+        gpu_key = str(spec.params.get("gpu_key", "federation.zndx.org/gpu"))
+        net_s = int(spec.params.get("apply_net_s", QUEUE_SHARE_APPLY_NET_S))
+        leaves = [str(x) for x in (spec.params.get("leaves") or [])]
+        ns = str(spec.params.get("namespace", "yunikorn"))
+        cm = str(spec.params.get("configmap", "yunikorn-configs"))
+        gate_names = ("records_settled", "floors_applied", "intents_honoured")
+
+        try:
+            records = await asyncio.to_thread(
+                qs.list_queue_share_requests, peer=qs.PEER, limit=1000
+            )
+        except Exception as e:  # noqa: BLE001 — an error verdict, never a guess
+            ev = f"ListQueueShareRequests: {e}"
+            return [{"gate": g, "verdict": "error", "evidence": ev} for g in gate_names]
+
+        now_ns = time.time_ns()
+        applying = getattr(spb, "QUEUE_SHARE_APPLYING", 5)
+        by_id: dict[str, Any] = {}
+        for r in records:
+            rid = r.request.request_id
+            if rid not in by_id or r.recorded_at_ns > by_id[rid].recorded_at_ns:
+                by_id[rid] = r
+
+        def _live(r: Any) -> bool:
+            vu = int(r.request.valid_until_ns or 0)
+            return r.state not in (spb.QUEUE_SHARE_SUPERSEDED, spb.QUEUE_SHARE_REJECTED) and (
+                vu == 0 or vu > now_ns
+            )
+
+        live = [r for r in by_id.values() if _live(r)]
+        stuck = [
+            r
+            for r in live
+            if r.state in (spb.QUEUE_SHARE_RECORDED, applying)
+            and (now_ns - int(r.recorded_at_ns)) > net_s * 1_000_000_000
+        ]
+        gates: list[dict[str, Any]] = [
+            {
+                "gate": "records_settled",
+                "verdict": "fail" if stuck else "pass",
+                "evidence": (
+                    f"records={len(by_id)} live={len(live)} stuck_past_{net_s}s="
+                    + str(
+                        [
+                            (
+                                r.request.request_id[-8:],
+                                qs._state_name(spb, r.state),
+                                (r.apply_error or "")[:60],
+                            )
+                            for r in stuck
+                        ][:6]
+                    )
+                ),
+            }
+        ]
+
+        # Expected floors: merge of live APPLIED records (arbiter semantics).
+        expected: dict[str, int] = {leaf: 0 for leaf in leaves}
+        for r in live:
+            if r.state != spb.QUEUE_SHARE_APPLIED:
+                continue
+            shares = {s.queue: s for s in r.request.shares}
+            for w in r.request.workloads:
+                if w.HasField("floor"):
+                    eff = int(w.floor)
+                else:
+                    s = shares.get(w.queue)
+                    eff = int(s.guaranteed.quantities.get(gpu_key, 0)) if s is not None else 0
+                expected[w.queue] = max(int(expected.get(w.queue, 0)), eff)
+
+        def _guarantees(yaml_text: str) -> dict[str, int]:
+            """guaranteed[gpu_key] per queue FQN from a YuniKorn queues.yaml."""
+            doc = yaml.safe_load(yaml_text) or {}
+            res: dict[str, int] = {}
+
+            def walk(node: dict[str, Any], prefix: str) -> None:
+                name = str(node.get("name") or "")
+                fqn = f"{prefix}.{name}" if prefix else name
+                g = ((node.get("resources") or {}).get("guaranteed") or {}).get(gpu_key)
+                if g is not None:
+                    res[fqn] = int(str(g))
+                for ch in node.get("queues") or []:
+                    walk(ch, fqn)
+
+            for part in doc.get("partitions") or []:
+                for q in part.get("queues") or []:
+                    walk(q, "")
+            return res
+
+        def _applied() -> dict[str, int]:
+            out = subprocess.run(
+                ["kubectl", "-n", ns, "get", "configmap", cm, "-o", "jsonpath={.data.queues\\.yaml}"],
+                capture_output=True,
+                text=True,
+                timeout=20,
+            )
+            if out.returncode != 0:
+                raise RuntimeError((out.stderr or "kubectl failed").strip()[:200])
+            return _guarantees(out.stdout)
+
+        def _baseline() -> dict[str, int]:
+            """The arbiter merges over the SoR template's guarantees (Signals'
+            baseline_guarantees reads the same file); mirror it, never assume 0."""
+            import os
+            from pathlib import Path
+
+            root = (os.environ.get("SIGNALS_ROOT") or "").strip()
+            if not root:
+                raise RuntimeError("SIGNALS_ROOT unset — cannot read the federation queue template")
+            p = Path(root) / str(spec.params.get("baseline_yaml", "config/scheduler/federation-queues.yaml"))
+            if not p.is_file():
+                raise RuntimeError(f"baseline queues missing: {p}")
+            return _guarantees(p.read_text(encoding="utf-8"))
+
+        try:
+            applied = await asyncio.to_thread(_applied)
+            baseline = await asyncio.to_thread(_baseline)
+        except Exception as e:  # noqa: BLE001
+            gates.append(
+                {"gate": "floors_applied", "verdict": "error", "evidence": f"{ns}/{cm} or template: {e}"}
+            )
+        else:
+            for leaf, g in baseline.items():
+                if leaf in leaves or leaf in expected:
+                    expected[leaf] = max(int(expected.get(leaf, 0)), int(g))
+            compare = sorted(set(leaves) | set(expected))
+            mismatch = [
+                (leaf, expected.get(leaf, 0), applied.get(leaf, 0))
+                for leaf in compare
+                if int(expected.get(leaf, 0)) != int(applied.get(leaf, 0))
+            ]
+            gates.append(
+                {
+                    "gate": "floors_applied",
+                    "verdict": "fail" if mismatch else "pass",
+                    "evidence": (
+                        "applied=" + str({k.rsplit('.', 1)[-1]: applied.get(k, 0) for k in compare})
+                        + " expected=" + str({k.rsplit('.', 1)[-1]: expected.get(k, 0) for k in compare})
+                        + (f" mismatch(leaf,expected,applied)={mismatch}" if mismatch else "")
+                    ),
+                }
+            )
+
+        held = dict(qs._PHASE_SHARES)
+        missing = []
+        for (owner_wid, workload), (rid, leaf) in held.items():
+            rec = by_id.get(rid)
+            if rec is None or not _live(rec) or rec.state != spb.QUEUE_SHARE_APPLIED:
+                missing.append(
+                    (owner_wid, workload, leaf.rsplit(".", 1)[-1], qs._state_name(spb, rec.state) if rec else "no-record")
+                )
+        gates.append(
+            {
+                "gate": "intents_honoured",
+                "verdict": "fail" if missing else "pass",
+                "evidence": f"held={len(held)} not_applied={missing[:6]}",
+            }
+        )
         return gates
 
     async def _within_days(self, d: Any, days: int) -> bool:
