@@ -382,11 +382,20 @@ def request_queue_share(kind: str, rc: ResourceClass) -> bool:
         except RuntimeError:
             on_loop = False
         if on_loop:
+            import traceback as _tb
+
+            # Name the caller: the guard fired 10× for `embedding` on 2026-09-04
+            # (twice per SKOS admit tick) with no obvious on-loop call site.
+            frames = [
+                f"{f.filename.rsplit('/', 1)[-1]}:{f.lineno}:{f.name}"
+                for f in _tb.extract_stack(limit=9)[:-1]
+            ]
             log.warning(
                 "#YK.00000011.ONLOOP request_queue_share(%s) called on the event loop — "
                 "APPLIED wait skipped (would stall every async probe); run admission "
-                "via asyncio.to_thread",
+                "via asyncio.to_thread. Stack: %s",
                 kind,
+                " <- ".join(reversed(frames)),
             )
             LAST_APPLY_WAIT[kind.replace("_", "-")] = {
                 "request_id": req.request_id,
