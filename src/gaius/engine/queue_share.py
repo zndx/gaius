@@ -92,8 +92,16 @@ def share_for_class(
     valid_until_ns: int = 0,
     supersedes_request_id: str = "",
     applications: int | None = None,
+    floor: int | None = None,
+    priority: int | None = None,
+    owner: str | None = None,
 ) -> object:
-    """Build a QueueShareRequest. Always mints a new UUIDv7."""
+    """Build a QueueShareRequest. Always mints a new UUIDv7.
+
+    ``floor``/``priority`` given → that declared intent rides the request
+    (phase emission). Otherwise the supervision instance is consulted for
+    (owner, kind); ``owner`` defaults to GAIUS_YK_KIND or ``kind``.
+    """
     from gaius.engine.generated.zndx.scheduler.v1 import scheduler_pb2 as spb
     from gaius.engine.generated.zndx.engine.v1 import engine_pb2 as zpb
 
@@ -137,22 +145,30 @@ def share_for_class(
         else f"{kind} occupies {rc.queue} (guarantee gpu={tokens})"
     )
     if tokens > 0:
-        try:
-            from gaius.engine.supervision_spec import intent_for
+        it = None
+        if floor is None:
+            try:
+                from gaius.engine.supervision_spec import intent_for
 
-            owner = (os.environ.get("GAIUS_YK_KIND") or kind).replace("_", "-")
-            it = intent_for(owner, kind)
-        except Exception as e:  # noqa: BLE001 — spec problems are logged by the loader
-            log.debug("intent lookup skipped for %s: %s", kind, e)
-            it = None
-        if it is not None:
-            floor = max(0, min(int(it.floor), tokens))
-            share.guaranteed.quantities[GPU_KEY] = floor
-            wrk.floor = floor
-            wrk.priority = int(it.priority)
+                own = (owner or os.environ.get("GAIUS_YK_KIND") or kind).replace("_", "-")
+                it = intent_for(own, kind)
+            except Exception as e:  # noqa: BLE001 — spec problems are logged by the loader
+                log.debug("intent lookup skipped for %s: %s", kind, e)
+            if it is not None:
+                floor, priority = int(it.floor), int(it.priority)
+                origin = f"{it.owner}{'/' + it.phase if it.phase else ''}"
+            else:
+                origin = ""
+        else:
+            origin = f"{owner or 'phase'}"
+        if floor is not None:
+            fl = max(0, min(int(floor), tokens))
+            share.guaranteed.quantities[GPU_KEY] = fl
+            wrk.floor = fl
+            wrk.priority = int(priority or 0)
             reason = (
-                f"{kind} occupies {rc.queue}: declared floor gpu={floor} of {tokens} "
-                f"priority={it.priority} ({it.owner}{'/' + it.phase if it.phase else ''})"
+                f"{kind} occupies {rc.queue}: declared floor gpu={fl} of {tokens} "
+                f"priority={int(priority or 0)} ({origin})"
             )
             log.info("queue share intent %s: %s", kind, reason)
     return spb.QueueShareRequest(
@@ -405,6 +421,74 @@ def list_queue_share_requests(
     finally:
         channel.close()
     return list(resp.records)
+
+
+# ── Phase emission (Nautilus's job; in-engine interim) ──────────────────────
+# A run's declared intents change with its phase. On phase entry every intent of
+# the phase is emitted with the phase horizon as its validity window (so a run
+# that dies without its end request cannot hold a floor forever); intents the
+# new phase no longer declares get a zero floor that supersedes them.
+
+# (owner_wid, workload) -> (request_id, leaf) of the share currently held
+_PHASE_SHARES: dict[tuple[str, str], tuple[str, str]] = {}
+
+
+def _class_for_leaf(leaf: str):
+    from gaius.engine import sentinel_claim as sc
+
+    for rc in (sc.HEAVY, sc.MEDIUM, sc.LIGHT, sc.EXTRACT, sc.COMPUTE):
+        if rc.queue == leaf:
+            return rc
+    return None
+
+
+def emit_phase_intents(owner_wid: str, owner_kind: str, intents, horizon_s: int) -> int:
+    """Emit the given intents for a phase; supersede intents no longer declared.
+
+    Returns the number of requests sent. Never raises — emission is bookkeeping
+    toward the arbiter; the claim itself is made (and gated) elsewhere.
+    """
+    sent = 0
+    wanted = {(owner_wid, (i.workload or "").replace("_", "-")): i for i in intents}
+    now = time.time_ns()
+    until = now + int(max(horizon_s, 60)) * 1_000_000_000 if horizon_s else 0
+    try:
+        # Zero floors for intents this phase dropped (supersede by request id).
+        for key, (rid, leaf) in list(_PHASE_SHARES.items()):
+            if key[0] != owner_wid or key in wanted:
+                continue
+            rc = _class_for_leaf(leaf)
+            if rc is not None:
+                req = share_for_class(
+                    key[1], rc, gpu=0, valid_until_ns=now, supersedes_request_id=rid,
+                    applications=0, floor=0, priority=0, owner=owner_kind,
+                )
+                _send(req)
+                sent += 1
+            _PHASE_SHARES.pop(key, None)
+        for key, it in wanted.items():
+            rc = _class_for_leaf(it.leaf)
+            if rc is None:
+                log.warning("phase intent for unknown leaf %s (%s) skipped", it.leaf, it.workload)
+                continue
+            prior = _PHASE_SHARES.get(key, ("", ""))[0]
+            req = share_for_class(
+                key[1], rc, gpu=int(it.occupancy or rc.gpu_tokens),
+                valid_until_ns=until, supersedes_request_id=prior,
+                floor=int(it.floor), priority=int(it.priority), owner=owner_kind,
+            )
+            resp = _send(req)
+            if resp is not None and getattr(resp, "accepted", False):
+                _PHASE_SHARES[key] = (req.request_id, it.leaf)
+                sent += 1
+    except Exception as e:  # noqa: BLE001 — never fail the run for its bookkeeping
+        log.warning("phase intent emission skipped for %s: %s", owner_kind, e)
+    return sent
+
+
+def end_phase_intents(owner_wid: str, owner_kind: str) -> int:
+    """Zero-floor every intent still held for this run (run ended or died)."""
+    return emit_phase_intents(owner_wid, owner_kind, [], 0)
 
 
 def notify_admit(kind: str, rc: ResourceClass | None = None) -> bool:

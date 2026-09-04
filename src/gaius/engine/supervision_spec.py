@@ -105,6 +105,39 @@ class SupervisionSpec:
     def standing(self) -> list[Intent]:
         return [i for lst in self._standing.values() for i in lst]
 
+    # ── phase lookup (for emission on phase transitions) ─────────────────
+    def machine_for(self, owner: str) -> Any | None:
+        """The Machine whose process (or its parent task) is this owner kind."""
+        owner = (owner or "").replace("_", "-")
+        procs = {p.id: p for p in self.supervisor.processes}
+        for m in self.supervisor.machines:
+            proc = procs.get(m.process)
+            kinds = {m.id, m.process}
+            if proc is not None:
+                kinds.add(_kind_of_process_id(proc.id))
+                if proc.parent:
+                    kinds.add(_kind_of_process_id(proc.parent))
+            if owner in kinds:
+                return m
+        return None
+
+    def phase_for_step(self, owner: str, step: str) -> tuple[str, Any] | None:
+        """(machine_id, Phase) whose `steps` include this source step name."""
+        m = self.machine_for(owner)
+        if m is None:
+            return None
+        for ph in m.phases:
+            if step in ph.steps:
+                return m.id, ph
+        return None
+
+    @staticmethod
+    def phase_intents(phase: Any, machine_id: str) -> list[Intent]:
+        return [
+            Intent(r.leaf, r.workload, r.occupancy, r.floor, r.priority, machine_id, phase.id, r.rationale)
+            for r in phase.resources
+        ]
+
 
 _LOCK = threading.Lock()
 _CACHE: tuple[float, SupervisionSpec] | None = None

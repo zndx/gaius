@@ -27,6 +27,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Awaitable, Callable, Protocol
@@ -34,6 +35,10 @@ from typing import Any, Awaitable, Callable, Protocol
 import asyncpg
 
 from .base_daemon import BaseDaemon, DaemonCriticality, DaemonHealth
+
+# Metaflow step start in a spawned child's output, e.g.
+# "2026-09-04 03:35:10.809 [2507/analyze_filings/9941 (pid 2432531)] Task is starting."
+_STEP_START_RE = re.compile(r"\[\d+/([A-Za-z_][A-Za-z0-9_]*)/\d+ \(pid \d+\)\] Task is starting")
 
 logger = logging.getLogger(__name__)
 
@@ -287,6 +292,11 @@ class ScheduledTaskProcessor(BaseDaemon):
         )
         last_output = time.monotonic()
         output_lines: list[str] = []
+        current_phase: str | None = None
+        from gaius.engine.queue_share import (
+            emit_phase_intents as _qs_emit,
+            end_phase_intents as _qs_end,
+        )
         try:
             assert proc.stdout is not None
             while True:
@@ -313,6 +323,34 @@ class ScheduledTaskProcessor(BaseDaemon):
                     last_output = time.monotonic()
                     output_lines.append(line)
                     logger.info(f"  {log_prefix}: {line}")
+                    # Phase transitions (in-engine interim for Nautilus): a
+                    # Metaflow step start names the source step; the
+                    # supervision instance maps it to a phase whose declared
+                    # resource intents are emitted to the arbiter with the
+                    # phase horizon as validity, ahead of the phase's claims.
+                    m_step = _STEP_START_RE.search(line)
+                    if m_step is not None:
+                        step = m_step.group(1)
+                        spec = None
+                        hit = None
+                        try:
+                            from gaius.engine.supervision_spec import load_spec
+                            spec = load_spec()
+                            hit = spec.phase_for_step(kind, step) if spec else None
+                        except Exception:  # noqa: BLE001 — bookkeeping only
+                            hit = None
+                        if spec is not None and hit is not None and hit[1].id != current_phase:
+                            machine_id, phase = hit
+                            current_phase = phase.id
+                            horizon_s = int(phase.horizon.window_seconds or 0)
+                            intents = spec.phase_intents(phase, machine_id)
+                            n = await asyncio.to_thread(
+                                _qs_emit, wid, kind, intents, horizon_s
+                            )
+                            logger.info(
+                                f"{log_prefix} phase {machine_id}/{phase.id} entered at step "
+                                f"{step}: {len(intents)} intent(s), {n} share request(s)"
+                            )
                 else:
                     break
             retcode = await proc.wait()
@@ -364,6 +402,12 @@ class ScheduledTaskProcessor(BaseDaemon):
             logger.error(f"{log_prefix} error: {e}")
             return {"status": "error", "workload_id": wid, "error": str(e)}
         finally:
+            # Phase intents held for this run get their zero floors now —
+            # the run ended, died, or was killed; a floor must not outlive it.
+            try:
+                await asyncio.to_thread(_qs_end, wid, kind)
+            except Exception:  # noqa: BLE001 — bookkeeping only
+                logger.debug("phase intent end skipped", exc_info=True)
             # Natural end of the host child. Yield path already unregistered
             # and deleted the claim. Do not delete at spawn.
             if table.get(wid) is not None:
