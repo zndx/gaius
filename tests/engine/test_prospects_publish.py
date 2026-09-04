@@ -27,7 +27,9 @@ PLATFORM_ENV = {
 
 
 def test_format_market_row_keeps_symbol_and_body() -> None:
-    from gaius.engine.services.prospects_service import _format_market_row
+    # (2026-09-04) The formatter moved with the FMP roll to the flow that owns
+    # the pull: gaius.flows.prospects.market_feed.format_market_row.
+    from gaius.flows.prospects.market_feed import format_market_row as _format_market_row
 
     text = _format_market_row(
         "8-K",
