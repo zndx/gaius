@@ -42,6 +42,14 @@ _STEP_START_RE = re.compile(r"\[\d+/([A-Za-z_][A-Za-z0-9_]*)/\d+ \(pid \d+\)\] T
 
 logger = logging.getLogger(__name__)
 
+# Progress heartbeat cadence for spawned flows (2026-09-04): stamp
+# scheduled_tasks.heartbeat_at at most once per interval from the child's
+# output lines. Metaflow prints a status line at least every 5 min while a
+# step runs, so a live flow is never silent longer than that; the
+# task-watchdog (migration 20260904000002) resets on 45 min of SILENCE since
+# the last heartbeat, never on age since pick-up.
+HEARTBEAT_INTERVAL_S = 60.0
+
 
 @dataclass
 class ScheduledTask:
@@ -320,6 +328,7 @@ class ScheduledTaskProcessor(BaseDaemon):
             )
         )
         last_output = time.monotonic()
+        last_heartbeat = 0.0  # first output line stamps immediately
         output_lines: list[str] = []
         current_phase: str | None = None
         from gaius.engine.queue_share import (
@@ -352,6 +361,27 @@ class ScheduledTaskProcessor(BaseDaemon):
                     last_output = time.monotonic()
                     output_lines.append(line)
                     logger.info(f"  {log_prefix}: {line}")
+                    # Progress heartbeat (2026-09-04): every output line is a
+                    # progress signal — Metaflow prints one at least every
+                    # 5 min while a step runs. Stamp scheduled_tasks.heartbeat_at
+                    # (throttled) so the task-watchdog measures SILENCE since
+                    # the last heartbeat instead of age since pick-up — the
+                    # 17:25 reset of a compaction that was generating at 10–30
+                    # tok/s was a wall-clock false positive. Fail-open: the
+                    # stamp never disturbs the run.
+                    if (
+                        self._pool is not None
+                        and time.monotonic() - last_heartbeat >= HEARTBEAT_INTERVAL_S
+                    ):
+                        last_heartbeat = time.monotonic()
+                        try:
+                            await self._pool.execute(
+                                "UPDATE scheduled_tasks SET heartbeat_at = NOW() "
+                                "WHERE id = $1 AND completed_at IS NULL",
+                                task.id,
+                            )
+                        except Exception:  # noqa: BLE001 — bookkeeping only
+                            logger.debug("heartbeat stamp skipped", exc_info=True)
                     # Phase transitions (in-engine interim for Nautilus): a
                     # Metaflow step start names the source step; the
                     # supervision instance maps it to a phase whose declared
