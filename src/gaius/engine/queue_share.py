@@ -381,6 +381,14 @@ def request_queue_share(kind: str, rc: ResourceClass) -> bool:
             on_loop = True
         except RuntimeError:
             on_loop = False
+        # A spawned flow (GAIUS_YK_APPLICATION_ID set) admitting inside its own
+        # asyncio.run blocks nothing that matters — no health probes live on
+        # that loop — and it MUST wait for APPLIED so its floor lands before the
+        # pod races YuniKorn. The guard is for the engine's loop only. (The ten
+        # ONLOOP hits on 2026-09-04 were all flow output: the SKOS admit and
+        # prospects flows embedding through ColBERT inside async steps.)
+        if on_loop and os.environ.get("GAIUS_YK_APPLICATION_ID"):
+            on_loop = False
         if on_loop:
             import traceback as _tb
 
