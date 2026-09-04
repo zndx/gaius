@@ -127,3 +127,6 @@ config/
 /t.sm_*.cubin
 # stray compiled Java bytecode (e.g. Kudu client probes)
 /org/**/*.class
+
+# Rust build output of the vendored Nautilus supervisor
+external/nautilus/target/

@@ -1,0 +1,16 @@
+[Unit]
+Description=Nautilus hourly Backlog fill (the systemd timer's second hand while the resident runs)
+Documentation=file:///home/rch/local/src/zndx/gaius/docs/notes/2026-09-04/205000_operations_backlog_build.md
+# The resident Nautilus (devenv process, under gaius.service) fills the
+# Fibonacci-hour Backlog itself at hh:01. This oneshot asks it to fill again at
+# hh:03 — idempotent on the epoch hour — so a resident whose own clock stalled
+# still gets its slot filled, and a resident that is DOWN fails this unit
+# loudly (#NT.00000009.TICKSKIP) instead of silently missing the hour.
+# Persistent=false on the timer: a missed hour is recorded as `unknown`, not
+# replayed — the ladder's honesty depends on it.
+After=gaius.service
+
+[Service]
+Type=oneshot
+User=rch
+ExecStart=/home/rch/local/src/zndx/gaius/external/nautilus/target/release/nautilus tick --target 127.0.0.1:50061

@@ -178,7 +178,7 @@ resume-gpu:
 reboot-hardening-install:
     #!/usr/bin/env bash
     set -euo pipefail
-    UNITS="crash-guard.service gaius-thinking-ready.service gaius-engine-ready.service"
+    UNITS="crash-guard.service gaius-thinking-ready.service gaius-engine-ready.service nautilus-tick.service nautilus-tick.timer"
     echo "Installing hardening units: $UNITS"
     for u in $UNITS; do
       sudo install -m 0644 "$(pwd)/scripts/systemd/$u" "/etc/systemd/system/$u"
@@ -190,9 +190,28 @@ reboot-hardening-install:
     # the currently-running engine immediately.
     sudo systemctl enable crash-guard.service >/dev/null
     sudo systemctl enable --now gaius-engine-ready.service gaius-thinking-ready.service
+    # nautilus-tick.timer: hourly hh:03 second hand for the resident Nautilus's
+    # Backlog fill (idempotent on the epoch hour; fails loudly when the resident is down).
+    sudo systemctl enable --now nautilus-tick.timer
     echo "✓ Installed + enabled. Verify:"
     echo "    systemctl status gaius-engine-ready.service --no-pager"
     echo "    journalctl -u gaius-engine-ready.service -n 20 --no-pager"
+    echo "    systemctl list-timers nautilus-tick.timer --no-pager"
+
+# Build the resident Nautilus supervisor (external/nautilus) in release mode.
+# The devenv process builds on demand too; this is the explicit form.
+nautilus-build:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cargo build --release --manifest-path "$(pwd)/external/nautilus/Cargo.toml"
+    "$(pwd)/external/nautilus/target/release/nautilus" validate "$(pwd)/config/supervision/gaius.textproto" --quiet | tail -1
+
+# Resident Nautilus faces (loopback :50061): status, the Operations Backlog, a forced tick.
+nautilus-status:
+    @"$(pwd)/external/nautilus/target/release/nautilus" status --target 127.0.0.1:50061
+
+backlog *ARGS:
+    @"$(pwd)/external/nautilus/target/release/nautilus" backlog --target 127.0.0.1:50061 {{ARGS}}
     echo "Kernel-panic-on-hang backstop is NOT armed. To arm (reboots on hard hang):"
     echo "    sudo install -m 0644 scripts/systemd/60-crash-recovery.conf /etc/sysctl.d/ && sudo sysctl --system"
 

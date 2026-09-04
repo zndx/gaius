@@ -609,6 +609,36 @@
     };
   };
 
+  # Nautilus — the resident deterministic supervisor (external/nautilus, Rust).
+  # Dials the engine's EngineSupervision stream, fills the Fibonacci-hour
+  # Operations Backlog, measures task silence, ports the T1–T6 triggers; hosts
+  # service Nautilus on 127.0.0.1:50061. Depends on Postgres (the impala_fdw
+  # transport to Kudu) but NOT on the engine: the observer must outlive its
+  # subject. Readiness = the binary's own Status probe (a dark engine is not
+  # unhealthy). failure_threshold covers a cold `cargo build --release`.
+  processes.nautilus = {
+    exec = ''
+      exec ${config.devenv.root}/scripts/processes/nautilus.sh
+    '';
+    process-compose = {
+      depends_on.postgres.condition = "process_healthy";
+      depends_on.gaius-engine.condition = "process_started";
+      availability = {
+        restart = "on_failure";
+        backoff_seconds = 10;
+        max_restarts = 20;
+      };
+      readiness_probe = {
+        exec = {
+          command = "${config.devenv.root}/external/nautilus/target/release/nautilus status --quiet --target 127.0.0.1:50061";
+        };
+        initial_delay_seconds = 5;
+        period_seconds = 10;
+        failure_threshold = 60;
+      };
+    };
+  };
+
   # Gaius Fetch Worker (content gathering daemon)
   processes.gaius-worker = {
     exec = ''

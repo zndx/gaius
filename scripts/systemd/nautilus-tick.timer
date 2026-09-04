@@ -1,0 +1,11 @@
+[Unit]
+Description=Nautilus hourly Backlog tick at hh:03 (see nautilus-tick.service)
+
+[Timer]
+OnCalendar=*-*-* *:03:00
+# A missed hour is a fact the Backlog records (unknown slot), never replayed.
+Persistent=false
+AccuracySec=15s
+
+[Install]
+WantedBy=timers.target

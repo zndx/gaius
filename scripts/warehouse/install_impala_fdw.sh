@@ -42,6 +42,13 @@ sed \
   -e "s|__KUDU_MASTERS__|$KUDU_MASTERS|g" \
   "$SQL" | psql -h "$PGHOST" -p "$PGPORT" -d "$PGDATABASE" -v ON_ERROR_STOP=1
 
+# Nautilus data product (Operations Backlog): foreign tables over the
+# signals_dataproducts.nautilus_* Kudu tier0 tables + logical views. Generated
+# by `nautilus ddl --fdw` (external/nautilus); the Kudu tables come from signals
+# `python -m signals.ops schema-apply` (config/platform/nautilus-kudu.sql).
+psql -h "$PGHOST" -p "$PGPORT" -d "$PGDATABASE" -v ON_ERROR_STOP=1 \
+  -f "$ROOT/scripts/warehouse/nautilus-fdw.sql"
+
 # Warehouse-side settle function, invoked by Gaius pg_cron → engine, not Signals cron.
 if [[ -f "$SIGNALS_ROOT/config/platform/gpu-metrics-settle.sql" ]]; then
   grep -v 'cron.schedule\|cron.unschedule' \
