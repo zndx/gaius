@@ -9548,6 +9548,122 @@ class GaiusServicer(GaiusServiceServicer):
             logger.exception("ObjectiveVerify failed")
             return ObjectiveVerifyResponse(error=str(e))
 
+    # ── Operations Backlog + resident Nautilus (2026-09-04) ────────────────
+    async def Backlog(self, request, context):
+        """/backlog — the Fibonacci state table as the tiered store holds it.
+
+        Reads the ``nautilus_backlog`` union view (Kudu tier0 ∪ Iceberg tier1)
+        through the impala_fdw foreign table on this database; still answers when
+        the supervisor is dark — a stale ``filled_at`` is the honest signal.
+        """
+        from ..generated import BacklogViewResponse, BacklogViewRow, BacklogViewSlot
+        from gaius.engine.generated.zndx.supervision.v1 import supervision_pb2 as sv
+        from gaius.engine.services.backlog_read import FIB_HOURS, read_backlog
+
+        pool = _summary_db(self._services)
+        if pool is None:
+            return BacklogViewResponse(error="#SV.00000015.NOPOOL engine database pool unavailable\n  Try: /health fix postgres")
+        try:
+            sessions = getattr(self._services, "supervision_bus", None)
+            live = False
+            try:
+                async with pool.acquire() as conn:
+                    live = bool(await conn.fetchval(
+                        "SELECT EXISTS (SELECT 1 FROM supervision_sessions WHERE disconnected_at IS NULL "
+                        "AND last_heartbeat_at > NOW() - INTERVAL '2 minutes')"
+                    ))
+            except Exception:  # noqa: BLE001
+                live = False
+            epoch = ""
+            try:
+                from gaius.engine.supervision_spec import load_spec
+
+                spec = load_spec()
+                epoch = spec.spec_version if spec is not None else ""
+            except Exception:  # noqa: BLE001
+                pass
+            resp = await read_backlog(
+                pool,
+                sv.BacklogRequest(workflow=request.workflow or "", include_ok=True),
+                epoch=epoch, supervisor_connected=live,
+            )
+
+            def _iso(ms: int) -> str:
+                from datetime import datetime, timezone
+
+                return datetime.fromtimestamp(ms / 1000, tz=timezone.utc).isoformat() if ms else ""
+
+            cat_name = {v: k.replace("EXPECTATION_CATEGORY_", "").lower() for k, v in sv.ExpectationCategory.items()}
+            ch_name = {v: k.replace("CHANNEL_", "").lower() for k, v in sv.Channel.items()}
+            st_name = {v: k.replace("BACKLOG_STATE_", "").lower() for k, v in sv.BacklogState.items()}
+            rows = []
+            for r in resp.rows:
+                if not request.include_ok and r.escalation_level == 0:
+                    continue
+                rows.append(BacklogViewRow(
+                    workflow=r.workflow, category=cat_name.get(r.category, ""),
+                    slots=[BacklogViewSlot(slot=s.slot, f_hours=FIB_HOURS[s.slot], state=("" if s.state == sv.BACKLOG_STATE_UNSPECIFIED else st_name.get(s.state, "")),
+                                           filled_at=_iso(s.filled_unix_ms), evidence=s.evidence_json) for s in r.slots],
+                    escalation_level=r.escalation_level, channel=("" if r.channel == sv.CHANNEL_UNSPECIFIED else ch_name.get(r.channel, "")),
+                    item_key=r.item_key, first_miss_at=_iso(r.first_miss_unix_ms), horizon_at=_iso(r.horizon_unix_ms),
+                    horizon_slot=r.horizon_slot, resolved_at=_iso(r.resolved_unix_ms),
+                ))
+            return BacklogViewResponse(rows=rows, filled_at=_iso(resp.last_tick_unix_ms), supervisor_connected=live, epoch=resp.epoch)
+        except Exception as e:
+            logger.exception("Backlog failed")
+            return BacklogViewResponse(error=str(e))
+
+    async def NautilusStatus(self, request, context):
+        """/nautilus status — the resident supervisor as the engine sees it: the
+        newest Supervise session and the SupervisorStatus row Nautilus upserts."""
+        import json as _json
+
+        from ..generated import NautilusSessionRow, NautilusStatusResponse
+
+        pool = _summary_db(self._services)
+        if pool is None:
+            return NautilusStatusResponse(error="#SV.00000015.NOPOOL engine database pool unavailable\n  Try: /health fix postgres")
+        try:
+            async with pool.acquire() as conn:
+                s = await conn.fetchrow(
+                    "SELECT id, connected_at, disconnected_at, supervisor_id, supervisor_epoch, events_sent, events_dropped, "
+                    "directives_received, directives_accepted, directives_refused, last_heartbeat_at "
+                    "FROM supervision_sessions ORDER BY connected_at DESC LIMIT 1"
+                )
+                st = await conn.fetchrow(
+                    "SELECT epoch, status, filled_at, (filled_at < NOW() - INTERVAL '10 minutes') AS stale "
+                    "FROM nautilus.supervisor_status WHERE project = $1", "gaius",
+                )
+            connected = bool(s and s["disconnected_at"] is None and s["last_heartbeat_at"] is not None
+                             and (s["last_heartbeat_at"].timestamp() > __import__("time").time() - 120))
+            bus = getattr(self._services, "supervision_bus", None)
+            bus_stats = bus.stats() if bus is not None and hasattr(bus, "stats") else {}
+            resp = NautilusStatusResponse(
+                connected=connected,
+                supervisor_status=(_json.dumps(st["status"], default=str) if st and not isinstance(st["status"], str) else (st["status"] if st else "")),
+                supervisor_epoch=(st["epoch"] if st else ""),
+                supervisor_filled_at=(st["filled_at"].isoformat() if st and st["filled_at"] else ""),
+                supervisor_stale=bool(st["stale"]) if st else True,
+                bus=_json.dumps(bus_stats, default=str),
+            )
+            if s:
+                resp.session.CopyFrom(NautilusSessionRow(
+                    id=int(s["id"]), connected_at=s["connected_at"].isoformat() if s["connected_at"] else "",
+                    disconnected_at=s["disconnected_at"].isoformat() if s["disconnected_at"] else "",
+                    supervisor_id=s["supervisor_id"] or "", supervisor_epoch=s["supervisor_epoch"] or "",
+                    events_sent=int(s["events_sent"] or 0), events_dropped=int(s["events_dropped"] or 0),
+                    directives_received=int(s["directives_received"] or 0), directives_accepted=int(s["directives_accepted"] or 0),
+                    directives_refused=int(s["directives_refused"] or 0),
+                    last_heartbeat_at=s["last_heartbeat_at"].isoformat() if s["last_heartbeat_at"] else "",
+                ))
+            if not st:
+                resp.error = ("#SV.00000011.NOSUPERVISOR no nautilus.supervisor_status row — the resident Nautilus has never "
+                              "reported.\n  Try: devenv processes start nautilus; nautilus status --target 127.0.0.1:50061")
+            return resp
+        except Exception as e:
+            logger.exception("NautilusStatus failed")
+            return NautilusStatusResponse(error=str(e))
+
     async def ObjectiveHistory(
         self,
         request: ObjectiveHistoryRequest,

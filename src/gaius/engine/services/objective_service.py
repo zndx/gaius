@@ -293,6 +293,20 @@ OBJECTIVES: dict[str, ObjectiveSpec] = {
     # outside the emitter's bookkeeping); a sustained FAIL is what Nautilus
     # escalates to Overwatch. Not task-bearing (dag=()): it verifies a
     # protocol, not a flow.
+    # (2026-09-04) The Operations Backlog itself (rule 1): the resident Nautilus
+    # fills a slot-0 row for every cadenced workflow each hour and holds a live
+    # session with this engine. Later gate: "every open item surfaced on its
+    # channel before its horizon slot" (GATE_KIND_BACKLOG_SURFACED).
+    "ops_backlog": ObjectiveSpec(
+        name="ops_backlog",
+        dag=(),
+        cadence=timedelta(hours=2),
+        description="The Backlog is being filled: a slot-0 row within 2 h (F=2) for every "
+        "cadenced process in the supervision instance, and a Supervise session "
+        "that heartbeated within 2 h.",
+        verifier="verify_ops_backlog",
+        params={"within_hours": 2},
+    ),
     "queue_share_arbitration": ObjectiveSpec(
         name="queue_share_arbitration",
         dag=(),
@@ -1168,6 +1182,61 @@ class ObjectiveService:
         )
         return gates
 
+    async def verify_ops_backlog(self, spec: ObjectiveSpec) -> list[dict[str, Any]]:
+        """The Operations Backlog is being filled (2026-09-04).
+
+        1. filled_within_horizon — every cadenced process in the supervision
+           instance has a slot-0 row in the tiered store newer than
+           `within_hours` (F=2). Evidence names the workflows that do not.
+        2. nautilus_connected — a Supervise session heartbeated within the
+           same window (the resident Nautilus is dialing this engine).
+        An unreadable store is an ERROR verdict, never a pass.
+        """
+        within_h = int(spec.params.get("within_hours", 2))
+        gates: list[dict[str, Any]] = []
+        expected: list[str] = []
+        try:
+            from gaius.engine.supervision_spec import load_spec
+
+            sp = load_spec()
+            expected = [p.id for p in sp.cadenced()] if sp is not None else []
+        except Exception as e:  # noqa: BLE001
+            gates.append({"gate": "filled_within_horizon", "verdict": "error", "evidence": f"instance unreadable: {e}"})
+        if expected:
+            try:
+                since_hour = int(__import__("time").time() // 3600) - within_h - 1
+                async with self._pool.acquire() as conn:
+                    rows = await conn.fetch(
+                        "SELECT workflow, max(ts_ns) AS ts_ns FROM nautilus_backlog "
+                        "WHERE project = 'gaius' AND slot = 0 AND epoch_hour >= $1 GROUP BY workflow",
+                        since_hour,
+                    )
+                    now_ns = int(await conn.fetchval("SELECT (EXTRACT(EPOCH FROM NOW()) * 1e9)::bigint"))
+                fresh = {r["workflow"] for r in rows if now_ns - int(r["ts_ns"] or 0) <= within_h * 3600 * 1_000_000_000}
+                missing = sorted(set(expected) - fresh)
+                gates.append({
+                    "gate": "filled_within_horizon",
+                    "verdict": "pass" if not missing else "fail",
+                    "evidence": (f"{len(fresh)}/{len(expected)} cadenced workflows have a slot-0 row within {within_h}h"
+                                 + (f"; missing: {missing[:8]}{'…' if len(missing) > 8 else ''}" if missing else "")
+                                 + ("" if not missing else " — DAG stage: the resident Nautilus tick (nautilus serve / nautilus-tick.timer)")),
+                })
+            except Exception as e:  # noqa: BLE001 — the store's absence is the finding
+                gates.append({"gate": "filled_within_horizon", "verdict": "error",
+                              "evidence": f"#SV.00000010.NOBACKLOG nautilus_backlog unreadable: {str(e)[:160]}"})
+        try:
+            async with self._pool.acquire() as conn:
+                hb = await conn.fetchval(
+                    "SELECT max(last_heartbeat_at) FROM supervision_sessions WHERE last_heartbeat_at > NOW() - make_interval(hours => $1)",
+                    within_h,
+                )
+            gates.append({"gate": "nautilus_connected", "verdict": "pass" if hb else "fail",
+                          "evidence": (f"last Supervise heartbeat {hb}" if hb else
+                                       f"no Supervise session heartbeat within {within_h}h — DAG stage: the resident Nautilus is not dialing this engine (#SV.00000011.NOSUPERVISOR)")})
+        except Exception as e:  # noqa: BLE001
+            gates.append({"gate": "nautilus_connected", "verdict": "error", "evidence": f"supervision_sessions unreadable: {e}"})
+        return gates
+
     async def _within_days(self, d: Any, days: int) -> bool:
         async with self._pool.acquire() as conn:
             return bool(
@@ -1298,6 +1367,23 @@ class ObjectiveService:
                 + "\n  Surfaced by Nautilus T3 (objective-stale)."
                 "\n  Try: /objective verify " + spec.name
             )
+
+        # Supervision (2026-09-04): the verdict as an event for the resident
+        # Nautilus — a FAIL/awaiting verdict is a Backlog slot-0 entry (judged /
+        # objective items). Fail-open bookkeeping.
+        try:
+            from gaius.engine.services.supervision_bus import KIND_OBJECTIVE, publish as _sv_publish
+
+            _sv_publish(
+                KIND_OBJECTIVE,
+                objective=spec.name, run_id=run_id, verdict=verdict.upper(),
+                gates_passed=passed, gates_total=len(gates), judge_rendered=bool(judge_backed),
+                awaits=str(spec.params.get("awaits") or ""),
+                gates=[{"name": g.get("gate", ""), "verdict": str(g.get("verdict", "")).upper(),
+                        "detail": str(g.get("evidence", ""))[:300]} for g in gates],
+            )
+        except Exception:  # noqa: BLE001
+            logger.debug("supervision objective publish skipped", exc_info=True)
 
         return {
             "objective": spec.name,

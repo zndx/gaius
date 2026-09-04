@@ -88,6 +88,10 @@ class ServiceRegistry:
 
     # Nautilus service — Overwatch's model-free detector (ACP+Grok judge)
     nautilus_service: Any = None
+    # (2026-09-04) EngineSupervision stream: the in-process event bus and the task
+    # processor (live-run knowledge the directive handler consults).
+    supervision_bus: Any = None
+    scheduled_task_processor: Any = None
 
     # Caught by #GR.00000005.UNKNOWNSVC on 2026-09-01: all four were
     # registered by server.py and silently dropped for want of a field —
@@ -258,6 +262,16 @@ class GrpcServer:
         zpb_grpc.add_EngineServicer_to_server(zndx_servicer, self._server)
         logger.debug("Registered zndx.engine.v1.Engine (lattice federation face)")
 
+        # (2026-09-04) The engine-hosted supervision stream the resident Nautilus
+        # dials: events out, directives in. Same port, distinct service path.
+        from gaius.engine.generated.zndx.supervision.v1 import supervision_pb2_grpc as sv_grpc
+        from .servicers.supervision_servicer import EngineSupervisionServicer
+
+        sv_grpc.add_EngineSupervisionServicer_to_server(
+            EngineSupervisionServicer(self._services), self._server
+        )
+        logger.debug("Registered zndx.supervision.v1.EngineSupervision (supervision stream)")
+
         # Reflection is required for external spot-checks (grpcurl list) and
         # lattice-ci. Generated stubs remain the protocol SoR.
         if self._config.reflection_enabled:
@@ -277,6 +291,7 @@ class GrpcServer:
                 "inference.GRPCInferenceService",
                 "gaius.engine.GaiusService",
                 "zndx.engine.v1.Engine",
+                "zndx.supervision.v1.EngineSupervision",
                 reflection.SERVICE_NAME,
             )
             reflection.enable_server_reflection(service_names, self._server)

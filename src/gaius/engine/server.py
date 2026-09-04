@@ -242,6 +242,21 @@ class GaiusEngine:
         except Exception as e:
             logger.debug("running-sha stamp skipped: %s", e)
 
+        # (2026-09-04) The supervision event bus exists before any daemon can
+        # publish to it; the EngineSupervision stream servicer subscribes per
+        # supervisor session. Fail-open: bookkeeping never gates the boot.
+        try:
+            from .services.supervision_bus import init_bus
+
+            _bus = init_bus()
+            try:
+                if self._grpc_server is not None:
+                    self._grpc_server.update_service("supervision_bus", _bus)
+            except Exception as e:  # noqa: BLE001
+                logger.debug("supervision bus registry update skipped: %s", e)
+        except Exception as e:
+            logger.debug("supervision bus init skipped: %s", e)
+
         # 0. Validate ACP prerequisites FIRST (FAIL-FAST)
         # This ensures escalation paths are available before any daemons start
         await self._validate_acp_prerequisites()
@@ -1127,6 +1142,14 @@ class GaiusEngine:
 
         # 6. Initialize ScheduledTaskProcessor (OPTIONAL, landing page tasks)
         await self._create_scheduled_task_processor()
+        # (2026-09-04) The EngineSupervision directive handler consults the
+        # processor for live-run knowledge (never reclaim a task whose child is
+        # alive); register it so the servicer can find it.
+        try:
+            if self._grpc_server is not None and self._scheduled_task_processor is not None:
+                self._grpc_server.update_service("scheduled_task_processor", self._scheduled_task_processor)
+        except Exception as e:  # noqa: BLE001
+            logger.debug("scheduled_task_processor registry update skipped: %s", e)
 
         # Register daemons with dependency ordering
         if self._health_observer_service:

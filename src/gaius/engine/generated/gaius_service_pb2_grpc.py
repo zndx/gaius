@@ -840,6 +840,16 @@ class GaiusServiceStub(object):
                 request_serializer=gaius__service__pb2.OverwatchHistoryRequest.SerializeToString,
                 response_deserializer=gaius__service__pb2.OverwatchHistoryResponse.FromString,
                 _registered_method=True)
+        self.Backlog = channel.unary_unary(
+                '/gaius.engine.GaiusService/Backlog',
+                request_serializer=gaius__service__pb2.BacklogViewRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.BacklogViewResponse.FromString,
+                _registered_method=True)
+        self.NautilusStatus = channel.unary_unary(
+                '/gaius.engine.GaiusService/NautilusStatus',
+                request_serializer=gaius__service__pb2.NautilusStatusRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.NautilusStatusResponse.FromString,
+                _registered_method=True)
 
 
 class GaiusServiceServicer(object):
@@ -1962,6 +1972,22 @@ class GaiusServiceServicer(object):
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def Backlog(self, request, context):
+        """(2026-09-04) Operations Backlog + the resident Nautilus — read-only views the
+        CLI renders. The Backlog rows come from the tiered store (nautilus_backlog
+        union view); the supervisor status from nautilus.supervisor_status and the
+        engine's own supervision_sessions.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def NautilusStatus(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
 
 def add_GaiusServiceServicer_to_server(servicer, server):
     rpc_method_handlers = {
@@ -2769,6 +2795,16 @@ def add_GaiusServiceServicer_to_server(servicer, server):
                     servicer.OverwatchHistory,
                     request_deserializer=gaius__service__pb2.OverwatchHistoryRequest.FromString,
                     response_serializer=gaius__service__pb2.OverwatchHistoryResponse.SerializeToString,
+            ),
+            'Backlog': grpc.unary_unary_rpc_method_handler(
+                    servicer.Backlog,
+                    request_deserializer=gaius__service__pb2.BacklogViewRequest.FromString,
+                    response_serializer=gaius__service__pb2.BacklogViewResponse.SerializeToString,
+            ),
+            'NautilusStatus': grpc.unary_unary_rpc_method_handler(
+                    servicer.NautilusStatus,
+                    request_deserializer=gaius__service__pb2.NautilusStatusRequest.FromString,
+                    response_serializer=gaius__service__pb2.NautilusStatusResponse.SerializeToString,
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
@@ -7118,6 +7154,60 @@ class GaiusService(object):
             '/gaius.engine.GaiusService/OverwatchHistory',
             gaius__service__pb2.OverwatchHistoryRequest.SerializeToString,
             gaius__service__pb2.OverwatchHistoryResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def Backlog(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/gaius.engine.GaiusService/Backlog',
+            gaius__service__pb2.BacklogViewRequest.SerializeToString,
+            gaius__service__pb2.BacklogViewResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def NautilusStatus(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/gaius.engine.GaiusService/NautilusStatus',
+            gaius__service__pb2.NautilusStatusRequest.SerializeToString,
+            gaius__service__pb2.NautilusStatusResponse.FromString,
             options,
             channel_credentials,
             insecure,

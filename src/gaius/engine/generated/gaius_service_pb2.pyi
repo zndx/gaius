@@ -5519,3 +5519,115 @@ class EfficacyResolveResponse(_message.Message):
     ok: bool
     error: str
     def __init__(self, ok: bool = ..., error: _Optional[str] = ...) -> None: ...
+
+class BacklogViewRequest(_message.Message):
+    __slots__ = ("workflow", "hours", "include_ok")
+    WORKFLOW_FIELD_NUMBER: _ClassVar[int]
+    HOURS_FIELD_NUMBER: _ClassVar[int]
+    INCLUDE_OK_FIELD_NUMBER: _ClassVar[int]
+    workflow: str
+    hours: int
+    include_ok: bool
+    def __init__(self, workflow: _Optional[str] = ..., hours: _Optional[int] = ..., include_ok: bool = ...) -> None: ...
+
+class BacklogViewSlot(_message.Message):
+    __slots__ = ("slot", "f_hours", "state", "filled_at", "evidence")
+    SLOT_FIELD_NUMBER: _ClassVar[int]
+    F_HOURS_FIELD_NUMBER: _ClassVar[int]
+    STATE_FIELD_NUMBER: _ClassVar[int]
+    FILLED_AT_FIELD_NUMBER: _ClassVar[int]
+    EVIDENCE_FIELD_NUMBER: _ClassVar[int]
+    slot: int
+    f_hours: int
+    state: str
+    filled_at: str
+    evidence: str
+    def __init__(self, slot: _Optional[int] = ..., f_hours: _Optional[int] = ..., state: _Optional[str] = ..., filled_at: _Optional[str] = ..., evidence: _Optional[str] = ...) -> None: ...
+
+class BacklogViewRow(_message.Message):
+    __slots__ = ("workflow", "category", "slots", "escalation_level", "channel", "item_key", "first_miss_at", "horizon_at", "horizon_slot", "resolved_at")
+    WORKFLOW_FIELD_NUMBER: _ClassVar[int]
+    CATEGORY_FIELD_NUMBER: _ClassVar[int]
+    SLOTS_FIELD_NUMBER: _ClassVar[int]
+    ESCALATION_LEVEL_FIELD_NUMBER: _ClassVar[int]
+    CHANNEL_FIELD_NUMBER: _ClassVar[int]
+    ITEM_KEY_FIELD_NUMBER: _ClassVar[int]
+    FIRST_MISS_AT_FIELD_NUMBER: _ClassVar[int]
+    HORIZON_AT_FIELD_NUMBER: _ClassVar[int]
+    HORIZON_SLOT_FIELD_NUMBER: _ClassVar[int]
+    RESOLVED_AT_FIELD_NUMBER: _ClassVar[int]
+    workflow: str
+    category: str
+    slots: _containers.RepeatedCompositeFieldContainer[BacklogViewSlot]
+    escalation_level: int
+    channel: str
+    item_key: str
+    first_miss_at: str
+    horizon_at: str
+    horizon_slot: int
+    resolved_at: str
+    def __init__(self, workflow: _Optional[str] = ..., category: _Optional[str] = ..., slots: _Optional[_Iterable[_Union[BacklogViewSlot, _Mapping]]] = ..., escalation_level: _Optional[int] = ..., channel: _Optional[str] = ..., item_key: _Optional[str] = ..., first_miss_at: _Optional[str] = ..., horizon_at: _Optional[str] = ..., horizon_slot: _Optional[int] = ..., resolved_at: _Optional[str] = ...) -> None: ...
+
+class BacklogViewResponse(_message.Message):
+    __slots__ = ("rows", "filled_at", "supervisor_connected", "epoch", "error")
+    ROWS_FIELD_NUMBER: _ClassVar[int]
+    FILLED_AT_FIELD_NUMBER: _ClassVar[int]
+    SUPERVISOR_CONNECTED_FIELD_NUMBER: _ClassVar[int]
+    EPOCH_FIELD_NUMBER: _ClassVar[int]
+    ERROR_FIELD_NUMBER: _ClassVar[int]
+    rows: _containers.RepeatedCompositeFieldContainer[BacklogViewRow]
+    filled_at: str
+    supervisor_connected: bool
+    epoch: str
+    error: str
+    def __init__(self, rows: _Optional[_Iterable[_Union[BacklogViewRow, _Mapping]]] = ..., filled_at: _Optional[str] = ..., supervisor_connected: bool = ..., epoch: _Optional[str] = ..., error: _Optional[str] = ...) -> None: ...
+
+class NautilusStatusRequest(_message.Message):
+    __slots__ = ()
+    def __init__(self) -> None: ...
+
+class NautilusSessionRow(_message.Message):
+    __slots__ = ("id", "connected_at", "disconnected_at", "supervisor_id", "supervisor_epoch", "events_sent", "events_dropped", "directives_received", "directives_accepted", "directives_refused", "last_heartbeat_at")
+    ID_FIELD_NUMBER: _ClassVar[int]
+    CONNECTED_AT_FIELD_NUMBER: _ClassVar[int]
+    DISCONNECTED_AT_FIELD_NUMBER: _ClassVar[int]
+    SUPERVISOR_ID_FIELD_NUMBER: _ClassVar[int]
+    SUPERVISOR_EPOCH_FIELD_NUMBER: _ClassVar[int]
+    EVENTS_SENT_FIELD_NUMBER: _ClassVar[int]
+    EVENTS_DROPPED_FIELD_NUMBER: _ClassVar[int]
+    DIRECTIVES_RECEIVED_FIELD_NUMBER: _ClassVar[int]
+    DIRECTIVES_ACCEPTED_FIELD_NUMBER: _ClassVar[int]
+    DIRECTIVES_REFUSED_FIELD_NUMBER: _ClassVar[int]
+    LAST_HEARTBEAT_AT_FIELD_NUMBER: _ClassVar[int]
+    id: int
+    connected_at: str
+    disconnected_at: str
+    supervisor_id: str
+    supervisor_epoch: str
+    events_sent: int
+    events_dropped: int
+    directives_received: int
+    directives_accepted: int
+    directives_refused: int
+    last_heartbeat_at: str
+    def __init__(self, id: _Optional[int] = ..., connected_at: _Optional[str] = ..., disconnected_at: _Optional[str] = ..., supervisor_id: _Optional[str] = ..., supervisor_epoch: _Optional[str] = ..., events_sent: _Optional[int] = ..., events_dropped: _Optional[int] = ..., directives_received: _Optional[int] = ..., directives_accepted: _Optional[int] = ..., directives_refused: _Optional[int] = ..., last_heartbeat_at: _Optional[str] = ...) -> None: ...
+
+class NautilusStatusResponse(_message.Message):
+    __slots__ = ("connected", "session", "supervisor_status", "supervisor_epoch", "supervisor_filled_at", "supervisor_stale", "bus", "error")
+    CONNECTED_FIELD_NUMBER: _ClassVar[int]
+    SESSION_FIELD_NUMBER: _ClassVar[int]
+    SUPERVISOR_STATUS_FIELD_NUMBER: _ClassVar[int]
+    SUPERVISOR_EPOCH_FIELD_NUMBER: _ClassVar[int]
+    SUPERVISOR_FILLED_AT_FIELD_NUMBER: _ClassVar[int]
+    SUPERVISOR_STALE_FIELD_NUMBER: _ClassVar[int]
+    BUS_FIELD_NUMBER: _ClassVar[int]
+    ERROR_FIELD_NUMBER: _ClassVar[int]
+    connected: bool
+    session: NautilusSessionRow
+    supervisor_status: str
+    supervisor_epoch: str
+    supervisor_filled_at: str
+    supervisor_stale: bool
+    bus: str
+    error: str
+    def __init__(self, connected: bool = ..., session: _Optional[_Union[NautilusSessionRow, _Mapping]] = ..., supervisor_status: _Optional[str] = ..., supervisor_epoch: _Optional[str] = ..., supervisor_filled_at: _Optional[str] = ..., supervisor_stale: bool = ..., bus: _Optional[str] = ..., error: _Optional[str] = ...) -> None: ...

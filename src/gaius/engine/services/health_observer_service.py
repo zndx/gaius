@@ -60,6 +60,18 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _sv_publish_incident(**payload: Any) -> None:
+    """Emit an IncidentEvent to the supervision bus (2026-09-04) — the resident
+    Nautilus's view of incidents (frozen-incident / kill-loop triggers, chronic
+    Backlog items). Fail-open: never disturbs remediation."""
+    try:
+        from gaius.engine.services.supervision_bus import KIND_INCIDENT, publish
+
+        publish(KIND_INCIDENT, **payload)
+    except Exception:  # noqa: BLE001 — bookkeeping only
+        logger.debug("supervision incident publish skipped", exc_info=True)
+
+
 def friendly_endpoint_name(name: str) -> str:
     """Convert internal endpoint name to user-friendly display name.
 
@@ -883,6 +895,14 @@ class HealthObserverService(BaseDaemon):
                     context=details,
                     failure_mode_id=failure_mode_id,
                 )
+            # Supervision (2026-09-04): an incident opening is an event for the
+            # resident Nautilus (frozen-incident / kill-loop triggers, chronic
+            # Backlog items). Fail-open bookkeeping.
+            _sv_publish_incident(
+                fingerprint=fingerprint, state="ACTIVE", tier=int(rpn_result.get("tier", 0) or 0),
+                endpoint=endpoint, failure_mode=failure_mode_id, sequence_id=str(sequence_id or ""),
+                event_type="sequence_started",
+            )
 
             incident = HealthIncident(
                 incident_id=uuid4(),
@@ -993,6 +1013,11 @@ class HealthObserverService(BaseDaemon):
                 to_tier=tier,
                 from_tier=tier - 1 if tier > 0 else None,
                 reason="escalation" if tier > 0 else "initial",
+            )
+            _sv_publish_incident(
+                fingerprint=incident.fingerprint, state="HEALING", tier=int(tier), endpoint=incident.endpoint,
+                failure_mode=incident.failure_mode_id, sequence_id=str(incident.sequence_id or ""),
+                event_type="tier_entered",
             )
 
         try:
@@ -2283,6 +2308,12 @@ Begin your investigation now."""
                 total_duration_ms = int(
                     (now - created_at).total_seconds() * 1000
                 )
+                _sv_publish_incident(
+                    fingerprint=incident.fingerprint, state=("RESOLVED" if outcome == "success" else "MANUAL_REQUIRED"),
+                    tier=int(incident.current_tier or 0), endpoint=incident.endpoint,
+                    failure_mode=incident.failure_mode_id, sequence_id=str(incident.sequence_id or ""),
+                    event_type="sequence_completed",
+                )
                 await self._event_recorder.complete_sequence(
                     sequence_id=incident.sequence_id,
                     endpoint=incident.endpoint,
@@ -2690,6 +2721,11 @@ Begin your investigation now."""
                     total_attempts=incident.attempts,
                     final_tier=incident.current_tier,
                 )
+            _sv_publish_incident(
+                fingerprint=incident.fingerprint, state="RESOLVED", tier=int(incident.current_tier or 0),
+                endpoint=incident.endpoint, failure_mode=incident.failure_mode_id,
+                sequence_id=str(incident.sequence_id or ""), event_type="sequence_completed",
+            )
 
             # Notify resolution callbacks
             for callback in self._on_resolution:

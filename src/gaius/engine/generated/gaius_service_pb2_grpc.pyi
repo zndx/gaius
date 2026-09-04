@@ -380,6 +380,13 @@ class GaiusServiceStub:
     """
     OverwatchHistory: grpc.UnaryUnaryMultiCallable[gaius_service_pb2.OverwatchHistoryRequest, gaius_service_pb2.OverwatchHistoryResponse]
     """overwatch_events rows"""
+    Backlog: grpc.UnaryUnaryMultiCallable[gaius_service_pb2.BacklogViewRequest, gaius_service_pb2.BacklogViewResponse]
+    """(2026-09-04) Operations Backlog + the resident Nautilus — read-only views the
+    CLI renders. The Backlog rows come from the tiered store (nautilus_backlog
+    union view); the supervisor status from nautilus.supervisor_status and the
+    engine's own supervision_sessions.
+    """
+    NautilusStatus: grpc.UnaryUnaryMultiCallable[gaius_service_pb2.NautilusStatusRequest, gaius_service_pb2.NautilusStatusResponse]
 
 @typing.type_check_only
 class GaiusServiceAsyncStub(GaiusServiceStub):
@@ -733,6 +740,13 @@ class GaiusServiceAsyncStub(GaiusServiceStub):
     """
     OverwatchHistory: grpc.aio.UnaryUnaryMultiCallable[gaius_service_pb2.OverwatchHistoryRequest, gaius_service_pb2.OverwatchHistoryResponse]  # type: ignore[assignment]
     """overwatch_events rows"""
+    Backlog: grpc.aio.UnaryUnaryMultiCallable[gaius_service_pb2.BacklogViewRequest, gaius_service_pb2.BacklogViewResponse]  # type: ignore[assignment]
+    """(2026-09-04) Operations Backlog + the resident Nautilus — read-only views the
+    CLI renders. The Backlog rows come from the tiered store (nautilus_backlog
+    union view); the supervisor status from nautilus.supervisor_status and the
+    engine's own supervision_sessions.
+    """
+    NautilusStatus: grpc.aio.UnaryUnaryMultiCallable[gaius_service_pb2.NautilusStatusRequest, gaius_service_pb2.NautilusStatusResponse]  # type: ignore[assignment]
 
 class GaiusServiceServicer(metaclass=abc.ABCMeta):
     @abc.abstractmethod
@@ -2049,5 +2063,24 @@ class GaiusServiceServicer(metaclass=abc.ABCMeta):
         context: _ServicerContext,
     ) -> typing.Union[gaius_service_pb2.OverwatchHistoryResponse, collections.abc.Awaitable[gaius_service_pb2.OverwatchHistoryResponse]]:
         """overwatch_events rows"""
+
+    @abc.abstractmethod
+    def Backlog(
+        self,
+        request: gaius_service_pb2.BacklogViewRequest,
+        context: _ServicerContext,
+    ) -> typing.Union[gaius_service_pb2.BacklogViewResponse, collections.abc.Awaitable[gaius_service_pb2.BacklogViewResponse]]:
+        """(2026-09-04) Operations Backlog + the resident Nautilus — read-only views the
+        CLI renders. The Backlog rows come from the tiered store (nautilus_backlog
+        union view); the supervisor status from nautilus.supervisor_status and the
+        engine's own supervision_sessions.
+        """
+
+    @abc.abstractmethod
+    def NautilusStatus(
+        self,
+        request: gaius_service_pb2.NautilusStatusRequest,
+        context: _ServicerContext,
+    ) -> typing.Union[gaius_service_pb2.NautilusStatusResponse, collections.abc.Awaitable[gaius_service_pb2.NautilusStatusResponse]]: ...
 
 def add_GaiusServiceServicer_to_server(servicer: GaiusServiceServicer, server: typing.Union[grpc.Server, grpc.aio.Server]) -> None: ...

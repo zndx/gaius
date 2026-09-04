@@ -211,6 +211,8 @@ class GaiusCLI:
                     result["data"] = self._run_async(self._cmd_objective(args))
                 elif command == "overwatch":
                     result["data"] = self._run_async(self._cmd_overwatch(args))
+                elif command == "backlog":
+                    result["data"] = self._run_async(self._cmd_backlog(args))
                 elif command == "nautilus":
                     result["data"] = self._run_async(self._cmd_nautilus(args))
                 # Inference management (high-level)
@@ -4085,16 +4087,55 @@ Respond with:
             }
         if sub == "history":
             return await client.call("Overwatch", "history", {"limit": 20})
-        status = await client.call("Overwatch", "status", {})
-        if "error" in status:
-            return status
-        return {
-            "capability": "nautilus (model-free detection)",
-            "running": status["running"],
-            "cycles": status["cycles"],
-            "firings_recorded": status["firings_recorded"],
-            "armed": status["armed"],
+        # (2026-09-04) Two supervisors during the observe phase: the RESIDENT
+        # Nautilus (Rust, out of process, over the EngineSupervision stream) and
+        # the in-engine daemon it is replacing. Both are reported; the resident
+        # one is the capability going forward.
+        resident = await client.call("Nautilus", "status", {})
+        inengine = await client.call("Overwatch", "status", {})
+        out = {
+            "capability": "nautilus (model-free supervision)",
+            "resident": resident,
         }
+        if "error" not in inengine:
+            out["in_engine_daemon"] = {
+                "running": inengine["running"],
+                "cycles": inengine["cycles"],
+                "firings_recorded": inengine["firings_recorded"],
+                "armed": inengine["armed"],
+            }
+        return out
+
+    async def _cmd_backlog(self, args: str) -> dict:
+        """Operations Backlog: one row per cadenced workflow, ten Fibonacci-hour
+        slots (0,1,1,2,3,5,8,13,21,34 h) over the trailing 34 h, filled hourly by
+        the resident Nautilus.
+
+        Usage:
+            /backlog                 - every workflow (text: the state table)
+            /backlog <workflow>      - one workflow (e.g. task.clt_skos_admit)
+            /backlog --open          - only workflows with an open item
+        """
+        parts = args.split() if args else []
+        include_ok = "--open" not in parts
+        workflow = next((p for p in parts if not p.startswith("--")), "")
+        try:
+            client = await self._get_engine_client_cached()
+        except Exception as e:
+            return {
+                "error": f"Failed to connect to engine: {e}",
+                "suggestion": "Run: systemctl restart gaius",
+            }
+        data = await client.call("Backlog", "view", {"workflow": workflow, "include_ok": include_ok})
+        if "error" in data:
+            return data
+        from gaius.cli_render.backlog import render_backlog
+
+        data["backlog"] = render_backlog(
+            data.get("rows", []), filled_at=data.get("filled_at") or "",
+            supervisor_connected=data.get("supervisor_connected"),
+        )
+        return data
 
     async def _cmd_overwatch(self, args: str) -> dict:
         """Overwatch: the ACP+Grok judgement capability (its own capability;

@@ -27,7 +27,8 @@ if _version_not_supported:
 
 class NautilusStub(object):
     """The supervisor's face. Engines and flows are CLIENTS of Nautilus for reporting;
-    Nautilus is a client of the engine's zndx.engine.v1 for observation and Overwatch.
+    Nautilus is a client of the engine's zndx.engine.v1 for observation and of the
+    engine-hosted EngineSupervision stream for events and directives.
     """
 
     def __init__(self, channel):
@@ -61,11 +62,22 @@ class NautilusStub(object):
                 request_serializer=zndx_dot_supervision_dot_v1_dot_supervision__pb2.LoadSpecRequest.SerializeToString,
                 response_deserializer=zndx_dot_supervision_dot_v1_dot_supervision__pb2.Ack.FromString,
                 _registered_method=True)
+        self.Backlog = channel.unary_unary(
+                '/zndx.supervision.v1.Nautilus/Backlog',
+                request_serializer=zndx_dot_supervision_dot_v1_dot_supervision__pb2.BacklogRequest.SerializeToString,
+                response_deserializer=zndx_dot_supervision_dot_v1_dot_supervision__pb2.BacklogResponse.FromString,
+                _registered_method=True)
+        self.Tick = channel.unary_unary(
+                '/zndx.supervision.v1.Nautilus/Tick',
+                request_serializer=zndx_dot_supervision_dot_v1_dot_supervision__pb2.TickRequest.SerializeToString,
+                response_deserializer=zndx_dot_supervision_dot_v1_dot_supervision__pb2.TickResponse.FromString,
+                _registered_method=True)
 
 
 class NautilusServicer(object):
     """The supervisor's face. Engines and flows are CLIENTS of Nautilus for reporting;
-    Nautilus is a client of the engine's zndx.engine.v1 for observation and Overwatch.
+    Nautilus is a client of the engine's zndx.engine.v1 for observation and of the
+    engine-hosted EngineSupervision stream for events and directives.
     """
 
     def ReportPosition(self, request, context):
@@ -89,7 +101,8 @@ class NautilusServicer(object):
         raise NotImplementedError('Method not implemented!')
 
     def WatchEscalations(self, request, context):
-        """The engine subscribes; each Escalation is handed to its Overwatch capability.
+        """Operators and peers watch what Nautilus escalates. For the LOCAL engine the
+        consult rides the Supervise stream; this is a tee of the same Escalations.
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -97,6 +110,20 @@ class NautilusServicer(object):
 
     def LoadSpec(self, request, context):
         """Operator: load or replace the instance. Validation failures are rejected whole.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def Backlog(self, request, context):
+        """(added 2026-09-04 — additive v1.)
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def Tick(self, request, context):
+        """The hourly fill; idempotent on window_start (the systemd timer's second hand).
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -130,6 +157,16 @@ def add_NautilusServicer_to_server(servicer, server):
                     request_deserializer=zndx_dot_supervision_dot_v1_dot_supervision__pb2.LoadSpecRequest.FromString,
                     response_serializer=zndx_dot_supervision_dot_v1_dot_supervision__pb2.Ack.SerializeToString,
             ),
+            'Backlog': grpc.unary_unary_rpc_method_handler(
+                    servicer.Backlog,
+                    request_deserializer=zndx_dot_supervision_dot_v1_dot_supervision__pb2.BacklogRequest.FromString,
+                    response_serializer=zndx_dot_supervision_dot_v1_dot_supervision__pb2.BacklogResponse.SerializeToString,
+            ),
+            'Tick': grpc.unary_unary_rpc_method_handler(
+                    servicer.Tick,
+                    request_deserializer=zndx_dot_supervision_dot_v1_dot_supervision__pb2.TickRequest.FromString,
+                    response_serializer=zndx_dot_supervision_dot_v1_dot_supervision__pb2.TickResponse.SerializeToString,
+            ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
             'zndx.supervision.v1.Nautilus', rpc_method_handlers)
@@ -140,7 +177,8 @@ def add_NautilusServicer_to_server(servicer, server):
  # This class is part of an EXPERIMENTAL API.
 class Nautilus(object):
     """The supervisor's face. Engines and flows are CLIENTS of Nautilus for reporting;
-    Nautilus is a client of the engine's zndx.engine.v1 for observation and Overwatch.
+    Nautilus is a client of the engine's zndx.engine.v1 for observation and of the
+    engine-hosted EngineSupervision stream for events and directives.
     """
 
     @staticmethod
@@ -268,6 +306,183 @@ class Nautilus(object):
             '/zndx.supervision.v1.Nautilus/LoadSpec',
             zndx_dot_supervision_dot_v1_dot_supervision__pb2.LoadSpecRequest.SerializeToString,
             zndx_dot_supervision_dot_v1_dot_supervision__pb2.Ack.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def Backlog(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/zndx.supervision.v1.Nautilus/Backlog',
+            zndx_dot_supervision_dot_v1_dot_supervision__pb2.BacklogRequest.SerializeToString,
+            zndx_dot_supervision_dot_v1_dot_supervision__pb2.BacklogResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def Tick(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/zndx.supervision.v1.Nautilus/Tick',
+            zndx_dot_supervision_dot_v1_dot_supervision__pb2.TickRequest.SerializeToString,
+            zndx_dot_supervision_dot_v1_dot_supervision__pb2.TickResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+
+class EngineSupervisionStub(object):
+    """Served by the ENGINE beside zndx.engine.v1.Engine. One active session per
+    supervisor_id (a newer Subscribe supersedes; the old stream gets Goodbye).
+    """
+
+    def __init__(self, channel):
+        """Constructor.
+
+        Args:
+            channel: A grpc.Channel.
+        """
+        self.Supervise = channel.stream_stream(
+                '/zndx.supervision.v1.EngineSupervision/Supervise',
+                request_serializer=zndx_dot_supervision_dot_v1_dot_supervision__pb2.SupervisorMessage.SerializeToString,
+                response_deserializer=zndx_dot_supervision_dot_v1_dot_supervision__pb2.EngineEvent.FromString,
+                _registered_method=True)
+        self.Backlog = channel.unary_unary(
+                '/zndx.supervision.v1.EngineSupervision/Backlog',
+                request_serializer=zndx_dot_supervision_dot_v1_dot_supervision__pb2.BacklogRequest.SerializeToString,
+                response_deserializer=zndx_dot_supervision_dot_v1_dot_supervision__pb2.BacklogResponse.FromString,
+                _registered_method=True)
+
+
+class EngineSupervisionServicer(object):
+    """Served by the ENGINE beside zndx.engine.v1.Engine. One active session per
+    supervisor_id (a newer Subscribe supersedes; the old stream gets Goodbye).
+    """
+
+    def Supervise(self, request_iterator, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def Backlog(self, request, context):
+        """Read-through of the project's Backlog store (still answers when the supervisor
+        is dark — a stale last_tick is the honest signal).
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+
+def add_EngineSupervisionServicer_to_server(servicer, server):
+    rpc_method_handlers = {
+            'Supervise': grpc.stream_stream_rpc_method_handler(
+                    servicer.Supervise,
+                    request_deserializer=zndx_dot_supervision_dot_v1_dot_supervision__pb2.SupervisorMessage.FromString,
+                    response_serializer=zndx_dot_supervision_dot_v1_dot_supervision__pb2.EngineEvent.SerializeToString,
+            ),
+            'Backlog': grpc.unary_unary_rpc_method_handler(
+                    servicer.Backlog,
+                    request_deserializer=zndx_dot_supervision_dot_v1_dot_supervision__pb2.BacklogRequest.FromString,
+                    response_serializer=zndx_dot_supervision_dot_v1_dot_supervision__pb2.BacklogResponse.SerializeToString,
+            ),
+    }
+    generic_handler = grpc.method_handlers_generic_handler(
+            'zndx.supervision.v1.EngineSupervision', rpc_method_handlers)
+    server.add_generic_rpc_handlers((generic_handler,))
+    server.add_registered_method_handlers('zndx.supervision.v1.EngineSupervision', rpc_method_handlers)
+
+
+ # This class is part of an EXPERIMENTAL API.
+class EngineSupervision(object):
+    """Served by the ENGINE beside zndx.engine.v1.Engine. One active session per
+    supervisor_id (a newer Subscribe supersedes; the old stream gets Goodbye).
+    """
+
+    @staticmethod
+    def Supervise(request_iterator,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.stream_stream(
+            request_iterator,
+            target,
+            '/zndx.supervision.v1.EngineSupervision/Supervise',
+            zndx_dot_supervision_dot_v1_dot_supervision__pb2.SupervisorMessage.SerializeToString,
+            zndx_dot_supervision_dot_v1_dot_supervision__pb2.EngineEvent.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def Backlog(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/zndx.supervision.v1.EngineSupervision/Backlog',
+            zndx_dot_supervision_dot_v1_dot_supervision__pb2.BacklogRequest.SerializeToString,
+            zndx_dot_supervision_dot_v1_dot_supervision__pb2.BacklogResponse.FromString,
             options,
             channel_credentials,
             insecure,

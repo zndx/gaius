@@ -290,54 +290,28 @@ class NautilusService(BaseDaemon):
     async def _dispatch(
         self, firing: TriggerFiring, snapshot: NautilusSnapshot
     ) -> None:
-        logger.warning(
-            f"#OW.00000006.TRIGGER {firing.trigger} [{firing.scope}]: "
-            f"{firing.detail}"
-        )
-        judge_payload: dict[str, Any] = {"status": "not_invoked"}
+        # (2026-09-04) One writer for firings — shared with the resident Nautilus's
+        # directive path (source='nautilus.rs'); the observe-phase comparison is a
+        # GROUP BY overwatch_events.source. report_only: the FAIL is the judge's own
+        # FINAL CALL; record the trigger, do not ask Overwatch about itself.
+        from gaius.engine.services.overwatch_events import SOURCE_INENGINE, record_trigger
+
         report_only = bool(firing.evidence.get("report_only"))
         consult = firing.trigger in OVERWATCH_TRIGGERS and not report_only
-        if report_only:
-            # The FAIL is the judge's own FINAL CALL; it already names the
-            # gaps. Record the trigger, do not ask Overwatch about itself.
-            judge_payload = {"status": "report_only"}
-        if consult:
-            judge_payload = await self._judge.consult(
-                trigger=firing.trigger,
-                scope=firing.scope,
-                detail=firing.detail,
-                snapshot_markdown=self._render_snapshot(snapshot),
-                ledger_report=snapshot.ledger_report,
-            )
-
-        action = "recorded"
-        verdict = judge_payload.get("verdict")
-        if verdict and not verdict.get("in_contract", True):
-            action = f"reported:{verdict.get('recommended_action', 'report')}"
-            # v1 monitor tier: proposals are recorded for the operator;
-            # nothing executes. (propose tier wires aiops approval.)
-
-        try:
-            async with self._pool.acquire() as conn:
-                await conn.execute(
-                    """
-                    INSERT INTO overwatch_events (
-                        trigger_name, scope, detail, snapshot,
-                        judge_invoked, judge_status, judge_verdict, action_taken
-                    ) VALUES ($1,$2,$3,$4::jsonb,$5,$6,$7::jsonb,$8)
-                    """,
-                    firing.trigger,
-                    firing.scope,
-                    firing.detail,
-                    json.dumps(firing.evidence, default=str),
-                    consult,
-                    judge_payload.get("status"),
-                    json.dumps(verdict, default=str) if verdict else None,
-                    action,
-                )
+        out = await record_trigger(
+            self._pool,
+            self._judge,
+            trigger=firing.trigger,
+            scope=firing.scope,
+            detail=firing.detail,
+            evidence=firing.evidence,
+            snapshot_markdown=self._render_snapshot(snapshot),
+            ledger_report=snapshot.ledger_report,
+            consult=consult,
+            source=SOURCE_INENGINE,
+        )
+        if out.get("event_id") is not None:
             self._firings_recorded += 1
-        except Exception:
-            logger.exception("#OW.00000007.EVTFAIL overwatch_events write failed")
 
     @staticmethod
     def _render_snapshot(snapshot: NautilusSnapshot) -> str:

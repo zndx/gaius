@@ -983,8 +983,89 @@ class GrpcEngineClient:
             return await self._call_objective(action, params, timeout)
         elif service == "Overwatch":
             return await self._call_overwatch(action, params, timeout)
+        elif service == "Backlog":
+            return await self._call_backlog(action, params, timeout)
+        elif service == "Nautilus":
+            return await self._call_nautilus(action, params, timeout)
         else:
             raise ValueError(f"Unknown service: {service}")
+
+    async def _call_backlog(self, action: str, params: dict, timeout: float) -> dict:
+        """Operations Backlog view (2026-09-04): one row per workflow, ten slots."""
+        from ..engine.generated import BacklogViewRequest
+
+        if action != "view":
+            raise ValueError(f"Unknown Backlog action: {action}")
+        response = await self._stub.Backlog(
+            BacklogViewRequest(
+                workflow=str(params.get("workflow") or ""),
+                hours=int(params.get("hours") or 0),
+                include_ok=bool(params.get("include_ok", True)),
+            ),
+            timeout=timeout,
+        )
+        if response.error:
+            return {"error": response.error}
+        return {
+            "rows": [
+                {
+                    "workflow": r.workflow,
+                    "category": r.category,
+                    "escalation_level": r.escalation_level,
+                    "channel": r.channel or None,
+                    "item_key": r.item_key,
+                    "first_miss_at": r.first_miss_at or None,
+                    "horizon_at": r.horizon_at or None,
+                    "horizon_slot": r.horizon_slot,
+                    "resolved_at": r.resolved_at or None,
+                    "slots": [
+                        {"slot": s.slot, "f_hours": s.f_hours, "state": s.state, "filled_at": s.filled_at or None,
+                         "evidence": s.evidence or None}
+                        for s in r.slots
+                    ],
+                }
+                for r in response.rows
+            ],
+            "filled_at": response.filled_at or None,
+            "supervisor_connected": response.supervisor_connected,
+            "epoch": response.epoch,
+        }
+
+    async def _call_nautilus(self, action: str, params: dict, timeout: float) -> dict:
+        """Resident Nautilus status as the engine sees it (2026-09-04)."""
+        import json as _json
+
+        from ..engine.generated import NautilusStatusRequest
+
+        if action != "status":
+            raise ValueError(f"Unknown Nautilus action: {action}")
+        response = await self._stub.NautilusStatus(NautilusStatusRequest(), timeout=timeout)
+        out: dict = {
+            "connected": response.connected,
+            "supervisor_epoch": response.supervisor_epoch or None,
+            "supervisor_filled_at": response.supervisor_filled_at or None,
+            "supervisor_stale": response.supervisor_stale,
+        }
+        try:
+            out["supervisor_status"] = _json.loads(response.supervisor_status) if response.supervisor_status else None
+        except ValueError:
+            out["supervisor_status"] = response.supervisor_status
+        try:
+            out["bus"] = _json.loads(response.bus) if response.bus else None
+        except ValueError:
+            out["bus"] = response.bus
+        if response.HasField("session"):
+            s = response.session
+            out["session"] = {
+                "id": s.id, "connected_at": s.connected_at or None, "disconnected_at": s.disconnected_at or None,
+                "supervisor_id": s.supervisor_id, "supervisor_epoch": s.supervisor_epoch,
+                "events_sent": s.events_sent, "events_dropped": s.events_dropped,
+                "directives_received": s.directives_received, "directives_accepted": s.directives_accepted,
+                "directives_refused": s.directives_refused, "last_heartbeat_at": s.last_heartbeat_at or None,
+            }
+        if response.error:
+            out["error"] = response.error
+        return out
 
     async def _call_overwatch(
         self, action: str, params: dict, timeout: float

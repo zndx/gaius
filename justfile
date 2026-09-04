@@ -137,6 +137,25 @@ proto-generate:
           > "$OUT_DIR/zndx/scheduler/v1/__init__.py"
         echo "✓ Generated zndx.scheduler.v1 bindings"
       fi
+      # zndx.supervision.v1 — the supervision grammar + the engine-hosted
+      # EngineSupervision stream (2026-09-04). Before this arm the committed stubs
+      # were produced out of band and no staleness check covered them.
+      if [[ -f "$ZNDX_PROTO/zndx/supervision/v1/supervision.proto" ]]; then
+        echo "Source:  $ZNDX_PROTO/zndx/supervision/v1/supervision.proto"
+        python -m grpc_tools.protoc \
+          -I="$ZNDX_PROTO" \
+          --python_out="$OUT_DIR" \
+          --grpc_python_out="$OUT_DIR" \
+          "$ZNDX_PROTO/zndx/supervision/v1/supervision.proto"
+        sed -i 's/^from zndx\.supervision\.v1 import supervision_pb2 as /from gaius.engine.generated.zndx.supervision.v1 import supervision_pb2 as /' \
+          "$OUT_DIR/zndx/supervision/v1/supervision_pb2_grpc.py"
+        mkdir -p "$OUT_DIR/zndx/supervision/v1"
+        printf '%s\n' '"""Generated bindings for zndx.supervision.v1 (signals-protocol)."""' \
+          'from . import supervision_pb2, supervision_pb2_grpc' \
+          '__all__ = ["supervision_pb2", "supervision_pb2_grpc"]' \
+          > "$OUT_DIR/zndx/supervision/v1/__init__.py"
+        echo "✓ Generated zndx.supervision.v1 bindings"
+      fi
     else
       echo "⚠ signals-protocol proto not found at $ZNDX_PROTO — skip zndx bindings"
     fi

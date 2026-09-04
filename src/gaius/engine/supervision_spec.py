@@ -138,6 +138,45 @@ class SupervisionSpec:
             for r in phase.resources
         ]
 
+    # ── expectations (the Operations Backlog's contract; 2026-09-04) ─────
+    @property
+    def spec_version(self) -> str:
+        return str(self.supervisor.spec_version or "")
+
+    @property
+    def sha256(self) -> str:
+        """sha256 of the instance bytes the engine loaded — EngineHello.spec_sha256."""
+        import hashlib
+
+        try:
+            return hashlib.sha256(self.path.read_bytes()).hexdigest()
+        except OSError:
+            return ""
+
+    def cadenced(self) -> list[Any]:
+        """Every process with a cadence (cron or expected period) — the Backlog's row set."""
+        return [
+            p for p in self.supervisor.processes
+            if p.HasField("cadence") and (p.cadence.cron or p.cadence.expected_period_seconds)
+        ]
+
+    def process(self, pid: str) -> Any | None:
+        for p in self.supervisor.processes:
+            if p.id == pid:
+                return p
+        return None
+
+    def expectation_for(self, pid: str) -> Any | None:
+        """The declared Expectation of a process (None when undeclared)."""
+        p = self.process(pid)
+        if p is None or not p.HasField("expectation"):
+            return None
+        return p.expectation
+
+    def undeclared_expectations(self) -> list[str]:
+        """Cadenced processes without an expectation — a validator finding."""
+        return [p.id for p in self.cadenced() if not p.HasField("expectation")]
+
 
 _LOCK = threading.Lock()
 _CACHE: tuple[float, SupervisionSpec] | None = None

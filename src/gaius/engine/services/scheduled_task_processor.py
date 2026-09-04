@@ -29,7 +29,7 @@ import logging
 import os
 import re
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable, Protocol
 
 import asyncpg
@@ -49,6 +49,56 @@ logger = logging.getLogger(__name__)
 # task-watchdog (migration 20260904000002) resets on 45 min of SILENCE since
 # the last heartbeat, never on age since pick-up.
 HEARTBEAT_INTERVAL_S = 60.0
+
+
+def _ms(ts: Any) -> int:
+    try:
+        return int(ts.timestamp() * 1000) if ts is not None else 0
+    except Exception:  # noqa: BLE001
+        return 0
+
+
+def _sv_publish_task(row: Any, state: str, **extra: Any) -> None:
+    """Emit a TaskLifecycle event to the supervision bus (the resident Nautilus's
+    view of this queue). Fail-open bookkeeping — never disturbs the task.
+
+    ``row`` is a scheduled_tasks record (or a dict with the same keys); the
+    payload carries the row's own timestamps (SOURCE time), so replayed and live
+    events sort identically on the supervisor's side.
+    """
+    try:
+        from gaius.engine.services.supervision_bus import KIND_TASK, get_bus
+
+        bus = get_bus()
+        if bus is None:
+            return
+        g = row.get if hasattr(row, "get") else (lambda k, d=None: getattr(row, k, d))
+        result = g("result") or {}
+        if isinstance(result, str):
+            try:
+                result = json.loads(result)
+            except Exception:  # noqa: BLE001
+                result = {}
+        at_key = {"CLAIMED": "picked_up_at", "HEARTBEAT": "heartbeat_at"}.get(state, "completed_at")
+        at_ms = _ms(g(at_key)) or None
+        bus.publish(
+            KIND_TASK,
+            at_unix_ms=at_ms,
+            task_id=int(g("id") or 0),
+            task_type=str(g("task_type") or ""),
+            state=state,
+            reason=str(extra.pop("reason", "") or (result.get("reason") if isinstance(result, dict) else "") or ""),
+            error=str(extra.pop("error", "") or g("error") or "")[:300],
+            source=str(g("source") or ""),
+            scheduled_for_unix_ms=_ms(g("scheduled_for")),
+            picked_up_unix_ms=_ms(g("picked_up_at")),
+            heartbeat_unix_ms=_ms(g("heartbeat_at")),
+            completed_unix_ms=_ms(g("completed_at")),
+            workload_id=str(extra.pop("workload_id", "") or (result.get("workload_id") if isinstance(result, dict) else "") or ""),
+            **extra,
+        )
+    except Exception:  # noqa: BLE001 — bookkeeping only
+        logger.debug("supervision task publish skipped", exc_info=True)
 
 
 @dataclass
@@ -380,6 +430,13 @@ class ScheduledTaskProcessor(BaseDaemon):
                                 "WHERE id = $1 AND completed_at IS NULL",
                                 task.id,
                             )
+                            # Supervision: the progress signal itself — what the
+                            # resident Nautilus measures silence against.
+                            _sv_publish_task(
+                                {"id": task.id, "task_type": task.task_type, "heartbeat_at": datetime.now(timezone.utc),
+                                 "picked_up_at": getattr(task, "picked_up_at", None), "source": getattr(task, "source", None)},
+                                "HEARTBEAT", workload_id=wid,
+                            )
                         except Exception:  # noqa: BLE001 — bookkeeping only
                             logger.debug("heartbeat stamp skipped", exc_info=True)
                     # Phase transitions (in-engine interim for Nautilus): a
@@ -410,6 +467,15 @@ class ScheduledTaskProcessor(BaseDaemon):
                                 f"{log_prefix} phase {machine_id}/{phase.id} entered at step "
                                 f"{step}: {len(intents)} intent(s), {n} share request(s)"
                             )
+                            # Supervision: an INFERRED position (step start → phase)
+                            # for the resident Nautilus's process view.
+                            try:
+                                from gaius.engine.services.supervision_bus import KIND_POSITION, publish as _sv_pub
+
+                                _sv_pub(KIND_POSITION, process=f"task.{kind.replace('-', '_')}", machine=machine_id,
+                                        phase=phase.id, run_id=wid, step=step, detail=f"task {task.id}")
+                            except Exception:  # noqa: BLE001
+                                logger.debug("supervision position publish skipped", exc_info=True)
                 else:
                     break
             retcode = await proc.wait()
@@ -1553,10 +1619,13 @@ class ScheduledTaskProcessor(BaseDaemon):
         so the caller can drop the type even if the body raises.
         """
         async with self._pool.acquire() as conn:
+            # heartbeat_at = NULL on claim (2026-09-04): a re-claimed row used to
+            # inherit the previous attempt's stale heartbeat, so a fresh claim
+            # could be a watchdog victim at the very next tick.
             row = await conn.fetchrow(
                 """
                 UPDATE scheduled_tasks
-                SET picked_up_at = NOW()
+                SET picked_up_at = NOW(), heartbeat_at = NULL
                 WHERE id = $1
                   AND picked_up_at IS NULL
                   AND completed_at IS NULL
@@ -1571,6 +1640,7 @@ class ScheduledTaskProcessor(BaseDaemon):
             return
 
         task = ScheduledTask.from_row(row)
+        _sv_publish_task(row, "CLAIMED")
         if task.task_type in SINGLETON_TASK_TYPES:
             defer = False
             async with self._exec_lock:
@@ -1628,13 +1698,14 @@ class ScheduledTaskProcessor(BaseDaemon):
                 self._tasks_failed += 1
 
             async with self._pool.acquire() as conn:
-                await conn.execute(
+                done_row = await conn.fetchrow(
                     """
                     UPDATE scheduled_tasks
                     SET completed_at = NOW(),
                         result = $2,
                         error = $3
                     WHERE id = $1
+                    RETURNING *
                     """,
                     task_id,
                     json.dumps(result),
@@ -1645,6 +1716,15 @@ class ScheduledTaskProcessor(BaseDaemon):
                 logger.error(f"Task {task_id} handler failed: {error_msg}")
             else:
                 logger.info(f"Task {task_id} completed: {result}")
+            # Supervision: the terminal state as the row records it. A deferral is
+            # a clean row with status='deferred' — the Backlog's slot-0 entry — so
+            # the state comes from result.status, never from error alone.
+            _sv_publish_task(
+                done_row if done_row is not None else {"id": task_id, "task_type": task.task_type},
+                {"completed": "COMPLETED", "deferred": "DEFERRED", "failed": "FAILED", "error": "ERROR",
+                 "stalled": "STALLED", "yielded": "YIELDED", "skipped": "SKIPPED"}.get(str(result_status), "COMPLETED"),
+                reason=str(result.get("reason") or "") if isinstance(result, dict) else "",
+            )
 
         except Exception as e:
             self._tasks_failed += 1
@@ -1652,16 +1732,18 @@ class ScheduledTaskProcessor(BaseDaemon):
             logger.error(f"Task {task_id} failed (#STP.00000002.TASKFAIL): {e}")
 
             async with self._pool.acquire() as conn:
-                await conn.execute(
+                done_row = await conn.fetchrow(
                     """
                     UPDATE scheduled_tasks
                     SET completed_at = NOW(),
                         error = $2
                     WHERE id = $1
+                    RETURNING *
                     """,
                     task_id,
                     error_msg[:1000],
                 )
+            _sv_publish_task(done_row if done_row is not None else {"id": task_id, "task_type": task.task_type}, "ERROR", error=error_msg[:300])
 
     async def _mark_task_error(self, task_id: int, error: str) -> None:
         """Mark a task as failed with error."""
@@ -1682,15 +1764,18 @@ class ScheduledTaskProcessor(BaseDaemon):
         if self._pool is None:
             return
         async with self._pool.acquire() as conn:
-            await conn.execute(
+            row = await conn.fetchrow(
                 """
                 UPDATE scheduled_tasks
-                   SET picked_up_at = NULL
+                   SET picked_up_at = NULL, heartbeat_at = NULL
                  WHERE id = $1
                    AND completed_at IS NULL
+                RETURNING *
                 """,
                 task_id,
             )
+        if row is not None:
+            _sv_publish_task(row, "RESET", reason="released")
 
     async def _health_check_loop(self) -> None:
         """Periodic health check."""

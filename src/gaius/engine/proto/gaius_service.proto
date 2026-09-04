@@ -3766,6 +3766,12 @@ service GaiusService {
   // Overwatch (Nautilus detector + ACP/Grok judge)
   rpc OverwatchStatus(OverwatchStatusRequest) returns (OverwatchStatusResponse);   // Detector heartbeat, armed triggers, judge availability
   rpc OverwatchHistory(OverwatchHistoryRequest) returns (OverwatchHistoryResponse); // overwatch_events rows
+  // (2026-09-04) Operations Backlog + the resident Nautilus — read-only views the
+  // CLI renders. The Backlog rows come from the tiered store (nautilus_backlog
+  // union view); the supervisor status from nautilus.supervisor_status and the
+  // engine's own supervision_sessions.
+  rpc Backlog(BacklogViewRequest) returns (BacklogViewResponse);
+  rpc NautilusStatus(NautilusStatusRequest) returns (NautilusStatusResponse);
 }
 
 message OverwatchStatusRequest {}
@@ -3913,4 +3919,69 @@ message EfficacyResolveRequest {
 message EfficacyResolveResponse {
   bool ok = 1;
   string error = 2;
+}
+
+// ── Operations Backlog + resident Nautilus (2026-09-04) ──────────────────────
+// House pattern: request = filters; response = repeated rows + string error.
+
+message BacklogViewRequest {
+  string workflow = 1;          // "" = every declared workflow
+  int32 hours = 2;              // trailing window; 0 = 34 (the deepest Fibonacci slot)
+  bool include_ok = 3;          // include workflows with no open item
+}
+
+message BacklogViewSlot {
+  int32 slot = 1;               // 0..9
+  int32 f_hours = 2;            // 0,1,1,2,3,5,8,13,21,34
+  string state = 3;             // ok|deferred|missed|failed|judged_fail|awaiting|unknown|"" (unfilled)
+  string filled_at = 4;         // ISO-8601
+  string evidence = 5;          // JSON
+}
+
+message BacklogViewRow {
+  string workflow = 1;
+  string category = 2;          // tick|hourly_settled|slot|daily_dependent|judged|chronic_audit|operator_window|transient
+  repeated BacklogViewSlot slots = 3;   // exactly 10
+  int32 escalation_level = 4;   // deepest slot holding a miss; 0 = clean
+  string channel = 5;           // log|agenda_event|reminder|briefing|discussion
+  string item_key = 6;
+  string first_miss_at = 7;
+  string horizon_at = 8;
+  int32 horizon_slot = 9;
+  string resolved_at = 10;
+}
+
+message BacklogViewResponse {
+  repeated BacklogViewRow rows = 1;
+  string filled_at = 2;         // newest cell in the window
+  bool supervisor_connected = 3;
+  string epoch = 4;
+  string error = 5;
+}
+
+message NautilusStatusRequest {}
+
+message NautilusSessionRow {
+  int64 id = 1;
+  string connected_at = 2;
+  string disconnected_at = 3;
+  string supervisor_id = 4;
+  string supervisor_epoch = 5;
+  int64 events_sent = 6;
+  int64 events_dropped = 7;
+  int32 directives_received = 8;
+  int32 directives_accepted = 9;
+  int32 directives_refused = 10;
+  string last_heartbeat_at = 11;
+}
+
+message NautilusStatusResponse {
+  bool connected = 1;                 // a live Supervise session exists
+  NautilusSessionRow session = 2;     // the newest session (live or last)
+  string supervisor_status = 3;       // nautilus.supervisor_status.status (JSON) as Nautilus last upserted it
+  string supervisor_epoch = 4;
+  string supervisor_filled_at = 5;
+  bool supervisor_stale = 6;          // filled_at older than 2x the poll (#SV.00000011.NOSUPERVISOR)
+  string bus = 7;                     // engine bus stats (JSON): seq, subscribers, dropped
+  string error = 8;
 }
