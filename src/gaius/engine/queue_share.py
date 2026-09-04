@@ -95,12 +95,18 @@ def share_for_class(
     floor: int | None = None,
     priority: int | None = None,
     owner: str | None = None,
+    owner_id: str = "",
 ) -> object:
     """Build a QueueShareRequest. Always mints a new UUIDv7.
 
     ``floor``/``priority`` given → that declared intent rides the request
     (phase emission). Otherwise the supervision instance is consulted for
     (owner, kind); ``owner`` defaults to GAIUS_YK_KIND or ``kind``.
+    ``owner_id`` is the DECLARER stamped on the wire (WorkloadIntent.owner):
+    the run's workload id for phase emission, empty for a workload's own
+    admission claim — the arbiter's supersession identity is
+    (peer, queue, wrk, owner), so two declarers' intents for one shared
+    workload coexist.
     """
     from gaius.engine.generated.zndx.scheduler.v1 import scheduler_pb2 as spb
     from gaius.engine.generated.zndx.engine.v1 import engine_pb2 as zpb
@@ -123,6 +129,7 @@ def share_for_class(
     wrk = spb.WorkloadIntent(
         wrk=kind.replace("_", "-"),
         queue=rc.queue,
+        owner=(owner_id or "").strip(),
         resource_class=_rc_enum,
         applications=apps,
         requirements=zpb.WorkloadRequirements(
@@ -500,6 +507,7 @@ def emit_phase_intents(owner_wid: str, owner_kind: str, intents, horizon_s: int)
                 req = share_for_class(
                     key[1], rc, gpu=0, valid_until_ns=now, supersedes_request_id=rid,
                     applications=0, floor=0, priority=0, owner=owner_kind,
+                    owner_id=owner_wid,
                 )
                 _send(req)
                 sent += 1
@@ -514,6 +522,7 @@ def emit_phase_intents(owner_wid: str, owner_kind: str, intents, horizon_s: int)
                 key[1], rc, gpu=int(it.occupancy or rc.gpu_tokens),
                 valid_until_ns=until, supersedes_request_id=prior,
                 floor=int(it.floor), priority=int(it.priority), owner=owner_kind,
+                owner_id=owner_wid,
             )
             resp = _send(req)
             if resp is not None and getattr(resp, "accepted", False):

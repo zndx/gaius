@@ -258,3 +258,18 @@ def test_admit_then_zero_floor_end(monkeypatch: pytest.MonkeyPatch) -> None:
         assert len(recs) == 2
     finally:
         server.stop(grace=0)
+
+
+def test_phase_intent_carries_owner_on_the_wire() -> None:
+    """(2026-09-04) Supersession identity at the arbiter is (peer, queue, wrk,
+    owner): a run's phase intent names the run; a workload's own admission
+    claim leaves owner empty."""
+    req = share_for_class(
+        "embedding", LIGHT, floor=1, priority=40, owner="ambient-synthesis",
+        owner_id="ambient-synthesis-28633",
+    )
+    assert req.workloads[0].wrk == "embedding"
+    assert req.workloads[0].owner == "ambient-synthesis-28633"
+    assert req.workloads[0].floor == 1
+    own = share_for_class("clt-probe", LIGHT)
+    assert own.workloads[0].owner == ""
