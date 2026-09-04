@@ -323,7 +323,6 @@ async def fetch_gpu_hist_buckets(
     and the HDF5 reader materialises only the matching hyperslab.
     """
     import asyncpg
-    from collections import defaultdict
 
     if interval not in ("minute", "hour", "day"):
         raise RuntimeError(f"{GURU}\n  bad hist interval {interval!r}")
@@ -347,6 +346,20 @@ async def fetch_gpu_hist_buckets(
         )
     finally:
         await conn.close()
+    # (2026-09-04) The bucketing is pure Python over every 4 Hz sample in the
+    # window (hundreds of thousands of rows for 36 h): on the event loop it held
+    # the engine ~30 s per landing refresh — caught by a py-spy dump at 07:00:53
+    # (_bucket_ts ← fetch_gpu_hist_buckets ← load_landing_mv ← _refresh_loop)
+    # while every async health probe starved. Run it in a worker thread.
+    import asyncio
+
+    return await asyncio.to_thread(_bucket_rows, recs, interval, sid_w)
+
+
+def _bucket_rows(recs: Any, interval: str, sid_w: int) -> list[dict[str, Any]]:
+    """Pure: watts/util per bucket from raw (ts_ns, gpu, series_id, val_i) rows."""
+    from collections import defaultdict
+
     per: dict[tuple[datetime, int], list[float]] = defaultdict(lambda: [0.0, 0.0, 0.0, 0.0])
     for r in recs:
         m = _bucket_ts(int(r["ts_ns"]), interval)
