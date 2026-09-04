@@ -141,6 +141,22 @@ OBJECTIVES: dict[str, ObjectiveSpec] = {
             "AND completed_at > NOW() - INTERVAL '6 hours'"
         ),
     ),
+    # (2026-09-04 16:17) skos_labels' 6 h window would have passed through a
+    # 5 h admit outage (today's ran 09:00–16:15 unseen). The admit tick is a
+    # 15-min cadence: a completed run within 3 ticks — one designed
+    # deferral tolerated — or the corpus is not being admitted.
+    "skos_admission": ObjectiveSpec(
+        name="skos_admission",
+        dag=("clt_skos_admit",),
+        flows=("CltSkosAdmitFlow",),
+        cadence=timedelta(hours=1),
+        description="The 15-min CLT/SKOS admit tick completes: a completed run within 45 min",
+        skeleton_check=(
+            "SELECT count(*) FROM scheduled_tasks WHERE task_type='clt_skos_admit' "
+            "AND error IS NULL AND result->>'status' = 'completed' "
+            "AND completed_at > NOW() - INTERVAL '45 minutes'"
+        ),
+    ),
     "tier_settle": ObjectiveSpec(
         name="tier_settle",
         dag=("tier_settle",),
