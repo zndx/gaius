@@ -9556,7 +9556,7 @@ class GaiusServicer(GaiusServiceServicer):
         through the impala_fdw foreign table on this database; still answers when
         the supervisor is dark — a stale ``filled_at`` is the honest signal.
         """
-        from ..generated import BacklogViewResponse, BacklogViewRow, BacklogViewSlot
+        from ...generated import BacklogViewResponse, BacklogViewRow, BacklogViewSlot
         from gaius.engine.generated.zndx.supervision.v1 import supervision_pb2 as sv
         from gaius.engine.services.backlog_read import FIB_HOURS, read_backlog
 
@@ -9618,7 +9618,7 @@ class GaiusServicer(GaiusServiceServicer):
         newest Supervise session and the SupervisorStatus row Nautilus upserts."""
         import json as _json
 
-        from ..generated import NautilusSessionRow, NautilusStatusResponse
+        from ...generated import NautilusSessionRow, NautilusStatusResponse
 
         pool = _summary_db(self._services)
         if pool is None:

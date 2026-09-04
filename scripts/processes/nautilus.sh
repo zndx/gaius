@@ -21,8 +21,6 @@ export NAUTILUS_ENGINE="${NAUTILUS_ENGINE:-127.0.0.1:50051}"
 export NAUTILUS_BIND="${NAUTILUS_BIND:-127.0.0.1:50061}"
 # observe | reclaim | reclaim,consult — promotion is a deliberate act (Stage 4).
 export NAUTILUS_DIRECTIVES="${NAUTILUS_DIRECTIVES:-observe}"
-# The Postgres TRANSPORT to Kudu (impala_fdw foreign tables); derived from PGPORT.
-export NAUTILUS_PG_DSN="${NAUTILUS_PG_DSN:-${DATABASE_URL:-postgresql://gaius:gaius@127.0.0.1:${PGPORT:-5444}/zndx_gaius}}"
 # Write-ahead journal: nisshi on RustFS (S3). One bucket for every project's
 # Nautilus; the key layout is namespaced by cluster_id = project.
 export NAUTILUS_RUSTFS_URL="${NAUTILUS_RUSTFS_URL:-s3://signals-nautilus/}"
@@ -31,7 +29,9 @@ export NAUTILUS_RUSTFS_ENDPOINT="${NAUTILUS_RUSTFS_ENDPOINT:-http://127.0.0.1:90
 # minioadmin rides this shell's AWS_ACCESS_KEY_ID. Never inherit AWS_* here.
 export SIGNALS_RUSTFS_KEY="${SIGNALS_RUSTFS_KEY:-rustfsadmin}"
 export SIGNALS_RUSTFS_SECRET="${SIGNALS_RUSTFS_SECRET:-rustfsadmin}"
-export RUST_LOG="${RUST_LOG:-info}"
+# Leave RUST_LOG unset unless debugging: the binary's default filter keeps nisshi's
+# per-record spans (encode/size_in_bytes/get_opts) at warn — `info` floods the log.
+[[ -n "${RUST_LOG:-}" ]] && export RUST_LOG
 
 banner "NAUTILUS - resident supervisor on $NAUTILUS_BIND (engine $NAUTILUS_ENGINE, directives $NAUTILUS_DIRECTIVES)"
 
@@ -39,6 +39,12 @@ PORT="${NAUTILUS_BIND##*:}"
 assert_tcp_port_free "$PORT" "nautilus"
 
 wait_for_postgres "${PGUSER:-$USER}"
+
+# The Postgres TRANSPORT to Kudu (impala_fdw foreign tables). Derived AFTER
+# wait_for_postgres: the allocator's port is only final once Postgres answers
+# (2026-09-04 first boot captured 5445 from a pre-boot DATABASE_URL while the
+# server came up on 5444, and the drain never landed).
+export NAUTILUS_PG_DSN="${NAUTILUS_PG_DSN:-${DATABASE_URL:-postgres://localhost:${PGPORT:-5444}/zndx_gaius?sslmode=disable}}"
 
 CRATE="$REPO/external/nautilus"
 BIN="$CRATE/target/release/nautilus"

@@ -52,6 +52,7 @@ logger = logging.getLogger(__name__)
 GURU_NOSUBSCRIBE = "#SV.00000003.NOSUBSCRIBE"
 GURU_NOBACKLOG = "#SV.00000010.NOBACKLOG"
 GURU_NOPOOL = "#SV.00000015.NOPOOL"
+GURU_DIRECTIVE_ERROR = "#SV.00000016.DIRECTIVEFAIL"
 
 HEARTBEAT_S = 30.0
 KIND_GOODBYE = "goodbye"
@@ -342,9 +343,16 @@ class EngineSupervisionServicer(sv_grpc.EngineSupervisionServicer):
                     continue  # re-subscribe on an open stream is ignored; a new stream supersedes
                 if which in ("reclaim_orphan", "escalation", "backlog_transition"):
                     received += 1
-                    body = MessageToDict(getattr(msg, which), preserving_proto_field_name=True, including_default_value_fields=False)
-                    async with sem:
-                        result = await handler.handle(msg.directive_id, which, body, session_id=sid)
+                    # One bad directive must not end the session (2026-09-04: a protobuf-6
+                    # keyword rename here killed the reader on the first report-only
+                    # Escalation and dropped every session at its first directive).
+                    try:
+                        body = MessageToDict(getattr(msg, which), preserving_proto_field_name=True)
+                        async with sem:
+                            result = await handler.handle(msg.directive_id, which, body, session_id=sid)
+                    except Exception as e:  # noqa: BLE001 — answered, never fatal to the stream
+                        logger.warning("supervision: directive %s (%s) failed: %s", msg.directive_id, which, e)
+                        result = {"accepted": False, "applied": False, "note": f"{GURU_DIRECTIVE_ERROR} {type(e).__name__}: {str(e)[:200]}", "judge_status": "not_invoked"}
                     if result.get("accepted"):
                         accepted += 1
                     else:
