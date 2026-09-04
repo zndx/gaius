@@ -545,9 +545,50 @@ def emit_phase_intents(owner_wid: str, owner_kind: str, intents, horizon_s: int)
             if resp is not None and getattr(resp, "accepted", False):
                 _PHASE_SHARES[key] = (req.request_id, it.leaf)
                 sent += 1
+        # (2026-09-04) A SHARED claim outlives its declarers: gaius-embedding
+        # stayed Running from the 11:00 ambient run's end until 12:17 holding
+        # a light token nobody used — no owner on the pod, so the intra-leaf
+        # arbiter never yields it — and the CLT probe deferred on every tick
+        # (21 rows). When no live phase intent for a shared workload remains,
+        # retire its sentinel here (this runs off-loop, in the emit thread).
+        _release_idle_shared_claims()
     except Exception as e:  # noqa: BLE001 — never fail the run for its bookkeeping
         log.warning("phase intent emission skipped for %s: %s", owner_kind, e)
     return sent
+
+
+_SHARED_WORKLOADS = ("embedding",)
+
+
+def _release_idle_shared_claims() -> None:
+    """Retire a shared sentinel (gaius-embedding) once no run declares an
+    intent for it. Every run that uses the shared claim declares it as a phase
+    intent (the instance says so), so "no intent held" ⇒ no run is in an
+    embedding phase ⇒ the pod holds a token for nobody. Caller holds no lock;
+    runs in the emit thread."""
+    from gaius.engine import sentinel_claim as sc
+
+    for workload in _SHARED_WORKLOADS:
+        if any(k[1] == workload for k in _PHASE_SHARES):
+            continue
+        wid = sc.EMBEDDING_WORKLOAD_ID if workload == "embedding" else f"gaius-{workload}"
+        phase = sc._pod_phase(wid)
+        if phase not in ("Running", "Pending"):
+            continue
+        log.info(
+            "shared claim %s idle (%s, no live phase intent for %s): retiring it so "
+            "the light leaf frees for the next declarer",
+            wid, phase, workload,
+        )
+        try:
+            if workload == "embedding":
+                from gaius.engine.embeddings.colbert import release_colbert_embedder
+
+                release_colbert_embedder()
+                sc.reset_light_device_pin()
+            sc.delete_flow_sentinel(wid)
+        except Exception as e:  # noqa: BLE001 — surfaced, never masked
+            log.warning("idle shared claim %s not released: %s", wid, e)
 
 
 def end_phase_intents(owner_wid: str, owner_kind: str) -> int:
