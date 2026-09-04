@@ -204,15 +204,31 @@ machines {
   process: "flow.ArticleCurationFlow"
   surfaced_result: "published cards on gaius.zndx.org"
   default_horizon { window_seconds: 43200 resolve_within_phase_only: true }
+  # (2026-09-04) Resource intents: the daily curate is the site_freshness /
+  # content_currency DAG — the product's own pipeline — and had none: on
+  # 2026-09-04 it deferred behind a forced prospects run at 09:17 (no
+  # priority, no floor) and the 12:00 slot published stale-dated cards. The
+  # run's identity is its extract token (kind article-curate); acquire is
+  # where docling needs the GPU, so the floor is protected there at priority
+  # 55 — above ambient's embedding (40) and the admit flow (20), on par with
+  # a prospects run (50/60): a daily product run yields to nothing lighter.
   phases { id: "select" order: 1 steps: "grok_research_summary" steps: "select_article"
-           gate { name: "article_selected" kind: GATE_KIND_FLOW_REACHED_STEP tier: TIER_SILVER params { key: "step" value: "acquire_external" } rationale: "an article with keywords/news_queries was chosen" } }
+           gate { name: "article_selected" kind: GATE_KIND_FLOW_REACHED_STEP tier: TIER_SILVER params { key: "step" value: "acquire_external" } rationale: "an article with keywords/news_queries was chosen" }
+           resources { leaf: "root.internal.inference.extract" workload: "article-curate" occupancy: 1 floor: 0 priority: 35
+                       rationale: "selection is thinking-lane work; the run holds its token but needs no GPU yet" } }
   phases { id: "acquire" order: 2 steps: "acquire_external" steps: "join_fetchers" steps: "update_manifest"
-           gate { name: "sources_acquired" kind: GATE_KIND_FLOW_REACHED_STEP tier: TIER_SILVER params { key: "step" value: "sync_grok_collection" } rationale: "external fetchers joined; manifest updated" } }
+           gate { name: "sources_acquired" kind: GATE_KIND_FLOW_REACHED_STEP tier: TIER_SILVER params { key: "step" value: "sync_grok_collection" } rationale: "external fetchers joined; manifest updated" }
+           resources { leaf: "root.internal.inference.extract" workload: "article-curate" occupancy: 1 floor: 1 priority: 55
+                       rationale: "docling extraction on the run's extract token; the 09:17 deferral behind prospects is what this floor prevents" } }
   phases { id: "draft" order: 3 steps: "sync_grok_collection" steps: "create_draft" steps: "create_base"
-           gate { name: "draft_written" kind: GATE_KIND_FLOW_REACHED_STEP tier: TIER_SILVER params { key: "step" value: "create_cards" } rationale: "draft + .base exist" } }
+           gate { name: "draft_written" kind: GATE_KIND_FLOW_REACHED_STEP tier: TIER_SILVER params { key: "step" value: "create_cards" } rationale: "draft + .base exist" }
+           resources { leaf: "root.internal.inference.extract" workload: "article-curate" occupancy: 1 floor: 0 priority: 35
+                       rationale: "drafting is thinking-lane work; token held, fully preemptible" } }
   phases { id: "publish" order: 4 steps: "create_cards" steps: "enrich_cards" steps: "publish_batch" steps: "end"
            gate { name: "cards_public" kind: GATE_KIND_PROBE_PASS tier: TIER_SILVER params { key: "probe" value: "probe:publish.cards_public" } rationale: "cards synced to KV and served on the live page" }
-           horizon { window_seconds: 43200 resolve_within_phase_only: false } }
+           horizon { window_seconds: 43200 resolve_within_phase_only: false }
+           resources { leaf: "root.internal.inference.extract" workload: "article-curate" occupancy: 1 floor: 0 priority: 30
+                       rationale: "publishing writes files and KV; nothing here needs a GPU" } }
 }
 # The 15-minute CLT/SKOS admit: a light claim of its own (admit.py gpu_tokens=1)
 # plus the shared embedding claim while it embeds. Both fully preemptible and
