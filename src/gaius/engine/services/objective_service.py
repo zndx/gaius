@@ -838,11 +838,22 @@ class ObjectiveService:
 
         try:
             records = await asyncio.to_thread(
-                qs.list_queue_share_requests, peer=qs.PEER, limit=1000
+                qs.list_queue_share_requests, peer=qs.PEER, limit=1000, timeout_s=10.0
             )
         except Exception as e:  # noqa: BLE001 — an error verdict, never a guess
             ev = f"ListQueueShareRequests: {e}"
             return [{"gate": g, "verdict": "error", "evidence": ev} for g in gate_names]
+        if not records:
+            # The helper returns [] for a transient too (Signals not ready /
+            # deadline). While this engine is up, thinking's standing record
+            # is always live, so "no records" is "no answer": explicitly
+            # unmeasurable, never a pass. (Found 2026-09-04 05:54: the first
+            # in-engine run passed vacuously on records=0 during boot.)
+            ev = (
+                "ListQueueShareRequests returned no records — Signals not ready or "
+                "deadline; thinking's standing record should always be live"
+            )
+            return [{"gate": g, "verdict": "inconclusive", "evidence": ev} for g in gate_names]
 
         now_ns = time.time_ns()
         applying = getattr(spb, "QUEUE_SHARE_APPLYING", 5)

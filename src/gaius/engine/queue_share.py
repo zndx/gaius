@@ -386,7 +386,14 @@ def list_queue_share_requests(
     queue: str = "",
     since_ns: int = 0,
     limit: int = 0,
+    timeout_s: float = 1.5,
 ) -> list:
+    """Signals' queue-share records. A transient (UNAVAILABLE / DEADLINE /
+    UNIMPLEMENTED) returns [] and logs — a caller that must tell "no records"
+    from "no answer" treats an empty list as inconclusive and passes a
+    deadline sized for its purpose (admission wants 1.5 s; a verifier listing
+    a thousand records can afford 10 s — the 1.5 s default timed out in-engine
+    during boot on 2026-09-04 and produced a vacuous objective pass)."""
     import grpc
 
     from gaius.engine.generated.zndx.scheduler.v1 import scheduler_pb2 as spb
@@ -399,7 +406,7 @@ def list_queue_share_requests(
             spb.ListQueueShareRequestsRequest(
                 peer=peer, queue=queue, since_ns=since_ns, limit=limit
             ),
-            timeout=1.5,
+            timeout=float(timeout_s),
         )
     except grpc.RpcError as e:
         transient = (

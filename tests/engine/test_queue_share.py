@@ -82,17 +82,22 @@ def test_zero_floor_valid_until_on_end() -> None:
 
 
 def test_workloads_not_in_queue_name() -> None:
-    hints = declared_workloads()
-    wrks = {h.wrk: h for h in hints}
-    assert wrks["thinking"].tensor_parallel == 4
-    assert wrks["thinking"].gpu_tokens == 4
-    assert wrks["ask-sae"].tensor_parallel == 2
-    assert wrks["optillm"].gpu_tokens == 0
-    assert wrks["article-curate"].gpu_tokens == 1
-    for h in hints:
-        assert "root.internal" not in h.model
+    # declared_workloads() returns zndx.engine.v1.WorkloadOffer since the
+    # 2026-08-31 redesign (model + capabilities + typed requirements); the
+    # old hint fields (wrk / gpu_tokens / tensor_parallel) are gone.
+    offers = declared_workloads()
+    assert offers
+    thinking = next(
+        o for o in offers if o.requirements.parallelism.tensor_parallel == 4
+    )
+    assert thinking.requirements.footprint.gpu == 4
+    proxy = next(o for o in offers if o.model == "proxy")
+    assert proxy.requirements.footprint.gpu == 0
+    for o in offers:
+        assert "root.internal" not in o.model
+        assert not o.queue or o.queue.startswith("root.")
     q = local_response(zpb.SERVER_QUERY_KIND_WORKLOADS, object())
-    assert [w.wrk for w in q.workloads] == [h.wrk for h in hints]
+    assert [(w.model, w.queue) for w in q.workloads] == [(o.model, o.queue) for o in offers]
 
 
 def test_queue_hint_is_declared_shape() -> None:
@@ -217,8 +222,17 @@ class _Record(spbg.SchedulerServicer):
         )
 
     def ListQueueShareRequests(self, request, context):
+        # The real applier moves RECORDED -> APPLYING -> APPLIED; the client's
+        # wait is progress-based (no deadline short of the 600 s net), so the
+        # stub must report the terminal state or the test outlives its budget.
         recs = [
-            spb.QueueShareRecord(request=r, recorded_at_ns=1, state=spb.QUEUE_SHARE_RECORDED)
+            spb.QueueShareRecord(
+                request=r,
+                recorded_at_ns=1,
+                state=spb.QUEUE_SHARE_APPLIED,
+                applied_at_ns=2,
+                apply_ms=1,
+            )
             for r in self.seen
         ]
         return spb.ListQueueShareRequestsResponse(records=recs)
