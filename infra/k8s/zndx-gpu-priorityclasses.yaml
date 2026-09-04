@@ -7,9 +7,15 @@
 # share, so the declared ordering (thinking > prospects' embedding > extract
 # > admit/CLT probe) is what the scheduler enforces.
 #
-# preemptionPolicy: Never keeps kube-scheduler's own preemption out of it —
-# YuniKorn is the arbiter for these pods. Cluster-scoped; apply once:
-#   kubectl apply -f infra/k8s/zndx-gpu-priorityclasses.yaml
+# preemptionPolicy MUST be PreemptLowerPriority: YuniKorn copies the pod's
+# spec.preemptionPolicy into the ask and "Never" makes it a NON-PREEMPTOR —
+# with it, the first extract claim after the 2026-09-04 resume sat Pending
+# against a light leaf two over its guarantee while YuniKorn reported "does
+# not fit in queue" (08:26). Kube-scheduler never sees these pods
+# (schedulerName yunikorn), so its preemption is moot. The field is immutable:
+# change it by delete + apply. Cluster-scoped:
+#   kubectl delete -f infra/k8s/zndx-gpu-priorityclasses.yaml --ignore-not-found
+#   kubectl apply  -f infra/k8s/zndx-gpu-priorityclasses.yaml
 apiVersion: scheduling.k8s.io/v1
 kind: PriorityClass
 metadata:
@@ -18,7 +24,7 @@ metadata:
     federation.zndx.org/tier: low
 value: 100
 globalDefault: false
-preemptionPolicy: Never
+preemptionPolicy: PreemptLowerPriority
 description: "Intent priority 0-24: CLT probe, admit-time embedding. First victims."
 ---
 apiVersion: scheduling.k8s.io/v1
@@ -29,7 +35,7 @@ metadata:
     federation.zndx.org/tier: normal
 value: 500
 globalDefault: false
-preemptionPolicy: Never
+preemptionPolicy: PreemptLowerPriority
 description: "Intent priority 25-54: extract phases (prospects acquire/analyze/synthesize/surface)."
 ---
 apiVersion: scheduling.k8s.io/v1
@@ -40,7 +46,7 @@ metadata:
     federation.zndx.org/tier: high
 value: 1000
 globalDefault: false
-preemptionPolicy: Never
+preemptionPolicy: PreemptLowerPriority
 description: "Intent priority 55-94: a run's own protected companions (prospects' embedding during analyze)."
 ---
 apiVersion: scheduling.k8s.io/v1
@@ -51,5 +57,5 @@ metadata:
     federation.zndx.org/tier: standing
 value: 2000
 globalDefault: false
-preemptionPolicy: Never
+preemptionPolicy: PreemptLowerPriority
 description: "Intent priority 95+: standing fenced capacity (thinking endpoint). Never a victim."
