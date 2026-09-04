@@ -197,32 +197,110 @@ def _send(req) -> object:
     return resp
 
 
+# Last observed apply wait per kind, for the caller (ScheduledTaskProcessor)
+# to record as a ledger forecast: {"elapsed_s", "final_state", "apply_ms",
+# "transitions"}. Written by _wait_applied, read by the spawn path.
+LAST_APPLY_WAIT: dict[str, dict] = {}
+
+
+def _state_name(spb, value: int | None) -> str:
+    if value is None:
+        return "UNSEEN"
+    try:
+        return spb.QueueShareState.Name(value)
+    except ValueError:
+        return f"STATE_{value}"
+
+
 def _wait_applied(
-    request_id: str, *, queue: str = "", deadline_s: float = 30.0, poll_s: float = 1.5
+    request_id: str,
+    *,
+    queue: str = "",
+    kind: str = "",
+    net_s: float | None = None,
+    stall_s: float | None = None,
+    poll_s: float = 1.5,
 ) -> str:
-    """Positively wait until the share reaches APPLIED — the Scheduler has actually
-    promoted the footprint-sized config to YuniKorn. The apply is off the RPC hot
-    path, so APPLIED lands shortly after RECORDED; if it stays RECORDED past the
-    deadline, YuniKorn/kubectl is not reconciling — logged plainly (the pod-admit
-    sentinel then surfaces it), never silently proceeded past on a bare accept.
+    """Progress-based wait until the share reaches APPLIED.
+
+    The Scheduler's applier moves a record RECORDED -> APPLYING (batch
+    taken, kubectl apply in flight) -> APPLIED. The apply is variable-
+    latency (~4 s when the worker is idle, minutes when it is busy or in
+    backoff), so this wait keys on PROGRESS, not a deadline: every state
+    transition resets patience; no transition for ``stall_s`` logs a
+    warning; ``net_s`` is the outer net for a dead arbiter. A fixed 30 s
+    deadline here mistook slow applies for stalls (11 of 14 GPU waits on
+    2026-09-04). The outcome is handed back via LAST_APPLY_WAIT so the
+    caller can score "APPLIED within QUEUE_SHARE_APPLY_EXPECTED_S" in the
+    ledger — the arbiter is Brier-scored like every other observer.
     """
+    from gaius.core.budgets import QUEUE_SHARE_APPLY_NET_S, QUEUE_SHARE_APPLY_STALL_S
     from gaius.engine.generated.zndx.scheduler.v1 import scheduler_pb2 as spb
 
-    end = time.monotonic() + deadline_s
-    while time.monotonic() < end:
+    net_s = QUEUE_SHARE_APPLY_NET_S if net_s is None else net_s
+    stall_s = QUEUE_SHARE_APPLY_STALL_S if stall_s is None else stall_s
+    applying = getattr(spb, "QUEUE_SHARE_APPLYING", 5)
+    t0 = time.monotonic()
+    last_state: int | None = None
+    last_change = t0
+    warned_stall = False
+    transitions: list[str] = []
+    final = "UNSEEN"
+    apply_ms = 0
+    while time.monotonic() - t0 < net_s:
+        rec = None
         for r in list_queue_share_requests(queue=queue):
             if r.request.request_id == request_id:
-                if r.state == spb.QUEUE_SHARE_APPLIED:
-                    log.info("queue share APPLIED id=%s queue=%s", request_id, queue)
-                    return "APPLIED"
+                rec = r
                 break
+        if rec is not None:
+            st = int(rec.state)
+            if st != last_state:
+                transitions.append(_state_name(spb, st))
+                last_state = st
+                last_change = time.monotonic()
+                warned_stall = False
+                if st == applying:
+                    log.info(
+                        "queue share APPLYING id=%s queue=%s (apply in flight)",
+                        request_id, queue,
+                    )
+            if st == spb.QUEUE_SHARE_APPLIED:
+                apply_ms = int(getattr(rec, "apply_ms", 0) or 0)
+                log.info(
+                    "queue share APPLIED id=%s queue=%s after %.1fs (apply %d ms)",
+                    request_id, queue, time.monotonic() - t0, apply_ms,
+                )
+                final = "APPLIED"
+                break
+            if st in (spb.QUEUE_SHARE_REJECTED, spb.QUEUE_SHARE_SUPERSEDED):
+                final = _state_name(spb, st)
+                log.warning("queue share %s id=%s queue=%s", final, request_id, queue)
+                break
+        if not warned_stall and time.monotonic() - last_change > stall_s:
+            warned_stall = True
+            log.warning(
+                "queue share no progress for %.0fs (state %s) id=%s queue=%s — "
+                "Signals applier busy or backing off; waiting under the %.0fs net",
+                stall_s, _state_name(spb, last_state), request_id, queue, net_s,
+            )
         time.sleep(poll_s)
-    log.warning(
-        "queue share not APPLIED within %ss (still RECORDED) id=%s queue=%s — "
-        "YuniKorn/kubectl reconcile lagging",
-        deadline_s, request_id, queue,
-    )
-    return "RECORDED"
+    else:
+        final = _state_name(spb, last_state)
+        log.warning(
+            "queue share not APPLIED within the %.0fs net (last state %s) id=%s queue=%s — "
+            "Signals arbiter dark or apply stuck",
+            net_s, final, request_id, queue,
+        )
+    LAST_APPLY_WAIT[(kind or queue).replace("_", "-")] = {
+        "request_id": request_id,
+        "queue": queue,
+        "elapsed_s": round(time.monotonic() - t0, 1),
+        "final_state": final,
+        "apply_ms": apply_ms,
+        "transitions": transitions,
+    }
+    return final
 
 
 def request_queue_share(kind: str, rc: ResourceClass) -> bool:
@@ -239,7 +317,7 @@ def request_queue_share(kind: str, rc: ResourceClass) -> bool:
     if resp.accepted and int(getattr(rc, "gpu_tokens", 0)):
         # GPU occupancy: gate on the queue actually being promoted before we let the
         # pod race YuniKorn admission. Zero-floor (ends) don't need to wait.
-        _wait_applied(req.request_id, queue=rc.queue)
+        _wait_applied(req.request_id, queue=rc.queue, kind=kind)
     return bool(resp.accepted)
 
 

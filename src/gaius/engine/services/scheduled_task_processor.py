@@ -239,6 +239,35 @@ class ScheduledTaskProcessor(BaseDaemon):
             except Exception:  # noqa: BLE001 — ledger is fail-open
                 logger.debug("ledger record for YK admit skipped", exc_info=True)
             return {"status": "error", "error": str(e), "workload_id": wid}
+        # Efficacy ledger: the Signals arbiter's apply latency is itself a
+        # forecast — "share APPLIED within QUEUE_SHARE_APPLY_EXPECTED_S" —
+        # scored like every other observer. The wait in queue_share is
+        # progress-based (APPLYING resets patience under an outer net); it
+        # hands its outcome back through LAST_APPLY_WAIT for this row.
+        try:
+            from gaius.core.budgets import QUEUE_SHARE_APPLY_EXPECTED_S
+            from gaius.engine import queue_share as _qs
+            from gaius.engine.services.efficacy_ledger import get_ledger
+            w = _qs.LAST_APPLY_WAIT.pop(kind.replace("_", "-"), None)
+            ledger = get_ledger()
+            if w and ledger is not None:
+                applied = w.get("final_state") == "APPLIED"
+                elapsed_s = float(w.get("elapsed_s") or 0.0)
+                within = applied and elapsed_s <= QUEUE_SHARE_APPLY_EXPECTED_S
+                await ledger.record_forecast(
+                    observer="probe:queue_share.apply",
+                    observer_kind="probe",
+                    call_site="scheduled_task_processor._run_spawned_metaflow",
+                    proposition=(
+                        f"queue share for {kind} APPLIED within "
+                        f"{QUEUE_SHARE_APPLY_EXPECTED_S:.0f}s"
+                    ),
+                    verdict="pass" if within else ("fail" if applied else "inconclusive"),
+                    evidence=w,
+                    elapsed_ms=int(elapsed_s * 1000),
+                )
+        except Exception:  # noqa: BLE001 — ledger is fail-open
+            logger.debug("ledger record for queue-share apply skipped", exc_info=True)
         try:
             proc = await asyncio.create_subprocess_exec(
                 *argv,

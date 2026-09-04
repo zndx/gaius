@@ -65,3 +65,14 @@ RUBRIC_JUDGMENTS_PER_DAY = 24
 # doctrine: a net for a dead lane, never a deadline). Matches the
 # prospects synthesis net.
 INCORPORATION_NET_S = 1800.0
+
+# Queue-share apply (Signals arbiter → YuniKorn ConfigMap). The apply
+# itself takes ~4 s when the applier runs and minutes when its single
+# worker is busy or backing off; a fixed 30 s deadline mistook the latter
+# for a stall (2026-09-04). EXPECTED is the forecast threshold scored in
+# the ledger; the wait itself is progress-based (APPLYING resets patience)
+# under the outer NET, and STALL is how long without a state change before
+# the wait warns.
+QUEUE_SHARE_APPLY_EXPECTED_S = 30.0
+QUEUE_SHARE_APPLY_STALL_S = 120.0
+QUEUE_SHARE_APPLY_NET_S = 600.0
