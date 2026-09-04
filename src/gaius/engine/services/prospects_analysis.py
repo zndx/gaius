@@ -365,13 +365,20 @@ Include:
    saw): name the concrete deltas — new filings, metrics that moved, catalysts
    that fired or lapsed. "No material change since <date>" is a first-class,
    supported answer; never restate the old thesis as if it were news.
+   Distinguish a change IN THE COMPANY (results, guidance, deals, capital
+   actions, management, regulatory) from a change in OUR EVIDENCE (a filing
+   we now hold): only the former counts as change; label the latter as
+   evidence, never as news. A brief whose only delta is "we now have data" says
+   so in one line and moves on.
 8. THE REBALANCING CALL. The reader manages a portfolio under switching costs
    (transaction costs, taxes, attention). State an explicit allocation decision:
    action (hold-in-band | add | trim | exit | watch), the band or no-trade
    region that decision sits in, the review cadence (when to look again and
-   what event would justify looking earlier), and the switching-cost-aware
-   rationale. "No action warranted; stay inside the band" is a fully supported
-   conclusion — silence is not.
+   what event would justify looking earlier), WHOSE cadence this belongs to —
+   daily, weekly, quarterly, or explicitly nobody's (an attention allocation,
+   not just a date), and the switching-cost-aware rationale. "No action
+   warranted; stay inside the band" is a fully supported conclusion — silence
+   is not.
 9. INPUT GAPS. If the evidence is thin (no recent filings, no holders data,
    stale news), say so explicitly and keep the call proportionate; never fill a
    gap with generic prose.
@@ -411,6 +418,7 @@ Produce a synthesis as JSON with this structure:
         "action": "<hold-in-band|add|trim|exit|watch>",
         "band": "<target weight range or no-trade region, e.g. 'hold 2-3% of book; no trade inside'>",
         "review_cadence": "<when to re-evaluate and which event justifies looking earlier>",
+        "owner_cadence": "<daily | weekly | quarterly | nobody — whose attention cadence this belongs to, and why>",
         "rationale": "<switching-cost-aware reasoning in 1-2 sentences>"
     }},
     "input_gaps": ["<evidence that was missing or stale>", ...]

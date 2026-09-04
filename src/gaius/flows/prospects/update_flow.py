@@ -1263,6 +1263,10 @@ filing_date: "{analysis.filing_date}"
         action = str(rc.get("action") or "watch")
         band = str(rc.get("band") or "no band stated — treat as watch-only until the next filing")
         cadence = str(rc.get("review_cadence") or "re-evaluate at the next filing or material event")
+        # The attention-portfolio item the judge scores as `allocation`: whose
+        # cadence this touches — daily, weekly, quarterly, or nobody's. Absent
+        # is stated as absent, never left blank.
+        owner = str(rc.get("owner_cadence") or "nobody's — no owner cadence assigned").strip()
         rationale = str(rc.get("rationale") or "").strip()
         gaps = [g for g in (synthesis.input_gaps or []) if str(g).strip()]
         gaps_md = "\n".join(f"- {g}" for g in gaps) if gaps else "- None material; the evidence above supports the call."
@@ -1273,6 +1277,7 @@ filing_date: "{analysis.filing_date}"
             f"- **Action:** {action}\n"
             f"- **Band / no-trade region:** {band}\n"
             f"- **Review cadence:** {cadence}\n"
+            f"- **Owner cadence:** {owner}\n"
             + (f"- **Rationale:** {rationale}\n" if rationale else "")
             + "\n## Input Gaps\n\n"
             f"{gaps_md}\n"
