@@ -988,7 +988,7 @@ class CollectionService:
                 JOIN collections.collections col
                   ON col.collection_id = c.collection_id
                 WHERE col.featured = TRUE AND c.status = 'pending'
-                  AND c.source_date > CURRENT_DATE - $1
+                  AND c.source_date > CURRENT_DATE - $1::int
                   AND c.image_url IS NOT NULL AND c.image_url != ''
                   AND EXISTS (
                       SELECT 1 FROM collections.card_summaries cs
@@ -1290,7 +1290,10 @@ class CollectionService:
                         SELECT c.card_id
                         FROM collections.cards c
                         WHERE c.collection_id = $1 AND c.status = 'pending'
-                          AND c.source_date > CURRENT_DATE - $3
+                          -- ::int is load-bearing: a bare $n after CURRENT_DATE -
+                          -- is inferred as date (date - date → integer) and the
+                          -- comparison fails "date > integer" (2026-09-05 23:51)
+                          AND c.source_date > CURRENT_DATE - $3::int
                           AND c.image_url IS NOT NULL AND c.image_url != ''
                           AND EXISTS (
                               SELECT 1 FROM collections.card_summaries cs
@@ -1347,7 +1350,7 @@ class CollectionService:
                         FROM collections.cards c
                         JOIN featured_col fc ON c.collection_id = fc.collection_id
                         WHERE c.status = 'pending'
-                          AND c.source_date > CURRENT_DATE - $2
+                          AND c.source_date > CURRENT_DATE - $2::int
                           AND c.image_url IS NOT NULL AND c.image_url != ''
                           AND EXISTS (
                               SELECT 1 FROM collections.card_summaries cs
