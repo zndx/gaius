@@ -65,7 +65,8 @@ T_START=$(date +%s)
 REV_BEFORE="$(git -C "$ROOT" rev-parse --short HEAD 2>/dev/null || echo "")"
 DIRTY="$(git -C "$ROOT" status --porcelain --untracked-files=no 2>/dev/null | grep -c . || true)"
 [[ -n "$CHANGE_REF" ]] || CHANGE_REF="$REV_BEFORE"
-RESTARTED_AT="" PORT_UP_S="" THINKING_STATUS="" THINKING_S="" BOOT_ERRS="" SUPERVISION_REG="" REV_AFTER="" EXIT_CODE=0
+RESTARTED_AT="" RESTART_VIA="" PORT_UP_S="" THINKING_STATUS="" THINKING_S="" BOOT_ERRS="" SUPERVISION_REG="" REV_AFTER="" EXIT_CODE=0
+(( EUID == 0 )) && say "running as root — not needed (polkit grants manage-units to $(stat -c %U "$ROOT")); state files will be handed back to the repo owner at the end"
 OBJ_RESULTS="[]"
 
 inflight() { $PSQL -c "select coalesce(string_agg(task_type||'#'||id||' '||to_char(now()-picked_up_at,'HH24:MI'), ', '),'') from scheduled_tasks where picked_up_at is not null and completed_at is null" 2>/dev/null; }
@@ -118,7 +119,7 @@ json.dump({
   "change_ref": "$CHANGE_REF", "rev_before": "$REV_BEFORE", "engine_rev_after": "$REV_AFTER" or None,
   "exit_code": $EXIT_CODE,
   "started_at": datetime.datetime.utcfromtimestamp($T_START).isoformat() + "Z",
-  "restarted_at": "$RESTARTED_AT" or None,
+  "restarted_at": "$RESTARTED_AT" or None, "restart_via": "$RESTART_VIA" or None,
   "port_up_s": ${PORT_UP_S:-None}, "thinking_status": "$THINKING_STATUS" or None,
   "thinking_healthy_s": ${THINKING_S:-None}, "boot_errors": ${BOOT_ERRS:-None},
   "supervision_registered": ${SUPERVISION_REG:-None},
@@ -127,6 +128,9 @@ json.dump({
 }, open(sys.argv[1], "w"), indent=1)
 EOF
   say "result → $STATE_DIR/result.json (exit $EXIT_CODE)"
+  # If someone ran this under sudo anyway, hand the state back to the repo owner
+  # so the next `just restart` as the user can write beside it.
+  if (( EUID == 0 )); then chown -R --reference="$ROOT" "$(dirname "$STATE_DIR")" 2>/dev/null || true; fi
 }
 
 PAUSED=0
@@ -173,11 +177,24 @@ else
   say "free: a declared objective is unmet, nothing is protected — restarting now (in flight: $(inflight))"
 fi
 
-# 4. restart
+# 4. restart — no sudo by design: polkit grants manage-units to the operator via
+# scripts/systemd/50-gaius-units.pkla (`just reboot-hardening-install`). The old
+# `sudo -n` was an unexamined habit that happened to be load-bearing before the
+# rule existed (polkit 0.105: "Interactive authentication required" from any
+# non-interactive caller). If the rule is missing we escalate ONCE, loudly.
 t0=$(date +%s); RESTARTED_AT="$(date -u +%FT%TZ)"
-if (( EUID == 0 )); then RESTART_CMD="systemctl restart gaius.service"; else RESTART_CMD="sudo -n systemctl restart gaius.service"; fi
-say "restarting gaius.service ($RESTART_CMD)"
-if ! $RESTART_CMD; then say "systemctl restart FAILED (rc $?)"; EXIT_CODE=4; exit 4; fi
+RESTART_VIA="systemctl"
+say "restarting gaius.service (systemctl restart, no sudo)"
+if ! systemctl --no-ask-password restart gaius.service; then
+  rc=$?
+  if (( EUID != 0 )) && sudo -n true 2>/dev/null; then
+    say "systemctl restart refused (rc $rc): polkit does not grant manage-units to $(id -un) — run \`just reboot-hardening-install\`; escalating once with sudo -n"
+    RESTART_VIA="sudo"
+    if ! sudo -n systemctl restart gaius.service; then say "systemctl restart FAILED under sudo too (rc $?)"; EXIT_CODE=4; exit 4; fi
+  else
+    say "systemctl restart FAILED (rc $rc) and no non-interactive sudo available"; EXIT_CODE=4; exit 4
+  fi
+fi
 for _ in $(seq 1 60); do nc -z 127.0.0.1 50051 2>/dev/null && break; sleep 10; done
 if ! nc -z 127.0.0.1 50051 2>/dev/null; then say ":50051 not listening after 10 min — journalctl -u gaius.service"; EXIT_CODE=5; exit 5; fi
 PORT_UP_S=$(( $(date +%s) - t0 )); say ":50051 up after ${PORT_UP_S}s; waiting for thinking HEALTHY"
@@ -191,8 +208,11 @@ THINKING_STATUS="${st:-unknown}"; THINKING_S=$(( $(date +%s) - t0 )); say "think
 
 # 5. verify
 ENGINE_LOG="$(ls -t /run/user/1001/devenv-*/processes/logs/gaius-engine.stderr.log 2>/dev/null | head -1)"
-BOOT_ERRS=$(grep -cE "Traceback|ImportError" "$ENGINE_LOG" 2>/dev/null || echo 0)
-SUPERVISION_REG=$(grep -c "Registered zndx.supervision.v1.EngineSupervision" "$ENGINE_LOG" 2>/dev/null || echo 0)
+# grep -c prints the count AND exits 1 when it is 0, so `|| echo 0` yields "0\n0"
+# and broke the result JSON on the first run (23:49 2026-09-05). Take the count as
+# printed; default only when grep produced nothing (missing log).
+BOOT_ERRS=$(grep -cE "Traceback|ImportError" "$ENGINE_LOG" 2>/dev/null); BOOT_ERRS=${BOOT_ERRS:-0}
+SUPERVISION_REG=$(grep -c "Registered zndx.supervision.v1.EngineSupervision" "$ENGINE_LOG" 2>/dev/null); SUPERVISION_REG=${SUPERVISION_REG:-0}
 REV_AFTER=$(git -C "$ROOT" rev-parse --short HEAD 2>/dev/null || echo "")
 say "engine log: boot errors=$BOOT_ERRS EngineSupervision registered=$SUPERVISION_REG rev=$REV_AFTER"
 for _ in $(seq 1 30); do
