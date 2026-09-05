@@ -53,6 +53,25 @@ REQUIRED_CARD_SUMMARY = "open_weights"
 OPTIONAL_CARD_SUMMARIES = ("frontier", "cerebras")
 
 
+def current_days() -> int:
+    """The surface's currency criterion, in days — ONE source of truth.
+
+    `content_currency` (objective_service.OBJECTIVES) declares
+    ``current_days`` (7 d) as the intent: content on the public page tracks
+    the present. The slot pipeline reads the same number so that what it
+    admits, counts as ready and publishes is exactly what the objective will
+    later measure. 2026-09-05: the pipeline had no currency notion at all —
+    slots drained a 162-card pending pool dated 2026-08-06..08-27 oldest
+    first while the objective failed for four days.
+    """
+    try:
+        from gaius.engine.services.objective_service import OBJECTIVES  # lazy: objective_service imports this module
+
+        return int(OBJECTIVES["content_currency"].params.get("current_days", 7))
+    except Exception:  # noqa: BLE001 — the criterion, not the import, is the contract
+        return 7
+
+
 def public_card_source_type(feed_source_type: str) -> str:
     """Map feed_sources.source_type onto collections.cards.source_type."""
     if feed_source_type in ("arxiv", "biorxiv"):
@@ -954,7 +973,14 @@ class CollectionService:
         return int(n or 0)
 
     async def count_featured_ready(self) -> int:
-        """Pending featured cards with LuxCore image + local open-weights."""
+        """Pending featured cards that are enriched (LuxCore image + local
+        open-weights) AND current (source_date within current_days).
+
+        "Ready" means ready to serve the surface's intent; a stale enriched
+        card is not ready, and a pool of them must read as EMPTY so the slot
+        admits current inflow instead (2026-09-05: 162 enriched stale cards
+        read as "ready" and inflow never ran).
+        """
         async with self._pool.acquire() as conn:
             n = await conn.fetchval(
                 """
@@ -962,13 +988,15 @@ class CollectionService:
                 JOIN collections.collections col
                   ON col.collection_id = c.collection_id
                 WHERE col.featured = TRUE AND c.status = 'pending'
+                  AND c.source_date > CURRENT_DATE - $1
                   AND c.image_url IS NOT NULL AND c.image_url != ''
                   AND EXISTS (
                       SELECT 1 FROM collections.card_summaries cs
                        WHERE cs.card_id = c.card_id
                          AND cs.summary_type = 'open_weights'
                   )
-                """
+                """,
+                current_days(),
             )
         return int(n or 0)
 
@@ -1011,6 +1039,9 @@ class CollectionService:
                    AND NOT COALESCE(c.summary_excluded, false)
                    AND COALESCE(c.llm_quality_score, 0) >= 50
                    AND c.fetched_at > NOW() - INTERVAL '21 days'
+                   -- current at admission: what the slot publishes must be
+                   -- what content_currency measures (source within current_days)
+                   AND COALESCE(c.published_at, c.fetched_at) > NOW() - make_interval(days => $3)
                    AND s.name = ANY($1::text[])
                    AND NOT EXISTS (
                        SELECT 1 FROM collections.cards k
@@ -1018,11 +1049,12 @@ class CollectionService:
                    )
                  ORDER BY
                    CASE s.name WHEN 'arxiv_cs_dc' THEN 0 ELSE 1 END,
-                   c.fetched_at DESC
+                   COALESCE(c.published_at, c.fetched_at) DESC
                  LIMIT $2
                 """,
                 ["arxiv_cs_dc", "temporal_blog", "databricks_blog"],
                 limit,
+                current_days(),
             )
 
         admitted = 0
@@ -1253,9 +1285,12 @@ class CollectionService:
                     """
                     WITH enriched_filter AS (
                         -- LuxCore image + local open-weights (Brave/Cerebras optional)
+                        -- AND current: the surface's intent is content within
+                        -- current_days; a slot never publishes stale content.
                         SELECT c.card_id
                         FROM collections.cards c
                         WHERE c.collection_id = $1 AND c.status = 'pending'
+                          AND c.source_date > CURRENT_DATE - $3
                           AND c.image_url IS NOT NULL AND c.image_url != ''
                           AND EXISTS (
                               SELECT 1 FROM collections.card_summaries cs
@@ -1265,14 +1300,15 @@ class CollectionService:
                     ),
                     pending_ranked AS (
                         -- Rank cards within each article/source_type combo
-                        -- to enable round-robin selection across diverse sources
+                        -- to enable round-robin selection across diverse sources;
+                        -- freshest content first (was created_at ASC = oldest first)
                         SELECT
                             c.card_id,
                             c.article_id,
                             c.source_type,
                             ROW_NUMBER() OVER (
                                 PARTITION BY c.article_id, c.source_type
-                                ORDER BY c.created_at ASC
+                                ORDER BY c.source_date DESC, c.created_at DESC
                             ) as rank_in_group
                         FROM collections.cards c
                         WHERE c.card_id IN (SELECT card_id FROM enriched_filter)
@@ -1290,7 +1326,7 @@ class CollectionService:
                     WHERE card_id IN (SELECT card_id FROM diverse_pending)
                     RETURNING *
                     """,
-                    collection_id, count,
+                    collection_id, count, current_days(),
                 )
             else:
                 # Publish from featured collection with diversity
@@ -1304,10 +1340,14 @@ class CollectionService:
                     ),
                     enriched_filter AS (
                         -- LuxCore image + local open-weights (Brave/Cerebras optional)
+                        -- AND current (source_date within current_days): a slot
+                        -- never publishes stale content — 2026-09-05 the pool was
+                        -- 162 cards dated 2026-08-06..08-27, drained oldest first.
                         SELECT c.card_id
                         FROM collections.cards c
                         JOIN featured_col fc ON c.collection_id = fc.collection_id
                         WHERE c.status = 'pending'
+                          AND c.source_date > CURRENT_DATE - $2
                           AND c.image_url IS NOT NULL AND c.image_url != ''
                           AND EXISTS (
                               SELECT 1 FROM collections.card_summaries cs
@@ -1316,14 +1356,15 @@ class CollectionService:
                           )
                     ),
                     pending_ranked AS (
-                        -- Rank cards within each article/source_type combo
+                        -- Rank cards within each article/source_type combo,
+                        -- freshest content first (was created_at ASC = oldest first)
                         SELECT
                             c.card_id,
                             c.article_id,
                             c.source_type,
                             ROW_NUMBER() OVER (
                                 PARTITION BY c.article_id, c.source_type
-                                ORDER BY c.created_at ASC
+                                ORDER BY c.source_date DESC, c.created_at DESC
                             ) as rank_in_group
                         FROM collections.cards c
                         WHERE c.card_id IN (SELECT card_id FROM enriched_filter)
@@ -1341,7 +1382,7 @@ class CollectionService:
                     WHERE card_id IN (SELECT card_id FROM diverse_pending)
                     RETURNING *
                     """,
-                    count,
+                    count, current_days(),
                 )
 
             published = [self._row_to_card(row) for row in rows]
@@ -2714,6 +2755,7 @@ created_at: {now.isoformat()}
             input_tokens = result.input_tokens
             output_tokens = result.output_tokens
             provider = "brave-answers"
+            model_id = "summarizer"
             thinking_trace = None
             # Store unique citation URLs for display on card page
             seen_urls: set[str] = set()
@@ -2760,6 +2802,7 @@ created_at: {now.isoformat()}
             input_tokens = result.input_tokens
             output_tokens = result.output_tokens
             provider = result.backend or "local-engine"
+            model_id = str(getattr(result, "model", "") or "thinking")
             thinking_trace = None
 
         else:
@@ -2801,6 +2844,7 @@ created_at: {now.isoformat()}
             input_tokens = response.input_tokens
             output_tokens = response.output_tokens
             provider = response.provider
+            model_id = str(getattr(response, "model", "") or "")
             thinking_trace = response.reasoning
 
         latency_ms = int(_time.time() * 1000) - start_ms
@@ -2816,7 +2860,10 @@ created_at: {now.isoformat()}
                 prompt=f"Card: {card.title} ({card.source_type})",
                 output=summary_text,
                 thinking_trace=thinking_trace,
-                model_name=provider or model_label,
+                # provider:model so HX rows compare like for like — the local
+                # thinking lane and Cerebras both serve Qwen3.8-27B (2026-09-05);
+                # scripts/throughput_report.py groups on this column.
+                model_name=(f"{provider or model_label}:{model_id}" if model_id else (provider or model_label)),
                 input_tokens=input_tokens,
                 output_tokens=output_tokens,
                 latency_ms=latency_ms,

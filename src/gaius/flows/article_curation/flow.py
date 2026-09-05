@@ -1125,60 +1125,77 @@ Respond with JSON:
             "Accept": "application/json",
             "X-Subscription-Token": api_key,
         }
-        params = {
-            "q": search_query,
-            "count": self.max_sources,
-            "safesearch": "moderate",
-            "freshness": "py",  # Past year
-        }
+        # Currency IS the intent (content_currency: source within current_days,
+        # 7 d). Search the past week first and widen to the past month only to
+        # fill the count, freshest first. `freshness=py` made the web half of
+        # every curate year-old by construction — 68 such cards were archived
+        # off the public surface on 2026-09-05 after four days of band FAILs.
+        freshness_ladder = ("pw", "pm")
+        max_n = int(self.max_sources)
+        skip_domains = ["twitter.com", "facebook.com", "reddit.com", "linkedin.com"]
 
         start_time = time.monotonic()
 
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
-                response = await client.get(url, headers=headers, params=params)
+                dated: list[tuple[str, AcquiredSource]] = []
+                seen_urls: set[str] = set()
+                used_freshness: list[str] = []
+                for freshness in freshness_ladder:
+                    if len(dated) >= max_n:
+                        break
+                    params = {
+                        "q": search_query,
+                        "count": max_n,
+                        "safesearch": "moderate",
+                        "freshness": freshness,
+                    }
+                    response = await client.get(url, headers=headers, params=params)
+
+                    if response.status_code == 401:
+                        raise RuntimeError(
+                            "Brave API authentication failed.\n"
+                            "  Guru Meditation: #ACF.00000015.NOBRAVE\n"
+                            "  Check BRAVE_API_KEY is valid"
+                        )
+
+                    if response.status_code != 200:
+                        raise RuntimeError(
+                            f"Brave API returned status {response.status_code}.\n"
+                            "  Guru Meditation: #ACF.00000015.NOBRAVE\n"
+                            "  Check network connectivity and Brave API status"
+                        )
+
+                    used_freshness.append(freshness)
+                    for entry in response.json().get("web", {}).get("results", []):
+                        url_str = entry.get("url", "")
+                        # Filter for likely academic/research sources
+                        # Skip social media, news aggregators, etc.
+                        if any(domain in url_str.lower() for domain in skip_domains):
+                            continue
+                        if url_str in seen_urls:
+                            continue
+                        seen_urls.add(url_str)
+                        dated.append((str(entry.get("page_age") or ""), AcquiredSource.from_fetcher_result(
+                            source_type="web",  # Use 'web' as source_type per schema
+                            url=url_str,
+                            title=entry.get("title", "").strip(),
+                            summary=entry.get("description", "")[:500],
+                            metadata={
+                                "age": entry.get("age", ""),
+                                # ISO page date when Brave has one — the precise
+                                # source_date signal; `age` is the coarse fallback.
+                                "page_age": entry.get("page_age", ""),
+                                "language": entry.get("language", "en"),
+                                "family_friendly": entry.get("family_friendly", True),
+                                "freshness": freshness,
+                            },
+                        )))
+
                 latency_ms = int((time.monotonic() - start_time) * 1000)
-
-                if response.status_code == 401:
-                    raise RuntimeError(
-                        "Brave API authentication failed.\n"
-                        "  Guru Meditation: #ACF.00000015.NOBRAVE\n"
-                        "  Check BRAVE_API_KEY is valid"
-                    )
-
-                if response.status_code != 200:
-                    raise RuntimeError(
-                        f"Brave API returned status {response.status_code}.\n"
-                        "  Guru Meditation: #ACF.00000015.NOBRAVE\n"
-                        "  Check network connectivity and Brave API status"
-                    )
-
-                data = response.json()
-                results = data.get("web", {}).get("results", [])
-                sources = []
-
-                for entry in results:
-                    url_str = entry.get("url", "")
-                    # Filter for likely academic/research sources
-                    # Skip social media, news aggregators, etc.
-                    skip_domains = ["twitter.com", "facebook.com", "reddit.com", "linkedin.com"]
-                    if any(domain in url_str.lower() for domain in skip_domains):
-                        continue
-
-                    sources.append(AcquiredSource.from_fetcher_result(
-                        source_type="web",  # Use 'web' as source_type per schema
-                        url=url_str,
-                        title=entry.get("title", "").strip(),
-                        summary=entry.get("description", "")[:500],
-                        metadata={
-                            "age": entry.get("age", ""),
-                            # ISO page date when Brave has one — the precise
-                            # source_date signal; `age` is the coarse fallback.
-                            "page_age": entry.get("page_age", ""),
-                            "language": entry.get("language", "en"),
-                            "family_friendly": entry.get("family_friendly", True),
-                        },
-                    ))
+                # Freshest first (ISO page_age sorts lexically; undated last).
+                dated.sort(key=lambda t: t[0], reverse=True)
+                sources = [s for _, s in dated]
 
                 # Capture exchange to Iceberg for ML training (REQUIRED)
                 # Brave explicitly allows API responses for model tuning/RL
@@ -1189,7 +1206,7 @@ Respond with JSON:
                         provider="brave",
                         request_messages=[{"role": "user", "content": search_query}],
                         request_model="brave-search-v1",
-                        request_params={"count": self.max_sources, "freshness": "py"},
+                        request_params={"count": max_n, "freshness": used_freshness},
                         response_content=json.dumps([{
                             "url": s.url,
                             "title": s.title,

@@ -49,12 +49,14 @@ class CerebrasBackend(ExternalBackend):
     # 2026-09-05: the account's live catalogue (GET /v1/models) is exactly
     # gpt-oss-120b, qwen-3.8-27b, gemma-4-31b — zai-glm-4.7, qwen-3-32b and
     # llama-3.3-70b were all archived upstream, so every "cerebras" card
-    # summary 404'd (#COL.00000013.CARDSUMFAIL x26 per curate). gpt-oss-120b
-    # is the reasoning model of a different family from the local Qwen lane.
-    DEFAULT_MODEL = "gpt-oss-120b"
+    # summary 404'd (#COL.00000013.CARDSUMFAIL x26 per curate). qwen-3.8-27b is
+    # the SAME model the local thinking lane serves (Qwen/Qwen3.8-27B), chosen
+    # deliberately so the paid API and local vLLM can be compared like for like
+    # on throughput (scripts/throughput_report.py over HX llm.generations).
+    DEFAULT_MODEL = "qwen-3.8-27b"
     # If the preferred reasoning model is archived, keep the panel alive
     # with another Cerebras model rather than dropping the feature.
-    FALLBACK_MODELS = ("qwen-3.8-27b", "gemma-4-31b")
+    FALLBACK_MODELS = ("gpt-oss-120b", "gemma-4-31b")
 
     # Recommended max_tokens for reasoning models to complete their chain-of-thought
     # GLM uses ~300-500 tokens for reasoning before producing final answer

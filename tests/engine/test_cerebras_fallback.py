@@ -13,7 +13,8 @@ ARCHIVED = {"zai-glm-4.7", "glm-4.7", "qwen-3-32b", "llama-3.3-70b", "llama3.1-8
 
 
 def test_cerebras_keeps_fallback_models() -> None:
-    assert CerebrasBackend.DEFAULT_MODEL == "gpt-oss-120b"
+    # Same model as the local thinking lane, for like-for-like throughput tracking.
+    assert CerebrasBackend.DEFAULT_MODEL == "qwen-3.8-27b"
     assert len(CerebrasBackend.FALLBACK_MODELS) >= 2
     assert CerebrasBackend.DEFAULT_MODEL not in CerebrasBackend.FALLBACK_MODELS
     assert len(set(CerebrasBackend.FALLBACK_MODELS)) == len(CerebrasBackend.FALLBACK_MODELS)

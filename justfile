@@ -586,3 +586,8 @@ k8s-cleanup:
     else
       echo "✓ No orphaned IPs to clean up"
     fi
+
+# Throughput: local vLLM thinking lane vs the Cerebras API on the same model
+# (Qwen3.8-27B), from HX llm.generations. Read-only; never `uv run` beside the engine.
+throughput days="7":
+    .devenv/state/venv/bin/python scripts/throughput_report.py --days {{days}}
