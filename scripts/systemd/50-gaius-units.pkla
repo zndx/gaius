@@ -1,0 +1,24 @@
+# Let the gaius operator manage systemd units without sudo and without a polkit
+# prompt, so `just restart` and the ACP restart executor run as the user,
+# non-interactively, and never need `sudo -n`.
+#
+# Why: from a terminal `systemctl restart gaius.service` "works without sudo"
+# only because polkit's agent asks for the user's OWN password; from a script or
+# an agent the same call fails with "Interactive authentication required"
+# (reset-failed probe, 2026-09-05). This host is Ubuntu 22.04 / polkit 0.105,
+# which reads .pkla files under /etc/polkit-1/localauthority/ and does NOT read
+# JavaScript .rules — and .pkla cannot match on the unit name, so this grants
+# manage-units for all units to the operator. On this box that is no expansion:
+# the operator already holds `(ALL) NOPASSWD: ALL` in sudoers. The scoping that
+# matters — what an AGENT may restart — is not done here: the ACP agent never
+# holds this permission; it writes a request and a root executor outside the
+# unit performs the restart (docs/notes/2026-09-05/224300_acp_restart_rendezvous_protocol.md).
+#
+# Installed by `just reboot-hardening-install` into
+# /etc/polkit-1/localauthority/50-local.d/. polkitd reloads .pkla on change.
+[Allow the gaius operator to manage systemd units]
+Identity=unix-user:rch
+Action=org.freedesktop.systemd1.manage-units
+ResultAny=yes
+ResultInactive=yes
+ResultActive=yes
