@@ -1199,7 +1199,16 @@ class ObjectiveService:
             from gaius.engine.supervision_spec import load_spec
 
             sp = load_spec()
-            expected = [p.id for p in sp.cadenced()] if sp is not None else []
+            # The resident fills exactly the DECLARED Backlog workflows: cadenced
+            # processes with an expectation minus pg_cron jobs (no task row of
+            # their own; the stream carries no job_run_details) plus
+            # `objective.<name>` for objectives with an expectation — the same
+            # set /backlog reads. `cadenced()` alone listed the enqueuers and
+            # would fail this gate forever (2026-09-05 sweep).
+            from gaius.engine.services.backlog_read import declared_workflows
+
+            declared = declared_workflows(sp) if sp is not None else None
+            expected = sorted(declared) if declared is not None else []
         except Exception as e:  # noqa: BLE001
             gates.append({"gate": "filled_within_horizon", "verdict": "error", "evidence": f"instance unreadable: {e}"})
         if expected:

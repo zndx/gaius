@@ -9,7 +9,7 @@
 # until the supervisor's own Brier record earns promotion per scope.
 
 project: "gaius"
-spec_version: "2026-09-04.2"
+spec_version: "2026-09-05.1"
 engine_build: "trunk"            # replaced by the deployed build id at launch; with
                                  # spec_version this is the scoring epoch
 engine_grpc: "127.0.0.1:50051"
@@ -354,7 +354,8 @@ objectives {
   gates { name: "live_coherent" kind: GATE_KIND_PROBE_PASS tier: TIER_SILVER params { key: "probe" value: "live page card ids == kv" } rationale: "what the user sees agrees with KV" }
   horizon { window_seconds: 43200 }
   resolves: "slot % cards are publicly served"
-}
+
+  expectation { category: EXPECTATION_CATEGORY_SLOT horizon_slot: 3 channel: CHANNEL_AGENDA_EVENT rationale: "verified four times daily; a FAIL on what the user receives is an Agenda Event within 2 h" } }
 objectives {
   name: "content_currency"
   surfaced_result: "the content dates a visitor reads on newly published cards — the schedule's INTENT: content tracks the present"
@@ -365,7 +366,8 @@ objectives {
   gates { name: "curation_inflow_current" kind: GATE_KIND_FRESHNESS_WITHIN tier: TIER_SILVER params { key: "source" value: "corpus newest source_date" } params { key: "within_seconds" value: "604800" } rationale: "2026-09-03: inflow itself went stale (Aug-27) — the DAG stage named" }
   horizon { window_seconds: 43200 }
   resolves: "slot % serves current content%"
-}
+
+  expectation { category: EXPECTATION_CATEGORY_SLOT horizon_slot: 3 channel: CHANNEL_AGENDA_EVENT rationale: "verified four times daily; a FAIL on what the user receives is an Agenda Event within 2 h" } }
 objectives {
   name: "prospects_intelligence"
   surfaced_result: "the prospect briefs the user opens — sufficient to a rebalancing BOUNDARY decision under switching costs, for capital or a professional's scarce time/money/energy (kb current/prospects/portfolio-theory.md)"
@@ -382,21 +384,27 @@ objectives {
   expectation { category: EXPECTATION_CATEGORY_JUDGED horizon_slot: 7 channel: CHANNEL_AGENDA_EVENT awaits: "task.prospects_update" rationale: "the judged verdict waits for the next prospects run (13 h to the 07:00 slot rounds down to slot 7); a forward Agenda Event, not a fault" }
 }
 objectives { name: "cognition" surfaced_result: "new thoughts in cognition_thoughts" machines: "" cadence_cron: "38 1,7,13,19 * * *"
-  gates { name: "footprint_advanced" kind: GATE_KIND_FOOTPRINT_ADVANCED tier: TIER_SILVER params { key: "sql" value: "SELECT count(*) FROM cognition_thoughts WHERE created_at > NOW() - INTERVAL '8 hours'" } params { key: "min" value: "1" } rationale: "skeleton: caught the 2026-09-02 THINKBURN drought (cycle green, zero thoughts)" } }
+  gates { name: "footprint_advanced" kind: GATE_KIND_FOOTPRINT_ADVANCED tier: TIER_SILVER params { key: "sql" value: "SELECT count(*) FROM cognition_thoughts WHERE created_at > NOW() - INTERVAL '8 hours'" } params { key: "min" value: "1" } rationale: "skeleton: caught the 2026-09-02 THINKBURN drought (cycle green, zero thoughts)" }
+  expectation { category: EXPECTATION_CATEGORY_SLOT horizon_slot: 5 channel: CHANNEL_REMINDER rationale: "6 h verify cadence; a FAIL is a Reminder by 5 h unless the next verify resolves it" } }
 objectives { name: "tier_settle" surfaced_result: "settled rows queryable in signal_tier1" cadence_cron: "38 1,7,13,19 * * *"
-  gates { name: "footprint_advanced" kind: GATE_KIND_FOOTPRINT_ADVANCED tier: TIER_SILVER params { key: "sql" value: "settle rows in window" } params { key: "min" value: "1" } rationale: "skeleton" } }
+  gates { name: "footprint_advanced" kind: GATE_KIND_FOOTPRINT_ADVANCED tier: TIER_SILVER params { key: "sql" value: "settle rows in window" } params { key: "min" value: "1" } rationale: "skeleton" }
+  expectation { category: EXPECTATION_CATEGORY_SLOT horizon_slot: 5 channel: CHANNEL_REMINDER rationale: "6 h verify cadence; a FAIL is a Reminder by 5 h unless the next verify resolves it" } }
 objectives { name: "skos_labels" surfaced_result: "SKOS labels landed in the KB" cadence_cron: "38 1,7,13,19 * * *"
-  gates { name: "footprint_advanced" kind: GATE_KIND_FOOTPRINT_ADVANCED tier: TIER_SILVER params { key: "sql" value: "labels in window" } params { key: "min" value: "1" } rationale: "skeleton" } }
+  gates { name: "footprint_advanced" kind: GATE_KIND_FOOTPRINT_ADVANCED tier: TIER_SILVER params { key: "sql" value: "labels in window" } params { key: "min" value: "1" } rationale: "skeleton" }
+  expectation { category: EXPECTATION_CATEGORY_SLOT horizon_slot: 5 channel: CHANNEL_REMINDER rationale: "6 h verify cadence; a FAIL is a Reminder by 5 h unless the next verify resolves it" } }
 objectives { name: "market_buffer" surfaced_result: "live prospects rows in buffer_entries newer than 2h" machines: "fmp_roll" cadence_cron: "38 1,7,13,19 * * *"
-  gates { name: "footprint_advanced" kind: GATE_KIND_FOOTPRINT_ADVANCED tier: TIER_SILVER params { key: "sql" value: "SELECT count(*) FROM buffer_entries WHERE buffer='prospects' AND compacted_at IS NULL AND created_at > NOW() - INTERVAL '2 hours'" } params { key: "min" value: "1" } rationale: "skeleton: the FIFO tracks the market" } }
+  gates { name: "footprint_advanced" kind: GATE_KIND_FOOTPRINT_ADVANCED tier: TIER_SILVER params { key: "sql" value: "SELECT count(*) FROM buffer_entries WHERE buffer='prospects' AND compacted_at IS NULL AND created_at > NOW() - INTERVAL '2 hours'" } params { key: "min" value: "1" } rationale: "skeleton: the FIFO tracks the market" }
+  expectation { category: EXPECTATION_CATEGORY_SLOT horizon_slot: 5 channel: CHANNEL_REMINDER rationale: "6 h verify cadence; a FAIL is a Reminder by 5 h unless the next verify resolves it" } }
 objectives { name: "ambient_synthesis" surfaced_result: "a thinking synthesis episode in cognition_buffer within 2h" machines: "ambient_synthesis" cadence_cron: "38 1,7,13,19 * * *"
-  gates { name: "footprint_advanced" kind: GATE_KIND_FOOTPRINT_ADVANCED tier: TIER_SILVER params { key: "sql" value: "SELECT count(*) FROM cognition_buffer WHERE kind='synthesis' AND created_at > NOW() - INTERVAL '2 hours'" } params { key: "min" value: "1" } rationale: "skeleton: synthesis lands on schedule" } }
+  gates { name: "footprint_advanced" kind: GATE_KIND_FOOTPRINT_ADVANCED tier: TIER_SILVER params { key: "sql" value: "SELECT count(*) FROM cognition_buffer WHERE kind='synthesis' AND created_at > NOW() - INTERVAL '2 hours'" } params { key: "min" value: "1" } rationale: "skeleton: synthesis lands on schedule" }
+  expectation { category: EXPECTATION_CATEGORY_SLOT horizon_slot: 5 channel: CHANNEL_REMINDER rationale: "6 h verify cadence; a FAIL is a Reminder by 5 h unless the next verify resolves it" } }
 # (2026-09-04) The arbiter objective: declared intents are forecasts that the federation's
 # arbiter applies them; this resolves them against Signals' records and the cluster ConfigMap.
 objectives { name: "queue_share_arbitration" surfaced_result: "yunikorn-configs guaranteed GPU per leaf vs live declared intents (Signals ListQueueShareRequests)" cadence_cron: "38 1,7,13,19 * * *"
   gates { name: "records_settled" kind: GATE_KIND_PROBE_PASS tier: TIER_SILVER params { key: "probe" value: "no live record RECORDED/APPLYING past QUEUE_SHARE_APPLY_NET_S" } rationale: "an applier that never applies is the silent failure" }
   gates { name: "floors_applied" kind: GATE_KIND_PROBE_PASS tier: TIER_SILVER params { key: "probe" value: "configmap guaranteed[leaf] == max live APPLIED declared floor[leaf]" } rationale: "the arbiter merge is the contract (declared floor, else share guaranteed; max per leaf)" }
-  gates { name: "intents_honoured" kind: GATE_KIND_PROBE_PASS tier: TIER_SILVER params { key: "probe" value: "every held phase intent has a live APPLIED record" } rationale: "a run whose phase intent was never applied ran unprotected" } }
+  gates { name: "intents_honoured" kind: GATE_KIND_PROBE_PASS tier: TIER_SILVER params { key: "probe" value: "every held phase intent has a live APPLIED record" } rationale: "a run whose phase intent was never applied ran unprotected" }
+  expectation { category: EXPECTATION_CATEGORY_SLOT horizon_slot: 5 channel: CHANNEL_REMINDER rationale: "6 h verify cadence; a FAIL is a Reminder by 5 h unless the next verify resolves it" } }
 
 # (2026-09-04) The Backlog itself carries an objective: every cadenced process has a
 # slot-0 row filled within 2 h and a supervisor session is live. Later: "every open item
@@ -404,4 +412,5 @@ objectives { name: "queue_share_arbitration" surfaced_result: "yunikorn-configs 
 objectives { name: "ops_backlog" surfaced_result: "/backlog shows every cadenced workflow with a fresh slot-0 row; /nautilus status shows a live session" cadence_cron: "38 1,7,13,19 * * *"
   gates { name: "filled_within_horizon" kind: GATE_KIND_FRESHNESS_WITHIN tier: TIER_SILVER params { key: "sql" value: "SELECT max(filled_at) FROM nautilus_backlog WHERE slot = 0" } params { key: "within_seconds" value: "7200" } rationale: "the hourly tick has 2 h (F=2) to land a slot-0 row for every workflow" }
   gates { name: "nautilus_connected" kind: GATE_KIND_FRESHNESS_WITHIN tier: TIER_SILVER params { key: "sql" value: "SELECT max(last_heartbeat_at) FROM supervision_sessions" } params { key: "within_seconds" value: "7200" } rationale: "a Supervise session heartbeated within 2 h" }
-  horizon { window_seconds: 7200 resolve_within_phase_only: false } }
+  horizon { window_seconds: 7200 resolve_within_phase_only: false }
+  expectation { category: EXPECTATION_CATEGORY_SLOT horizon_slot: 3 channel: CHANNEL_AGENDA_EVENT rationale: "verified four times daily; a FAIL on what the user receives is an Agenda Event within 2 h" } }
