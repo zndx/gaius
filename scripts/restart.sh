@@ -69,6 +69,15 @@ RESTARTED_AT="" RESTART_VIA="" PORT_UP_S="" THINKING_STATUS="" THINKING_S="" BOO
 (( EUID == 0 )) && say "running as root — not needed (polkit grants manage-units to $(stat -c %U "$ROOT")); state files will be handed back to the repo owner at the end"
 OBJ_RESULTS="[]"
 
+# A previous window that died by SIGKILL (a stopped background task, 2026-09-05
+# 23:53) never ran its EXIT trap and left the enqueuers paused. Recover first:
+# the pause is only ever ours, so an inactive enqueuer at start is a dead window.
+stale=$($PSQL -c "select coalesce(string_agg(jobname, ', '),'') from cron.job where jobname in ($JOBS) and not active" 2>/dev/null)
+if [[ -n "$stale" ]]; then
+  say "enqueuers left paused by a previous window: $stale — re-enabling before anything else"
+  $PSQL -c "UPDATE cron.job SET active=true WHERE jobname IN ($JOBS)" >/dev/null || say "could not re-enable $stale"
+fi
+
 inflight() { $PSQL -c "select coalesce(string_agg(task_type||'#'||id||' '||to_char(now()-picked_up_at,'HH24:MI'), ', '),'') from scheduled_tasks where picked_up_at is not null and completed_at is null" 2>/dev/null; }
 flows() { pgrep -af "python[0-9.]* -m gaius\.flows\." 2>/dev/null | grep -v "uv run" | cut -c1-110 | tr '\n' ';'; }
 
