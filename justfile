@@ -592,8 +592,10 @@ k8s-cleanup:
 throughput days="7":
     .devenv/state/venv/bin/python scripts/throughput_report.py --days {{days}}
 
-# Engine restart under policy (memory: gaius-controlled-restart-window). controlled = wait
-# for no publish slot, pause enqueuers, drain, restart, verify; free = a primary objective is
-# unmet so nothing is protected: restart now, verify. Add --objective NAME to verify it live.
-restart-window mode="controlled" *args="":
-    bash scripts/restart_window.sh --mode {{mode}} {{args}}
+# The one restart by command: clean, controlled, agent-friendly. No arguments. Waits for no
+# publish slot, pauses the enqueuers under a trap, drains, restarts gaius.service, verifies,
+# and re-verifies every declared objective whose latest verdict is FAIL — the objectives
+# under remediation — after writing their context for the fresh ACP session
+# (.devenv/state/gaius/restarts/latest/). See scripts/restart.sh.
+restart:
+    bash scripts/restart.sh
