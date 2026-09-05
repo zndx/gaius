@@ -1,7 +1,7 @@
 """Storage Backend Configuration.
 
 Manages the storage backend for Iceberg data files (parquet).
-Supports MinIO (S3-compatible) as primary and filesystem as fallback.
+Supports RustFS (S3-compatible) as primary and filesystem as fallback.
 """
 
 from __future__ import annotations
@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 class StorageBackend(Enum):
     """Supported storage backends."""
-    MINIO = "minio"      # S3-compatible MinIO
+    RUSTFS = "rustfs"      # S3-compatible RustFS
     FILESYSTEM = "fs"    # Local filesystem
 
 
@@ -33,7 +33,7 @@ class StorageConfig:
     backend: StorageBackend
     warehouse_path: str
 
-    # MinIO settings (when backend == MINIO)
+    # RustFS settings (when backend == RUSTFS)
     endpoint: str | None = None
     access_key: str | None = None
     secret_key: str | None = None
@@ -46,13 +46,13 @@ class StorageConfig:
 
 def get_storage_config(
     config: HxConfig | None = None,
-    check_minio: bool = True,
+    check_rustfs: bool = True,
 ) -> StorageConfig:
     """Get storage configuration. Signals RustFS is required; no filesystem fallback.
 
     Args:
         config: Optional HxConfig. If None, loads from global config.
-        check_minio: If True, probe RustFS and fail-fast when it is down.
+        check_rustfs: If True, probe RustFS and fail-fast when it is down.
 
     Returns:
         StorageConfig with appropriate backend settings.
@@ -60,31 +60,31 @@ def get_storage_config(
     if config is None:
         config = get_hx_config()
 
-    if config.use_minio:
-        if check_minio and not _check_minio_available(config):
+    if config.use_rustfs:
+        if check_rustfs and not _check_rustfs_available(config):
             raise RuntimeError(
                 "#HX.00000001.NORUSTFS Signals RustFS is required for "
-                f"HX at {config.minio_endpoint} (no filesystem fallback).\n"
+                f"HX at {config.rustfs_endpoint} (no filesystem fallback).\n"
                 "  Try: just signals-ready; confirm :9010 rustfsadmin\n"
-                "  devenv MinIO is not a warehouse"
+                "  devenv RustFS is not a warehouse"
             )
-        return _get_minio_config(config)
+        return _get_rustfs_config(config)
     else:
         return _get_filesystem_config(config)
 
 
-def _get_minio_config(config: HxConfig) -> StorageConfig:
-    """Get MinIO storage configuration."""
+def _get_rustfs_config(config: HxConfig) -> StorageConfig:
+    """Get RustFS storage configuration."""
     import os
 
     return StorageConfig(
-        backend=StorageBackend.MINIO,
+        backend=StorageBackend.RUSTFS,
         warehouse_path=config.warehouse_path,
         endpoint=config.s3_endpoint,
-        access_key=config.minio_access_key or os.environ.get("RUSTFS_ACCESS_KEY", "rustfsadmin"),
-        secret_key=config.minio_secret_key or os.environ.get("RUSTFS_SECRET_KEY", "rustfsadmin"),
-        bucket=config.minio_bucket,
-        prefix=config.minio_prefix,
+        access_key=config.rustfs_access_key or os.environ.get("RUSTFS_ACCESS_KEY", "rustfsadmin"),
+        secret_key=config.rustfs_secret_key or os.environ.get("RUSTFS_SECRET_KEY", "rustfsadmin"),
+        bucket=config.rustfs_bucket,
+        prefix=config.rustfs_prefix,
     )
 
 
@@ -99,46 +99,46 @@ def _get_filesystem_config(config: HxConfig) -> StorageConfig:
     )
 
 
-def _check_minio_available(config: HxConfig) -> bool:
-    """Check if MinIO is available and accessible.
+def _check_rustfs_available(config: HxConfig) -> bool:
+    """Check if RustFS is available and accessible.
 
     Returns:
-        True if MinIO is available, False otherwise.
+        True if RustFS is available, False otherwise.
     """
     import os
 
     try:
         import httpx
     except ImportError:
-        logger.warning("httpx not available for MinIO health check")
+        logger.warning("httpx not available for RustFS health check")
         return True  # Assume available
 
     try:
-        # MinIO health endpoint
+        # RustFS health endpoint
         endpoint = config.s3_endpoint.rstrip("/")
-        response = httpx.get(f"{endpoint}/minio/health/live", timeout=2.0)
+        response = httpx.get(f"{endpoint}/health", timeout=2.0)
         return response.status_code == 200
     except Exception as e:
-        logger.debug(f"MinIO health check failed: {e}")
+        logger.debug(f"RustFS health check failed: {e}")
         return False
 
 
 def ensure_storage_exists(storage: StorageConfig) -> None:
     """Ensure the storage location exists.
 
-    For MinIO: Creates the bucket if it doesn't exist.
+    For RustFS: Creates the bucket if it doesn't exist.
     For filesystem: Creates the directory if it doesn't exist.
     """
     if storage.backend == StorageBackend.FILESYSTEM:
         if storage.local_path:
             storage.local_path.mkdir(parents=True, exist_ok=True)
             logger.info(f"Ensured filesystem warehouse exists: {storage.local_path}")
-    elif storage.backend == StorageBackend.MINIO:
-        _ensure_minio_bucket(storage)
+    elif storage.backend == StorageBackend.RUSTFS:
+        _ensure_rustfs_bucket(storage)
 
 
-def _ensure_minio_bucket(storage: StorageConfig) -> None:
-    """Ensure the MinIO bucket exists."""
+def _ensure_rustfs_bucket(storage: StorageConfig) -> None:
+    """Ensure the RustFS bucket exists."""
     try:
         import s3fs
     except ImportError:
@@ -153,19 +153,19 @@ def _ensure_minio_bucket(storage: StorageConfig) -> None:
         )
 
         if not fs.exists(storage.bucket):
-            logger.info(f"Creating MinIO bucket: {storage.bucket}")
+            logger.info(f"Creating RustFS bucket: {storage.bucket}")
             fs.mkdir(storage.bucket)
         else:
-            logger.debug(f"MinIO bucket exists: {storage.bucket}")
+            logger.debug(f"RustFS bucket exists: {storage.bucket}")
 
         # Ensure prefix directory exists (if configured)
         if storage.prefix is None:
             return
         prefix_path = f"{storage.bucket}/{storage.prefix.rstrip('/')}"
         if not fs.exists(prefix_path):
-            logger.info(f"Creating MinIO prefix: {prefix_path}")
+            logger.info(f"Creating RustFS prefix: {prefix_path}")
             fs.mkdir(prefix_path)
 
     except Exception as e:
-        logger.error(f"Failed to ensure MinIO bucket: {e}")
+        logger.error(f"Failed to ensure RustFS bucket: {e}")
         raise

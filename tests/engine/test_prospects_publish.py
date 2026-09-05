@@ -57,28 +57,28 @@ def test_product_env_stamps_rustfs_hx() -> None:
             "SIGNALS_ROOT": "/tmp/signals-root",
         }
     )
-    assert env["GAIUS_MINIO_BUCKET"] == PRODUCT_BUCKET
-    assert env["GAIUS_MINIO_ENDPOINT"] == "127.0.0.1:9010"
-    assert env["GAIUS_MINIO_ACCESS_KEY"] == "rustfsadmin"
-    assert env["GAIUS_HX_USE_MINIO"] == "true"
+    assert env["GAIUS_RUSTFS_BUCKET"] == PRODUCT_BUCKET
+    assert env["GAIUS_RUSTFS_ENDPOINT"] == "127.0.0.1:9010"
+    assert env["GAIUS_RUSTFS_ACCESS_KEY"] == "rustfsadmin"
+    assert env["GAIUS_HX_USE_RUSTFS"] == "true"
     assert env["SIGNALS_DATA_PRODUCT_HISTORY"].endswith(
         "data-product-history.jsonl"
     )
 
 
 def test_engine_apply_metaflow_stamps_rustfs(monkeypatch: pytest.MonkeyPatch) -> None:
-    """HX is Signals RustFS; devenv MinIO is not a warehouse."""
-    monkeypatch.setenv("GAIUS_MINIO_ENDPOINT", "localhost:9014")
-    monkeypatch.setenv("GAIUS_MINIO_BUCKET", "zndx-gaius")
-    monkeypatch.setenv("AWS_ACCESS_KEY_ID", "minioadmin")
-    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "minioadmin")
+    """HX is Signals RustFS; devenv RustFS is not a warehouse."""
+    monkeypatch.setenv("GAIUS_RUSTFS_ENDPOINT", "localhost:9014")
+    monkeypatch.setenv("GAIUS_RUSTFS_BUCKET", "zndx-gaius")
+    monkeypatch.setenv("AWS_ACCESS_KEY_ID", "rustfsadmin")
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "rustfsadmin")
     monkeypatch.setenv("GAIUS_METAFLOW_MODE", "local")
     from gaius.flows.config import apply_metaflow_config
 
     apply_metaflow_config(mode="local")
-    assert "9010" in os.environ["GAIUS_MINIO_ENDPOINT"]
-    assert os.environ["GAIUS_MINIO_BUCKET"] == "signals-dataproducts"
-    assert os.environ["GAIUS_MINIO_ACCESS_KEY"] == "rustfsadmin"
+    assert "9010" in os.environ["GAIUS_RUSTFS_ENDPOINT"]
+    assert os.environ["GAIUS_RUSTFS_BUCKET"] == "signals-dataproducts"
+    assert os.environ["GAIUS_RUSTFS_ACCESS_KEY"] == "rustfsadmin"
     assert os.environ["GAIUS_HX_PREFIX"] == "iceberg/"
 
 
@@ -88,11 +88,11 @@ def test_hx_platform_refuses_filesystem_fallback(monkeypatch: pytest.MonkeyPatch
 
     monkeypatch.setenv("GAIUS_METAFLOW_MODE", "platform")
     monkeypatch.setattr(
-        "gaius.hx.storage._check_minio_available",
+        "gaius.hx.storage._check_rustfs_available",
         lambda _cfg: False,
     )
     with pytest.raises(RuntimeError, match="#HX.00000001.NORUSTFS"):
-        get_storage_config(HxConfig(), check_minio=True)
+        get_storage_config(HxConfig(), check_rustfs=True)
 
 
 def test_record_availability_needs_update_without_runs(

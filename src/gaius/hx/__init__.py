@@ -11,7 +11,7 @@ Architecture:
 
 Components:
     - catalog: PyIceberg catalog setup with PostgreSQL backend
-    - storage: MinIO primary storage with filesystem fallback
+    - storage: RustFS (Signals, S3 API) primary storage with filesystem fallback
     - tables: Iceberg table schemas for raw content
     - writer: IcebergContentStore for writing fetched content
     - reader: IcebergContentReader for querying content

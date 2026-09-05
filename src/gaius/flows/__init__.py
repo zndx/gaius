@@ -1,7 +1,7 @@
 """Gaius Flows - Metaflow-based data pipelines with lineage tracking.
 
 This module provides Metaflow flows integrated with Gaius infrastructure:
-- Devenv PostgreSQL and MinIO for storage
+- Devenv PostgreSQL and Signals RustFS (S3) for storage
 - Apache AGE graph for lineage tracking
 - KB integration for output artifacts
 

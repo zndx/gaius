@@ -1,7 +1,9 @@
 # NodePort Services for Exposing Devenv Services to Kubernetes
 #
 # These services allow K8s pods (e.g., Metaflow jobs, Argo workflows) to access
-# the devenv PostgreSQL and MinIO instances running on the host.
+# the devenv PostgreSQL and Signals' RustFS object store running on the host.
+# (devenv MinIO retired 2026-09-05 — nixpkgs marks it insecure; RustFS is the
+# federation's single S3 store, owned by wxs/signals, API 9010 / console 9011.)
 #
 # Usage:
 #   1. Get your RKE2 node IP: kubectl get nodes -o wide
@@ -10,14 +12,14 @@
 #
 # Services:
 #   - devenv-postgres: PostgreSQL on 5444 -> NodePort 30438
-#   - devenv-minio: MinIO on 9010 -> NodePort 30910
+#   - devenv-rustfs: RustFS S3 API on 9010 (console 9011)
 #
 # NOTE: the Endpoints ports below are the DECLARED lattice ports. devenv's
-# daemon port allocator may shift the host services (e.g. postgres 5445,
-# minio 9012/9013); scripts/processes/metaflow-bootstrap.sh patches the
-# Endpoints to the effective $PGPORT/$MINIO_PORT after every apply. This
-# file must stay valid static YAML because infra/tilt/Tiltfile consumes it
-# unrendered via k8s_yaml.
+# daemon port allocator may shift Postgres (e.g. 5445);
+# scripts/processes/metaflow-bootstrap.sh patches the postgres Endpoints to
+# the effective $PGPORT after every apply. RustFS runs under Signals' strict
+# port policy and is never shifted. This file must stay valid static YAML
+# because infra/tilt/Tiltfile consumes it unrendered via k8s_yaml.
 
 ---
 # PostgreSQL Service (for Metaflow metadata, Gaius lineage)
@@ -51,13 +53,13 @@ subsets:
         name: postgres
 
 ---
-# MinIO Service (for Metaflow artifacts, KB storage)
+# RustFS Service (Signals' object store: Metaflow artifacts, HX data lake, KB storage)
 apiVersion: v1
 kind: Service
 metadata:
-  name: devenv-minio
+  name: devenv-rustfs
   labels:
-    app: devenv-minio
+    app: devenv-rustfs
     component: storage
 spec:
   type: ClusterIP
@@ -72,14 +74,14 @@ spec:
       name: console
 
 ---
-# MinIO Endpoints (pointing to host)
+# RustFS Endpoints (pointing to host)
 apiVersion: v1
 kind: Endpoints
 metadata:
-  name: devenv-minio
+  name: devenv-rustfs
 subsets:
   - addresses:
-      # Host IP for tinybox (where devenv minio runs)
+      # Host IP for tinybox (where Signals' RustFS runs)
       - ip: "192.168.1.55"
     ports:
       - port: 9010
@@ -88,13 +90,13 @@ subsets:
         name: console
 
 ---
-# MinIO credentials secret (for Metaflow S3 access)
+# RustFS credentials secret (for Metaflow S3 access)
 apiVersion: v1
 kind: Secret
 metadata:
-  name: devenv-minio-credentials
+  name: devenv-rustfs-credentials
 type: Opaque
 stringData:
-  AWS_ACCESS_KEY_ID: "minioadmin"
-  AWS_SECRET_ACCESS_KEY: "minioadmin"
-  AWS_ENDPOINT_URL_S3: "http://devenv-minio:9010"
+  AWS_ACCESS_KEY_ID: "rustfsadmin"
+  AWS_SECRET_ACCESS_KEY: "rustfsadmin"
+  AWS_ENDPOINT_URL_S3: "http://devenv-rustfs:9010"

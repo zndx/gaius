@@ -1458,7 +1458,7 @@ message DatasetGenerationRequest {
   bool enable_calibration = 7;        // XAI calibration (default: false)
   float calibration_sample_rate = 8;  // Sample rate (default: 0.1)
   bool export_calibration = 9;        // Export to Iceberg
-  string storage_backend = 10;        // "minio" or "filesystem"
+  string storage_backend = 10;        // "rustfs" or "filesystem"
 }
 
 message DatasetJobStatus {

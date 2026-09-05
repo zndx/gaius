@@ -1,4 +1,4 @@
-"""Card Server Service - Serves Metaflow cards from MinIO/S3.
+"""Card Server Service - Serves Metaflow cards from RustFS/S3.
 
 This service provides HTTP endpoints for viewing Metaflow cards stored in S3,
 bypassing the buggy Metaflow UI backend card endpoint.
@@ -28,7 +28,7 @@ class CardServerConfig:
     host: str = "0.0.0.0"
     port: int = 8084
 
-    # S3/MinIO configuration
+    # S3/RustFS configuration
     s3_endpoint: str = field(
         default_factory=lambda: os.environ.get(
             "METAFLOW_S3_ENDPOINT_URL", "http://localhost:9010"
@@ -36,11 +36,15 @@ class CardServerConfig:
     )
     s3_bucket: str = "metaflow-artifacts"
     s3_card_prefix: str = "metaflow/mf.cards"
+    # RustFS (Signals, :9010) credentials: the explicit GAIUS_RUSTFS_* pair first;
+    # an AWS_* pair only when a caller set one deliberately for a foreign S3.
     aws_access_key: str = field(
-        default_factory=lambda: os.environ.get("AWS_ACCESS_KEY_ID", "minioadmin")
+        default_factory=lambda: os.environ.get("GAIUS_RUSTFS_ACCESS_KEY")
+        or os.environ.get("AWS_ACCESS_KEY_ID", "rustfsadmin")
     )
     aws_secret_key: str = field(
-        default_factory=lambda: os.environ.get("AWS_SECRET_ACCESS_KEY", "minioadmin")
+        default_factory=lambda: os.environ.get("GAIUS_RUSTFS_SECRET_KEY")
+        or os.environ.get("AWS_SECRET_ACCESS_KEY", "rustfsadmin")
     )
 
 
@@ -118,7 +122,7 @@ class CardServerService:
 <head><title>Gaius Card Server</title></head>
 <body>
 <h1>Gaius Card Server</h1>
-<p>Serves Metaflow cards from MinIO storage.</p>
+<p>Serves Metaflow cards from RustFS storage.</p>
 <ul>
 <li><a href="/cards">Browse Flows</a></li>
 </ul>

@@ -2,7 +2,7 @@
 
 Provides a unified interface for file storage that can be backed by:
 - Local filesystem (default, for development)
-- Minio/S3 object storage (for production)
+- RustFS/S3 object storage (for production)
 - Cloudera Agent Studio (for enterprise deployment)
 
 The abstraction extends deepagents' BackendProtocol to ensure compatibility

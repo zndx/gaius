@@ -98,7 +98,7 @@ async def submit_job(
     enable_calibration: bool = False,
     calibration_sample_rate: float = 0.1,
     export_calibration: bool = False,
-    storage: str = "minio",
+    storage: str = "rustfs",
     host: str = "localhost",
     port: int = 50051,
     stream_progress: bool = True,
@@ -115,7 +115,7 @@ async def submit_job(
         enable_calibration: Enable XAI calibration
         calibration_sample_rate: Sample rate for calibration
         export_calibration: Export calibration to Iceberg
-        storage: Storage backend ("minio" or "filesystem")
+        storage: Storage backend ("rustfs" or "filesystem")
         host: Engine host
         port: Engine gRPC port
         stream_progress: Whether to stream progress
@@ -434,9 +434,9 @@ Budget: 100/day, 500/week. Use --calibration-rate to control sampling.""",
     )
     submit_parser.add_argument(
         "--storage",
-        choices=["minio", "filesystem"],
-        default="minio",
-        help="Storage backend (default: minio/S3)",
+        choices=["rustfs", "filesystem"],
+        default="rustfs",
+        help="Storage backend (default: rustfs/S3)",
     )
     submit_parser.add_argument(
         "--no-stream",

@@ -1,7 +1,7 @@
 """Topic modeling utilities for Gaius flows.
 
 Provides LDA, LSA, HDP (Gensim) and BERTopic for document analysis
-with incremental corpus building and MinIO persistence.
+with incremental corpus building and RustFS (S3) persistence.
 """
 
 from gaius.flows.topics.corpus import (

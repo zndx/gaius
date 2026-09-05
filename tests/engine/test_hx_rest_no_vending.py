@@ -16,9 +16,9 @@ def test_rest_catalog_opts_out_of_credential_vending() -> None:
 def test_s3_properties_have_rustfs_keys() -> None:
     cfg = HxConfig(
         catalog_name="signals",
-        minio_endpoint="127.0.0.1:9010",
-        minio_access_key="",
-        minio_secret_key="",
+        rustfs_endpoint="127.0.0.1:9010",
+        rustfs_access_key="",
+        rustfs_secret_key="",
     )
     props = _get_s3_properties(cfg)
     assert props["s3.access-key-id"]

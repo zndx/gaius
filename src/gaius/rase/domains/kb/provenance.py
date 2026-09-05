@@ -710,7 +710,7 @@ async def get_lineage_from_db(
 
 async def get_sync_state_from_db(
     file_path: str,
-    target_name: str = "minio-local",
+    target_name: str = "rustfs-local",
     db_url: str | None = None,
 ) -> dict[str, Any] | None:
     """Get sync state for a file from kb_sync_state table.

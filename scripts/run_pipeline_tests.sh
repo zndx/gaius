@@ -114,14 +114,14 @@ echo ""
 # Service management via devenv
 DEVENV_PG_DATA="$PROJECT_ROOT/.devenv/state/postgres"
 DEVENV_PG_PORT=5444
-MINIO_PORT=9010
+RUSTFS_PORT=9010   # Signals RustFS (S3 API); START_MINIO now means "require RustFS"
 
 check_postgres() {
     pg_isready -h localhost -p $DEVENV_PG_PORT -q 2>/dev/null
 }
 
-check_minio() {
-    nc -z localhost $MINIO_PORT 2>/dev/null
+check_rustfs() {
+    nc -z localhost $RUSTFS_PORT 2>/dev/null
 }
 
 start_postgres() {
@@ -153,25 +153,21 @@ start_postgres() {
     return 1
 }
 
-start_minio() {
-    if check_minio; then
-        echo "✓ MinIO already running on port $MINIO_PORT"
+require_rustfs() {
+    # RustFS is Signals' object store (127.0.0.1:9010); gaius runs no object store of
+    # its own (devenv MinIO retired 2026-09-05). This script cannot start it — fail
+    # fast with the owner's remediation instead of skipping tiers silently.
+    if check_rustfs; then
+        echo "✓ RustFS (Signals) answering on port $RUSTFS_PORT"
+        mc alias set rustfs "http://localhost:$RUSTFS_PORT" rustfsadmin rustfsadmin >/dev/null 2>&1 || true
+        mc mb rustfs/zndx-gaius-test --ignore-existing >/dev/null 2>&1 || true
         return 0
     fi
-
-    echo "Starting MinIO via devenv..."
-    devenv processes up minio -d >/dev/null 2>&1
-
-    # Wait for MinIO
-    for i in {1..15}; do
-        if check_minio; then
-            echo "✓ MinIO started on port $MINIO_PORT"
-            # Ensure test bucket exists
-            mc mb local/zndx-gaius-test --ignore-existing >/dev/null 2>&1 || true
-            return 0
-        fi
-        sleep 1
-    done
+    echo "RustFS not answering on localhost:$RUSTFS_PORT — tier-2+ tests need it."
+    echo "  Guru: #ST.00002.RUSTFS_UNREACHABLE"
+    echo "  Try (in ~/local/src/wxs/signals): devenv processes start rustfs"
+    echo "  Or:  systemctl status signals.service"
+    return 1
 
     echo "WARNING: MinIO failed to start (tests may fail)"
     return 1
@@ -260,7 +256,7 @@ if $START_POSTGRES; then
 fi
 
 if $START_MINIO; then
-    start_minio || true  # Don't fail if MinIO doesn't start
+    require_rustfs || exit 1
 fi
 
 if $START_ENGINE; then
@@ -273,18 +269,18 @@ fi
 # Note: devenv postgres uses the system user, not 'postgres'
 export GAIUS_DATABASE_URL="postgresql://$USER@localhost:$DEVENV_PG_PORT/zndx_gaius"
 export GAIUS_KB_ROOT="$PROJECT_ROOT/build/test"
-export GAIUS_MINIO_ENDPOINT="localhost:$MINIO_PORT"
-export GAIUS_MINIO_BUCKET="zndx-gaius-test"
-export GAIUS_MINIO_ACCESS_KEY="minioadmin"
-export GAIUS_MINIO_SECRET_KEY="minioadmin"
+export GAIUS_RUSTFS_ENDPOINT="localhost:$RUSTFS_PORT"
+export GAIUS_RUSTFS_BUCKET="zndx-gaius-test"
+export GAIUS_RUSTFS_ACCESS_KEY="rustfsadmin"
+export GAIUS_RUSTFS_SECRET_KEY="rustfsadmin"
 
 echo ""
 echo "Environment:"
 echo "  GAIUS_DATABASE_URL=$GAIUS_DATABASE_URL"
 echo "  GAIUS_KB_ROOT=$GAIUS_KB_ROOT"
 if $START_MINIO; then
-    echo "  GAIUS_MINIO_ENDPOINT=$GAIUS_MINIO_ENDPOINT"
-    echo "  GAIUS_MINIO_BUCKET=$GAIUS_MINIO_BUCKET"
+    echo "  GAIUS_RUSTFS_ENDPOINT=$GAIUS_RUSTFS_ENDPOINT"
+    echo "  GAIUS_RUSTFS_BUCKET=$GAIUS_RUSTFS_BUCKET"
 fi
 echo ""
 

@@ -1,4 +1,4 @@
-"""Dataset storage backend for S3/MinIO."""
+"""Dataset storage backend for S3/RustFS."""
 
 import hashlib
 import io
@@ -11,13 +11,10 @@ from typing import Optional
 
 from PIL import Image
 
-try:
-    from minio import Minio
-    from minio.error import S3Error
-
-    MINIO_AVAILABLE = True
-except ImportError:
-    MINIO_AVAILABLE = False
+# minio-py is the S3 client library (a hard dependency in pyproject); it speaks
+# to Signals' RustFS. No availability flag: fail-fast at import.
+from minio import Minio
+from minio.error import S3Error
 
 
 @dataclass
@@ -65,7 +62,7 @@ class DatasetManifest:
 class DatasetStorage:
     """Storage backend for dataset artifacts.
 
-    Supports both local filesystem and MinIO/S3 backends.
+    Supports both local filesystem and RustFS/S3 backends.
     """
 
     def __init__(
@@ -82,18 +79,14 @@ class DatasetStorage:
         self.bucket = bucket
         self.prefix = prefix
         self.endpoint = endpoint or os.getenv("GAIUS_KB_ENDPOINT", "localhost:9010")
-        self.access_key = access_key or os.getenv("GAIUS_KB_ACCESS_KEY", "minioadmin")
-        self.secret_key = secret_key or os.getenv("GAIUS_KB_SECRET_KEY", "minioadmin")
+        self.access_key = access_key or os.getenv("GAIUS_KB_ACCESS_KEY", "rustfsadmin")
+        self.secret_key = secret_key or os.getenv("GAIUS_KB_SECRET_KEY", "rustfsadmin")
         self.secure = secure
 
         self._client: Optional[Minio] = None
 
     def _get_client(self) -> Minio:
-        """Get or create MinIO client."""
-        if not MINIO_AVAILABLE:
-            raise ImportError(
-                "minio package required for S3 storage. Install with: uv add minio"
-            )
+        """Get or create the RustFS (S3) client."""
         if self._client is None:
             self._client = Minio(
                 self.endpoint,

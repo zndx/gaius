@@ -138,7 +138,7 @@ class BasesService:
                     f"[#BASES.00000002.NOICEBERG] Iceberg catalog initialization failed: {e}\n"
                     "  PyIceberg is a hard requirement. Check:\n"
                     "  1. PostgreSQL is running (catalog metadata store)\n"
-                    "  2. MinIO is running (data file storage)\n"
+                    "  2. RustFS (Signals, 127.0.0.1:9010) is running (data file storage)\n"
                     "  3. HX config is correct in gaius.hx.config"
                 ) from e
 

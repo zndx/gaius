@@ -58,12 +58,12 @@ class KBOracle(BaseModel):
     Attributes:
         kb_root: Root directory of the KB
         evidence_root: Where to store verification evidence
-        use_minio: Whether to use MinIO for evidence storage
+        use_rustfs: Whether to use RustFS for evidence storage
     """
 
     kb_root: str = "build/dev"
     evidence_root: str = "current/objectives/evidence"
-    use_minio: bool = True
+    use_rustfs: bool = True
     _state_cache: KBState | None = None
 
     model_config = {"arbitrary_types_allowed": True}
@@ -231,7 +231,7 @@ class KBOracle(BaseModel):
         Returns:
             Run ID of stored evidence
         """
-        if self.use_minio:
+        if self.use_rustfs:
             # Use HX evidence capture for Iceberg storage
             write_result = await capture_verification_evidence(
                 objective_name=objective.name,

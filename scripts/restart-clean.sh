@@ -35,7 +35,6 @@ echo "  ✓ process-compose killed"
 # Step 3: Kill stale service processes
 echo "Step 3/7: Killing stale service processes..."
 pkill -9 -f "devenv-tasks.*devenv:processes:" 2>/dev/null && echo "  - Killed stale devenv-tasks" || true
-pkill -9 -f "minio server" 2>/dev/null && echo "  - Killed minio" || true
 pkill -9 -f "qdrant" 2>/dev/null && echo "  - Killed qdrant" || true
 pkill -9 -f "gaius.engine" 2>/dev/null && echo "  - Killed gaius.engine" || true
 pkill -9 -f "optillm-gunicorn" 2>/dev/null && echo "  - Killed optillm-gunicorn" || true

@@ -473,17 +473,17 @@ def create_server() -> "FastMCP":
 
     @server.tool()
     async def kb_sync(
-        target: str = "minio-local",
+        target: str = "rustfs-local",
         dry_run: bool = False,
         resume: bool = False,
     ) -> str:
         """Sync filesystem KB to S3 storage.
 
-        Syncs all KB files from local filesystem to Minio/S3.
+        Syncs all KB files from local filesystem to RustFS/S3.
         Uses SHA-256 content hashing for incremental sync.
 
         Args:
-            target: Sync target name (default: minio-local)
+            target: Sync target name (default: rustfs-local)
             dry_run: If True, show what would sync without uploading
             resume: Resume from last checkpoint if interrupted
         """
@@ -519,7 +519,7 @@ def create_server() -> "FastMCP":
         }, indent=2)
 
     @server.tool()
-    async def kb_sync_status(target: str = "minio-local") -> str:
+    async def kb_sync_status(target: str = "rustfs-local") -> str:
         """Get sync status for a target.
 
         Shows sync state summary and last run info.
@@ -538,7 +538,7 @@ def create_server() -> "FastMCP":
     async def kb_sync_targets() -> str:
         """List configured sync targets.
 
-        Returns all S3-compatible sync targets (Minio, AWS S3, etc.)
+        Returns all S3-compatible sync targets (RustFS, AWS S3, etc.)
         """
         from .storage.sync_engine import list_sync_targets
         from .storage.grid_state import get_database_url
@@ -549,7 +549,7 @@ def create_server() -> "FastMCP":
 
     @server.tool()
     async def kb_sync_verify(
-        target: str = "minio-local",
+        target: str = "rustfs-local",
         sample_size: int = 20,
     ) -> str:
         """Verify synced files match local content.

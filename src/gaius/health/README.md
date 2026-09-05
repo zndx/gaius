@@ -260,7 +260,7 @@ class AdaptiveLearner:
 
 | Category | Checks | Purpose |
 |----------|--------|---------|
-| Infrastructure | grpc_connection, postgresql, qdrant, minio | Core service connectivity |
+| Infrastructure | grpc_connection, postgresql, qdrant, rustfs | Core service connectivity |
 | GPU | gpu_memory, gpu_temperature | Hardware health |
 | Endpoints | endpoints, stuck_endpoints, stale_processes | vLLM/optillm health |
 | Evolution | evolution_daemon, cognition_daemon | Background services |

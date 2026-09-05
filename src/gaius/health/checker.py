@@ -340,12 +340,12 @@ class HealthChecker:
                 fix_service="qdrant",
             ),
             HealthCheck(
-                id="s3_minio_service",
-                name="S3/MinIO",
+                id="s3_rustfs_service",
+                name="RustFS object store (Signals)",
                 category="data",
-                description="Primary: Object storage for artifacts, large documents",
-                check_fn="_check_s3_minio",
-                fix_service="minio",
+                description="Primary: Signals RustFS object store (artifacts, documents, HX lake, Nautilus journal)",
+                check_fn="_check_s3_rustfs",
+                fix_service="rustfs",
             ),
             # Cognition checks
             HealthCheck(
@@ -689,7 +689,7 @@ class HealthChecker:
         - vLLM: Direct inference fallback
         - PostgreSQL: Activity logs, state (critical)
         - Qdrant: Vector embeddings, semantic search (primary)
-        - S3/MinIO: Object storage (primary)
+        - S3/RustFS: Object storage (primary)
 
         Args:
             progress_callback: Called after each check with (result, completed, total)
@@ -707,7 +707,7 @@ class HealthChecker:
             "vllm_service",            # Fallback inference
             "database_connection",     # PostgreSQL (critical)
             "qdrant_service",          # Vector DB
-            "s3_minio_service",        # Object storage
+            "s3_rustfs_service",        # Object storage
             "landing_page_pipeline",   # Article curation / card publishing
         ]
 
@@ -1519,104 +1519,67 @@ class HealthChecker:
                 message=f"Check failed: {str(e)[:80]}",
             )
 
-    async def _check_s3_minio(self) -> CheckResult:
-        """Check S3/MinIO object storage connectivity.
+    async def _check_s3_rustfs(self) -> CheckResult:
+        """Check the RustFS object store (Signals, S3 API on 127.0.0.1:9010).
 
-        MinIO is PRIMARY for:
-        - Artifact storage
-        - Large document storage
-        - Model weights caching
+        RustFS is PRIMARY for artifact storage, large documents, the HX data
+        lake and the Nautilus journal. It is owned by Signals: gaius runs no
+        object store of its own (the devenv MinIO was retired 2026-09-05).
         """
         import os
 
+        name = "RustFS object store (Signals)"
+        raw = os.getenv("GAIUS_RUSTFS_ENDPOINT") or os.getenv("RUSTFS_ENDPOINT", "127.0.0.1:9010")
+        url = raw if "://" in raw else f"http://{raw}"
+        url = url.rstrip("/")
+        owner_hint = (
+            "RustFS is Signals-owned. Try (in ~/local/src/wxs/signals): devenv processes start rustfs; "
+            "Or: systemctl status signals.service; Then: /health fix rustfs"
+        )
         try:
             import httpx
 
-            # MinIO API endpoint (not console)
-            url = os.getenv("MINIO_ENDPOINT", "http://localhost:9010")
-
             async with httpx.AsyncClient(timeout=5.0) as client:
-                # MinIO health check endpoint
                 try:
-                    response = await client.get(f"{url}/minio/health/live")
+                    response = await client.get(f"{url}/health")
                     if response.status_code == 200:
-                        # Try to get bucket list (may require auth)
                         return CheckResult(
-                            name="S3/MinIO",
+                            name=name,
                             status=CheckStatus.PASS,
-                            message=f"Connected at {url}",
-                            details={
-                                "url": url,
-                                "role": "primary",
-                                "purpose": "Object storage for artifacts, documents",
-                            },
+                            message=f"Healthy at {url}",
+                            details={"url": url, "role": "primary", "owner": "signals",
+                                     "purpose": "Object storage: artifacts, documents, HX lake, Nautilus journal"},
                         )
                 except httpx.HTTPError:
                     pass
-
-                # Try cluster health endpoint
-                try:
-                    response = await client.get(f"{url}/minio/health/cluster")
-                    if response.status_code == 200:
-                        return CheckResult(
-                            name="S3/MinIO",
-                            status=CheckStatus.PASS,
-                            message=f"Cluster healthy at {url}",
-                            details={
-                                "url": url,
-                                "role": "primary",
-                                "purpose": "Object storage for artifacts, documents",
-                            },
-                        )
-                except httpx.HTTPError:
-                    pass
-
-                # Check if port is open but service not responding properly
+                # An S3 endpoint answers the root with 403/400 when the health route is off.
                 try:
                     response = await client.get(url)
-                    # MinIO returns various responses at root
                     if response.status_code in (200, 403, 400):
                         return CheckResult(
-                            name="S3/MinIO",
+                            name=name,
                             status=CheckStatus.PASS,
-                            message=f"Service responding at {url}",
-                            details={
-                                "url": url,
-                                "role": "primary",
-                                "purpose": "Object storage for artifacts, documents",
-                            },
+                            message=f"S3 API responding at {url} (no /health route)",
+                            details={"url": url, "role": "primary", "owner": "signals"},
                         )
                 except httpx.HTTPError:
                     pass
-
                 return CheckResult(
-                    name="S3/MinIO",
-                    status=CheckStatus.WARN,
-                    message=f"Not responding at {url}",
-                    details={"url": url, "role": "primary"},
-                    suggestion="Start MinIO: devenv up minio",
+                    name=name,
+                    status=CheckStatus.FAIL,
+                    message=f"#ST.00002.RUSTFS_UNREACHABLE not responding at {url}",
+                    details={"url": url, "role": "primary", "owner": "signals"},
+                    suggestion=owner_hint,
                 )
-
         except ImportError:
-            return CheckResult(
-                name="S3/MinIO",
-                status=CheckStatus.SKIP,
-                message="httpx not available",
-            )
+            return CheckResult(name=name, status=CheckStatus.SKIP, message="httpx not available")
         except Exception as e:
-            error_msg = str(e)
-            if "Connection refused" in error_msg or "ConnectError" in error_msg:
-                return CheckResult(
-                    name="S3/MinIO",
-                    status=CheckStatus.WARN,
-                    message="Not reachable at localhost:9010",
-                    details={"role": "primary"},
-                    suggestion="Start MinIO: devenv up minio",
-                )
             return CheckResult(
-                name="S3/MinIO",
-                status=CheckStatus.WARN,
-                message=f"Check failed: {str(e)[:80]}",
+                name=name,
+                status=CheckStatus.FAIL,
+                message=f"#ST.00002.RUSTFS_UNREACHABLE {str(e)[:80]}",
+                details={"url": url, "role": "primary", "owner": "signals"},
+                suggestion=owner_hint,
             )
 
     # =========================================================================
@@ -2208,7 +2171,7 @@ class HealthChecker:
                 details["kb_state_docs"] = len(state.documents)
 
                 # Test KBOracle creation
-                oracle = KBOracle(kb_root=kb_root, use_minio=False)
+                oracle = KBOracle(kb_root=kb_root, use_rustfs=False)
                 details["kb_oracle"] = "ok"
 
             except ImportError as e:
@@ -2243,7 +2206,7 @@ class HealthChecker:
                 issues.append(f"Evidence capture import failed: {e}")
                 details["evidence_imports"] = str(e)
             except Exception as e:
-                # Non-critical - MinIO might not be available
+                # Non-critical - RustFS might not be available
                 details["evidence_capture"] = f"warn: {e}"
 
             duration_ms = int((time.time() - start_time) * 1000)

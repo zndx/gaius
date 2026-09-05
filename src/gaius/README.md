@@ -118,7 +118,7 @@ flowchart TD
 |--------|-------|-----------|-----------|-------------|
 | [`core/`](core/README.md) | L1 | — | `AppState`, `ViewMode` | TDA, geometry, projection, telemetry |
 | [`client/`](client/README.md) | L2 | `get_grpc_client()` | `GrpcEngineClient` | gRPC + Aeron transport to engine |
-| [`storage/`](storage/README.md) | L2 | `get_storage_backend()` | `StorageBackend` | KB filesystem, Minio sync |
+| [`storage/`](storage/README.md) | L2 | `get_storage_backend()` | `StorageBackend` | KB filesystem, RustFS sync |
 | [`hx/`](hx/README.md) | L2 | — | `IcebergContentStore` | Raw content lake, lineage |
 | [`engine/`](engine/README.md) | L3 | — | `GaiusEngine` | gRPC daemon, 9-phase startup |
 | [`inference/`](inference/README.md) | L4 | `get_inference_client()` | `InferenceClient` | vLLM orchestration, optillm |

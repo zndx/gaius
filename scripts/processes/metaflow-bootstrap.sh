@@ -51,18 +51,15 @@ kubectl apply -f infra/k8s/devenv-services.yaml
 echo "  NodePort services applied"
 
 # 2b. Align host-side Endpoints with devenv's EFFECTIVE ports. The devenv
-# daemon's port allocator may shift services off their declared ports when
-# stacks launch concurrently (PGPORT / MINIO_PORT / MINIO_CONSOLE_PORT carry
-# the truth). The manifest keeps the declared lattice — in-cluster consumers
-# still dial devenv-postgres:5444 / devenv-minio:9010 — and only the host
-# side of the bridge follows the allocator. Runs before the skip-if-running
-# gate so existing pods heal without a redeploy.
+# daemon's port allocator may shift Postgres off its declared port when stacks
+# launch concurrently (PGPORT carries the truth). The manifest keeps the
+# declared lattice — in-cluster consumers dial devenv-postgres:5444 and
+# devenv-rustfs:9010 (Signals' RustFS; strict ports, never shifted) — and only
+# the host side of the bridge follows the allocator. Runs before the
+# skip-if-running gate so existing pods heal without a redeploy.
 kubectl patch endpoints devenv-postgres --type=json -p="[
   {\"op\":\"replace\",\"path\":\"/subsets/0/ports/0/port\",\"value\":${PGPORT:-5444}}]"
-kubectl patch endpoints devenv-minio --type=json -p="[
-  {\"op\":\"replace\",\"path\":\"/subsets/0/ports/0/port\",\"value\":${MINIO_PORT:-9010}},
-  {\"op\":\"replace\",\"path\":\"/subsets/0/ports/1/port\",\"value\":${MINIO_CONSOLE_PORT:-9011}}]"
-echo "  Endpoints aligned to effective ports (pg:${PGPORT:-5444} minio:${MINIO_PORT:-9010}/${MINIO_CONSOLE_PORT:-9011})"
+echo "  Endpoints aligned to effective ports (pg:${PGPORT:-5444}; rustfs fixed at 9010/9011)"
 
 # 3. Skip if already healthy
 if kubectl get pods -l app.kubernetes.io/name=metaflow-service \

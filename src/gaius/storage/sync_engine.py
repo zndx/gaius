@@ -1,6 +1,6 @@
 """Filesystem to S3 KB sync engine.
 
-Robust one-way sync from local filesystem KB to Minio/S3 storage.
+Robust one-way sync from local filesystem KB to RustFS/S3 storage.
 Features:
 - Incremental sync via SHA-256 content hashing
 - Postgres-backed state for resume capability
@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 
 # Lazy imports
 _asyncpg = None
-_minio = None
+_s3_client_cls = None
 
 
 def _get_asyncpg():
@@ -39,13 +39,13 @@ def _get_asyncpg():
     return _asyncpg
 
 
-def _get_minio():
-    """Get minio client class (deferred import for faster startup)."""
-    global _minio
-    if _minio is None:
+def _get_s3_client():
+    """Get the S3 client class (minio-py, deferred import; speaks to RustFS)."""
+    global _s3_client_cls
+    if _s3_client_cls is None:
         from minio import Minio
-        _minio = Minio
-    return _minio
+        _s3_client_cls = Minio
+    return _s3_client_cls
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -59,7 +59,7 @@ class SyncTarget:
 
     id: int
     name: str
-    target_type: str  # "minio" | "s3"
+    target_type: str  # "rustfs" | "s3"  (rustfs = MinIO-SDK client against Signals RustFS)
     endpoint: str
     bucket: str
     region: str | None
@@ -115,7 +115,7 @@ class SyncEngine:
     """Robust filesystem-to-S3 sync with state tracking.
 
     Usage:
-        target = await get_sync_target("minio-local", db_url)
+        target = await get_sync_target("rustfs-local", db_url)
         engine = SyncEngine("build/dev", target, db_url)
         result = await engine.sync(progress_callback=print_progress)
     """
@@ -429,10 +429,10 @@ class SyncEngine:
             return False
 
     def _get_client(self):
-        """Get or create Minio client."""
+        """Get or create the S3 client."""
         if self._client is None:
-            Minio = _get_minio()
-            self._client = Minio(
+            S3Client = _get_s3_client()
+            self._client = S3Client(
                 self.target.endpoint,
                 access_key=self.target.access_key,
                 secret_key=self.target.secret_key,
@@ -716,9 +716,9 @@ async def get_sync_target(name: str, db_url: str) -> SyncTarget | None:
 
         # Fall back to generic KB credentials
         if not access_key:
-            access_key = os.getenv("GAIUS_KB_ACCESS_KEY", "minioadmin")
+            access_key = os.getenv("GAIUS_KB_ACCESS_KEY", "rustfsadmin")
         if not secret_key:
-            secret_key = os.getenv("GAIUS_KB_SECRET_KEY", "minioadmin")
+            secret_key = os.getenv("GAIUS_KB_SECRET_KEY", "rustfsadmin")
 
         # Parse config - asyncpg may return str or dict depending on version
         config_raw = row["config"]

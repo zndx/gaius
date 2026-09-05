@@ -1,13 +1,13 @@
-"""Minio/S3 storage backend for object storage.
+"""RustFS/S3 storage backend for object storage.
 
-This backend stores KB documents in Minio or S3-compatible object storage,
+This backend stores KB documents in RustFS or any S3-compatible object storage,
 providing durable, scalable storage suitable for production deployments.
 
 Configuration via environment variables:
-    GAIUS_KB_BACKEND=minio
+    GAIUS_KB_BACKEND=rustfs
     GAIUS_KB_ENDPOINT=localhost:9010
-    GAIUS_KB_ACCESS_KEY=minioadmin
-    GAIUS_KB_SECRET_KEY=minioadmin
+    GAIUS_KB_ACCESS_KEY=rustfsadmin
+    GAIUS_KB_SECRET_KEY=rustfsadmin
     GAIUS_KB_BUCKET=zndx-gaius
     GAIUS_KB_SECURE=false  # Use http instead of https for local dev
 """
@@ -29,20 +29,20 @@ from deepagents.backends.protocol import (
 from .protocol import KBDocument, StorageBackend, StorageConfig
 
 # Deferred import for faster module load time
-_minio_client = None
+_s3_client_cls = None
 
 
-def _get_minio():
-    """Get minio client class (deferred import for faster startup)."""
-    global _minio_client
-    if _minio_client is None:
+def _get_s3_client():
+    """Get the S3 client class (minio-py, deferred import; speaks to RustFS)."""
+    global _s3_client_cls
+    if _s3_client_cls is None:
         from minio import Minio
-        _minio_client = Minio
-    return _minio_client
+        _s3_client_cls = Minio
+    return _s3_client_cls
 
 
-class MinioStorage:
-    """Minio/S3 object storage backend.
+class RustFSStorage:
+    """RustFS/S3 object storage backend.
 
     Stores KB documents in an S3-compatible object store. Objects are stored
     with keys matching the KB path structure (e.g., "current/topics/kudu.md").
@@ -52,28 +52,28 @@ class MinioStorage:
 
     Example:
         config = StorageConfig(
-            backend_type="minio",
+            backend_type="rustfs",
             endpoint="localhost:9010",
-            access_key="minioadmin",
-            secret_key="minioadmin",
+            access_key="rustfsadmin",
+            secret_key="rustfsadmin",
             root="zndx-gaius",  # bucket name
             secure=False,
         )
-        storage = MinioStorage(config)
+        storage = RustFSStorage(config)
         for doc in storage.iter_documents():
             print(doc.path, doc.title)
     """
 
     def __init__(self, config: StorageConfig):
-        """Initialize Minio storage.
+        """Initialize RustFS storage.
 
         Args:
             config: Storage configuration with endpoint, credentials, and bucket.
         """
         self._config = config
 
-        Minio = _get_minio()
-        self._client = Minio(
+        S3Client = _get_s3_client()
+        self._client = S3Client(
             config.endpoint,
             access_key=config.access_key,
             secret_key=config.secret_key,
@@ -458,7 +458,7 @@ class MinioStorage:
         total_size_bytes = 0
         by_directory: dict[str, dict[str, int]] = {}
         stats: dict[str, object] = {
-            "backend_type": "minio",
+            "backend_type": "rustfs",
             "endpoint": self._config.endpoint,
             "bucket": self._bucket,
         }

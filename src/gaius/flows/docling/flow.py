@@ -34,7 +34,7 @@ OpenTelemetry Integration:
 - correlation_id links Metaflow execution to NiFi FlowFiles
 
 Usage:
-    # Local execution (requires devenv postgres/minio)
+    # Local execution (requires devenv postgres/rustfs)
     python -m gaius.flows.docling.flow run --arxiv_url "https://arxiv.org/abs/2312.12345"
 
     # With topic modeling

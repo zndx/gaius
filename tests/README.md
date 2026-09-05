@@ -16,7 +16,7 @@ hide.
 |---------|--------------|----------------|------------------|
 | PostgreSQL | ✅ Yes | ✅ Yes | Never mock - use real database |
 | Qdrant | ✅ Yes | ✅ Yes | Never mock - use real vector store |
-| MinIO | ✅ Yes | ✅ Yes | Never mock - use real S3-compatible storage |
+| RustFS (Signals, :9010) | ✅ Yes | ✅ Yes | Never mock - use the real S3-compatible store |
 | gRPC Engine | ✅ Yes | ✅ Yes | Never mock - start real engine |
 | LLM Inference | ✅ Yes | ✅ Yes | Use llama.cpp with tiny models (see below) |
 | GPUs (nvidia-smi) | ❌ No | ✅ Yes | Model as integers, mock pynvml |

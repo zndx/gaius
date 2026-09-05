@@ -353,7 +353,7 @@ class TopicsRecoverable(Constraint[KBState]):
             documents = []
             if self.corpus_path:
                 if self.corpus_path.startswith("hx://"):
-                    # HX storage - would need to fetch from MinIO
+                    # HX storage - would need to fetch from RustFS
                     # For now, use verbalizations as synthetic corpus
                     documents = [v["verbalization"] for v in verbalizations]
                 else:

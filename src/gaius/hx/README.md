@@ -16,7 +16,7 @@ graph TB
     subgraph "HX Data Lake"
         ICE[Apache Iceberg]
         PQ[Parquet Files]
-        MINIO[MinIO Storage]
+        RUSTFS[RustFS Storage]
     end
 
     subgraph "Processing"
@@ -34,7 +34,7 @@ graph TB
     RSS --> ICE
     API --> ICE
     ICE --> PQ
-    PQ --> MINIO
+    PQ --> RUSTFS
     ICE --> SUM
     SUM --> KB
     ICE --> OL
@@ -48,7 +48,7 @@ hx/
 ├── __init__.py           # Module exports
 ├── config.py             # HxConfig, get_hx_config()
 ├── catalog.py            # PyIceberg catalog setup
-├── storage.py            # MinIO/filesystem storage
+├── storage.py            # RustFS/filesystem storage
 ├── tables.py             # Iceberg table schemas
 ├── writer.py             # IcebergContentStore
 ├── reader.py             # IcebergContentReader
@@ -207,15 +207,15 @@ catalog = get_catalog(CatalogType.IN_MEMORY)
 
 Environment variables:
 - `ICEBERG_CATALOG_URI`: PostgreSQL connection string
-- `ICEBERG_WAREHOUSE`: MinIO warehouse path
+- `ICEBERG_WAREHOUSE`: RustFS warehouse path
 
 ## Storage Backends
 
 ```python
 from gaius.hx import get_storage_config, StorageBackend
 
-# MinIO (production)
-config = get_storage_config(StorageBackend.MINIO)
+# RustFS (production)
+config = get_storage_config(StorageBackend.RUSTFS)
 
 # Filesystem (development)
 config = get_storage_config(StorageBackend.FILESYSTEM)
@@ -259,7 +259,7 @@ $$) as (namespace agtype, name agtype, hops agtype);
 @dataclass
 class HxConfig:
     catalog_type: CatalogType = CatalogType.SQL
-    storage_backend: StorageBackend = StorageBackend.MINIO
+    storage_backend: StorageBackend = StorageBackend.RUSTFS
     warehouse_path: str = "s3://gaius-hx/"
     retention_days: int = 365
 ```
@@ -308,7 +308,7 @@ flowchart TB
     RAW[Raw Content<br/>Table]
     EXCH[Exchanges<br/>Table]
     EVID[Evidence<br/>Table]
-    ICE["Apache Iceberg<br/>(PyIceberg + MinIO/S3)"]
+    ICE["Apache Iceberg<br/>(PyIceberg + RustFS/S3)"]
     AGE["Apache AGE Graph<br/>(Dataset, Job, Run vertices)"]
 
     SRC --> STORE
@@ -325,7 +325,7 @@ flowchart TB
 
 | Component | Uses | Used By | Integration |
 |-----------|------|---------|-------------|
-| `IcebergContentStore` | pyiceberg, minio | flows, workers | `write()`, `read()` |
+| `IcebergContentStore` | pyiceberg, minio (S3 client lib) | flows, workers | `write()`, `read()` |
 | `ExchangeCapture` | pyiceberg | inference.client | `record()` context manager |
 | `EvidenceCapture` | pyiceberg | rase.vm | `record()` |
 | `LineageEmitter` | apache-age, asyncpg | flows, mcp_server | `emit()`, `query()` |
@@ -363,6 +363,6 @@ call_paths:
   lineage: mcp.lineage_cypher→LineageEmitter.query→ag_catalog.cypher
 test_cmds:
   lineage: 'uv run gaius-cli --cmd "/lineage query scratch/2024-12-25/paper.md"'
-guru_codes: [HX.00001.ICEBERG_CONN, HX.00002.AGE_UNAVAIL, HX.00003.MINIO_DOWN]
+guru_codes: [HX.00001.ICEBERG_CONN, HX.00002.AGE_UNAVAIL, HX.00003.RUSTFS_DOWN]
 fail_fast: true
 -->

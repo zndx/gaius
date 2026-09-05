@@ -58,8 +58,9 @@ def _settle_env(root: Path) -> dict[str, str]:
     """Environment a settle child needs that the engine does not carry.
 
     - **RustFS S3**: HDF5 objects land in RustFS, whose creds are rustfsadmin.
-      The engine env injects minioadmin (legacy MinIO, being removed from
-      nixpkgs as insecure) which RustFS rejects -- override explicitly.
+      Pass them explicitly: the engine env must never carry an ambient
+      AWS_ACCESS_KEY_ID (the retired gaius-local object store's admin key used
+      to ride there and RustFS rejected it).
     - **Kerberos**: the settle authenticates to Impala/Kudu via GSSAPI. Point
       KRB5_CONFIG/KRB5CCNAME at the signals KDC dir; the ticket itself is
       refreshed in _ensure_ticket().

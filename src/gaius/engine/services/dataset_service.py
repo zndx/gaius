@@ -134,7 +134,7 @@ class DatasetJobConfig:
     enable_calibration: bool = False  # Off by default
     calibration_sample_rate: float = 0.1
     export_calibration: bool = False
-    storage_backend: str = "minio"
+    storage_backend: str = "rustfs"
 
 
 @dataclass
@@ -721,7 +721,7 @@ class DatasetService:
 
         # Determine output paths
         output_paths = []
-        if job.config.storage_backend == "minio":
+        if job.config.storage_backend == "rustfs":
             output_paths.append(f"s3://zndx-gaius/datasets/{job.config.dataset_id}/")
             output_paths.append(str(output_dir / "manifest.json"))
         else:

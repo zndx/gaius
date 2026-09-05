@@ -157,44 +157,46 @@ class QdrantFixStrategy(ServiceFixStrategy):
         return actions
 
 
-class MinioFixStrategy(ServiceFixStrategy):
-    """Fix strategy for MinIO object storage."""
+class RustFSFixStrategy(ServiceFixStrategy):
+    """Fix strategy for the RustFS object store (S3 API on 127.0.0.1:9010).
+
+    RustFS is OWNED BY SIGNALS (its devenv process, under signals.service);
+    gaius runs no object store of its own since the 2026-09-05 retirement of
+    the nixpkgs-insecure devenv MinIO. This strategy therefore never starts
+    anything in the gaius tree: it probes the health endpoint and, when RustFS
+    is down, fails with the owner's remediation (guru #ST.00002.RUSTFS_UNREACHABLE).
+    """
+
+    GURU = "#ST.00002.RUSTFS_UNREACHABLE"
 
     def __init__(self):
-        super().__init__("minio")
-        self.api_port = int(os.getenv("MINIO_API_PORT", "9010"))
-        self.console_port = int(os.getenv("MINIO_CONSOLE_PORT", "9011"))
+        super().__init__("rustfs")
+        endpoint = os.getenv("GAIUS_RUSTFS_ENDPOINT") or os.getenv("RUSTFS_ENDPOINT", "127.0.0.1:9010")
+        if "://" not in endpoint:
+            endpoint = f"http://{endpoint}"
+        self.endpoint = endpoint.rstrip("/")
 
     def create_fix_actions(
         self, check_result: dict | None = None
     ) -> list[RemediationAction]:
-        """Create actions to fix MinIO issues."""
-        actions = []
-
-        # Start minio via devenv (only if devenv not already running)
-        if not _is_devenv_running():
-            actions.append(
-                RemediationAction(
-                    name="Start MinIO",
-                    description="Start MinIO via devenv",
-                    command="devenv up -d",
-                    safety=SafetyLevel.SAFE,
-                    timeout=60,
-                )
-            )
-
-        # Wait for health endpoint
-        actions.append(
-            RemediationAction(
-                name="Wait for MinIO",
-                description="Wait for MinIO health check",
-                command=f"timeout 30 bash -c 'until curl -s http://localhost:{self.api_port}/minio/health/live > /dev/null; do sleep 1; done'",
-                safety=SafetyLevel.SAFE,
-                timeout=35,
-            )
+        """Probe RustFS; a dead probe names the owner (Signals) — never `devenv up` here."""
+        remediation = (
+            f"{self.GURU} RustFS (Signals) not answering on {self.endpoint}. "
+            "Try (in ~/local/src/wxs/signals): devenv processes start rustfs; "
+            "Or: systemctl status signals.service"
         )
-
-        return actions
+        return [
+            RemediationAction(
+                name="Probe RustFS health",
+                description="GET /health on the Signals RustFS S3 endpoint (owner: signals.service)",
+                command=(
+                    f"curl -sf --max-time 5 {self.endpoint}/health > /dev/null "
+                    f"|| {{ echo '{remediation}' >&2; exit 1; }}"
+                ),
+                safety=SafetyLevel.SAFE,
+                timeout=10,
+            )
+        ]
 
 
 class SingletonFixStrategy(ServiceFixStrategy):
@@ -1303,14 +1305,14 @@ async def test_evidence():
         print(f"  - table: {status['table_name']}")
         print(f"  - kb_root: {status['kb_root']}")
 
-        # Test MinIO connectivity
-        from gaius.storage.minio_client import get_minio_client
+        # Test RustFS connectivity (Signals object store on :9010)
+        from gaius.flows.topics.corpus import get_rustfs_client
         try:
-            client = get_minio_client()
+            client = get_rustfs_client()
             buckets = client.list_buckets()
-            print(f"[OK] MinIO connected: {len(buckets)} buckets")
+            print(f"[OK] RustFS connected: {len(buckets)} buckets")
         except Exception as e:
-            print(f"[WARN] MinIO check failed (may not be critical): {e}")
+            print(f"[WARN] RustFS check failed (may not be critical): {e}")
 
         return True
     except Exception as e:
@@ -2043,8 +2045,8 @@ SERVICE_STRATEGIES: dict[str, ServiceFixStrategy] = {
     "postgresql": PostgresFixStrategy(),  # Alias
     "database": PostgresFixStrategy(),  # Alias
     "qdrant": QdrantFixStrategy(),
-    "minio": MinioFixStrategy(),
-    "s3": MinioFixStrategy(),  # Alias
+    "rustfs": RustFSFixStrategy(),
+    "s3": RustFSFixStrategy(),  # Alias
     # "singletons" removed - deprecated, use "engine" instead
     "all": AllServicesFixStrategy(),
     "endpoints": EndpointFixStrategy(),

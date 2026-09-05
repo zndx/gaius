@@ -39,11 +39,11 @@ unset _dir
 # devenv exported so we do not talk to a dark contract port.
 export DATABASE_URL="postgres://localhost:${PGPORT:-5444}/zndx_gaius?sslmode=disable"
 # Warehouse is Signals RustFS. devenv MinIO is not a lattice store.
-export GAIUS_MINIO_ENDPOINT="${GAIUS_MINIO_ENDPOINT:-${RUSTFS_ADDRESS:-127.0.0.1:9010}}"
-export GAIUS_MINIO_BUCKET="${GAIUS_MINIO_BUCKET:-signals-dataproducts}"
+export GAIUS_RUSTFS_ENDPOINT="${GAIUS_RUSTFS_ENDPOINT:-${RUSTFS_ADDRESS:-127.0.0.1:9010}}"
+export GAIUS_RUSTFS_BUCKET="${GAIUS_RUSTFS_BUCKET:-signals-dataproducts}"
 export GAIUS_HX_PREFIX="${GAIUS_HX_PREFIX:-iceberg/}"
-export GAIUS_MINIO_ACCESS_KEY="${GAIUS_MINIO_ACCESS_KEY:-${RUSTFS_ACCESS_KEY:-rustfsadmin}}"
-export GAIUS_MINIO_SECRET_KEY="${GAIUS_MINIO_SECRET_KEY:-${RUSTFS_SECRET_KEY:-rustfsadmin}}"
+export GAIUS_RUSTFS_ACCESS_KEY="${GAIUS_RUSTFS_ACCESS_KEY:-${RUSTFS_ACCESS_KEY:-rustfsadmin}}"
+export GAIUS_RUSTFS_SECRET_KEY="${GAIUS_RUSTFS_SECRET_KEY:-${RUSTFS_SECRET_KEY:-rustfsadmin}}"
 # Iceberg catalog is Signals Polarisfork (signals-polaris.service), not Gaius SQL.
 export GAIUS_HX_CATALOG_TYPE="${GAIUS_HX_CATALOG_TYPE:-rest}"
 export GAIUS_HX_CATALOG_NAME="${GAIUS_HX_CATALOG_NAME:-signals}"

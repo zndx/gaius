@@ -1,7 +1,7 @@
 """Env stamps so prospects can keep ``gaius.prospects.corpus`` unattended.
 
 Platform Metaflow already owns RustFS keys. HX and History must use that
-same plane — not devenv MinIO ``zndx-gaius`` / ``minioadmin``.
+same plane — not devenv RustFS ``zndx-gaius`` / ``rustfsadmin``.
 """
 
 from __future__ import annotations
@@ -34,15 +34,18 @@ def rustfs_endpoint(environ: Mapping[str, str] | None = None) -> str:
 
 
 def rustfs_credentials(environ: Mapping[str, str] | None = None) -> tuple[str, str]:
-    """RustFS keys. Never inherit devenv ``minioadmin`` (nixpkgs MinIO is retired)."""
+    """RustFS keys, read ONLY from the explicit RustFS variables.
+
+    Never from ``AWS_ACCESS_KEY_ID``/``AWS_SECRET_ACCESS_KEY``: an ambient default
+    credential chain is what leaked the retired object store's admin key into
+    every S3 client (the Nautilus journal, 2026-09-04). Order: the gaius
+    ``GAIUS_RUSTFS_*`` pair, then Signals' ``RUSTFS_*`` pair, then the RustFS
+    default.
+    """
     env = environ if environ is not None else os.environ
-    ak = (env.get("RUSTFS_ACCESS_KEY") or "").strip()
-    sk = (env.get("RUSTFS_SECRET_KEY") or "").strip()
-    if not ak or ak == "minioadmin":
-        ak = "rustfsadmin"
-    if not sk or sk == "minioadmin":
-        sk = "rustfsadmin"
-    return ak, sk
+    ak = (env.get("GAIUS_RUSTFS_ACCESS_KEY") or env.get("RUSTFS_ACCESS_KEY") or "").strip()
+    sk = (env.get("GAIUS_RUSTFS_SECRET_KEY") or env.get("RUSTFS_SECRET_KEY") or "").strip()
+    return ak or "rustfsadmin", sk or "rustfsadmin"
 
 
 def apply_product_env(env: dict[str, str]) -> dict[str, str]:
@@ -57,11 +60,11 @@ def apply_product_env(env: dict[str, str]) -> dict[str, str]:
         "SIGNALS_DATA_PRODUCT_HISTORY",
         str(root / "build" / "state" / "data-product-history.jsonl"),
     )
-    env["GAIUS_HX_USE_MINIO"] = "true"
-    env["GAIUS_MINIO_BUCKET"] = PRODUCT_BUCKET
-    env["GAIUS_MINIO_ENDPOINT"] = host
-    env["GAIUS_MINIO_ACCESS_KEY"] = ak
-    env["GAIUS_MINIO_SECRET_KEY"] = sk
+    env["GAIUS_HX_USE_RUSTFS"] = "true"
+    env["GAIUS_RUSTFS_BUCKET"] = PRODUCT_BUCKET
+    env["GAIUS_RUSTFS_ENDPOINT"] = host
+    env["GAIUS_RUSTFS_ACCESS_KEY"] = ak
+    env["GAIUS_RUSTFS_SECRET_KEY"] = sk
     env["GAIUS_HX_PREFIX"] = HX_PREFIX
     return env
 

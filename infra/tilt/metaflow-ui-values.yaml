@@ -10,7 +10,7 @@ uiBackend:
     name: metaflow
 
   metaflowDatastoreSysRootS3: "s3://metaflow-artifacts/metaflow"
-  metaflowS3EndpointURL: "http://devenv-minio:9010"
+  metaflowS3EndpointURL: "http://devenv-rustfs:9010"
 
   image:
     name: public.ecr.aws/outerbounds/metaflow_metadata_service
@@ -18,9 +18,9 @@ uiBackend:
 
   env:
     - name: AWS_ACCESS_KEY_ID
-      value: minioadmin
+      value: rustfsadmin
     - name: AWS_SECRET_ACCESS_KEY
-      value: minioadmin
+      value: rustfsadmin
     - name: METAFLOW_CARD_S3ROOT
       value: "s3://metaflow-artifacts/metaflow/cards"
 

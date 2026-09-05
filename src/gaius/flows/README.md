@@ -1,6 +1,6 @@
 # Gaius Flows
 
-Metaflow-based data pipelines with OpenLineage tracking (OpenLineage, 2024). Integrates with devenv PostgreSQL, MinIO for storage, and Apache AGE graph for lineage.
+Metaflow-based data pipelines with OpenLineage tracking (OpenLineage, 2024). Integrates with devenv PostgreSQL, RustFS for storage, and Apache AGE graph for lineage.
 
 ## Architecture
 
@@ -18,7 +18,7 @@ graph TB
     end
 
     subgraph "Storage"
-        MINIO[MinIO/S3]
+        RUSTFS[RustFS/S3]
         KB[Knowledge Base]
         PG[PostgreSQL]
     end
@@ -27,7 +27,7 @@ graph TB
     FLOW --> STEP
     STEP --> OL
     OL --> AGE
-    STEP --> MINIO
+    STEP --> RUSTFS
     STEP --> KB
     MF --> PG
 ```
@@ -190,7 +190,7 @@ class FlowConfig:
 
 Environment variables:
 - `GAIUS_KB_ROOT`: KB root directory
-- `METAFLOW_DATASTORE_SYSROOT_S3`: MinIO path for artifacts
+- `METAFLOW_DATASTORE_SYSROOT_S3`: RustFS path for artifacts
 - `METAFLOW_DEFAULT_METADATA`: Metadata backend
 
 ## Running Flows

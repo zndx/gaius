@@ -28,13 +28,13 @@ class HxConfig:
     polaris_credential: str = "admin:admin"
     polaris_scope: str = "PRINCIPAL_ROLE:ALL"
 
-    # S3-compatible storage (Signals RustFS; env names keep MINIO_*)
-    use_minio: bool = True
-    minio_endpoint: str = "127.0.0.1:9010"
-    minio_bucket: str = "signals-dataproducts"
-    minio_prefix: str = "iceberg/"
-    minio_access_key: str = ""
-    minio_secret_key: str = ""
+    # S3-compatible storage (Signals RustFS; env names GAIUS_RUSTFS_*)
+    use_rustfs: bool = True
+    rustfs_endpoint: str = "127.0.0.1:9010"
+    rustfs_bucket: str = "signals-dataproducts"
+    rustfs_prefix: str = "iceberg/"
+    rustfs_access_key: str = ""
+    rustfs_secret_key: str = ""
 
     # Filesystem fallback
     filesystem_warehouse: str = ".iceberg"
@@ -54,10 +54,10 @@ class HxConfig:
 
         Returns S3 path if object storage enabled, otherwise filesystem path.
         """
-        if self.use_minio:
+        if self.use_rustfs:
             # s3://bucket/prefix
-            prefix = self.minio_prefix.rstrip("/")
-            return f"s3://{self.minio_bucket}/{prefix}"
+            prefix = self.rustfs_prefix.rstrip("/")
+            return f"s3://{self.rustfs_bucket}/{prefix}"
         else:
             # Filesystem path under KB root
             from pathlib import Path
@@ -66,9 +66,9 @@ class HxConfig:
     @property
     def s3_endpoint(self) -> str:
         """Get the S3 endpoint URL (Signals RustFS)."""
-        if "://" in self.minio_endpoint:
-            return self.minio_endpoint
-        return f"http://{self.minio_endpoint}"
+        if "://" in self.rustfs_endpoint:
+            return self.rustfs_endpoint
+        return f"http://{self.rustfs_endpoint}"
 
 
 def get_hx_config(config: GaiusConfig | None = None) -> HxConfig:
@@ -87,22 +87,22 @@ def get_hx_config(config: GaiusConfig | None = None) -> HxConfig:
     hx = config.hx
     import os
 
-    endpoint = os.environ.get("GAIUS_MINIO_ENDPOINT") or hx.minio.endpoint
-    bucket = os.environ.get("GAIUS_MINIO_BUCKET") or hx.minio.bucket
+    endpoint = os.environ.get("GAIUS_RUSTFS_ENDPOINT") or hx.rustfs.endpoint
+    bucket = os.environ.get("GAIUS_RUSTFS_BUCKET") or hx.rustfs.bucket
     prefix = (
         os.environ.get("GAIUS_HX_PREFIX")
-        or os.environ.get("GAIUS_MINIO_PREFIX")
-        or hx.minio.prefix
+        or os.environ.get("GAIUS_RUSTFS_PREFIX")
+        or hx.rustfs.prefix
     )
     access = (
-        os.environ.get("GAIUS_MINIO_ACCESS_KEY")
+        os.environ.get("GAIUS_RUSTFS_ACCESS_KEY")
         or os.environ.get("RUSTFS_ACCESS_KEY")
-        or hx.minio.access_key
+        or hx.rustfs.access_key
     )
     secret = (
-        os.environ.get("GAIUS_MINIO_SECRET_KEY")
+        os.environ.get("GAIUS_RUSTFS_SECRET_KEY")
         or os.environ.get("RUSTFS_SECRET_KEY")
-        or hx.minio.secret_key
+        or hx.rustfs.secret_key
     )
     catalog_name = os.environ.get("GAIUS_HX_CATALOG_NAME") or hx.iceberg.catalog
     catalog_type = (
@@ -119,12 +119,12 @@ def get_hx_config(config: GaiusConfig | None = None) -> HxConfig:
         catalog_type=catalog_type,
         polaris_uri=polaris_uri,
         polaris_credential=polaris_credential,
-        use_minio=hx.iceberg.use_minio,
-        minio_endpoint=endpoint,
-        minio_bucket=bucket,
-        minio_prefix=prefix,
-        minio_access_key=access,
-        minio_secret_key=secret,
+        use_rustfs=hx.iceberg.use_rustfs,
+        rustfs_endpoint=endpoint,
+        rustfs_bucket=bucket,
+        rustfs_prefix=prefix,
+        rustfs_access_key=access,
+        rustfs_secret_key=secret,
         filesystem_warehouse=hx.filesystem.warehouse,
         kb_root=config.kb.root,
         lineage_enabled=hx.lineage.enabled,

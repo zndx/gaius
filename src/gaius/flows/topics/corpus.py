@@ -1,6 +1,6 @@
 """Corpus management for incremental topic model building.
 
-Handles tokenization, dictionary updates, and MinIO persistence.
+Handles tokenization, dictionary updates, and RustFS persistence.
 """
 
 from __future__ import annotations
@@ -40,9 +40,9 @@ class CorpusState:
     vocabulary_size: int
     model_type: str | None = None
     num_topics: int | None = None  # None for HDP (auto)
-    dictionary_path: str | None = None  # MinIO path
-    corpus_path: str | None = None  # MinIO path
-    model_path: str | None = None  # MinIO path
+    dictionary_path: str | None = None  # RustFS path
+    corpus_path: str | None = None  # RustFS path
+    model_path: str | None = None  # RustFS path
     created_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
     updated_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
 
@@ -143,15 +143,15 @@ def build_corpus_incremental(
     return dictionary, bow
 
 
-def get_minio_client():
-    """Get MinIO client from environment."""
+def get_rustfs_client():
+    """Get RustFS client from environment."""
     from minio import Minio
 
     # Default to port 9010 (devenv) or 9000 (production)
-    endpoint = os.environ.get("MINIO_ENDPOINT", "localhost:9010")
-    access_key = os.environ.get("MINIO_ACCESS_KEY", "minioadmin")
-    secret_key = os.environ.get("MINIO_SECRET_KEY", "minioadmin")
-    secure = os.environ.get("MINIO_SECURE", "false").lower() == "true"
+    endpoint = os.environ.get("RUSTFS_ENDPOINT", "localhost:9010")
+    access_key = os.environ.get("RUSTFS_ACCESS_KEY", "rustfsadmin")
+    secret_key = os.environ.get("RUSTFS_SECRET_KEY", "rustfsadmin")
+    secure = os.environ.get("RUSTFS_SECURE", "false").lower() == "true"
 
     return Minio(endpoint, access_key=access_key, secret_key=secret_key, secure=secure)
 
@@ -161,17 +161,17 @@ def save_corpus_state(
     bucket: str = "gaius-models",
     prefix: str = "corpora",
 ) -> str:
-    """Persist corpus state to MinIO.
+    """Persist corpus state to RustFS.
 
     Args:
         state: CorpusState to save
-        bucket: MinIO bucket name
+        bucket: RustFS bucket name
         prefix: Path prefix in bucket
 
     Returns:
         S3 path where state was saved
     """
-    client = get_minio_client()
+    client = get_rustfs_client()
 
     # Ensure bucket exists
     if not client.bucket_exists(bucket):
@@ -199,17 +199,17 @@ def load_corpus_state(
     prefix: str = "corpora",
     version_id: str | None = None,
 ) -> CorpusState | None:
-    """Load corpus state from MinIO.
+    """Load corpus state from RustFS.
 
     Args:
-        bucket: MinIO bucket name
+        bucket: RustFS bucket name
         prefix: Path prefix in bucket
         version_id: Specific version to load (or None for latest)
 
     Returns:
         CorpusState or None if not found
     """
-    client = get_minio_client()
+    client = get_rustfs_client()
 
     if not client.bucket_exists(bucket):
         return None
@@ -248,11 +248,11 @@ def save_dictionary(
     prefix: str = "corpora",
     version_id: str | None = None,
 ) -> str:
-    """Save Gensim dictionary to MinIO.
+    """Save Gensim dictionary to RustFS.
 
     Args:
         dictionary: Gensim Dictionary
-        bucket: MinIO bucket name
+        bucket: RustFS bucket name
         prefix: Path prefix
         version_id: Version identifier
 
@@ -261,7 +261,7 @@ def save_dictionary(
     """
     from datetime import datetime
 
-    client = get_minio_client()
+    client = get_rustfs_client()
 
     if version_id is None:
         version_id = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
@@ -280,7 +280,7 @@ def save_dictionary(
 def load_dictionary(
     s3_path: str,
 ) -> Any:
-    """Load Gensim dictionary from MinIO.
+    """Load Gensim dictionary from RustFS.
 
     Args:
         s3_path: S3 path (s3://bucket/path)
@@ -296,7 +296,7 @@ def load_dictionary(
     bucket, *path_parts = s3_path.split("/", 1)
     object_path = path_parts[0] if path_parts else ""
 
-    client = get_minio_client()
+    client = get_rustfs_client()
 
     with tempfile.TemporaryDirectory() as tmpdir:
         local_path = Path(tmpdir) / "dictionary.dict"
@@ -310,11 +310,11 @@ def save_corpus(
     prefix: str = "corpora",
     version_id: str | None = None,
 ) -> str:
-    """Save corpus to MinIO in Market Matrix format.
+    """Save corpus to RustFS in Market Matrix format.
 
     Args:
         corpus: List of BOW representations
-        bucket: MinIO bucket name
+        bucket: RustFS bucket name
         prefix: Path prefix
         version_id: Version identifier
 
@@ -325,7 +325,7 @@ def save_corpus(
 
     from gensim import corpora
 
-    client = get_minio_client()
+    client = get_rustfs_client()
 
     if version_id is None:
         version_id = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
@@ -344,7 +344,7 @@ def save_corpus(
 def load_corpus(
     s3_path: str,
 ) -> Any:
-    """Load corpus from MinIO.
+    """Load corpus from RustFS.
 
     Args:
         s3_path: S3 path (s3://bucket/path)
@@ -360,7 +360,7 @@ def load_corpus(
     bucket, *path_parts = s3_path.split("/", 1)
     object_path = path_parts[0] if path_parts else ""
 
-    client = get_minio_client()
+    client = get_rustfs_client()
 
     with tempfile.TemporaryDirectory() as tmpdir:
         local_path = Path(tmpdir) / "corpus.mm"

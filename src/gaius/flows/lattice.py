@@ -228,11 +228,11 @@ def require_signals_metaflow(environ: dict[str, str] | None = None) -> None:
             f"METAFLOW_DEFAULT_DATASTORE={ds!r}.\n"
             "  Set GAIUS_METAFLOW_MODE=platform (Signals :30180 + RustFS).",
         )
-    if "metaflow-artifacts" in sysroot or "devenv-minio" in (
+    if "metaflow-artifacts" in sysroot or "devenv-rustfs" in (
         env.get("METAFLOW_S3_ENDPOINT_URL") or ""
     ):
         raise PlatformMetaflowError(
             GURU_NOPLATFORM,
-            "config/metaflow/k8s.json is the old Tilt/MinIO profile, not Signals. "
+            "config/metaflow/k8s.json is the old Tilt profile (gaius-local object store), not Signals. "
             "Use SIGNALS_ROOT/config/metaflow/platform.json.",
         )

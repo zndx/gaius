@@ -723,13 +723,11 @@ class NiFiSoMGenerator:
             logger.error(f"Failed to export calibration results: {e}")
 
 
-def _check_minio_available() -> bool:
-    """Check if MinIO is available and configured."""
+def _check_rustfs_available() -> bool:
+    """Check if RustFS is available and configured."""
     try:
-        from ..storage import DatasetStorage, MINIO_AVAILABLE
-        if not MINIO_AVAILABLE:
-            return False
-        storage = DatasetStorage(backend="minio")
+        from ..storage import DatasetStorage
+        storage = DatasetStorage(backend="rustfs")
         client = storage._get_client()
         # Check bucket exists
         return client.bucket_exists(storage.bucket)
@@ -753,13 +751,13 @@ async def main():
     parser.add_argument(
         "--output",
         default="build/dev/current/datasets/nifi-som-v1",
-        help="Output directory (KB path for manifest when using minio)",
+        help="Output directory (KB path for manifest when using rustfs)",
     )
     parser.add_argument(
         "--storage",
-        choices=["filesystem", "minio"],
-        default="minio",
-        help="Storage backend: minio (S3, default) or filesystem (local, for testing)",
+        choices=["filesystem", "rustfs"],
+        default="rustfs",
+        help="Storage backend: rustfs (S3, default) or filesystem (local, for testing)",
     )
     parser.add_argument(
         "--mode",
@@ -831,12 +829,12 @@ async def main():
         )
 
     # Validate storage backend before proceeding
-    if args.storage == "minio" and not args.dry_run:
-        if not _check_minio_available():
-            print("ERROR: MinIO storage is not available.", file=sys.stderr)
+    if args.storage == "rustfs" and not args.dry_run:
+        if not _check_rustfs_available():
+            print("ERROR: RustFS storage is not available.", file=sys.stderr)
             print("", file=sys.stderr)
             print("Options:", file=sys.stderr)
-            print("  1. Start MinIO: devenv processes up", file=sys.stderr)
+            print("  1. Start RustFS: devenv processes up", file=sys.stderr)
             print("  2. Use filesystem (testing only): --storage filesystem", file=sys.stderr)
             print("", file=sys.stderr)
             print("Dataset artifacts should be stored in S3, not the KB.", file=sys.stderr)
@@ -894,7 +892,7 @@ async def main():
         print(f"Total frames: {total_frames}")
 
     if not args.dry_run:
-        if args.storage == "minio":
+        if args.storage == "rustfs":
             print(f"Manifest: {args.output}/manifest.json")
             print(f"Artifacts: s3://zndx-gaius/datasets/{dataset_id}/")
         else:

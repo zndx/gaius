@@ -99,7 +99,7 @@ def test_child_env_forces_platform_datastore(monkeypatch: pytest.MonkeyPatch) ->
 
     monkeypatch.setenv("GAIUS_METAFLOW_MODE", "platform")
     monkeypatch.setenv("GAIUS_METAFLOW_SKIP_PING", "1")
-    monkeypatch.setenv("AWS_ACCESS_KEY_ID", "minioadmin")
+    monkeypatch.setenv("AWS_ACCESS_KEY_ID", "rustfsadmin")
     monkeypatch.setenv("METAFLOW_DEFAULT_DATASTORE", "local")
     env = metaflow_child_env()
     assert env["GAIUS_METAFLOW_MODE"] == "platform"

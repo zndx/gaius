@@ -30,7 +30,7 @@ class MagmaExporter:
     def __init__(
         self,
         output_dir: Path,
-        storage_backend: str = "minio",
+        storage_backend: str = "rustfs",
         dataset_id: str = "nifi-som-v1",
         dataset_version: str = "1.0.0",
     ):
@@ -51,7 +51,7 @@ class MagmaExporter:
         Returns:
             Path to the output file (annotations.json or manifest.json)
         """
-        if self.storage_backend == "minio":
+        if self.storage_backend == "rustfs":
             return self._export_to_s3(examples)
         else:
             return self._export_to_filesystem(examples)
@@ -96,10 +96,10 @@ class MagmaExporter:
     def _export_to_s3(
         self, examples: list[Union[DatasetExample, TraceExample]]
     ) -> Path:
-        """Export to S3/MinIO with manifest in KB."""
+        """Export to S3/RustFS with manifest in KB."""
         from ..storage import DatasetStorage
 
-        storage = DatasetStorage(backend="minio")
+        storage = DatasetStorage(backend="rustfs")
 
         annotations = []
         image_infos = []
@@ -168,7 +168,7 @@ class MagmaExporter:
         self.output_dir.mkdir(parents=True, exist_ok=True)
         manifest_path = storage.write_manifest_to_kb(manifest, self.output_dir)
 
-        self._update_generation_log(len(examples), "minio")
+        self._update_generation_log(len(examples), "rustfs")
         return manifest_path
 
     def _update_generation_log(self, num_examples: int, backend: str = "filesystem"):

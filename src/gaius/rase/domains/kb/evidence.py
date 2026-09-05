@@ -6,7 +6,7 @@ the rest of the HX data lake.
 
 The HX evidence module handles:
 - Iceberg table creation and schema management
-- MinIO storage backend
+- RustFS (S3) storage backend
 - Retry logic for failed writes
 - KB thin manifests
 

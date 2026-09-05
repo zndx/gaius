@@ -1207,7 +1207,7 @@ Respond with JSON:
                         raise RuntimeError(
                             f"Brave exchange capture failed: {result.errors}\n"
                             "  Guru Meditation: #ACF.00000016.HXCAPTURE\n"
-                            "  Check Iceberg/Minio connectivity: /health fix hx"
+                            "  Check Iceberg/RustFS connectivity: /health fix hx"
                         )
                     logger.info(f"Captured Brave exchange: {len(sources)} results, {latency_ms}ms")
 

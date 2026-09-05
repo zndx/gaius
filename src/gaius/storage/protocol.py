@@ -7,7 +7,7 @@ while maintaining compatibility with the LangChain agent ecosystem.
 The design allows:
 1. Direct use with deepagents' CompositeBackend for path-based routing
 2. Migration path to Cloudera Agent Studio's artifact storage
-3. Pluggable backends (filesystem, Minio, S3, etc.)
+3. Pluggable backends (filesystem, RustFS, S3, etc.)
 """
 
 from dataclasses import dataclass, field
@@ -48,9 +48,9 @@ class StorageConfig:
     """Configuration for storage backends.
 
     Attributes:
-        backend_type: Type of backend ("filesystem", "minio", "agent_studio")
+        backend_type: Type of backend ("filesystem", "rustfs", "agent_studio")
         root: Root path or bucket for storage
-        endpoint: Endpoint URL for remote backends (Minio, S3)
+        endpoint: Endpoint URL for remote backends (RustFS, S3)
         access_key: Access key for authenticated backends
         secret_key: Secret key for authenticated backends
         region: Region for S3-compatible backends
@@ -101,7 +101,7 @@ class StorageBackend(BackendProtocol, Protocol):
 
     Implementations:
     - FilesystemStorage: Local filesystem (default)
-    - MinioStorage: Minio/S3 object storage
+    - RustFSStorage: RustFS/S3 object storage
     - AgentStudioStorage: Cloudera Agent Studio integration
     """
 

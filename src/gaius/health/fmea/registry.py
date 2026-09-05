@@ -95,8 +95,8 @@ FMEA_REGISTRY: tuple[FMEAMapping, ...] = (
     ),
     FMEAMapping(
         fmea_id="INFRA_004",
-        heuristic_path="data/minio_connection",
-        check_names=("minio",),
+        heuristic_path="data/rustfs_connection",
+        check_names=("rustfs",),
     ),
     FMEAMapping(
         fmea_id="INFRA_005",

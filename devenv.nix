@@ -81,22 +81,25 @@
     };
   in "${luxcore-syslibs}/lib/pkgconfig";
 
-  # Override MinIO data directory to use RAID storage
-  env.MINIO_DATA_DIR = lib.mkForce "/raid/minio/gaius";
+  # Object store: Signals' RustFS on 127.0.0.1:9010 (S3 API, path-style). Gaius runs
+  # NO object store of its own: the devenv MinIO (nixpkgs marks it insecure) was
+  # retired 2026-09-05; its buckets were mirrored to RustFS (zndx-gaius,
+  # metaflow-artifacts, gaius-kb, gaius-models) and /raid/minio/gaius is an archive.
+  # Never export AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY project-wide: the ambient
+  # default credential chain leaks into every S3 client (it poisoned the Nautilus
+  # journal on 2026-09-04); every consumer reads GAIUS_RUSTFS_* explicitly.
 
   # Qdrant configuration via environment variables
   env.QDRANT__STORAGE__STORAGE_PATH = "/raid/qdrant/gaius";
   env.QDRANT__SERVICE__HTTP_PORT = "6339";  # Non-default to avoid conflicts
   env.QDRANT__SERVICE__GRPC_PORT = "6340";
 
-  # MinIO/S3 credentials for Metaflow (must override ~/.aws/credentials)
-  env.AWS_ACCESS_KEY_ID = "minioadmin";
-  env.AWS_SECRET_ACCESS_KEY = "minioadmin";
-  env.GAIUS_MINIO_ENDPOINT = "127.0.0.1:9010";
-  env.GAIUS_MINIO_BUCKET = "signals-dataproducts";
+  # RustFS (Signals-owned) — the HX data lake and every S3 consumer in gaius.
+  env.GAIUS_RUSTFS_ENDPOINT = "127.0.0.1:9010";
+  env.GAIUS_RUSTFS_BUCKET = "signals-dataproducts";
   env.GAIUS_HX_PREFIX = "gaius/hx/";
-  env.GAIUS_MINIO_ACCESS_KEY = "rustfsadmin";
-  env.GAIUS_MINIO_SECRET_KEY = "rustfsadmin";
+  env.GAIUS_RUSTFS_ACCESS_KEY = "rustfsadmin";
+  env.GAIUS_RUSTFS_SECRET_KEY = "rustfsadmin";
 
   # Project-specific Metaflow config (instead of ~/.metaflowconfig)
   env.METAFLOW_HOME = "${config.devenv.root}/.metaflow";
@@ -218,12 +221,7 @@
     libxkbcommon   # XKB keyboard handling
   ];
 
-  services.minio = {
-    enable = true;
-    buckets = ["zndx-gaius" "metaflow-artifacts"];
-    listenAddress = "0.0.0.0:9014";   # :9010 is Signals RustFS on the lattice host
-    consoleAddress = "0.0.0.0:9015";
-  };
+  # (services.minio retired 2026-09-05 — see the RustFS note above.)
 
   services.postgres = {
     enable = true;

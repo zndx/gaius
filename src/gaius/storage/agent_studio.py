@@ -13,7 +13,7 @@ For now, this serves as documentation of the expected integration pattern.
 
 Migration path:
 1. Start with filesystem backend for local development
-2. Move to minio backend for production object storage
+2. Move to rustfs backend for production object storage
 3. Transition to agent_studio when deploying on Cloudera AI platform
 
 Configuration:
@@ -84,7 +84,7 @@ class AgentStudioStorage:
         # Example API: GET /artifacts/{workspace}/_list?prefix={path}
         raise NotImplementedError(
             "Agent Studio backend not yet implemented. "
-            "Use 'filesystem' or 'minio' backend for now. "
+            "Use 'filesystem' or 'rustfs' backend for now. "
             "See https://github.com/cloudera/CAI_STUDIO_AGENT for Agent Studio API."
         )
 

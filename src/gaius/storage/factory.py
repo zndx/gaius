@@ -4,9 +4,9 @@ Provides a registry pattern for pluggable storage backends, allowing
 new backends to be registered at runtime (e.g., for Agent Studio integration).
 
 Configuration via environment variables:
-    GAIUS_KB_BACKEND=filesystem|minio|agent_studio
-    GAIUS_KB_ROOT=build/dev  (or bucket name for minio)
-    GAIUS_KB_ENDPOINT=localhost:9010  (for minio)
+    GAIUS_KB_BACKEND=filesystem|rustfs|agent_studio
+    GAIUS_KB_ROOT=build/dev  (or bucket name for rustfs)
+    GAIUS_KB_ENDPOINT=localhost:9010  (for rustfs)
     GAIUS_KB_ACCESS_KEY=...
     GAIUS_KB_SECRET_KEY=...
     GAIUS_KB_SECURE=true|false
@@ -54,17 +54,17 @@ def _load_default_backends() -> None:
 
         _backends["filesystem"] = lambda config: FilesystemStorage(config)
 
-    if "minio" not in _backends:
-        from .minio import MinioStorage
+    if "rustfs" not in _backends:
+        from .rustfs import RustFSStorage
 
-        _backends["minio"] = lambda config: MinioStorage(config)
+        _backends["rustfs"] = lambda config: RustFSStorage(config)
 
 
 def get_config_from_env() -> StorageConfig:
     """Build StorageConfig from environment variables.
 
     Environment variables:
-        GAIUS_KB_BACKEND: Backend type (filesystem, minio, agent_studio)
+        GAIUS_KB_BACKEND: Backend type (filesystem, rustfs, agent_studio)
         GAIUS_KB_ROOT: Root path or bucket name
         GAIUS_KB_ENDPOINT: Endpoint URL for remote backends
         GAIUS_KB_ACCESS_KEY: Access key for authenticated backends

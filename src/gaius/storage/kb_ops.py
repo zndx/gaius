@@ -5,7 +5,7 @@ These functions are used by MCP server, CLI, and TUI for KB access.
 
 All KB operations go through this module to ensure:
 - Consistent behavior across all interfaces
-- Storage backend independence (filesystem, minio, agent studio)
+- Storage backend independence (filesystem, rustfs, agent studio)
 - Proper error handling and validation
 """
 

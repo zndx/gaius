@@ -2578,7 +2578,7 @@ created_at: {now.isoformat()}
             raise CollectionError(
                 f"Iceberg HX catalog unavailable: {e}\n"
                 "  Try: /health fix hx\n"
-                "  Or:  Check MinIO + PostgreSQL catalog connectivity",
+                "  Or:  Check RustFS (Signals, :9010) + PostgreSQL catalog connectivity",
                 guru_code="#HX.00000001.CATALOGFAIL",
             ) from e
 
@@ -2629,7 +2629,7 @@ created_at: {now.isoformat()}
             raise CollectionError(
                 f"Failed to write generation to Iceberg HX: {e}\n"
                 "  Try: /health fix hx\n"
-                "  Or:  Check MinIO storage availability",
+                "  Or:  Check RustFS (Signals, :9010) availability",
                 guru_code="#HX.00000003.WRITEFAIL",
             ) from e
 

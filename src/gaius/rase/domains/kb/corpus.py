@@ -16,7 +16,7 @@ Table Schema:
     - created_at: Timestamp
     - content_hash: Hash of input+output for deduplication
 
-Uses the existing HX infrastructure (Iceberg + MinIO) for:
+Uses the existing HX infrastructure (Iceberg + RustFS) for:
 - ACID transactions
 - Schema evolution
 - Efficient columnar storage (Parquet)

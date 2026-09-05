@@ -105,7 +105,7 @@ class DaemonOracle:
             from gaius.rase.domains.kb import KBOracle
             self._kb_oracle = KBOracle(
                 kb_root=self.kb_root,
-                use_minio=self.capture_evidence,
+                use_rustfs=self.capture_evidence,
             )
         return self._kb_oracle
 

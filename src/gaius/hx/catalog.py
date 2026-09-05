@@ -121,7 +121,7 @@ def _create_sql_catalog(config: HxConfig) -> Catalog:
     """Create a PostgreSQL-backed Iceberg catalog.
 
     The SQL catalog uses PostgreSQL to store table metadata while
-    data files (parquet) are stored in MinIO or filesystem.
+    data files (parquet) are stored in RustFS or filesystem.
     """
     try:
         from pyiceberg.catalog.sql import SqlCatalog
@@ -144,8 +144,8 @@ def _create_sql_catalog(config: HxConfig) -> Catalog:
         "warehouse": config.warehouse_path,
     }
 
-    # Add S3/MinIO properties if using object storage
-    if config.use_minio:
+    # Add S3/RustFS properties if using object storage
+    if config.use_rustfs:
         properties.update(_get_s3_properties(config))
 
     logger.info(
@@ -202,30 +202,30 @@ def _postgres_uri_to_jdbc(uri: str) -> str:
 
 
 def _get_s3_properties(config: HxConfig) -> dict:
-    """Get S3/MinIO properties for Iceberg file I/O.
+    """Get S3/RustFS properties for Iceberg file I/O.
 
     Returns:
         Dictionary of S3 configuration properties.
     """
     properties = {
         "s3.endpoint": config.s3_endpoint,
-        "s3.access-key-id": config.minio_access_key,
-        "s3.secret-access-key": config.minio_secret_key,
-        # MinIO-specific settings
+        "s3.access-key-id": config.rustfs_access_key,
+        "s3.secret-access-key": config.rustfs_secret_key,
+        # RustFS-specific settings
         "s3.path-style-access": "true",
-        "s3.region": "us-east-1",  # MinIO default
+        "s3.region": "us-east-1",  # RustFS default
     }
 
     # Only add credentials if provided
-    if not config.minio_access_key:
-        # Use environment variables or default MinIO credentials
+    if not config.rustfs_access_key:
+        # Use environment variables or default RustFS credentials
         import os
         properties["s3.access-key-id"] = os.environ.get(
-            "GAIUS_MINIO_ACCESS_KEY",
+            "GAIUS_RUSTFS_ACCESS_KEY",
             os.environ.get("RUSTFS_ACCESS_KEY", "rustfsadmin"),
         )
         properties["s3.secret-access-key"] = os.environ.get(
-            "GAIUS_MINIO_SECRET_KEY",
+            "GAIUS_RUSTFS_SECRET_KEY",
             os.environ.get("RUSTFS_SECRET_KEY", "rustfsadmin"),
         )
 

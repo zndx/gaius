@@ -28,11 +28,11 @@ psql -h 127.0.0.1 -p "$PGPORT" -U "$USER" -d zndx_gaius -tc \
 psql -h 127.0.0.1 -p "$PGPORT" -U "$USER" -d metaflow -c "GRANT ALL PRIVILEGES ON DATABASE metaflow TO metaflow" 2>/dev/null || true
 echo "  metaflow user and database ready"
 
-# Ensure metaflow-artifacts bucket exists in MinIO
-echo "Ensuring metaflow-artifacts bucket exists..."
-mc alias set local http://localhost:9010 minioadmin minioadmin 2>/dev/null || true
-mc mb --ignore-existing local/metaflow-artifacts 2>/dev/null || true
-echo "  MinIO bucket ready"
+# Ensure the metaflow-artifacts bucket exists on RustFS (Signals, :9010).
+echo "Ensuring metaflow-artifacts bucket exists on RustFS..."
+mc alias set rustfs "http://localhost:${RUSTFS_PORT:-9010}" "${RUSTFS_ACCESS_KEY:-rustfsadmin}" "${RUSTFS_SECRET_KEY:-rustfsadmin}" 2>/dev/null || true
+mc mb --ignore-existing rustfs/metaflow-artifacts 2>/dev/null || true
+echo "  RustFS bucket ready"
 
 echo ""
 echo "Metaflow database setup complete."

@@ -3682,7 +3682,7 @@ class GaiusServicer(GaiusServiceServicer):
                 enable_calibration=request.enable_calibration,  # Default False
                 calibration_sample_rate=request.calibration_sample_rate or 0.1,
                 export_calibration=request.export_calibration,
-                storage_backend=request.storage_backend or "minio",
+                storage_backend=request.storage_backend or "rustfs",
             )
 
             job = await dataset_service.submit_job(config)

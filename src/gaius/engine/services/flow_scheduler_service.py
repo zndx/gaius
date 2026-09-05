@@ -365,9 +365,9 @@ class FlowSchedulerService:
         env = os.environ.copy()
         env["CUDA_VISIBLE_DEVICES"] = self.config.gpu_index
         env["GAIUS_KB_ROOT"] = self.config.kb_root
-        env["MINIO_ENDPOINT"] = os.environ.get("MINIO_ENDPOINT", "localhost:9010")
-        env["MINIO_ACCESS_KEY"] = os.environ.get("MINIO_ACCESS_KEY", "minioadmin")
-        env["MINIO_SECRET_KEY"] = os.environ.get("MINIO_SECRET_KEY", "minioadmin")
+        env["RUSTFS_ENDPOINT"] = os.environ.get("RUSTFS_ENDPOINT", "localhost:9010")
+        env["RUSTFS_ACCESS_KEY"] = os.environ.get("RUSTFS_ACCESS_KEY", "rustfsadmin")
+        env["RUSTFS_SECRET_KEY"] = os.environ.get("RUSTFS_SECRET_KEY", "rustfsadmin")
 
         try:
             # Start process in background

@@ -1,6 +1,6 @@
 """Iceberg-based Calibration Storage for XAI Calibration History.
 
-Persists calibration samples to Iceberg tables in S3/MinIO following
+Persists calibration samples to Iceberg tables on RustFS (S3) following
 the hx.writer pattern. Stores both local and XAI scores for analysis
 and calibration factor training.
 

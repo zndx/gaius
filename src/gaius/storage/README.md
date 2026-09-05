@@ -1,6 +1,6 @@
 # Gaius Storage
 
-Unified storage abstraction for knowledge base, embeddings, and persistent state. Supports multiple backends: filesystem, MinIO/S3, and Cloudera Agent Studio.
+Unified storage abstraction for knowledge base, embeddings, and persistent state. Supports multiple backends: filesystem, RustFS/S3, and Cloudera Agent Studio.
 
 ## Architecture
 
@@ -20,14 +20,14 @@ graph TB
 
     subgraph "Storage Backends"
         FS[FilesystemStorage<br/>Development]
-        MINIO[MinioStorage<br/>Primary Storage]
+        RUSTFS[RustFSStorage<br/>Primary Storage]
         STUDIO[AgentStudioStorage<br/>Cloudera Enterprise]
     end
 
     subgraph "Data Stores"
         PG[(PostgreSQL<br/>State, Metrics)]
         QD[(Qdrant<br/>Embeddings)]
-        S3[(MinIO/S3<br/>KB Files)]
+        S3[(RustFS/S3<br/>KB Files)]
     end
 
     CLI --> KBOPS
@@ -38,11 +38,11 @@ graph TB
     MCP --> DB
 
     KBOPS --> FS
-    KBOPS --> MINIO
+    KBOPS --> RUSTFS
     KBOPS --> STUDIO
 
     FS --> S3
-    MINIO --> S3
+    RUSTFS --> S3
     DB --> PG
     GRID --> PG
     GRID --> QD
@@ -56,7 +56,7 @@ storage/
 ├── protocol.py        # StorageBackend protocol, KBDocument
 ├── factory.py         # get_storage_backend(), register_backend()
 ├── filesystem.py      # FilesystemStorage (local files)
-├── minio.py           # MinioStorage (S3-compatible)
+├── rustfs.py           # RustFSStorage (S3-compatible)
 ├── agent_studio.py    # AgentStudioStorage (Cloudera)
 ├── kb_ops.py          # High-level KB operations
 ├── database.py        # PostgreSQL queries
@@ -99,7 +99,7 @@ class StorageBackend(Protocol):
 @dataclass
 class StorageConfig:
     root: str = "build/dev"
-    backend: str = "filesystem"  # filesystem, minio, agent_studio
+    backend: str = "filesystem"  # filesystem, rustfs, agent_studio
     allowed_dirs: tuple[str, ...] = ("archive", "current", "scratch")
 ```
 
@@ -236,15 +236,15 @@ CREATE TABLE grid_snapshots (
 );
 ```
 
-## MinIO Integration
+## RustFS Integration
 
-MinIO provides S3-compatible storage for KB documents:
+RustFS provides S3-compatible storage for KB documents:
 
 ```python
-from gaius.storage.minio import MinioStorage
+from gaius.storage.rustfs import RustFSStorage
 
-storage = MinioStorage(
-    endpoint="minio:9000",
+storage = RustFSStorage(
+    endpoint="127.0.0.1:9010",
     access_key="gaius",
     secret_key="secret",
     bucket="gaius-kb",
@@ -257,11 +257,11 @@ content = await storage.read("current/topics/tda.md")
 ### Configuration
 
 ```bash
-export GAIUS_KB_BACKEND=minio
-export MINIO_ENDPOINT=minio:9000
-export MINIO_ACCESS_KEY=gaius
-export MINIO_SECRET_KEY=secret
-export MINIO_BUCKET=gaius-kb
+export GAIUS_KB_BACKEND=rustfs
+export RUSTFS_ENDPOINT=127.0.0.1:9010
+export RUSTFS_ACCESS_KEY=gaius
+export RUSTFS_SECRET_KEY=secret
+export RUSTFS_BUCKET=gaius-kb
 ```
 
 ## Agent Studio Integration
@@ -319,15 +319,15 @@ graph LR
 
 ```hocon
 storage {
-    backend = "filesystem"  # filesystem, minio, agent_studio
+    backend = "filesystem"  # filesystem, rustfs, agent_studio
     root = "build/dev"
 
     filesystem {
         create_dirs = true
     }
 
-    minio {
-        endpoint = "minio:9000"
+    rustfs {
+        endpoint = "127.0.0.1:9010"
         bucket = "gaius-kb"
         secure = false
     }
@@ -348,7 +348,7 @@ mcp_server.py:read_kb(path)
       └─→ get_storage_backend()                # singleton factory
           └─→ StorageBackend.read(path)
               ├─→ FilesystemStorage.read()     # local dev
-              ├─→ MinioStorage.read()          # S3-compatible
+              ├─→ RustFSStorage.read()          # S3-compatible
               └─→ AgentStudioStorage.read()    # Cloudera
 
 # KB Write Path
@@ -377,19 +377,19 @@ graph TB
     INPUT["User Input<br/>(MCP tool, CLI command, TUI action)"]
     KBOPS["kb_ops.py<br/>(search_kb, read_kb, create_kb, ...)"]
     FS["Filesystem<br/>Storage"]
-    MINIO["MinIO<br/>Storage"]
+    RUSTFS["RustFS<br/>Storage"]
     STUDIO["Agent Studio<br/>Storage"]
     SYNC["sync_engine.py<br/>(embedding generation, upsert)"]
     QD["Qdrant<br/>Embeddings"]
     PG["PostgreSQL<br/>State"]
-    S3["MinIO/S3<br/>KB Files"]
+    S3["RustFS/S3<br/>KB Files"]
 
     INPUT --> KBOPS
     KBOPS --> FS
-    KBOPS --> MINIO
+    KBOPS --> RUSTFS
     KBOPS --> STUDIO
     FS --> SYNC
-    MINIO --> SYNC
+    RUSTFS --> SYNC
     STUDIO --> SYNC
     SYNC --> QD
     SYNC --> PG
@@ -420,17 +420,17 @@ graph TB
 module: gaius.storage
 layer: L2-transport
 singleton: get_storage_backend
-key_types: [StorageBackend, FilesystemStorage, MinioStorage, AgentStudioStorage, KBDocument, WriteResult]
+key_types: [StorageBackend, FilesystemStorage, RustFSStorage, AgentStudioStorage, KBDocument, WriteResult]
 key_funcs: [search_kb, read_kb, create_kb, update_kb, list_kb, save_grid_state, load_current_state]
 submodules: []
-depends: [core.config, qdrant_client, asyncpg, minio]
+depends: [core.config, qdrant_client, asyncpg, rustfs]
 dependents: [mcp_server, agents, flows, workers, widgets.grid]
-config_keys: [storage.backend, storage.root, storage.minio.endpoint, storage.database.url]
-env_vars: [GAIUS_KB_BACKEND, MINIO_ENDPOINT, MINIO_ACCESS_KEY, MINIO_SECRET_KEY, MINIO_BUCKET]
+config_keys: [storage.backend, storage.root, storage.rustfs.endpoint, storage.database.url]
+env_vars: [GAIUS_KB_BACKEND, RUSTFS_ENDPOINT, RUSTFS_ACCESS_KEY, RUSTFS_SECRET_KEY, RUSTFS_BUCKET]
 grpc_services: []
 qdrant_collections: [gaius_embeddings]
 postgres_tables: [grid_snapshots]
-external_deps: [asyncpg, qdrant_client, minio]
+external_deps: [asyncpg, qdrant_client, rustfs]
 call_paths:
   read: mcp.read_kb→kb_ops.read_kb→get_storage_backend→StorageBackend.read
   write: mcp.create_kb→kb_ops.create_kb→StorageBackend.write→sync_engine.queue_embedding
@@ -439,6 +439,6 @@ call_paths:
 test_cmds:
   read: 'uv run gaius-cli --cmd "/kb read current/topics/test.md"'
   search: 'uv run gaius-cli --cmd "/kb search persistent homology"'
-guru_codes: [ST.00001.QDRANT_DOWN, ST.00002.MINIO_UNREACHABLE, ST.00003.PG_CONN_FAIL]
+guru_codes: [ST.00001.QDRANT_DOWN, ST.00002.RUSTFS_UNREACHABLE, ST.00003.PG_CONN_FAIL]
 fail_fast: true
 -->

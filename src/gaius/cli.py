@@ -5509,7 +5509,7 @@ Respond with:
             list [directory] - List KB entries (optionally filter by directory)
             read <path>      - Read a KB entry
             search <query>   - Search KB by filename or content
-            sync [target]    - Sync KB to S3 (default: minio-local)
+            sync [target]    - Sync KB to S3 (default: rustfs-local)
             sync status      - Show sync status
             sync targets     - List configured targets
             sync verify      - Verify remote integrity
@@ -5556,7 +5556,7 @@ Respond with:
         """Sync KB to S3 storage.
 
         Usage:
-            /kb sync [target]           - Sync to target (default: minio-local)
+            /kb sync [target]           - Sync to target (default: rustfs-local)
             /kb sync status [target]    - Show sync status
             /kb sync targets            - List configured targets
             /kb sync verify [target]    - Verify remote integrity
@@ -5578,7 +5578,7 @@ Respond with:
         # Parse subcommand
         if "status" in parts:
             idx = parts.index("status")
-            target_name = parts[idx + 1] if len(parts) > idx + 1 else "minio-local"
+            target_name = parts[idx + 1] if len(parts) > idx + 1 else "rustfs-local"
             return await get_sync_status(target_name, db_url)
 
         elif "targets" in parts:
@@ -5587,7 +5587,7 @@ Respond with:
 
         elif "verify" in parts:
             idx = parts.index("verify")
-            target_name = parts[idx + 1] if len(parts) > idx + 1 else "minio-local"
+            target_name = parts[idx + 1] if len(parts) > idx + 1 else "rustfs-local"
             return await verify_sync(
                 target_name,
                 self.config.kb.root,
@@ -5597,7 +5597,7 @@ Respond with:
 
         else:
             # Actual sync
-            target_name = "minio-local"
+            target_name = "rustfs-local"
             dry_run = "--dry-run" in parts or "-n" in parts
             resume = "--resume" in parts
 
@@ -6757,7 +6757,7 @@ Respond with:
             "postgresql": "data",
             "database": "data",
             "qdrant": "data",
-            "minio": "data",
+            "rustfs": "data",
             "s3": "data",
             "endpoints": "inference",
             "inference": "inference",

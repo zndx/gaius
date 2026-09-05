@@ -259,12 +259,12 @@ class IcebergConfig:
 
     catalog: str = "signals"
     namespace: str = "raw"
-    use_minio: bool = True
+    use_rustfs: bool = True
 
 
 @dataclass
-class MinioConfig:
-    """MinIO S3-compatible storage configuration."""
+class RustFSConfig:
+    """RustFS S3-compatible storage configuration."""
 
     endpoint: str = "127.0.0.1:9010"
     bucket: str = "signals-dataproducts"
@@ -294,13 +294,13 @@ class HxConfig:
     """Gaius HX - Raw content data lake configuration.
 
     HX (history) stores high-volume raw fetched content in Apache Iceberg
-    tables, separate from curated KB summaries. Supports MinIO primary
+    tables, separate from curated KB summaries. Supports RustFS primary
     storage with filesystem fallback.
     """
 
     enabled: bool = True
     iceberg: IcebergConfig = field(default_factory=IcebergConfig)
-    minio: MinioConfig = field(default_factory=MinioConfig)
+    rustfs: RustFSConfig = field(default_factory=RustFSConfig)
     filesystem: FilesystemConfig = field(default_factory=FilesystemConfig)
     lineage: LineageConfig = field(default_factory=LineageConfig)
 
@@ -638,15 +638,15 @@ def _parse_config_tree(tree: ConfigTree) -> GaiusConfig:
     hx_iceberg = IcebergConfig(
         catalog=g.get("hx.iceberg.catalog", "signals"),
         namespace=g.get("hx.iceberg.namespace", "raw"),
-        use_minio=g.get("hx.iceberg.use_minio", True),
+        use_rustfs=g.get("hx.iceberg.use_rustfs", True),
     )
 
-    hx_minio = MinioConfig(
-        endpoint=g.get("hx.minio.endpoint", "127.0.0.1:9010"),
-        bucket=g.get("hx.minio.bucket", "signals-dataproducts"),
-        prefix=g.get("hx.minio.prefix", "iceberg/"),
-        access_key=g.get("hx.minio.access_key", ""),
-        secret_key=g.get("hx.minio.secret_key", ""),
+    hx_rustfs = RustFSConfig(
+        endpoint=g.get("hx.rustfs.endpoint", "127.0.0.1:9010"),
+        bucket=g.get("hx.rustfs.bucket", "signals-dataproducts"),
+        prefix=g.get("hx.rustfs.prefix", "iceberg/"),
+        access_key=g.get("hx.rustfs.access_key", ""),
+        secret_key=g.get("hx.rustfs.secret_key", ""),
     )
 
     hx_filesystem = FilesystemConfig(
@@ -662,7 +662,7 @@ def _parse_config_tree(tree: ConfigTree) -> GaiusConfig:
     hx = HxConfig(
         enabled=g.get("hx.enabled", True),
         iceberg=hx_iceberg,
-        minio=hx_minio,
+        rustfs=hx_rustfs,
         filesystem=hx_filesystem,
         lineage=hx_lineage,
     )
