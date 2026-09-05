@@ -1078,8 +1078,16 @@ class VLLMController:
                         delta = ch.get("delta") or {}
                         if delta.get("content"):
                             content_parts.append(delta["content"])
-                        if delta.get("reasoning_content"):
-                            reasoning_parts.append(delta["reasoning_content"])
+                        # vLLM 0.27 renamed the delta field `reasoning_content`
+                        # → `reasoning` (openai/chat_completion/protocol.py);
+                        # reading only the old name dropped EVERY streamed
+                        # thinking trace (reasoning_length=0 on all 98
+                        # completions of 2026-09-05 08:17–16:47) and made a
+                        # think-to-EOS compaction indistinguishable from an
+                        # empty one (#BUF.00000001.COMPACTFAIL x2).
+                        r = delta.get("reasoning_content") or delta.get("reasoning")
+                        if r:
+                            reasoning_parts.append(r)
                         if delta.get("tool_calls"):
                             self._merge_stream_tool_calls(
                                 tool_calls_acc, delta["tool_calls"]

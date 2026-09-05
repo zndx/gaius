@@ -45,12 +45,16 @@ class CerebrasBackend(ExternalBackend):
         CEREBRAS_API_KEY: API key for Cerebras Cloud
     """
 
-    # Cerebras model IDs use their own format (no slash like HuggingFace)
-    # Examples: llama-3.3-70b, zai-glm-4.7, qwen-3-32b
-    DEFAULT_MODEL = "zai-glm-4.7"
+    # Cerebras model IDs use their own format (no slash like HuggingFace).
+    # 2026-09-05: the account's live catalogue (GET /v1/models) is exactly
+    # gpt-oss-120b, qwen-3.8-27b, gemma-4-31b — zai-glm-4.7, qwen-3-32b and
+    # llama-3.3-70b were all archived upstream, so every "cerebras" card
+    # summary 404'd (#COL.00000013.CARDSUMFAIL x26 per curate). gpt-oss-120b
+    # is the reasoning model of a different family from the local Qwen lane.
+    DEFAULT_MODEL = "gpt-oss-120b"
     # If the preferred reasoning model is archived, keep the panel alive
     # with another Cerebras model rather than dropping the feature.
-    FALLBACK_MODELS = ("qwen-3-32b", "llama-3.3-70b")
+    FALLBACK_MODELS = ("qwen-3.8-27b", "gemma-4-31b")
 
     # Recommended max_tokens for reasoning models to complete their chain-of-thought
     # GLM uses ~300-500 tokens for reasoning before producing final answer
@@ -61,7 +65,7 @@ class CerebrasBackend(ExternalBackend):
         """Initialize Cerebras backend.
 
         Args:
-            model: Model to use (default: llama-3.3-70b)
+            model: Model to use (default: DEFAULT_MODEL, gpt-oss-120b)
         """
         self._api_key = os.environ.get("CEREBRAS_API_KEY")
         self._model = model or self.DEFAULT_MODEL

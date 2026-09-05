@@ -1215,9 +1215,15 @@ class ObjectiveService:
             try:
                 since_hour = int(__import__("time").time() // 3600) - within_h - 1
                 async with self._pool.acquire() as conn:
+                    # ANY slot counts as a fill: a healthy workflow re-fills slot 0
+                    # each tick, but a workflow with an OPEN item fills slot 0 once
+                    # (the mechanics boundary) and later ticks fill higher slots —
+                    # `slot = 0` here failed this gate for every failing objective
+                    # (2026-09-05 16:17 sweep: content_currency and ops_backlog
+                    # listed as "missing" while their items advanced to slot 7).
                     rows = await conn.fetch(
                         "SELECT workflow, max(ts_ns) AS ts_ns FROM nautilus_backlog "
-                        "WHERE project = 'gaius' AND slot = 0 AND epoch_hour >= $1 GROUP BY workflow",
+                        "WHERE project = 'gaius' AND epoch_hour >= $1 GROUP BY workflow",
                         since_hour,
                     )
                     now_ns = int(await conn.fetchval("SELECT (EXTRACT(EPOCH FROM NOW()) * 1e9)::bigint"))
@@ -1226,7 +1232,7 @@ class ObjectiveService:
                 gates.append({
                     "gate": "filled_within_horizon",
                     "verdict": "pass" if not missing else "fail",
-                    "evidence": (f"{len(fresh)}/{len(expected)} cadenced workflows have a slot-0 row within {within_h}h"
+                    "evidence": (f"{len(fresh)}/{len(expected)} cadenced workflows have a Backlog fill (any slot) within {within_h}h"
                                  + (f"; missing: {missing[:8]}{'…' if len(missing) > 8 else ''}" if missing else "")
                                  + ("" if not missing else " — DAG stage: the resident Nautilus tick (nautilus serve / nautilus-tick.timer)")),
                 })
