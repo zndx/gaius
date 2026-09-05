@@ -1,0 +1,33 @@
+// Let the gaius operator manage the gaius units without sudo and without a
+// polkit prompt — so `just restart` and the ACP restart executor run as the
+// user, non-interactively, and never need `sudo -n`.
+//
+// Why: from a terminal, `systemctl restart gaius.service` "works without sudo"
+// only because polkit's agent asks for the user's OWN password; from a script or
+// an agent the same call fails with "Interactive authentication required"
+// (found 2026-09-05 while asking why the just recipe carried sudo). This rule
+// grants org.freedesktop.systemd1.manage-units for exactly the gaius units.
+//
+// Installed by `just reboot-hardening-install` into /etc/polkit-1/rules.d/.
+// polkit reloads rules on change; no daemon restart needed.
+polkit.addRule(function (action, subject) {
+    if (action.id !== "org.freedesktop.systemd1.manage-units") {
+        return polkit.Result.NOT_HANDLED;
+    }
+    if (subject.user !== "rch") {
+        return polkit.Result.NOT_HANDLED;
+    }
+    var unit = action.lookup("unit");
+    var allowed = [
+        "gaius.service",
+        "gaius-engine-ready.service",
+        "gaius-thinking-ready.service",
+        "nautilus-tick.service",
+        "nautilus-tick.timer",
+        "crash-guard.service",
+    ];
+    if (allowed.indexOf(unit) !== -1) {
+        return polkit.Result.YES;
+    }
+    return polkit.Result.NOT_HANDLED;
+});

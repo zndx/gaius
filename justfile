@@ -184,6 +184,12 @@ reboot-hardening-install:
       sudo install -m 0644 "$(pwd)/scripts/systemd/$u" "/etc/systemd/system/$u"
     done
     sudo systemctl daemon-reload
+    # polkit: let the gaius user manage the gaius units non-interactively, so
+    # `just restart` and the ACP restart executor never need sudo (the units run
+    # as this user already; only the manage-units action was gated behind an
+    # interactive prompt). polkit reloads rules on change.
+    sudo install -d -m 0755 /etc/polkit-1/rules.d
+    sudo install -m 0644 "$(pwd)/scripts/systemd/50-gaius-units.rules" /etc/polkit-1/rules.d/50-gaius-units.rules
     # crash-guard is a boot/shutdown oneshot (WantedBy=multi-user.target).
     # engine-ready + thinking-ready are continuous watchdogs WantedBy=gaius.service
     # (run whenever the engine unit runs). --now starts the continuous ones against
