@@ -135,13 +135,20 @@ def declared_workflows(spec: Any) -> set[str] | None:
     if sup is None:
         return None
     out: set[str] = set()
-    for p in getattr(sup, "processes", []):
+    procs = list(getattr(sup, "processes", []))
+    with_expectation = {p.id for p in procs if (p.HasField("expectation") if hasattr(p, "HasField") else getattr(p, "expectation", None) is not None)}
+    for p in procs:
         cad = getattr(p, "cadence", None)
         if cad is None or (not cad.cron and not cad.expected_period_seconds):
             continue
-        if not p.HasField("expectation") if hasattr(p, "HasField") else getattr(p, "expectation", None) is None:
+        if p.id not in with_expectation:
             continue
         if p.kind == sv.PROCESS_KIND_PG_CRON_JOB:
+            continue
+        # A Metaflow flow mirrors its parent task class (the task row carries the
+        # events); the resident folds it into the parent — same rule here, or the
+        # ops_backlog gate lists flow.* as "missing" forever (2026-09-05 01:38).
+        if p.kind == sv.PROCESS_KIND_METAFLOW_FLOW and p.parent and p.parent in with_expectation:
             continue
         out.add(p.id)
     for o in getattr(sup, "objectives", []):

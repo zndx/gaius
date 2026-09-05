@@ -55,8 +55,11 @@ def test_declared_workflows_excludes_pg_cron_and_adds_objectives() -> None:
     p_cron = sv.Process(id="cron.x", kind=sv.PROCESS_KIND_PG_CRON_JOB, cadence=sv.Cadence(cron="20 * * * *", net_seconds=900),
                         expectation=sv.Expectation(category=sv.EXPECTATION_CATEGORY_TICK, horizon_slot=3))
     p_noexp = sv.Process(id="task.y", kind=sv.PROCESS_KIND_SCHEDULED_TASK, cadence=sv.Cadence(cron="0 * * * *"))
+    # a flow folded into its declared parent task class is not a workflow of its own
+    p_flow = sv.Process(id="flow.XFlow", kind=sv.PROCESS_KIND_METAFLOW_FLOW, parent="task.x", cadence=sv.Cadence(cron="*/15 * * * *", net_seconds=900),
+                        expectation=sv.Expectation(category=sv.EXPECTATION_CATEGORY_TICK, horizon_slot=3))
     obj = sv.Objective(name="prospects_intelligence", expectation=sv.Expectation(category=sv.EXPECTATION_CATEGORY_JUDGED, horizon_slot=7))
     obj2 = sv.Objective(name="site_freshness")
-    sup = sv.Supervisor(project="gaius", processes=[p_task, p_cron, p_noexp], objectives=[obj, obj2])
+    sup = sv.Supervisor(project="gaius", processes=[p_task, p_cron, p_noexp, p_flow], objectives=[obj, obj2])
     assert declared_workflows(SimpleNamespace(supervisor=sup)) == {"task.x", "objective.prospects_intelligence"}
     assert declared_workflows(SimpleNamespace(supervisor=None)) is None
