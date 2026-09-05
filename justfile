@@ -591,3 +591,9 @@ k8s-cleanup:
 # (Qwen3.8-27B), from HX llm.generations. Read-only; never `uv run` beside the engine.
 throughput days="7":
     .devenv/state/venv/bin/python scripts/throughput_report.py --days {{days}}
+
+# Engine restart under policy (memory: gaius-controlled-restart-window). controlled = wait
+# for no publish slot, pause enqueuers, drain, restart, verify; free = a primary objective is
+# unmet so nothing is protected: restart now, verify. Add --objective NAME to verify it live.
+restart-window mode="controlled" *args="":
+    bash scripts/restart_window.sh --mode {{mode}} {{args}}
