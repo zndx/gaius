@@ -552,6 +552,19 @@ class GaiusServicer(GaiusServiceServicer):
                     status=_status_to_enum(ep.get("status", "stopped")),
                     port=ep.get("port", 0),
                 )
+                ceded = ep.get("ceded") if isinstance(ep, dict) else None
+                if isinstance(ceded, dict) and ceded:
+                    # (2026-09-06) intent ceded to a coordination Activity
+                    until_ms = int(ceded.get("until_ms") or 0)
+                    until = (
+                        datetime.fromtimestamp(until_ms / 1000, tz=timezone.utc).isoformat(timespec="seconds")
+                        if until_ms
+                        else "-"
+                    )
+                    endpoint.ceded = (
+                        f"{ceded.get('kind') or 'activity'} {ceded.get('activity_id') or ''} "
+                        f"({ceded.get('owner') or '?'}) until {until}"
+                    )
                 response.endpoints.append(endpoint)
                 seen_endpoints.add(alias)
 
@@ -9615,6 +9628,69 @@ class GaiusServicer(GaiusServiceServicer):
         except Exception as e:
             logger.exception("Backlog failed")
             return BacklogViewResponse(error=str(e))
+
+    async def Activities(self, request, context):
+        """/activities — coordination Activities as THIS engine learned them from
+        Signals (Scheduler/WatchActivities): peers' declared intent with a
+        lifetime, and which of our endpoints each one holds. (2026-09-06)"""
+        from ...generated import ActivitiesViewResponse, ActivityViewRow
+        from ...services.coordination import GURU_NOWATCHER, get_coordination
+
+        def _iso(ns: int) -> str:
+            if not ns:
+                return ""
+            return datetime.fromtimestamp(ns / 1e9, tz=timezone.utc).isoformat(timespec="seconds")
+
+        try:
+            co = get_coordination()
+            if co is None:
+                return ActivitiesViewResponse(
+                    error=(
+                        f"{GURU_NOWATCHER} coordination watcher not running "
+                        "(GAIUS_COORDINATION_WATCH=0 or the engine is still booting)\n"
+                        "  Try: /health\n"
+                        "  Or:  unset GAIUS_COORDINATION_WATCH and `just restart`"
+                    )
+                )
+            st = co.status()
+            held: dict[str, list[str]] = {}
+            for alias, aid in (st.get("ceded") or {}).items():
+                held.setdefault(aid, []).append(f"endpoint.{alias}")
+            resp = ActivitiesViewResponse(
+                watcher_connected=bool(st.get("connected")),
+                signals_target=str(st.get("target") or ""),
+                observed_at=_iso(int(st.get("observed_ms") or 0) * 1_000_000),
+                last_event_at=_iso(int(st.get("last_event_ms") or 0) * 1_000_000),
+            )
+            for a in co.snapshot(include_ended=bool(request.include_ended)):
+                if request.kind and a.get("kind") != request.kind:
+                    continue
+                if request.peer and a.get("peer") != request.peer:
+                    continue
+                row = ActivityViewRow(
+                    activity_id=str(a.get("activity_id") or ""),
+                    kind=str(a.get("kind") or ""),
+                    peer=str(a.get("peer") or ""),
+                    owner=str(a.get("owner") or ""),
+                    dag_id=str(a.get("dag_id") or ""),
+                    run_id=str(a.get("run_id") or ""),
+                    state=str(a.get("state") or ""),
+                    declared_at=_iso(int(a.get("declared_ns") or 0)),
+                    horizon_at=_iso(int(a.get("horizon_ns") or 0)),
+                    ended_at=_iso(int(a.get("ended_ns") or 0)),
+                    claims=[f"{c.get('leaf')}:{int(c.get('gpu') or 0)}" for c in (a.get("claims") or [])],
+                    precludes=[str(p) for p in (a.get("precludes") or [])],
+                    reason=str(a.get("reason") or ""),
+                    note=str(a.get("note") or ""),
+                    ceded=held.get(str(a.get("activity_id") or ""), []),
+                )
+                for k, v in (a.get("postures") or {}).items():
+                    row.postures[str(k)] = str(v)
+                resp.rows.append(row)
+            return resp
+        except Exception as e:  # noqa: BLE001 — in-band error, never a bare abort
+            logger.exception("Activities failed")
+            return ActivitiesViewResponse(error=f"#CO.00000005.VIEWFAIL {e}")
 
     async def NautilusStatus(self, request, context):
         """/nautilus status — the resident supervisor as the engine sees it: the

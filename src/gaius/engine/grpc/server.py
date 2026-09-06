@@ -92,6 +92,9 @@ class ServiceRegistry:
     # processor (live-run knowledge the directive handler consults).
     supervision_bus: Any = None
     scheduled_task_processor: Any = None
+    # (2026-09-06) Coordination Activities watcher (services.coordination): the
+    # engine's view of peers' declared intent, read by ServerQuery/Activities.
+    coordination: Any = None
 
     # Caught by #GR.00000005.UNKNOWNSVC on 2026-09-01: all four were
     # registered by server.py and silently dropped for want of a field —

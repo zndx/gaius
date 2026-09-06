@@ -112,6 +112,10 @@ message EndpointInfo {
   ProcessStatus status = 3;  // Endpoint process status
   repeated int32 gpu_ids = 4;
   int32 port = 5;
+  // (2026-09-06) non-empty when the endpoint's INTENT is ceded to a coordination
+  // Activity: "<kind> <activity_id> (<peer>:<owner>) until <ISO>". The process
+  // may still be serving; the engine just does not chase it.
+  string ceded = 6;
 }
 
 message StartEndpointRequest {
@@ -3772,6 +3776,10 @@ service GaiusService {
   // engine's own supervision_sessions.
   rpc Backlog(BacklogViewRequest) returns (BacklogViewResponse);
   rpc NautilusStatus(NautilusStatusRequest) returns (NautilusStatusResponse);
+  // (2026-09-06) Coordination Activities — inter-project intent with a lifetime
+  // (a peer's declared run in the Signals Airflow) as THIS engine learned it
+  // over Scheduler/WatchActivities. The CLI reads here; it never dials Signals.
+  rpc Activities(ActivitiesViewRequest) returns (ActivitiesViewResponse);
 }
 
 message OverwatchStatusRequest {}
@@ -3984,4 +3992,39 @@ message NautilusStatusResponse {
   bool supervisor_stale = 6;          // filled_at older than 2x the poll (#SV.00000011.NOSUPERVISOR)
   string bus = 7;                     // engine bus stats (JSON): seq, subscribers, dropped
   string error = 8;
+}
+
+// (2026-09-06) /activities — the engine's view of coordination Activities.
+message ActivitiesViewRequest {
+  bool include_ended = 1;       // also the terminal ones Signals still shows (trailing window)
+  string kind = 2;              // "" = every kind
+  string peer = 3;              // "" = every peer
+}
+
+message ActivityViewRow {
+  string activity_id = 1;
+  string kind = 2;              // interactive_session | curation_window | restart_window | maintenance_pause | …
+  string peer = 3;              // declaring project
+  string owner = 4;             // the declarer within the peer
+  string dag_id = 5;
+  string run_id = 6;
+  string state = 7;             // queued|running|released|expired|failed|superseded
+  string declared_at = 8;       // ISO-8601
+  string horizon_at = 9;
+  string ended_at = 10;
+  repeated string claims = 11;  // "<leaf>:<gpu>"
+  repeated string precludes = 12;
+  map<string, string> postures = 13;
+  string reason = 14;
+  string note = 15;
+  repeated string ceded = 16;   // this engine's process ids held by it (endpoint.<alias>)
+}
+
+message ActivitiesViewResponse {
+  repeated ActivityViewRow rows = 1;
+  bool watcher_connected = 2;   // the engine's WatchActivities stream is live
+  string signals_target = 3;
+  string observed_at = 4;       // Signals' observed_ns of the current view (ISO-8601)
+  string last_event_at = 5;     // when this engine last heard from Signals
+  string error = 6;
 }

@@ -108,11 +108,18 @@ class WorkloadProfilePublisher:
             status = {}
         eps = status.get("endpoints") or {}
         evicted = set(getattr(orch, "_evicted_endpoints", set()) or set())
+        # (2026-09-06) An endpoint whose intent is CEDED to a coordination
+        # Activity (a peer's declared run; posture hold-uptime) leaves the
+        # intended set exactly like an eviction: its absence is expected, never
+        # a miss for the watchdog to act on. A healthy ceded endpoint may still
+        # be serving — that is fine; it is simply not intended.
+        ceded = set((getattr(orch, "_ceded", {}) or {}).keys())
+        withheld = evicted | ceded
 
         intents: list[dict] = []
         seen: set[str] = set()
         for alias, ep in eps.items():
-            if alias in evicted or not isinstance(ep, dict):
+            if alias in withheld or not isinstance(ep, dict):
                 continue
             st = str(ep.get("status") or "")
             if _map_actual(st) == STATUS_FAILED and st.lower().replace(
@@ -136,7 +143,7 @@ class WorkloadProfilePublisher:
             seen.add(alias)
 
         for alias in self._baseline_aliases():
-            if alias in evicted or alias in seen:
+            if alias in withheld or alias in seen:
                 continue
             port = int(os.environ.get("GAIUS_THINKING_PORT", "8081")) if alias == "thinking" else 0
             intents.append(
@@ -154,12 +161,15 @@ class WorkloadProfilePublisher:
         return intents
 
     def snapshot(self) -> dict:
+        ceded = getattr(self.orchestrator, "_ceded", {}) or {}
         return {
             "phase": self.phase,
             "generation": self.generation,
             "settled_at_ms": self.settled_at_ms,
             "detail": self.detail,
             "intents": self.compute_intents(),
+            # aliases withheld from the intended set by a coordination Activity
+            "ceded": sorted(ceded.keys()),
         }
 
     # ── fanout ────────────────────────────────────────────────────────────────

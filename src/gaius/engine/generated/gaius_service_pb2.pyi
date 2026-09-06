@@ -213,18 +213,20 @@ class GPUAllocation(_message.Message):
     def __init__(self, agent_alias: _Optional[str] = ..., model: _Optional[str] = ..., gpu_ids: _Optional[_Iterable[int]] = ..., vram_reserved_gb: _Optional[float] = ...) -> None: ...
 
 class EndpointInfo(_message.Message):
-    __slots__ = ("name", "model", "status", "gpu_ids", "port")
+    __slots__ = ("name", "model", "status", "gpu_ids", "port", "ceded")
     NAME_FIELD_NUMBER: _ClassVar[int]
     MODEL_FIELD_NUMBER: _ClassVar[int]
     STATUS_FIELD_NUMBER: _ClassVar[int]
     GPU_IDS_FIELD_NUMBER: _ClassVar[int]
     PORT_FIELD_NUMBER: _ClassVar[int]
+    CEDED_FIELD_NUMBER: _ClassVar[int]
     name: str
     model: str
     status: ProcessStatus
     gpu_ids: _containers.RepeatedScalarFieldContainer[int]
     port: int
-    def __init__(self, name: _Optional[str] = ..., model: _Optional[str] = ..., status: _Optional[_Union[ProcessStatus, str]] = ..., gpu_ids: _Optional[_Iterable[int]] = ..., port: _Optional[int] = ...) -> None: ...
+    ceded: str
+    def __init__(self, name: _Optional[str] = ..., model: _Optional[str] = ..., status: _Optional[_Union[ProcessStatus, str]] = ..., gpu_ids: _Optional[_Iterable[int]] = ..., port: _Optional[int] = ..., ceded: _Optional[str] = ...) -> None: ...
 
 class StartEndpointRequest(_message.Message):
     __slots__ = ("endpoint_name",)
@@ -5631,3 +5633,72 @@ class NautilusStatusResponse(_message.Message):
     bus: str
     error: str
     def __init__(self, connected: bool = ..., session: _Optional[_Union[NautilusSessionRow, _Mapping]] = ..., supervisor_status: _Optional[str] = ..., supervisor_epoch: _Optional[str] = ..., supervisor_filled_at: _Optional[str] = ..., supervisor_stale: bool = ..., bus: _Optional[str] = ..., error: _Optional[str] = ...) -> None: ...
+
+class ActivitiesViewRequest(_message.Message):
+    __slots__ = ("include_ended", "kind", "peer")
+    INCLUDE_ENDED_FIELD_NUMBER: _ClassVar[int]
+    KIND_FIELD_NUMBER: _ClassVar[int]
+    PEER_FIELD_NUMBER: _ClassVar[int]
+    include_ended: bool
+    kind: str
+    peer: str
+    def __init__(self, include_ended: bool = ..., kind: _Optional[str] = ..., peer: _Optional[str] = ...) -> None: ...
+
+class ActivityViewRow(_message.Message):
+    __slots__ = ("activity_id", "kind", "peer", "owner", "dag_id", "run_id", "state", "declared_at", "horizon_at", "ended_at", "claims", "precludes", "postures", "reason", "note", "ceded")
+    class PosturesEntry(_message.Message):
+        __slots__ = ("key", "value")
+        KEY_FIELD_NUMBER: _ClassVar[int]
+        VALUE_FIELD_NUMBER: _ClassVar[int]
+        key: str
+        value: str
+        def __init__(self, key: _Optional[str] = ..., value: _Optional[str] = ...) -> None: ...
+    ACTIVITY_ID_FIELD_NUMBER: _ClassVar[int]
+    KIND_FIELD_NUMBER: _ClassVar[int]
+    PEER_FIELD_NUMBER: _ClassVar[int]
+    OWNER_FIELD_NUMBER: _ClassVar[int]
+    DAG_ID_FIELD_NUMBER: _ClassVar[int]
+    RUN_ID_FIELD_NUMBER: _ClassVar[int]
+    STATE_FIELD_NUMBER: _ClassVar[int]
+    DECLARED_AT_FIELD_NUMBER: _ClassVar[int]
+    HORIZON_AT_FIELD_NUMBER: _ClassVar[int]
+    ENDED_AT_FIELD_NUMBER: _ClassVar[int]
+    CLAIMS_FIELD_NUMBER: _ClassVar[int]
+    PRECLUDES_FIELD_NUMBER: _ClassVar[int]
+    POSTURES_FIELD_NUMBER: _ClassVar[int]
+    REASON_FIELD_NUMBER: _ClassVar[int]
+    NOTE_FIELD_NUMBER: _ClassVar[int]
+    CEDED_FIELD_NUMBER: _ClassVar[int]
+    activity_id: str
+    kind: str
+    peer: str
+    owner: str
+    dag_id: str
+    run_id: str
+    state: str
+    declared_at: str
+    horizon_at: str
+    ended_at: str
+    claims: _containers.RepeatedScalarFieldContainer[str]
+    precludes: _containers.RepeatedScalarFieldContainer[str]
+    postures: _containers.ScalarMap[str, str]
+    reason: str
+    note: str
+    ceded: _containers.RepeatedScalarFieldContainer[str]
+    def __init__(self, activity_id: _Optional[str] = ..., kind: _Optional[str] = ..., peer: _Optional[str] = ..., owner: _Optional[str] = ..., dag_id: _Optional[str] = ..., run_id: _Optional[str] = ..., state: _Optional[str] = ..., declared_at: _Optional[str] = ..., horizon_at: _Optional[str] = ..., ended_at: _Optional[str] = ..., claims: _Optional[_Iterable[str]] = ..., precludes: _Optional[_Iterable[str]] = ..., postures: _Optional[_Mapping[str, str]] = ..., reason: _Optional[str] = ..., note: _Optional[str] = ..., ceded: _Optional[_Iterable[str]] = ...) -> None: ...
+
+class ActivitiesViewResponse(_message.Message):
+    __slots__ = ("rows", "watcher_connected", "signals_target", "observed_at", "last_event_at", "error")
+    ROWS_FIELD_NUMBER: _ClassVar[int]
+    WATCHER_CONNECTED_FIELD_NUMBER: _ClassVar[int]
+    SIGNALS_TARGET_FIELD_NUMBER: _ClassVar[int]
+    OBSERVED_AT_FIELD_NUMBER: _ClassVar[int]
+    LAST_EVENT_AT_FIELD_NUMBER: _ClassVar[int]
+    ERROR_FIELD_NUMBER: _ClassVar[int]
+    rows: _containers.RepeatedCompositeFieldContainer[ActivityViewRow]
+    watcher_connected: bool
+    signals_target: str
+    observed_at: str
+    last_event_at: str
+    error: str
+    def __init__(self, rows: _Optional[_Iterable[_Union[ActivityViewRow, _Mapping]]] = ..., watcher_connected: bool = ..., signals_target: _Optional[str] = ..., observed_at: _Optional[str] = ..., last_event_at: _Optional[str] = ..., error: _Optional[str] = ...) -> None: ...

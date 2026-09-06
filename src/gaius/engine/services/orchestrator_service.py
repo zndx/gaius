@@ -209,6 +209,14 @@ class OrchestratorService:
         # conflicting with workload-managed restore.
         self._evicted_endpoints: set[str] = set()
 
+        # (2026-09-06) Endpoints whose INTENT is ceded to a coordination Activity
+        # (a peer's declared run in the Signals Airflow, posture
+        # `gaius.endpoint.<alias>: hold-uptime`): alias → {owner, activity_id,
+        # kind, until_ms, since_ms}. A ceded endpoint is not chased — no
+        # auto-restart, no unmet intent in the workload profile — but a healthy
+        # one keeps serving. Written only by services.coordination.
+        self._ceded: dict[str, dict[str, Any]] = {}
+
         # Intended workload-profile publisher — the live desired-vs-actual serving
         # set streamed over Engine/WatchWorkload for the out-of-band watchdog. The
         # @_publishes_transition-decorated begin_workload/complete_workload bracket
@@ -460,6 +468,61 @@ class OrchestratorService:
         except YkAdmitError:
             return
         apply_and_admit(capability_workload_id(agent_alias), kind)
+
+    # ── coordination cession (2026-09-06) ────────────────────────────────────
+    def cede_endpoint(
+        self,
+        alias: str,
+        *,
+        owner: str,
+        activity_id: str,
+        horizon_ns: int,
+        kind: str = "",
+    ) -> None:
+        """Cede ``alias``'s intent to a coordination Activity until its horizon.
+
+        The endpoint is left exactly as it is (a healthy one keeps serving); what
+        changes is what the engine CHASES: auto-restart holds and the workload
+        profile stops carrying the intent, so no supervisor sees a miss.
+        """
+        rec = {
+            "owner": owner,
+            "activity_id": activity_id,
+            "kind": kind,
+            "until_ms": int(horizon_ns) // 1_000_000,
+            "since_ms": int(time.time() * 1000),
+        }
+        prev = self._ceded.get(alias)
+        self._ceded[alias] = rec
+        if prev is None or prev.get("activity_id") != activity_id:
+            logger.info(
+                "Ceding endpoint %s to %s %s (%s) until %s — auto-restart held, intent withdrawn",
+                alias, kind or "activity", activity_id, owner,
+                datetime.fromtimestamp(rec["until_ms"] / 1000).isoformat(timespec="seconds") if rec["until_ms"] else "-",
+            )
+            wp = getattr(self, "_workload_profile", None)
+            if wp is not None:
+                wp.settle(f"ceded {alias} to {kind or 'activity'} {activity_id}")
+
+    def restore_endpoint(self, alias: str, *, activity_id: str = "") -> bool:
+        """Undo ``cede_endpoint`` (the Activity ended). Returns True if a cession was lifted."""
+        rec = self._ceded.get(alias)
+        if rec is None:
+            return False
+        if activity_id and rec.get("activity_id") != activity_id:
+            return False
+        del self._ceded[alias]
+        logger.info("Restored intent for endpoint %s (activity %s ended)", alias, rec.get("activity_id"))
+        wp = getattr(self, "_workload_profile", None)
+        if wp is not None:
+            wp.settle(f"restored {alias} after {rec.get('kind') or 'activity'} {rec.get('activity_id')}")
+        return True
+
+    def ceded_endpoints(self) -> dict[str, dict[str, Any]]:
+        return {k: dict(v) for k, v in self._ceded.items()}
+
+    def is_ceded(self, alias: str) -> bool:
+        return alias in self._ceded
 
     async def stop_endpoint(self, agent_alias: str) -> bool:
         """Stop an inference endpoint.
@@ -2520,6 +2583,19 @@ class OrchestratorService:
         if not self._auto_restart_enabled:
             return
 
+        # (2026-09-06) Intent ceded to a coordination Activity: do not chase.
+        # The peer that declared it (e.g. Hermes's interactive session) owns
+        # the lane until the horizon; the watcher restores intent when it ends.
+        ceded = self._ceded.get(alias)
+        if ceded:
+            logger.info(
+                "Hold auto-restart of %s: intent ceded to %s %s (%s) until %s",
+                alias, ceded.get("kind") or "activity", ceded.get("activity_id"), ceded.get("owner"),
+                datetime.fromtimestamp(int(ceded.get("until_ms") or 0) / 1000).isoformat(timespec="seconds")
+                if ceded.get("until_ms") else "-",
+            )
+            return
+
         live = self.get_endpoint_status(alias)
         if live and (live.status or "").lower() in {
             "starting",
@@ -3017,11 +3093,14 @@ class OrchestratorService:
                 "startup_message": message,
                 "requests_served": proc.requests_served,
                 "capabilities": list(agent.capabilities) if agent else [],
+                # (2026-09-06) intent ceded to a coordination Activity, else None
+                "ceded": dict(self._ceded[alias]) if alias in self._ceded else None,
             }
 
         return {
             "running": self._running,
             "endpoints": endpoints,
+            "ceded": {k: dict(v) for k, v in self._ceded.items()},
             "total_running": sum(
                 1
                 for p in self._vllm._processes.values()

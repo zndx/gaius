@@ -66,6 +66,7 @@ class GaiusEngine:
 
         # Orchestrator service for endpoint management
         self._orchestrator_service = None
+        self._coordination = None  # services.coordination.CoordinationWatcher (2026-09-06)
 
         # Evolution daemon
         self._evolution_daemon = None
@@ -337,6 +338,25 @@ class GaiusEngine:
 
         # 7. Start background tasks
         self._health_task = asyncio.create_task(self._health_broadcast_loop())
+
+        # (2026-09-06) Coordination Activities: the engine is the peer that
+        # watches Signals (Scheduler/WatchActivities) for inter-project intent
+        # and cedes endpoints to it; local processes read the view from THIS
+        # engine. Fail-open: a dark or older Signals never gates the boot.
+        try:
+            if os.environ.get("GAIUS_COORDINATION_WATCH", "1").lower() in ("0", "false", "no", "off"):
+                logger.info("Coordination watcher disabled (GAIUS_COORDINATION_WATCH=0)")
+            else:
+                from .services.coordination import init_coordination
+                from .services.supervision_bus import get_bus
+
+                self._coordination = init_coordination(self._orchestrator_service, get_bus())
+                self._coordination.start()
+                if self._grpc_server is not None:
+                    self._grpc_server.update_service("coordination", self._coordination)
+                logger.info("Coordination watcher started (Signals %s)", self._coordination.target)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("Coordination watcher not started: %s", e)
         try:
             from .services.cognition_waterfall import start_strip
 
@@ -1666,6 +1686,12 @@ class GaiusEngine:
                 await self._health_task
             except asyncio.CancelledError:
                 pass
+        coord = getattr(self, "_coordination", None)
+        if coord is not None:
+            try:
+                await coord.stop()
+            except Exception:  # noqa: BLE001
+                logger.debug("coordination watcher stop skipped", exc_info=True)
 
         # Stop all daemons via registry (in reverse dependency order)
         if self._daemon_registry:

@@ -890,6 +890,44 @@ def assert_host_envelope(
         )
 
 
+GURU_PRECLUDED = "#YK.00000012.PRECLUDED"
+
+
+def assert_not_precluded(rc: ResourceClass, kind: str, workload_id: str) -> None:
+    """A RUNNING coordination Activity may preclude admission into a leaf.
+
+    (2026-09-06) Peers declare Activities in the Signals Airflow; the engine's
+    coordination watcher mirrors them. When one names ``rc.queue`` in its
+    ``precludes[]`` this class is DEFERRED (the cadence retries) — the same
+    booking as YuniKorn backpressure, never a failure. Leaves not named keep
+    admitting: light and medium sentinels continue unless the Activity says
+    otherwise. Only the engine process has the watcher; a child flow sees no
+    view and admits as before.
+    """
+    try:
+        from gaius.engine.services.coordination import get_coordination
+
+        co = get_coordination()
+    except Exception:  # noqa: BLE001 — the watcher is optional plumbing
+        return
+    if co is None:
+        return
+    act = co.precluding_activity(rc.queue)
+    if not act:
+        return
+    until = int(act.get("horizon_ns") or 0)
+    until_s = (
+        time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(until / 1e9)) if until else "-"
+    )
+    raise YkAdmitError(
+        GURU_PRECLUDED,
+        f"leaf {rc.queue} is precluded for {kind} ({workload_id}) by coordination "
+        f"activity {act.get('kind')} {act.get('activity_id')} "
+        f"({act.get('peer')}:{act.get('owner')}) until {until_s} — a deferral; "
+        "the cadence retries when the activity ends. See /activities",
+    )
+
+
 def apply_and_admit(
     workload_id: str,
     kind: str,
@@ -905,6 +943,7 @@ def apply_and_admit(
     rc = resource_class_for(kind)
     if timeout_s is None:
         timeout_s = GPU_ADMIT_TIMEOUT_S if rc.gpu_tokens else CPU_ADMIT_TIMEOUT_S
+    assert_not_precluded(rc, kind, workload_id)
     assert_host_envelope(disk_paths=disk_paths_for(kind))
     required = federation_required()
     if not sentinels_enabled():

@@ -42,6 +42,8 @@ KIND_OBJECTIVE = "objective"
 KIND_INCIDENT = "incident"
 KIND_SERVING = "serving"
 KIND_DIRECTIVE_RESULT = "directive_result"
+# (2026-09-06) Coordination Activities as the LOCAL engine saw them (→ ActivityEvent).
+KIND_ACTIVITY = "activity"
 
 
 def now_ms() -> int:

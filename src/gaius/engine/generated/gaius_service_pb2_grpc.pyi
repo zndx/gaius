@@ -387,6 +387,11 @@ class GaiusServiceStub:
     engine's own supervision_sessions.
     """
     NautilusStatus: grpc.UnaryUnaryMultiCallable[gaius_service_pb2.NautilusStatusRequest, gaius_service_pb2.NautilusStatusResponse]
+    Activities: grpc.UnaryUnaryMultiCallable[gaius_service_pb2.ActivitiesViewRequest, gaius_service_pb2.ActivitiesViewResponse]
+    """(2026-09-06) Coordination Activities — inter-project intent with a lifetime
+    (a peer's declared run in the Signals Airflow) as THIS engine learned it
+    over Scheduler/WatchActivities. The CLI reads here; it never dials Signals.
+    """
 
 @typing.type_check_only
 class GaiusServiceAsyncStub(GaiusServiceStub):
@@ -747,6 +752,11 @@ class GaiusServiceAsyncStub(GaiusServiceStub):
     engine's own supervision_sessions.
     """
     NautilusStatus: grpc.aio.UnaryUnaryMultiCallable[gaius_service_pb2.NautilusStatusRequest, gaius_service_pb2.NautilusStatusResponse]  # type: ignore[assignment]
+    Activities: grpc.aio.UnaryUnaryMultiCallable[gaius_service_pb2.ActivitiesViewRequest, gaius_service_pb2.ActivitiesViewResponse]  # type: ignore[assignment]
+    """(2026-09-06) Coordination Activities — inter-project intent with a lifetime
+    (a peer's declared run in the Signals Airflow) as THIS engine learned it
+    over Scheduler/WatchActivities. The CLI reads here; it never dials Signals.
+    """
 
 class GaiusServiceServicer(metaclass=abc.ABCMeta):
     @abc.abstractmethod
@@ -2082,5 +2092,16 @@ class GaiusServiceServicer(metaclass=abc.ABCMeta):
         request: gaius_service_pb2.NautilusStatusRequest,
         context: _ServicerContext,
     ) -> typing.Union[gaius_service_pb2.NautilusStatusResponse, collections.abc.Awaitable[gaius_service_pb2.NautilusStatusResponse]]: ...
+
+    @abc.abstractmethod
+    def Activities(
+        self,
+        request: gaius_service_pb2.ActivitiesViewRequest,
+        context: _ServicerContext,
+    ) -> typing.Union[gaius_service_pb2.ActivitiesViewResponse, collections.abc.Awaitable[gaius_service_pb2.ActivitiesViewResponse]]:
+        """(2026-09-06) Coordination Activities — inter-project intent with a lifetime
+        (a peer's declared run in the Signals Airflow) as THIS engine learned it
+        over Scheduler/WatchActivities. The CLI reads here; it never dials Signals.
+        """
 
 def add_GaiusServiceServicer_to_server(servicer: GaiusServiceServicer, server: typing.Union[grpc.Server, grpc.aio.Server]) -> None: ...

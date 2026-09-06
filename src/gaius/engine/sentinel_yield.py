@@ -129,7 +129,20 @@ async def yield_workload(services: Any, request: zpb.YieldRequest) -> zpb.YieldR
     alias = alias_for_workload(wid)
     orch = getattr(services, "orchestrator_service", None)
     if alias and orch is not None:
+        # (2026-09-06) A Yield of a baseline endpoint is an ENGINE-INITIATED
+        # eviction: mark it so the workload profile drops the intent. Before
+        # this, a yielded thinking read as "intended, not serving" and the root
+        # watchdog recycled the whole unit after its grace (the 21:34 kill-loop).
+        evicted = getattr(orch, "_evicted_endpoints", None)
+        if isinstance(evicted, set):
+            evicted.add(alias)
         stopped = await orch.stop_endpoint(alias)
+        wp = getattr(orch, "_workload_profile", None)
+        if wp is not None:
+            try:
+                wp.settle(f"yield {wid} evicted {alias}")
+            except Exception:  # noqa: BLE001 — bookkeeping
+                log.debug("workload profile settle after yield skipped", exc_info=True)
         import asyncio as _aio
 
         await _aio.to_thread(delete_flow_sentinel, wid)  # off-loop (kubectl delete)

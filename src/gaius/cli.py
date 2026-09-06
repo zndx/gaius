@@ -215,6 +215,8 @@ class GaiusCLI:
                     result["data"] = self._run_async(self._cmd_backlog(args))
                 elif command == "nautilus":
                     result["data"] = self._run_async(self._cmd_nautilus(args))
+                elif command == "activities":
+                    result["data"] = self._run_async(self._cmd_activities(args))
                 # Inference management (high-level)
                 elif command == "inference" or command == "inf":
                     result["data"] = self._run_async(self._cmd_inference(args))
@@ -4134,6 +4136,48 @@ Respond with:
         data["backlog"] = render_backlog(
             data.get("rows", []), filled_at=data.get("filled_at") or "",
             supervisor_connected=data.get("supervisor_connected"),
+        )
+        return data
+
+    async def _cmd_activities(self, args: str) -> dict:
+        """Coordination Activities: inter-project intent with a lifetime (a peer's
+        declared run in the Signals Airflow) as THIS engine learned it from
+        Signals — and which of our endpoints each one holds. Engine-First: the
+        CLI never dials Signals or Airflow.
+
+        Usage:
+            /activities                - activities in force (queued/running)
+            /activities --all          - also the ones that ended recently
+            /activities <kind>         - one kind (e.g. interactive_session)
+            /activities --peer hermes  - one declaring project
+        """
+        parts = args.split() if args else []
+        include_ended = "--all" in parts
+        peer = ""
+        if "--peer" in parts:
+            i = parts.index("--peer")
+            peer = parts[i + 1] if i + 1 < len(parts) else ""
+            parts = parts[:i] + parts[i + 2:]
+        kind = next((p for p in parts if not p.startswith("--")), "")
+        try:
+            client = await self._get_engine_client_cached()
+        except Exception as e:
+            return {
+                "error": f"Failed to connect to engine: {e}",
+                "suggestion": "Run: systemctl restart gaius",
+            }
+        data = await client.call(
+            "Activities", "view", {"include_ended": include_ended, "kind": kind, "peer": peer}
+        )
+        if "error" in data:
+            return data
+        from gaius.cli_render.activities import render_activities
+
+        data["activities"] = render_activities(
+            data.get("rows", []),
+            watcher_connected=data.get("watcher_connected"),
+            signals_target=data.get("signals_target") or "",
+            last_event_at=data.get("last_event_at") or "",
         )
         return data
 

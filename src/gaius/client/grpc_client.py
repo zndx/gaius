@@ -987,8 +987,54 @@ class GrpcEngineClient:
             return await self._call_backlog(action, params, timeout)
         elif service == "Nautilus":
             return await self._call_nautilus(action, params, timeout)
+        elif service == "Activities":
+            return await self._call_activities(action, params, timeout)
         else:
             raise ValueError(f"Unknown service: {service}")
+
+    async def _call_activities(self, action: str, params: dict, timeout: float) -> dict:
+        """Coordination Activities as the engine learned them from Signals (2026-09-06)."""
+        from ..engine.generated import ActivitiesViewRequest
+
+        if action != "view":
+            raise ValueError(f"Unknown Activities action: {action}")
+        response = await self._stub.Activities(
+            ActivitiesViewRequest(
+                include_ended=bool(params.get("include_ended", False)),
+                kind=str(params.get("kind") or ""),
+                peer=str(params.get("peer") or ""),
+            ),
+            timeout=timeout,
+        )
+        if response.error:
+            return {"error": response.error}
+        return {
+            "rows": [
+                {
+                    "activity_id": r.activity_id,
+                    "kind": r.kind,
+                    "peer": r.peer,
+                    "owner": r.owner,
+                    "dag_id": r.dag_id,
+                    "run_id": r.run_id,
+                    "state": r.state,
+                    "declared_at": r.declared_at or None,
+                    "horizon_at": r.horizon_at or None,
+                    "ended_at": r.ended_at or None,
+                    "claims": list(r.claims),
+                    "precludes": list(r.precludes),
+                    "postures": dict(r.postures),
+                    "reason": r.reason,
+                    "note": r.note or None,
+                    "ceded": list(r.ceded),
+                }
+                for r in response.rows
+            ],
+            "watcher_connected": response.watcher_connected,
+            "signals_target": response.signals_target,
+            "observed_at": response.observed_at or None,
+            "last_event_at": response.last_event_at or None,
+        }
 
     async def _call_backlog(self, action: str, params: dict, timeout: float) -> dict:
         """Operations Backlog view (2026-09-04): one row per workflow, ten slots."""

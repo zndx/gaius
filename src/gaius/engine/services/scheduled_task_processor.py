@@ -229,6 +229,7 @@ class ScheduledTaskProcessor(BaseDaemon):
         from gaius.engine.sentinel_claim import (
             GURU_ENVELOPE,
             GURU_NOTADMITTED,
+            GURU_PRECLUDED,
             YkAdmitError,
             apply_and_admit,
             bind_workload_id,
@@ -276,6 +277,24 @@ class ScheduledTaskProcessor(BaseDaemon):
             # block the engine's event loop.
             await asyncio.to_thread(apply_and_admit, wid, kind)
         except YkAdmitError as e:
+            if GURU_PRECLUDED in str(e):
+                # (2026-09-06) A RUNNING coordination Activity (a peer's declared
+                # run in the Signals Airflow) precludes this class's leaf. A
+                # declared deferral — not a timeout, not a failure; the cadence
+                # retries once the activity ends. No admit-timeout forecast: no
+                # window was waited out.
+                logger.warning(
+                    "%s deferred: %s's leaf precluded by a coordination activity — "
+                    "next cadence tick retries (%s)",
+                    log_prefix, kind, str(e)[:200].replace("\n", " "),
+                )
+                await asyncio.to_thread(delete_flow_sentinel, wid)
+                return {
+                    "status": "deferred",
+                    "reason": "yk_precluded",
+                    "error": str(e)[:300],
+                    "workload_id": wid,
+                }
             logger.error(f"{log_prefix} YK admit failed: {e}")
             await asyncio.to_thread(delete_flow_sentinel, wid)
             # Efficacy ledger (timeout doctrine): the admission timeout is
@@ -512,6 +531,18 @@ class ScheduledTaskProcessor(BaseDaemon):
                 return {
                     "status": "deferred",
                     "reason": "yk_admission",
+                    "workload_id": wid,
+                    "returncode": retcode,
+                    "last_lines": output_lines[-10:],
+                }
+            if "#YK.00000012.PRECLUDED" in tail:
+                logger.warning(
+                    f"{log_prefix} deferred: leaf precluded by a coordination "
+                    f"activity — next cadence tick retries"
+                )
+                return {
+                    "status": "deferred",
+                    "reason": "yk_precluded",
                     "workload_id": wid,
                     "returncode": retcode,
                     "last_lines": output_lines[-10:],

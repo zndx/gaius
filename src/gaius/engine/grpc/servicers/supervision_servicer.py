@@ -34,6 +34,7 @@ from grpc import aio
 from gaius.engine.generated.zndx.supervision.v1 import supervision_pb2 as sv
 from gaius.engine.generated.zndx.supervision.v1 import supervision_pb2_grpc as sv_grpc
 from gaius.engine.services.supervision_bus import (
+    KIND_ACTIVITY,
     KIND_ADMISSION,
     KIND_DIRECTIVE_RESULT,
     KIND_INCIDENT,
@@ -158,6 +159,19 @@ def event_to_proto(ev: SupervisionEvent, epoch: str) -> sv.EngineEvent:
         ))
     elif ev.kind == KIND_GOODBYE:
         out.goodbye.CopyFrom(sv.Goodbye(reason=int(p.get("reason") or sv.GOODBYE_REASON_UNSPECIFIED), note=str(p.get("note") or "")))
+    elif ev.kind == KIND_ACTIVITY:
+        # (2026-09-06) A coordination Activity as THIS engine saw it: flattened
+        # mirror of zndx.engine.v1.Activity; `ceded` names our process ids held.
+        # The bus's `kind` is the event kind; the activity's kind rides as
+        # `activity_kind` (identical payload shape on the Hermes engine).
+        out.activity.CopyFrom(sv.ActivityEvent(
+            activity_id=str(p.get("activity_id") or ""), kind=str(p.get("activity_kind") or ""), peer=str(p.get("peer") or ""),
+            owner=str(p.get("owner") or ""), dag_id=str(p.get("dag_id") or ""), run_id=str(p.get("run_id") or ""),
+            state=str(p.get("state") or ""), declared_ns=int(p.get("declared_ns") or 0), horizon_ns=int(p.get("horizon_ns") or 0),
+            ended_ns=int(p.get("ended_ns") or 0), precludes=[str(x) for x in (p.get("precludes") or [])],
+            postures={str(k): str(v) for k, v in (p.get("postures") or {}).items()}, reason=str(p.get("reason") or "")[:500],
+            transition=str(p.get("transition") or ""), ceded=[str(x) for x in (p.get("ceded") or [])],
+        ))
     return out
 
 

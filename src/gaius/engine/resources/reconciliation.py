@@ -1122,6 +1122,18 @@ async def remediate(
                 f"evicted by active workload (will be restored on completion)"
             )
             return None
+        # (2026-09-06) Intent ceded to a coordination Activity (a peer's declared
+        # run in the Signals Airflow, posture hold-uptime): not chased here
+        # either — the coordination watcher restores intent when it ends.
+        ceded = getattr(orchestrator_service, "_ceded", {}) or {}
+        if obs.name in ceded:
+            rec = ceded[obs.name] or {}
+            logger.info(
+                "Skipping remediation for %s: intent ceded to %s %s (%s) until %s",
+                obs.name, rec.get("kind") or "activity", rec.get("activity_id"), rec.get("owner"),
+                rec.get("until_ms"),
+            )
+            return None
         logger.info(f"Remediating unhealthy endpoint {obs.name}")
         return await remediate_unhealthy(obs, orchestrator_service)
 

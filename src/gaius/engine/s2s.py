@@ -796,6 +796,16 @@ def local_response(
         resp.posture.CopyFrom(build_source_posture(root, project=resp.project))
     if kind == zpb.SERVER_QUERY_KIND_PRODUCTS:
         resp.products.extend(declared_products(peer=resp.project))
+    if kind == zpb.SERVER_QUERY_KIND_ACTIVITIES:
+        # (2026-09-06) Coordination Activities as THIS engine learned them from
+        # Signals (Scheduler/WatchActivities). Local processes and the resident
+        # read here; they never dial Signals or Airflow. No watcher → empty,
+        # honest.
+        from .services.coordination import dict_to_proto, get_coordination
+
+        co = get_coordination()
+        if co is not None:
+            resp.activities.extend(dict_to_proto(a) for a in co.snapshot())
     # SCHEDULES: empty until the catalog lands (P3). Honest, not invented.
     return resp
 

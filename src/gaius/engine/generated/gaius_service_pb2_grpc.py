@@ -850,6 +850,11 @@ class GaiusServiceStub(object):
                 request_serializer=gaius__service__pb2.NautilusStatusRequest.SerializeToString,
                 response_deserializer=gaius__service__pb2.NautilusStatusResponse.FromString,
                 _registered_method=True)
+        self.Activities = channel.unary_unary(
+                '/gaius.engine.GaiusService/Activities',
+                request_serializer=gaius__service__pb2.ActivitiesViewRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.ActivitiesViewResponse.FromString,
+                _registered_method=True)
 
 
 class GaiusServiceServicer(object):
@@ -1988,6 +1993,15 @@ class GaiusServiceServicer(object):
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def Activities(self, request, context):
+        """(2026-09-06) Coordination Activities — inter-project intent with a lifetime
+        (a peer's declared run in the Signals Airflow) as THIS engine learned it
+        over Scheduler/WatchActivities. The CLI reads here; it never dials Signals.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
 
 def add_GaiusServiceServicer_to_server(servicer, server):
     rpc_method_handlers = {
@@ -2805,6 +2819,11 @@ def add_GaiusServiceServicer_to_server(servicer, server):
                     servicer.NautilusStatus,
                     request_deserializer=gaius__service__pb2.NautilusStatusRequest.FromString,
                     response_serializer=gaius__service__pb2.NautilusStatusResponse.SerializeToString,
+            ),
+            'Activities': grpc.unary_unary_rpc_method_handler(
+                    servicer.Activities,
+                    request_deserializer=gaius__service__pb2.ActivitiesViewRequest.FromString,
+                    response_serializer=gaius__service__pb2.ActivitiesViewResponse.SerializeToString,
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
@@ -7208,6 +7227,33 @@ class GaiusService(object):
             '/gaius.engine.GaiusService/NautilusStatus',
             gaius__service__pb2.NautilusStatusRequest.SerializeToString,
             gaius__service__pb2.NautilusStatusResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def Activities(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/gaius.engine.GaiusService/Activities',
+            gaius__service__pb2.ActivitiesViewRequest.SerializeToString,
+            gaius__service__pb2.ActivitiesViewResponse.FromString,
             options,
             channel_credentials,
             insecure,
