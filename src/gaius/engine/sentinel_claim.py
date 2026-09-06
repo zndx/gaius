@@ -158,6 +158,14 @@ RATE_METERED = ResourceClass(
     max_applications=4,
 )
 
+# Pay-per-token APIs (Cerebras thinking, OpenAI-class). Not subscription.
+TOKEN_METERED = ResourceClass(
+    name="external.token-metered",
+    queue="root.external.token-metered",
+    gpu_tokens=0,
+    max_applications=16,
+)
+
 # Ambient + host Metaflow ticks (label, …). No GPU.
 COMPUTE = ResourceClass(
     name="internal.compute",
@@ -328,6 +336,10 @@ _KIND_CLASS: dict[str, ResourceClass] = {
     # it through Engine/Complete and never carry a class of their own.
     "thinking": HEAVY,
     "gaius-thinking": HEAVY,
+    # Cerebras Qwen3.8 (and any peer's cerebras-thinking): token-metered,
+    # never subscription.rate-limited (Grok/Bytez only).
+    "cerebras-thinking": TOKEN_METERED,
+    "gaius-cerebras-thinking": TOKEN_METERED,
     # gunicorn proxy. 0 extra GPU — bind a provided vLLM; demand one
     # via zndx.engine.v1 only when none is healthy.
     "optillm": COMPUTE,

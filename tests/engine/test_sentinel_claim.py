@@ -27,6 +27,19 @@ def test_gpu_extract_waits_for_yk_preemption() -> None:
     assert EXTRACT.gpu_tokens == 1
 
 
+def test_cerebras_thinking_is_token_metered_not_subscription() -> None:
+    from gaius.engine.sentinel_claim import TOKEN_METERED
+
+    assert resource_class_for("cerebras-thinking") == TOKEN_METERED
+    assert resource_class_for("gaius-cerebras-thinking") == TOKEN_METERED
+    doc = yaml.safe_load(application_yaml("gaius-cerebras-thinking", "cerebras-thinking"))
+    assert doc["metadata"]["annotations"]["yunikorn.apache.org/queue"] == (
+        "root.external.token-metered"
+    )
+    req = doc["spec"]["containers"][0]["resources"]["requests"]
+    assert "federation.zndx.org/gpu" not in req
+
+
 def test_optillm_is_compute_not_a_gpu_claim() -> None:
     from gaius.engine.sentinel_claim import OPTILLM_WORKLOAD_ID, disk_paths_for
 
