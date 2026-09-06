@@ -671,3 +671,54 @@ def find_extracted_path(kb_root: Path, traceable_id: str) -> str:
                 continue
 
     return ""
+
+
+# ---------------------------------------------------------------------------
+# Source integrity (2026-09-06): content engineered to rank for research-tool
+# queries — vendor listicles, product pages, comparison and pricing pages —
+# reached the public surface as research briefs the moment the web half went
+# week-first. A reflex classifier at acquisition; the Brave goggle
+# (config/brave/web-half.goggle) is the first line, this is the second, the
+# `surface_integrity` objective measures what got through anyway.
+# ---------------------------------------------------------------------------
+
+import re as _re
+
+_MARKETING_TITLE = _re.compile(
+    # the numeric listicle shape ("Top 10 …", "11 Best …", "Best 5 …") — never a
+    # bare "top"/"best" ("Top-k routing" is a paper) and never "vs"/"versus"
+    # (papers compare things; the /vs- URL shape is a page type, the word is not)
+    r"\btop\s+\d+\b|\bbest\s+\d+\b|\b\d+\s+(best|top|essential|must[- ]have|great|powerful|popular)\b"
+    r"|\b\d+\s+ai\b|\b\d+\s+(tools|agents|platforms|software|apps|assistants|ways|tips|examples)\b"
+    r"|\bbest\s+(ai\s+)?(tools|agents|platforms|software|apps|assistants)\b"
+    r"|\b(tools|agents|platforms|software|apps|assistants)\s+(for|in)\s+20\d\d\b"
+    r"|\bpricing\b|\bultimate guide\b|\bcomplete guide\b|\breviewed in 20\d\d\b",
+    _re.IGNORECASE,
+)
+_MARKETING_PATH = _re.compile(
+    r"/(best|top)[-/]|-tools/?($|[?#])|/tools/|/alternatives|/pricing|/compar(e|ison)|/vs-|/reviews?($|[/?#])"
+    r"|/products?/|/list/|/search([/?]|$)|/tag/|/category/",
+    _re.IGNORECASE,
+)
+
+
+def looks_like_marketing(url: str, title: str) -> str | None:
+    """Reason string when a web result is marketing/aggregation rather than a
+    source worth a card; None when it passes the reflex.
+
+    Deliberately coarse and explainable (a reason a human can read in the
+    source's frontmatter), not a model. Primary sources — papers, technical
+    reports, official documentation, first-party engineering posts — do not
+    carry these shapes.
+    """
+    from urllib.parse import urlsplit
+
+    u = urlsplit(url or "")
+    path = u.path or "/"
+    m = _MARKETING_PATH.search(path)
+    if m:
+        return f"url path matches marketing pattern {m.group(0)!r}"
+    m = _MARKETING_TITLE.search(title or "")
+    if m:
+        return f"title matches marketing pattern {m.group(0).strip()!r}"
+    return None

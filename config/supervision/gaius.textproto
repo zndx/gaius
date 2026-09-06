@@ -406,6 +406,17 @@ objectives { name: "queue_share_arbitration" surfaced_result: "yunikorn-configs 
   gates { name: "intents_honoured" kind: GATE_KIND_PROBE_PASS tier: TIER_SILVER params { key: "probe" value: "every held phase intent has a live APPLIED record" } rationale: "a run whose phase intent was never applied ran unprotected" }
   expectation { category: EXPECTATION_CATEGORY_SLOT horizon_slot: 5 channel: CHANNEL_REMINDER rationale: "6 h verify cadence; a FAIL is a Reminder by 5 h unless the next verify resolves it" } }
 
+# (2026-09-06) Source integrity of the public surface: adversarial (SEO / vendor
+# marketing) content that reached gaius.zndx.org as research briefs. Deterministic
+# gates on what is published; acquisition-side defences are the Brave goggle and
+# the reflex classifier. A FAIL names the cards; remediation is an explained archive.
+objectives { name: "surface_integrity" surfaced_result: "the cards a visitor sees on gaius.zndx.org contain no marketing/aggregation content, no discarded-domain source, no duplicate source" machines: "article_curation" cadence_cron: "38 1,7,13,19 * * *"
+  gates { name: "no_marketing_shapes" kind: GATE_KIND_PROBE_PASS tier: TIER_SILVER params { key: "probe" value: "published cards matching flows.article_curation.common.looks_like_marketing == 0" } rationale: "the shape acquisition refuses must not be on the page" }
+  gates { name: "no_denied_domains" kind: GATE_KIND_PROBE_PASS tier: TIER_SILVER params { key: "probe" value: "published web cards from a config/brave/web-half.goggle $discard,site= domain == 0" } rationale: "the goggle's discard list is the vendor list" }
+  gates { name: "no_duplicate_sources" kind: GATE_KIND_PROBE_PASS tier: TIER_SILVER params { key: "probe" value: "no source_url published more than once" } rationale: "one card per source across articles (agentic.ai x4, 2026-09-06)" }
+  horizon { window_seconds: 43200 }
+  expectation { category: EXPECTATION_CATEGORY_SLOT horizon_slot: 3 channel: CHANNEL_AGENDA_EVENT rationale: "verified four times daily; adversarial content on the surface is an Agenda Event within 2 h" } }
+
 # (2026-09-04) The Backlog itself carries an objective: every cadenced process has a
 # slot-0 row filled within 2 h and a supervisor session is live. Later: "every open item
 # surfaced on its channel before its horizon slot" (GATE_KIND_BACKLOG_SURFACED).

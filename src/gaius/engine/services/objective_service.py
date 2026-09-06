@@ -307,6 +307,33 @@ OBJECTIVES: dict[str, ObjectiveSpec] = {
         verifier="verify_ops_backlog",
         params={"within_hours": 2},
     ),
+    # (2026-09-06) Source integrity of the public surface. A vendor listicle
+    # ("Top 10 AI Tools for Researchers in 2026 | AnswerThis") reached
+    # gaius.zndx.org as a research brief with two analysis panels the day the
+    # web half went week-first: content engineered to rank for research-tool
+    # queries is adversarial to the selection function. Deterministic gates on
+    # what is PUBLISHED (rule 2); the acquisition-side defences are the Brave
+    # goggle and looks_like_marketing(); this measures what got through anyway.
+    "surface_integrity": ObjectiveSpec(
+        name="surface_integrity",
+        dag=("article_curate", "publish_cards"),
+        flows=("ArticleCurationFlow",),
+        cadence=timedelta(hours=6),
+        description=(
+            "No published card is marketing/aggregation content (listicle or "
+            "product-page shape), no published card's source domain is on the "
+            "goggle's discard list, and no source URL is published more than once."
+        ),
+        verifier="verify_surface_integrity",
+        params={
+            "goggle": "config/brave/web-half.goggle",
+            "rationale": (
+                "pattern and domain rules are the same ones acquisition applies "
+                "(common.looks_like_marketing, the goggle's $discard,site= lines): "
+                "a card that would be refused at acquisition must not be on the page"
+            ),
+        },
+    ),
     "queue_share_arbitration": ObjectiveSpec(
         name="queue_share_arbitration",
         dag=(),
@@ -1180,6 +1207,73 @@ class ObjectiveService:
                 "evidence": f"held={len(held)} not_applied={missing[:6]}",
             }
         )
+        return gates
+
+    async def verify_surface_integrity(self, spec: ObjectiveSpec) -> list[dict[str, Any]]:
+        """Deterministic integrity of what is published (2026-09-06).
+
+        Gates: no_marketing_shapes (published cards whose URL/title match the
+        acquisition reflex), no_denied_domains (published web cards from a
+        domain the goggle discards), no_duplicate_sources (a source URL
+        published more than once). Each FAIL names the cards so remediation is
+        an explained archive, never a silent drop.
+        """
+        from pathlib import Path
+        from urllib.parse import urlsplit
+
+        from gaius.flows.article_curation.common import looks_like_marketing
+
+        gates: list[dict[str, Any]] = []
+        try:
+            async with self._pool.acquire() as conn:
+                rows = await conn.fetch(
+                    "SELECT card_id, source_type, source_url, title FROM collections.cards "
+                    "WHERE status = 'published'"
+                )
+        except Exception as e:  # noqa: BLE001
+            return [{"gate": g, "verdict": "error", "evidence": f"collections.cards unreadable: {e}"}
+                    for g in ("no_marketing_shapes", "no_denied_domains", "no_duplicate_sources")]
+
+        flagged = [(r["card_id"], why) for r in rows
+                   if (why := looks_like_marketing(r["source_url"] or "", r["title"] or ""))]
+        gates.append({
+            "gate": "no_marketing_shapes",
+            "verdict": "pass" if not flagged else "fail",
+            "evidence": (f"{len(flagged)}/{len(rows)} published cards match a marketing shape"
+                         + (": " + "; ".join(f"{c} ({w})" for c, w in flagged[:5]) if flagged else "")
+                         + ("" if not flagged else " — DAG stage: article_curate acquisition (goggle/reflex) let it in; archive with reason 'adversarial'")),
+        })
+
+        goggle_rel = str(spec.params.get("goggle", "config/brave/web-half.goggle"))
+        goggle_path = Path(__file__).resolve().parents[4] / goggle_rel
+        if not goggle_path.is_file():
+            gates.append({"gate": "no_denied_domains", "verdict": "error",
+                          "evidence": f"goggle missing: {goggle_path} (#ACF.00000021.NOGOGGLE)"})
+        else:
+            denied = {
+                line.split("site=", 1)[1].strip().lower()
+                for line in goggle_path.read_text(encoding="utf-8").splitlines()
+                if line.startswith("$discard,site=")
+            }
+            bad = [r["card_id"] for r in rows
+                   if (urlsplit(r["source_url"] or "").hostname or "").lower().removeprefix("www.") in denied]
+            gates.append({
+                "gate": "no_denied_domains",
+                "verdict": "pass" if not bad else "fail",
+                "evidence": (f"{len(bad)}/{len(rows)} published cards from a discarded domain ({len(denied)} domains in {goggle_rel})"
+                             + (": " + ", ".join(bad[:8]) if bad else "")),
+            })
+
+        seen: dict[str, list[str]] = {}
+        for r in rows:
+            seen.setdefault((r["source_url"] or "").strip(), []).append(r["card_id"])
+        dupes = {u: ids for u, ids in seen.items() if u and len(ids) > 1}
+        gates.append({
+            "gate": "no_duplicate_sources",
+            "verdict": "pass" if not dupes else "fail",
+            "evidence": (f"{len(dupes)} source URL(s) published more than once"
+                         + (": " + "; ".join(f"{u[:50]} x{len(ids)}" for u, ids in list(dupes.items())[:4]) if dupes else "")),
+        })
         return gates
 
     async def verify_ops_backlog(self, spec: ObjectiveSpec) -> list[dict[str, Any]]:

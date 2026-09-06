@@ -1,0 +1,62 @@
+! name: gaius web half
+! description: Re-ranking for the curate's Brave searches: primary and technical sources up, vendor listicles and product marketing out.
+! public: false
+! author: zndx
+!
+! 2026-09-06: the week-first freshness change surfaced ten vendor listicles in
+! one curate ("Top 10 AI Tools for Researchers in 2026 | AnswerThis" …), and the
+! pipeline dressed them as research briefs. Content engineered to rank for
+! research-tool queries is adversarial to the selection function; it is
+! discarded at acquisition, before it can be summarised. Passed inline as the
+! `goggles` parameter by _fetch_brave (config/brave/web-half.goggle, tracked with
+! `git add -f`). Rules: pattern$action,option — see github.com/brave/goggles-quickstart.
+
+! --- structural marketing patterns (URL) ---
+/best/$discard
+/best-$discard
+/top-$discard
+/top/$discard
+-tools$discard
+-tools/$discard
+/tools/$discard
+/alternatives$discard
+/pricing$discard
+/compare$discard
+/comparison$discard
+/vs-$discard
+/review$discard
+/reviews$discard
+
+! --- index and search pages are not sources ---
+/list/$discard
+/search$discard
+/tag/$discard
+/category/$discard
+
+! --- vendors and content farms seen on the surface (2026-09-02..06) ---
+$discard,site=answerthis.io
+$discard,site=agentic.ai
+$discard,site=lindy.ai
+$discard,site=jenni.ai
+$discard,site=buffer.com
+$discard,site=hootsuite.com
+$discard,site=peoplemanagingpeople.com
+$discard,site=document360.com
+$discard,site=zendesk.com
+$discard,site=martech.org
+$discard,site=magai.co
+$discard,site=aicontentfy.com
+$discard,site=wprssaggregator.com
+
+! --- primary and technical sources ---
+/abs/$boost=2,site=arxiv.org
+/html/$boost=2,site=arxiv.org
+/pdf/$boost=1,site=arxiv.org
+$boost=2,site=doi.org
+$boost=1,site=dl.acm.org
+$boost=1,site=ieeexplore.ieee.org
+$boost=1,site=nature.com
+$boost=1,site=sciencedirect.com
+$boost=1,site=link.springer.com
+$boost=1,site=openreview.net
+$boost=1,site=github.com

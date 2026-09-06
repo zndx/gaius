@@ -1134,6 +1134,30 @@ Respond with JSON:
         max_n = int(self.max_sources)
         skip_domains = ["twitter.com", "facebook.com", "reddit.com", "linkedin.com"]
 
+        # Source integrity (2026-09-06): week-first freshness surfaced ten vendor
+        # listicles in one curate and the pipeline published them as research.
+        # Two lines of defence at acquisition, both explainable:
+        #  1. a Brave Goggle (config/brave/web-half.goggle) re-ranks the index —
+        #     marketing URL shapes and known vendors discarded, primary sources
+        #     boosted — passed inline; missing goggle = fail-fast, never an
+        #     unfiltered search;
+        #  2. looks_like_marketing() on every result that still comes back —
+        #     rejections are kept in the exchange record, so what was refused is
+        #     as auditable as what was admitted.
+        from pathlib import Path as _Path
+
+        from gaius.flows.article_curation.common import looks_like_marketing
+
+        goggle_path = _Path(__file__).resolve().parents[4] / "config" / "brave" / "web-half.goggle"
+        if not goggle_path.is_file():
+            raise RuntimeError(
+                f"Brave goggle missing: {goggle_path}\n"
+                "  Guru Meditation: #ACF.00000021.NOGOGGLE\n"
+                "  The web half never runs unfiltered — restore config/brave/web-half.goggle"
+            )
+        goggle = goggle_path.read_text(encoding="utf-8")
+        rejected: list[dict[str, str]] = []
+
         start_time = time.monotonic()
 
         try:
@@ -1149,6 +1173,7 @@ Respond with JSON:
                         "count": max_n,
                         "safesearch": "moderate",
                         "freshness": freshness,
+                        "goggles": goggle,
                     }
                     response = await client.get(url, headers=headers, params=params)
 
@@ -1176,6 +1201,10 @@ Respond with JSON:
                         if url_str in seen_urls:
                             continue
                         seen_urls.add(url_str)
+                        why = looks_like_marketing(url_str, entry.get("title", ""))
+                        if why:
+                            rejected.append({"url": url_str, "reason": why, "freshness": freshness})
+                            continue
                         dated.append((str(entry.get("page_age") or ""), AcquiredSource.from_fetcher_result(
                             source_type="web",  # Use 'web' as source_type per schema
                             url=url_str,
@@ -1196,6 +1225,12 @@ Respond with JSON:
                 # Freshest first (ISO page_age sorts lexically; undated last).
                 dated.sort(key=lambda t: t[0], reverse=True)
                 sources = [s for _, s in dated]
+                if rejected:
+                    logger.info(
+                        "Brave web half: rejected %d marketing/aggregation result(s): %s",
+                        len(rejected),
+                        "; ".join(f"{r['url'][:60]} ({r['reason']})" for r in rejected[:5]),
+                    )
 
                 # Capture exchange to Iceberg for ML training (REQUIRED)
                 # Brave explicitly allows API responses for model tuning/RL
@@ -1206,7 +1241,12 @@ Respond with JSON:
                         provider="brave",
                         request_messages=[{"role": "user", "content": search_query}],
                         request_model="brave-search-v1",
-                        request_params={"count": max_n, "freshness": used_freshness},
+                        request_params={
+                            "count": max_n,
+                            "freshness": used_freshness,
+                            "goggle": "config/brave/web-half.goggle",
+                            "rejected": rejected,
+                        },
                         response_content=json.dumps([{
                             "url": s.url,
                             "title": s.title,
@@ -2223,6 +2263,19 @@ Be concise - each summary should be 1-2 sentences max."""
 
                 # Validate source URL before creating card
                 self._validate_source_url(source_url, ref.ref_id, ref.traceable_id)
+
+                # One card per source URL across ALL articles. acquired_sources is
+                # unique per (article, url) only, so the same page acquired by
+                # different articles became several published cards with identical
+                # briefs (agentic.ai listicle x4, medium.com x2 — the
+                # #SITE.00000003.BRIEFS duplicates, 2026-09-06).
+                dup = await pool.fetchval(
+                    "SELECT card_id FROM collections.cards WHERE source_url = $1 LIMIT 1",
+                    source_url,
+                )
+                if dup:
+                    print(f"  skip {ref.ref_id}: {source_url[:70]} already has card {dup}")
+                    continue
 
                 brief_summary = ref.brief_summary or ""
                 if not brief_summary:
