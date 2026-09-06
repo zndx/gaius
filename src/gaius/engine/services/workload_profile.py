@@ -39,7 +39,13 @@ PHASE_TRANSITIONING = "transitioning"
 
 # Per-capability warmup grace (seconds after settle) before actual != SERVING is a
 # miss. The 27B thinking baseline (TP=4 cold load via gpu_cleanup) needs the most.
-_WARMUP_THINKING = int(os.environ.get("GAIUS_WORKLOAD_WARMUP_THINKING", "330"))
+# 2026-09-06 21:34/21:42: the root workload watchdog recycled the unit twice
+# while the 27B was still loading — 330 s equalled the measured cold load
+# (321–329 s on 2026-09-05) with no margin, and it is shorter than the
+# orchestrator's own endpoint restart-to-HEALTHY, so two supervisors raced on
+# one symptom and the outer one killed the inner one's progress. The grace an
+# intent gets must exceed the engine's self-restoration time: 610 s (F15).
+_WARMUP_THINKING = int(os.environ.get("GAIUS_WORKLOAD_WARMUP_THINKING", "610"))
 _WARMUP_DEFAULT = int(os.environ.get("GAIUS_WORKLOAD_WARMUP_DEFAULT", "90"))
 
 # Subscriber queue depth. Small: the watchdog only needs the latest; on overflow we

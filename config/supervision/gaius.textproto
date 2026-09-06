@@ -35,7 +35,7 @@ processes {
   kind: PROCESS_KIND_SYSTEMD_UNIT
   restart: RESTART_STRATEGY_NONE          # promote to ONE_FOR_ALL after read-only phase
   observation { source: SOURCE_KIND_SYSTEMD locator: "gaius.service" poll_seconds: 15 }
-  warmup_seconds: 330                     # engine + 27B load; matches declared thinking warmup
+  warmup_seconds: 610                     # engine + 27B load (F15); 330 s equalled the measured cold load and the root watchdog recycled a loading engine twice on 2026-09-06
   attrs { key: "control_plane" value: "systemd oneshot -> just up (devenv process-compose)" }
 }
 processes {
@@ -64,7 +64,7 @@ processes {
   parent: "engine"
   restart: RESTART_STRATEGY_NONE
   observation { source: SOURCE_KIND_ENGINE_GRPC locator: "thinking" }
-  warmup_seconds: 330
+  warmup_seconds: 610
   depends_on: "engine"
   attrs { key: "model" value: "Qwen/Qwen3.8-27B" }
   attrs { key: "gpus" value: "0-3" }
