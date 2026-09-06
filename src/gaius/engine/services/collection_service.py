@@ -50,7 +50,13 @@ logger = logging.getLogger(__name__)
 #   required — LuxCore image + local open-weights panel
 #   optional — Brave / Cerebras panels (API availability and budget)
 REQUIRED_CARD_SUMMARY = "open_weights"
-OPTIONAL_CARD_SUMMARIES = ("frontier", "cerebras")
+# 2026-09-06 (user): the Cerebras API is reserved for INTERACTIVE agent-rtc
+# workloads (`cerebras-thinking` in the YuniKorn token-metered queue). Content
+# curation and publishing are non-interactive and run the same model locally
+# (Qwen3.8-27B), so the "cerebras" card summary is no longer produced; the
+# summary_type stays valid for stored rows and explicit calls, and the local
+# open_weights summary now carries the reasoning trace to HX instead.
+OPTIONAL_CARD_SUMMARIES = ("frontier",)
 
 
 def current_days() -> int:
@@ -2807,7 +2813,11 @@ created_at: {now.isoformat()}
             output_tokens = result.output_tokens
             provider = result.backend or "local-engine"
             model_id = str(getattr(result, "model", "") or "thinking")
-            thinking_trace = None
+            # Reasoning traces are the product: since the vLLM `reasoning` delta
+            # fix (2026-09-05) the local lane returns its trace; it lands in HX
+            # llm.generations.thinking_trace (the cerebras panel used to be the
+            # only carrier of a trace; it is retired from the pipeline).
+            thinking_trace = getattr(result, "reasoning_content", None) or None
 
         else:
             # cerebras — use Cerebras GLM-4.7 via external router

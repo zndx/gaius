@@ -4,9 +4,13 @@
 Reads HX ``llm.generations`` (Iceberg on RustFS via the HX catalog), where
 every card summary lands with ``model_name``, ``input_tokens``,
 ``output_tokens`` and ``latency_ms``. The ``card_open_weights`` rows are the
-LOCAL thinking lane (Qwen/Qwen3.8-27B on vLLM); ``card_cerebras`` rows are
-the Cerebras API on the same model (``qwen-3.8-27b`` since 2026-09-05) — the
-same prompt shape, so tokens/s and latency compare like for like.
+LOCAL thinking lane (Qwen/Qwen3.8-27B on vLLM); ``card_cerebras`` rows were
+the Cerebras API on the same model (``qwen-3.8-27b``, 2026-09-05/06 — six
+cards: 759 tok/s vs 10.5 local), the same prompt shape, so the comparison is
+like for like. Since 2026-09-06 the pipeline no longer produces cerebras
+summaries: the API is reserved for interactive agent-rtc workloads
+(``cerebras-thinking`` in the YuniKorn token-metered queue), whose generations
+will land here under their own summary_type as that lane comes up.
 
     .devenv/state/venv/bin/python scripts/throughput_report.py [--days 7]
 

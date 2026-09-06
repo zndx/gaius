@@ -17,5 +17,7 @@ def test_public_card_source_type_arxiv() -> None:
 def test_card_page_requires_local_open_weights() -> None:
     """LuxCore + local OW are mandatory; Brave/Cerebras vary with API/budget."""
     assert REQUIRED_CARD_SUMMARY == "open_weights"
-    assert OPTIONAL_CARD_SUMMARIES == ("frontier", "cerebras")
+    # 2026-09-06: Cerebras is reserved for interactive agent-rtc workloads; the
+    # non-interactive pipeline produces only the Brave frontier panel as optional.
+    assert OPTIONAL_CARD_SUMMARIES == ("frontier",)
     assert REQUIRED_CARD_SUMMARY not in OPTIONAL_CARD_SUMMARIES
