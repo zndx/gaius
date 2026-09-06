@@ -47,6 +47,7 @@ $discard,site=martech.org
 $discard,site=magai.co
 $discard,site=aicontentfy.com
 $discard,site=wprssaggregator.com
+$discard,site=mindstudio.ai
 
 ! --- primary and technical sources ---
 /abs/$boost=2,site=arxiv.org

@@ -124,55 +124,11 @@ OBJECTIVES: dict[str, ObjectiveSpec] = {
         "live page is what the user receives.",
         verifier="verify_site_freshness",
     ),
-    "content_currency": ObjectiveSpec(
-        name="content_currency",
-        dag=("article_curate", "publish_cards", "feed_check"),
-        flows=("ArticleCurationFlow",),
-        resolves=("slot % serves current content%",),
-        cadence=timedelta(hours=6),
-        description="The INTENT of the publishing schedule, measured on the "
-        "PUBLISHED SURFACE against the current date: the card dates a "
-        "visitor reads at gaius.zndx.org today track the present, the top "
-        "of the page is mostly current, and the surface refreshed within "
-        "the slot cadence. Thresholds are what pg_cron promises (daily "
-        "curate 09:07 UTC; slots 12/17/21/02 UTC); Airflow runs no gaius "
-        "surface DAG (2026-09-04). When Signals surfaces Airflow on "
-        "signals-protocol (pending), the Gaius engine syncs its local pg_cron "
-        "entries to Airflow over signals-protocol and defers to Signals "
-        "Airflow for execution when available; locally executed operations "
-        "surface in Airflow as Sensors (signals-protocol for multi-host "
-        "coordination). The intent read here then comes from the DAG "
-        "schedule and sensor timeouts, while Nautilus keeps running locally "
-        "and speaks gRPC only to this engine. "
-        "site_freshness proves cards flow; this "
-        "proves the RIGHT cards flow — as seen, not as stored. (2026-09-01: "
-        "mechanics green while publishing 18-day-old content past 25 "
-        "fresher pending cards. 2026-09-04: the DB-side selection gate could "
-        "only ever be inconclusive — the curate publishes its own cards — "
-        "so the gates moved to the surface.)",
-        verifier="verify_content_currency",
-        params={
-            # What the visitor reads is compared to TODAY. Rationale (rule 3):
-            # newest_days: article-curate-daily (09:07 UTC) promises new content
-            #   every day; source dates are day-granular and lag the fetch by up
-            #   to a day → the newest visible date must be within 2 days.
-            "newest_days": 2,
-            # current_days: 7d = 2x the worst-case weekly curation cadence the
-            #   health checker documents (~4-5 curations/week).
-            "current_days": 7,
-            # band: one day's intended publishes = ~20 curate + (3+1+1+1) slot
-            #   cards — the set a day's visitor is offered at the top.
-            "band": 26,
-            # min_current_share: the intended mix is ≈ 20 current : 6 slot
-            #   (0.77); the gate floor is half of that — below 0.5 the slots are
-            #   outweighing the curate or the curate did not run.
-            "min_current_share": 0.5,
-            # refresh_hours: slots at 12/17/21/02 UTC → longest gap 10 h
-            #   (02→12); the next Fibonacci hour is 13.
-            "refresh_hours": 13,
-            "surface_url": "https://gaius.zndx.org/",
-        },
-    ),
+    # `content_currency` (2026-09-01 → 2026-09-06) was folded into
+    # `surface_integrity` below as its CURRENCY aspect (user, 2026-09-06: "keep
+    # our objective set focused"). Its history stays under its own name in
+    # objective_verifications; its gates, thresholds and rationale moved
+    # verbatim. verify_content_currency remains only as dead code for readers.
     "prospects_intelligence": ObjectiveSpec(
         name="prospects_intelligence",
         dag=("prospects_check", "prospects_update"),
@@ -314,24 +270,55 @@ OBJECTIVES: dict[str, ObjectiveSpec] = {
     # queries is adversarial to the selection function. Deterministic gates on
     # what is PUBLISHED (rule 2); the acquisition-side defences are the Brave
     # goggle and looks_like_marketing(); this measures what got through anyway.
+    # (2026-09-06) THE public-surface intent objective — one composite, three
+    # aspects, eight deterministic gates, in the sdg-strategy `objective`
+    # pillar's card shape (config/supervision/objectives/surface-integrity.{md,json};
+    # the JSON's examples are this week's incidents and tests run them through
+    # surface_integrity.evaluate). site_freshness stays the mechanics pair.
+    #   currency      (ex content_currency) the dates a visitor reads track the present
+    #   integrity     no marketing/aggregation, no discarded domain, no duplicate source
+    #   conservation  the surface never shrinks except by a declared-reason removal
     "surface_integrity": ObjectiveSpec(
         name="surface_integrity",
-        dag=("article_curate", "publish_cards"),
+        dag=("article_curate", "publish_cards", "feed_check"),
         flows=("ArticleCurationFlow",),
+        resolves=("slot % serves current content%",),
         cadence=timedelta(hours=6),
         description=(
-            "No published card is marketing/aggregation content (listicle or "
-            "product-page shape), no published card's source domain is on the "
-            "goggle's discard list, and no source URL is published more than once."
+            "FINAL SURFACED RESULT: the cards a visitor sees on gaius.zndx.org. "
+            "CURRENCY — the newest visible date is within newest_days, at least "
+            "min_current_share of the first `band` cards are within current_days, "
+            "the top card was published within refresh_hours. INTEGRITY — no "
+            "published card has a marketing/aggregation shape, comes from a domain "
+            "the acquisition goggle discards, or shares its source URL with another. "
+            "CONSERVATION — every published→archived transition in the window "
+            "carries a reason of a declared category (collections.card_events): "
+            "content tracks the present by addition, never by silent removal "
+            "(2026-09-05: a currency FAIL was cleared by archiving 79 cards)."
         ),
         verifier="verify_surface_integrity",
         params={
+            # currency — what the visitor reads compared to TODAY (rule 3):
+            # newest_days: the daily curate (09:07 UTC) promises new content every
+            #   day; source dates are day-granular and lag the fetch by up to a day.
+            "newest_days": 2,
+            # current_days: 7 d = 2× the worst-case weekly curation cadence.
+            "current_days": 7,
+            # band: one day's intended publishes (~20 curate + 3+1+1+1 slots).
+            "band": 26,
+            # min_current_share: intended mix ≈ 20:6 (0.77); the floor is half.
+            "min_current_share": 0.5,
+            # refresh_hours: slots at 12/17/21/02 UTC → longest gap 10 h → F=13.
+            "refresh_hours": 13,
+            "surface_url": "https://gaius.zndx.org/",
+            # integrity — the same rules acquisition applies (looks_like_marketing,
+            #   the goggle's $discard,site= list): what would be refused at
+            #   acquisition must not be on the page.
             "goggle": "config/brave/web-half.goggle",
-            "rationale": (
-                "pattern and domain rules are the same ones acquisition applies "
-                "(common.looks_like_marketing, the goggle's $discard,site= lines): "
-                "a card that would be refused at acquisition must not be on the page"
-            ),
+            # conservation — removals are judged over a week (F=168 h is not a
+            #   Fibonacci hour; 144 would be; the week is the schedule's own unit).
+            "conservation_window_hours": 168,
+            "card": "config/supervision/objectives/surface-integrity.md",
         },
     ),
     "queue_share_arbitration": ObjectiveSpec(
@@ -531,7 +518,11 @@ class ObjectiveService:
         return gates
 
     async def verify_content_currency(self, spec: ObjectiveSpec) -> list[dict[str, Any]]:
-        """The schedule's INTENT, measured on the PUBLISHED SURFACE.
+        """DEPRECATED 2026-09-06 — folded into surface_integrity (currency aspect,
+        surface_integrity.evaluate). No ObjectiveSpec references this verifier;
+        kept for readers of the 2026-09-01..06 history.
+
+        The schedule's INTENT, measured on the PUBLISHED SURFACE.
 
         (2026-09-04, user reframe) What a visitor sees at gaius.zndx.org
         today is the basis for currency; the thresholds are what the
@@ -1210,71 +1201,17 @@ class ObjectiveService:
         return gates
 
     async def verify_surface_integrity(self, spec: ObjectiveSpec) -> list[dict[str, Any]]:
-        """Deterministic integrity of what is published (2026-09-06).
-
-        Gates: no_marketing_shapes (published cards whose URL/title match the
-        acquisition reflex), no_denied_domains (published web cards from a
-        domain the goggle discards), no_duplicate_sources (a source URL
-        published more than once). Each FAIL names the cards so remediation is
-        an explained archive, never a silent drop.
+        """The composite public-surface objective: currency + integrity +
+        conservation (2026-09-06). Facts are collected once (live page, published
+        rows, goggle discard list, card_events window) and the gates are a pure
+        function of them — `surface_integrity.evaluate` — so the card's JSON
+        examples (config/supervision/objectives/surface-integrity.json) are run
+        as specimens by tests and by the same code that scores the live surface.
         """
-        from pathlib import Path
-        from urllib.parse import urlsplit
+        from gaius.engine.services.surface_integrity import collect_facts, evaluate
 
-        from gaius.flows.article_curation.common import looks_like_marketing
-
-        gates: list[dict[str, Any]] = []
-        try:
-            async with self._pool.acquire() as conn:
-                rows = await conn.fetch(
-                    "SELECT card_id, source_type, source_url, title FROM collections.cards "
-                    "WHERE status = 'published'"
-                )
-        except Exception as e:  # noqa: BLE001
-            return [{"gate": g, "verdict": "error", "evidence": f"collections.cards unreadable: {e}"}
-                    for g in ("no_marketing_shapes", "no_denied_domains", "no_duplicate_sources")]
-
-        flagged = [(r["card_id"], why) for r in rows
-                   if (why := looks_like_marketing(r["source_url"] or "", r["title"] or ""))]
-        gates.append({
-            "gate": "no_marketing_shapes",
-            "verdict": "pass" if not flagged else "fail",
-            "evidence": (f"{len(flagged)}/{len(rows)} published cards match a marketing shape"
-                         + (": " + "; ".join(f"{c} ({w})" for c, w in flagged[:5]) if flagged else "")
-                         + ("" if not flagged else " — DAG stage: article_curate acquisition (goggle/reflex) let it in; archive with reason 'adversarial'")),
-        })
-
-        goggle_rel = str(spec.params.get("goggle", "config/brave/web-half.goggle"))
-        goggle_path = Path(__file__).resolve().parents[4] / goggle_rel
-        if not goggle_path.is_file():
-            gates.append({"gate": "no_denied_domains", "verdict": "error",
-                          "evidence": f"goggle missing: {goggle_path} (#ACF.00000021.NOGOGGLE)"})
-        else:
-            denied = {
-                line.split("site=", 1)[1].strip().lower()
-                for line in goggle_path.read_text(encoding="utf-8").splitlines()
-                if line.startswith("$discard,site=")
-            }
-            bad = [r["card_id"] for r in rows
-                   if (urlsplit(r["source_url"] or "").hostname or "").lower().removeprefix("www.") in denied]
-            gates.append({
-                "gate": "no_denied_domains",
-                "verdict": "pass" if not bad else "fail",
-                "evidence": (f"{len(bad)}/{len(rows)} published cards from a discarded domain ({len(denied)} domains in {goggle_rel})"
-                             + (": " + ", ".join(bad[:8]) if bad else "")),
-            })
-
-        seen: dict[str, list[str]] = {}
-        for r in rows:
-            seen.setdefault((r["source_url"] or "").strip(), []).append(r["card_id"])
-        dupes = {u: ids for u, ids in seen.items() if u and len(ids) > 1}
-        gates.append({
-            "gate": "no_duplicate_sources",
-            "verdict": "pass" if not dupes else "fail",
-            "evidence": (f"{len(dupes)} source URL(s) published more than once"
-                         + (": " + "; ".join(f"{u[:50]} x{len(ids)}" for u, ids in list(dupes.items())[:4]) if dupes else "")),
-        })
-        return gates
+        facts = await collect_facts(self._pool, spec.params)
+        return evaluate(facts, spec.params)
 
     async def verify_ops_backlog(self, spec: ObjectiveSpec) -> list[dict[str, Any]]:
         """The Operations Backlog is being filled (2026-09-04).

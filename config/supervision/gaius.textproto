@@ -9,7 +9,7 @@
 # until the supervisor's own Brier record earns promotion per scope.
 
 project: "gaius"
-spec_version: "2026-09-05.1"
+spec_version: "2026-09-06.1"
 engine_build: "trunk"            # replaced by the deployed build id at launch; with
                                  # spec_version this is the scoring epoch
 engine_grpc: "127.0.0.1:50051"
@@ -356,18 +356,8 @@ objectives {
   resolves: "slot % cards are publicly served"
 
   expectation { category: EXPECTATION_CATEGORY_SLOT horizon_slot: 3 channel: CHANNEL_AGENDA_EVENT rationale: "verified four times daily; a FAIL on what the user receives is an Agenda Event within 2 h" } }
-objectives {
-  name: "content_currency"
-  surfaced_result: "the content dates a visitor reads on newly published cards — the schedule's INTENT: content tracks the present"
-  machines: "article_curation"
-  cadence_cron: "38 1,7,13,19 * * *"
-  gates { name: "published_content_current" kind: GATE_KIND_FRESHNESS_WITHIN tier: TIER_SILVER params { key: "source" value: "newest source_date among last-24h publishes" } params { key: "within_seconds" value: "604800" } rationale: "7d: mechanics green while serving 18-day-old content past 25 fresher cards (2026-09-01)" }
-  gates { name: "selection_favors_current" kind: GATE_KIND_PROBE_PASS tier: TIER_SILVER params { key: "probe" value: "pending cards with current source_date are selected before older" } rationale: "inconclusive when nothing current is pending — blame inflow" }
-  gates { name: "curation_inflow_current" kind: GATE_KIND_FRESHNESS_WITHIN tier: TIER_SILVER params { key: "source" value: "corpus newest source_date" } params { key: "within_seconds" value: "604800" } rationale: "2026-09-03: inflow itself went stale (Aug-27) — the DAG stage named" }
-  horizon { window_seconds: 43200 }
-  resolves: "slot % serves current content%"
-
-  expectation { category: EXPECTATION_CATEGORY_SLOT horizon_slot: 3 channel: CHANNEL_AGENDA_EVENT rationale: "verified four times daily; a FAIL on what the user receives is an Agenda Event within 2 h" } }
+# content_currency (2026-09-01 → 2026-09-06) is folded into surface_integrity as its
+# CURRENCY aspect (user: keep the objective set focused). History under its own name.
 objectives {
   name: "prospects_intelligence"
   surfaced_result: "the prospect briefs the user opens — sufficient to a rebalancing BOUNDARY decision under switching costs, for capital or a professional's scarce time/money/energy (kb current/prospects/portfolio-theory.md)"
@@ -406,16 +396,23 @@ objectives { name: "queue_share_arbitration" surfaced_result: "yunikorn-configs 
   gates { name: "intents_honoured" kind: GATE_KIND_PROBE_PASS tier: TIER_SILVER params { key: "probe" value: "every held phase intent has a live APPLIED record" } rationale: "a run whose phase intent was never applied ran unprotected" }
   expectation { category: EXPECTATION_CATEGORY_SLOT horizon_slot: 5 channel: CHANNEL_REMINDER rationale: "6 h verify cadence; a FAIL is a Reminder by 5 h unless the next verify resolves it" } }
 
-# (2026-09-06) Source integrity of the public surface: adversarial (SEO / vendor
-# marketing) content that reached gaius.zndx.org as research briefs. Deterministic
-# gates on what is published; acquisition-side defences are the Brave goggle and
-# the reflex classifier. A FAIL names the cards; remediation is an explained archive.
-objectives { name: "surface_integrity" surfaced_result: "the cards a visitor sees on gaius.zndx.org contain no marketing/aggregation content, no discarded-domain source, no duplicate source" machines: "article_curation" cadence_cron: "38 1,7,13,19 * * *"
-  gates { name: "no_marketing_shapes" kind: GATE_KIND_PROBE_PASS tier: TIER_SILVER params { key: "probe" value: "published cards matching flows.article_curation.common.looks_like_marketing == 0" } rationale: "the shape acquisition refuses must not be on the page" }
-  gates { name: "no_denied_domains" kind: GATE_KIND_PROBE_PASS tier: TIER_SILVER params { key: "probe" value: "published web cards from a config/brave/web-half.goggle $discard,site= domain == 0" } rationale: "the goggle's discard list is the vendor list" }
-  gates { name: "no_duplicate_sources" kind: GATE_KIND_PROBE_PASS tier: TIER_SILVER params { key: "probe" value: "no source_url published more than once" } rationale: "one card per source across articles (agentic.ai x4, 2026-09-06)" }
+# (2026-09-06) THE public-surface intent objective — composite: currency (ex
+# content_currency) + integrity (adversarial/marketing content, discarded domains,
+# duplicates) + conservation (the surface never shrinks except by a declared-reason
+# removal, collections.card_events). Card: config/supervision/objectives/surface-integrity.md;
+# its JSON examples are specimens that surface_integrity.evaluate must resolve identically.
+objectives { name: "surface_integrity" surfaced_result: "the cards a visitor sees on gaius.zndx.org: dates track the present; no marketing/aggregation, discarded-domain or duplicate source; nothing removed without a declared reason" machines: "article_curation" cadence_cron: "38 1,7,13,19 * * *"
+  gates { name: "surface_newest_current" kind: GATE_KIND_FRESHNESS_WITHIN tier: TIER_SILVER params { key: "source" value: "newest card-date on the live page vs today" } params { key: "within_seconds" value: "172800" } rationale: "currency: daily curate + day-granular source dates → 2 d" }
+  gates { name: "surface_band_current" kind: GATE_KIND_PROBE_PASS tier: TIER_SILVER params { key: "probe" value: "share of the first 26 live cards dated within 7 d >= 0.5" } rationale: "currency: one day's intended publishes ≈ 20 curate : 6 slot (0.77); floor is half" }
+  gates { name: "surface_refreshed_within_intent" kind: GATE_KIND_FRESHNESS_WITHIN tier: TIER_SILVER params { key: "source" value: "top live card published_at" } params { key: "within_seconds" value: "46800" } rationale: "currency: slots 12/17/21/02 UTC → longest gap 10 h → F=13" }
+  gates { name: "no_marketing_shapes" kind: GATE_KIND_PROBE_PASS tier: TIER_SILVER params { key: "probe" value: "published cards matching flows.article_curation.common.looks_like_marketing == 0" } rationale: "integrity: the shape acquisition refuses must not be on the page" }
+  gates { name: "no_denied_domains" kind: GATE_KIND_PROBE_PASS tier: TIER_SILVER params { key: "probe" value: "published cards from a config/brave/web-half.goggle $discard,site= domain == 0" } rationale: "integrity: the goggle's discard list is the vendor list" }
+  gates { name: "no_duplicate_sources" kind: GATE_KIND_PROBE_PASS tier: TIER_SILVER params { key: "probe" value: "no source_url published more than once" } rationale: "integrity: one card per source across articles (agentic.ai x4, 2026-09-06)" }
+  gates { name: "no_unexplained_removals" kind: GATE_KIND_PROBE_PASS tier: TIER_SILVER params { key: "probe" value: "card_events published→archived in 168 h without a reason == 0" } rationale: "conservation: a currency FAIL was cleared by archiving 79 cards on 2026-09-05; the surface may not shrink silently" }
+  gates { name: "removal_reasons_declared" kind: GATE_KIND_PROBE_PASS tier: TIER_SILVER params { key: "probe" value: "every explained removal's category ∈ duplicate|adversarial|license|retired|broken|operator" } rationale: "conservation: 'stale' is not a reason; acquisition is" }
   horizon { window_seconds: 43200 }
-  expectation { category: EXPECTATION_CATEGORY_SLOT horizon_slot: 3 channel: CHANNEL_AGENDA_EVENT rationale: "verified four times daily; adversarial content on the surface is an Agenda Event within 2 h" } }
+  resolves: "slot % serves current content%"
+  expectation { category: EXPECTATION_CATEGORY_SLOT horizon_slot: 3 channel: CHANNEL_AGENDA_EVENT rationale: "verified four times daily; a FAIL on what the visitor receives is an Agenda Event within 2 h" } }
 
 # (2026-09-04) The Backlog itself carries an objective: every cadenced process has a
 # slot-0 row filled within 2 h and a supervisor session is live. Later: "every open item

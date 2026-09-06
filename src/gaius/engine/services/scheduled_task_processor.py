@@ -745,14 +745,14 @@ class ScheduledTaskProcessor(BaseDaemon):
             if published_count == 0:
                 raise RuntimeError(
                     "No CURRENT card passed the enrichment gate "
-                    "(source_date within content_currency's current_days, "
+                    "(source_date within surface_integrity's current_days, "
                     "LuxCore image, local open-weights).\n"
                     "  Guru: #COL.00000016.NOENRICH\n"
                     f"  admitted={admitted} enriched={enrich_count} "
                     f"failed={enrich_failed}\n"
                     "  DAG stage: feed_check inflow (no current feed items) or "
                     "enrichment; a slot never publishes stale content to fill the gap.\n"
-                    "  Try: /objective verify content_currency; RenderCards + summaries, then /publish cards"
+                    "  Try: /objective verify surface_integrity; RenderCards + summaries, then /publish cards"
                 )
             # Per-card KV sync outcomes were previously collected by
             # publish_and_sync and then discarded here — cards could be

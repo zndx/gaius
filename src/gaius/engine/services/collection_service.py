@@ -56,18 +56,19 @@ OPTIONAL_CARD_SUMMARIES = ("frontier", "cerebras")
 def current_days() -> int:
     """The surface's currency criterion, in days — ONE source of truth.
 
-    `content_currency` (objective_service.OBJECTIVES) declares
-    ``current_days`` (7 d) as the intent: content on the public page tracks
-    the present. The slot pipeline reads the same number so that what it
-    admits, counts as ready and publishes is exactly what the objective will
-    later measure. 2026-09-05: the pipeline had no currency notion at all —
-    slots drained a 162-card pending pool dated 2026-08-06..08-27 oldest
-    first while the objective failed for four days.
+    `surface_integrity` (objective_service.OBJECTIVES; its CURRENCY aspect,
+    ex `content_currency`) declares ``current_days`` (7 d) as the intent:
+    content on the public page tracks the present. The slot pipeline reads the
+    same number so that what it admits, counts as ready and publishes is
+    exactly what the objective will later measure. 2026-09-05: the pipeline
+    had no currency notion at all — slots drained a 162-card pending pool
+    dated 2026-08-06..08-27 oldest first while the objective failed for four
+    days.
     """
     try:
         from gaius.engine.services.objective_service import OBJECTIVES  # lazy: objective_service imports this module
 
-        return int(OBJECTIVES["content_currency"].params.get("current_days", 7))
+        return int(OBJECTIVES["surface_integrity"].params.get("current_days", 7))
     except Exception:  # noqa: BLE001 — the criterion, not the import, is the contract
         return 7
 
