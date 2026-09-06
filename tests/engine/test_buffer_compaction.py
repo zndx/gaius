@@ -91,9 +91,12 @@ def test_compact_if_needed_replaces_prefix_with_summary() -> None:
     asyncio.run(_run())
 
 
-def test_compact_if_needed_refuses_a_summary_larger_than_a_quarter_of_the_window() -> None:
+def test_compact_if_needed_refuses_a_summary_larger_than_its_material() -> None:
     """2026-09-06: a 159 946-byte reasoning trace was accepted as the SUMMARY of a
-    79 KB window and poisoned every later compaction. A summary is bounded."""
+    79 KB window and poisoned every later compaction. A summary is bounded by the
+    material it replaces (and by 3/4 of the buffer) — NOT by a fixed fraction: the
+    first guard (max_bytes/4) broke the FMP roll, whose 110–130 KB market state is
+    a legitimate summary of ~170 KB of prior summary + content."""
     import asyncio
 
     from gaius.engine.services.ambient_buffer import AmbientBuffer
@@ -104,14 +107,19 @@ def test_compact_if_needed_refuses_a_summary_larger_than_a_quarter_of_the_window
             await buf.add_entry(BufferEntry.create(BufferRole.CONTENT, f"story-{i} " * 400))
         before = buf.get_stats()["entry_count"]
 
-        async def bloated(prompt: str) -> str:
-            return "## Goal\n" + ("reasoning " * 3000)  # ~30 KB > 50 KB / 4
+        async def trace_dump(prompt: str) -> str:
+            return "## Goal\n" + ("reasoning " * 20_000)  # 200 KB: 2x+ the material, 4x the buffer
 
         with pytest.raises(RuntimeError) as ei:
-            await buf.compact_if_needed(bloated)
+            await buf.compact_if_needed(trace_dump)
         assert "#BUF.00000002.SUMMARYBLOAT" in str(ei.value)
-        # nothing written, window intact
-        assert buf.get_stats()["entry_count"] == before
+        assert buf.get_stats()["entry_count"] == before  # nothing written, window intact
         assert not await buf.get_entries_by_role(BufferRole.SUMMARY)
+
+        async def large_but_smaller_than_material(prompt: str) -> str:
+            return "## Goal\n" + ("market state " * 1500)  # ~19.5 KB, below the dropped prefix
+
+        out = await buf.compact_if_needed(large_but_smaller_than_material)
+        assert out.get("success") is True
 
     asyncio.run(_run())
