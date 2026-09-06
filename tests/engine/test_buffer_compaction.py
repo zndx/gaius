@@ -89,3 +89,29 @@ def test_compact_if_needed_replaces_prefix_with_summary() -> None:
         assert any(s.metadata.get("kind") == "compaction" for s in summaries)
 
     asyncio.run(_run())
+
+
+def test_compact_if_needed_refuses_a_summary_larger_than_a_quarter_of_the_window() -> None:
+    """2026-09-06: a 159 946-byte reasoning trace was accepted as the SUMMARY of a
+    79 KB window and poisoned every later compaction. A summary is bounded."""
+    import asyncio
+
+    from gaius.engine.services.ambient_buffer import AmbientBuffer
+
+    async def _run() -> None:
+        buf = AmbientBuffer(max_bytes=50_000)
+        for i in range(16):
+            await buf.add_entry(BufferEntry.create(BufferRole.CONTENT, f"story-{i} " * 400))
+        before = buf.get_stats()["entry_count"]
+
+        async def bloated(prompt: str) -> str:
+            return "## Goal\n" + ("reasoning " * 3000)  # ~30 KB > 50 KB / 4
+
+        with pytest.raises(RuntimeError) as ei:
+            await buf.compact_if_needed(bloated)
+        assert "#BUF.00000002.SUMMARYBLOAT" in str(ei.value)
+        # nothing written, window intact
+        assert buf.get_stats()["entry_count"] == before
+        assert not await buf.get_entries_by_role(BufferRole.SUMMARY)
+
+    asyncio.run(_run())

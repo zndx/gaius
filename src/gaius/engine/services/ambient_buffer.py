@@ -223,6 +223,19 @@ class AmbientBuffer:
             raise RuntimeError(f"{GURU}\n  {e}") from e
         if not (summary or "").strip():
             raise RuntimeError(f"{GURU}\n  empty summary")
+        # A summary larger than a quarter of the window is not a summary. On
+        # 2026-09-06 01:10 a 159 946-byte reasoning trace was accepted here as
+        # the SUMMARY of a 79 KB window (256 KB buffer); every compaction after
+        # it re-read the dump, reasoned to the token cap and failed, and the
+        # ambient class was dark for 7 h. Refuse it, whatever summarizer wrote it.
+        summary_bytes = len(summary.strip().encode("utf-8"))
+        summary_cap = max(self._max_bytes // 4, 4096)
+        if summary_bytes > summary_cap:
+            raise RuntimeError(
+                f"#BUF.00000002.SUMMARYBLOAT summary is {summary_bytes} bytes, "
+                f"cap {summary_cap} (max_bytes {self._max_bytes} / 4): not a summary; "
+                "nothing written, the window stays intact for the next attempt"
+            )
         compact_entry = BufferEntry.create(
             role=BufferRole.SUMMARY,
             content=summary.strip(),

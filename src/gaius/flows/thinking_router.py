@@ -75,9 +75,24 @@ class LatticeRouter:
 
 
 async def summarize_with_thinking(prompt: str) -> str:
-    """Compaction summarizer: content, else the reasoning trace; empty is an error."""
+    """Compaction summarizer: the model's ANSWER only; empty is an error.
+
+    The reasoning trace is never a summary. Until 2026-09-05 the stream
+    assembler dropped every trace, so a `content or reasoning_content`
+    fallback was inert; the moment traces became visible, a think-to-EOS
+    compaction (content 0, reasoning 159 890 chars) was written into the
+    ambient buffer as a 160 KB SUMMARY row, every later compaction re-read
+    it, reasoned to the 89 702-token cap and failed, and the class was dark
+    for 7 h (2026-09-06 01:13 → 08:47). Fail fast instead: the flow's
+    #BUF.00000001.COMPACTFAIL names the class, the window stays intact for
+    the next attempt, nothing poisoned is written.
+    """
     resp = await LatticeRouter().complete(prompt=prompt, temperature=0.2, task_type="buffer_compaction")
-    text = (resp.content or resp.reasoning_content or "").strip()
+    text = (resp.content or "").strip()
     if not text:
-        raise RuntimeError("empty thinking compaction")
+        raise RuntimeError(
+            "empty thinking compaction "
+            f"(reasoning_chars={len(resp.reasoning_content or '')}, output_tokens={resp.output_tokens}): "
+            "the model reasoned to the end without answering; the trace is not a summary"
+        )
     return text
