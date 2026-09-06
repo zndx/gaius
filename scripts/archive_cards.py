@@ -5,8 +5,8 @@
     .devenv/state/venv/bin/python scripts/archive_cards.py --reason 'adversarial: vendor listicle' --sync card_x
 
 The reason's category (prefix before ':') must be one of
-surface_integrity.REMOVAL_REASONS; it is written by the cards_status_events
-trigger from `SET LOCAL gaius.card_reason` in the same transaction, so the
+surface_integrity.REMOVAL_REASONS; it is written by the cards_content_events
+trigger from `SET LOCAL gaius.content_reason` in the same transaction, so the
 removal is EXPLAINED to the conservation aspect of `surface_integrity`.
 --sync re-syncs the public KV afterwards (scripts/sync_public_kv.py).
 """
@@ -32,8 +32,8 @@ async def _run(card_ids: list[str], reason: str, actor: str, sync: bool) -> int:
     try:
         async with pool.acquire() as conn:
             async with conn.transaction():
-                await conn.execute("SELECT set_config('gaius.card_reason', $1, true)", reason)
-                await conn.execute("SELECT set_config('gaius.card_actor', $1, true)", actor)
+                await conn.execute("SELECT set_config('gaius.content_reason', $1, true)", reason)
+                await conn.execute("SELECT set_config('gaius.content_actor', $1, true)", actor)
                 rows = await conn.fetch(
                     "UPDATE collections.cards SET status = 'archived', updated_at = NOW() "
                     "WHERE card_id = ANY($1::text[]) AND status = 'published' RETURNING card_id",

@@ -1,7 +1,7 @@
 {
   "name": "Surface Integrity (composite objective on the public surface)",
   "description": "The cards a visitor sees at gaius.zndx.org are current, clean, and conserved: newest visible date within newest_days; at least min_current_share of the first band cards within current_days; top card published within refresh_hours; no marketing/aggregation shape, no goggle-discarded domain, no duplicate source URL among published cards; no published→archived transition in the window without a declared-category reason. Verdicts are pass|fail|error per gate, never inconclusive; each FAIL names the DAG stage; the flip is the smallest declared action that restores PASS.",
-  "modality": "Structured facts (JSON) collected from the live page, collections.cards, the Brave goggle and collections.card_events",
+  "modality": "Structured facts (JSON) collected from the live page, collections.cards, the Brave goggle and collections.content_events",
   "diagram": null,
   "citations": [
     "docs/notes/2026-09-04/175500_content_currency_surface_reframe.md",
@@ -123,7 +123,7 @@
         ],
         "denied_domains": ["answerthis.io","agentic.ai"],
         "events": {"window_hours": 168, "journal_since": null, "added": 3, "removed": [
-          {"card_id":"x1","reason":null},{"card_id":"x2","reason":null},{"card_id":"x3","reason":""},{"card_id":"x4","reason":null},{"card_id":"x5","reason":null}
+          {"content_id":"x1","reason":null},{"content_id":"x2","reason":null},{"content_id":"x3","reason":""},{"content_id":"x4","reason":null},{"content_id":"x5","reason":null}
         ]}
       },
       "output": {
@@ -152,9 +152,9 @@
         ],
         "denied_domains": ["answerthis.io","agentic.ai"],
         "events": {"window_hours": 168, "journal_since": "2026-09-06T00:00:00Z", "added": 24, "removed": [
-          {"card_id":"v3","reason":"adversarial: vendor marketing / SEO listicle acquired by keyword match"},
-          {"card_id":"v2b","reason":"duplicate: kept earliest v1"},
-          {"card_id":"z1","reason":"operator: stale content archived to restore currency (2026-09-05 remediation, pre-journal)"}
+          {"content_id":"v3","reason":"adversarial: vendor marketing / SEO listicle acquired by keyword match"},
+          {"content_id":"v2b","reason":"duplicate: kept earliest v1"},
+          {"content_id":"z1","reason":"operator: stale content archived to restore currency (2026-09-05 remediation, pre-journal)"}
         ]}
       },
       "output": {
@@ -179,7 +179,7 @@
         ],
         "denied_domains": ["answerthis.io"],
         "events": {"window_hours": 168, "journal_since": "2026-09-06T00:00:00Z", "added": 4, "removed": [
-          {"card_id":"q1","reason":"stale: aged out of the band"}
+          {"content_id":"q1","reason":"stale: aged out of the band"}
         ]}
       },
       "output": {

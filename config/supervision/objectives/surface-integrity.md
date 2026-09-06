@@ -30,7 +30,7 @@ efficacy: a specimen that once surfaced a fault is pinned forever.
 | `corpus_newest` | `max(source_date)` over all cards | ISO date; diagnosis only |
 | `published` | `collections.cards WHERE status='published'` | `[{card_id, source_url, title}]` |
 | `denied_domains` | `$discard,site=` lines of `config/brave/web-half.goggle` | `[domain, …]` |
-| `events` | `collections.card_events` over `conservation_window_hours` | `{window_hours, journal_since, added, removed: [{card_id, reason}]}` |
+| `events` | `collections.content_events` over `conservation_window_hours` | `{window_hours, journal_since, added, removed: [{card_id, reason}]}` |
 | `<section>_error` | any failed collection | string; the section's gates render `error` |
 
 ### Aspects and gates
@@ -54,8 +54,8 @@ category or it is a fault. Growth itself is `site_freshness`'s mechanics.
 ### Reason protocol (removals)
 
 An archiver sets, in the same transaction,
-`SET LOCAL gaius.card_reason = '<category>: <why>'` and
-`SET LOCAL gaius.card_actor = '<who>'`; the `cards_status_events` trigger
+`SET LOCAL gaius.content_reason = '<category>: <why>'` and
+`SET LOCAL gaius.content_actor = '<who>'`; the `cards_content_events` trigger
 snapshots both. `scripts/archive_cards.py --reason …` is the sanctioned path.
 Rows before the journal (2026-09-06) were backfilled from the archive TSVs
 with `backfill = TRUE`.

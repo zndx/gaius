@@ -292,7 +292,7 @@ OBJECTIVES: dict[str, ObjectiveSpec] = {
             "published card has a marketing/aggregation shape, comes from a domain "
             "the acquisition goggle discards, or shares its source URL with another. "
             "CONSERVATION — every published→archived transition in the window "
-            "carries a reason of a declared category (collections.card_events): "
+            "carries a reason of a declared category (collections.content_events): "
             "content tracks the present by addition, never by silent removal "
             "(2026-09-05: a currency FAIL was cleared by archiving 79 cards)."
         ),
@@ -1203,7 +1203,7 @@ class ObjectiveService:
     async def verify_surface_integrity(self, spec: ObjectiveSpec) -> list[dict[str, Any]]:
         """The composite public-surface objective: currency + integrity +
         conservation (2026-09-06). Facts are collected once (live page, published
-        rows, goggle discard list, card_events window) and the gates are a pure
+        rows, goggle discard list, content_events window) and the gates are a pure
         function of them — `surface_integrity.evaluate` — so the card's JSON
         examples (config/supervision/objectives/surface-integrity.json) are run
         as specimens by tests and by the same code that scores the live surface.

@@ -399,7 +399,7 @@ objectives { name: "queue_share_arbitration" surfaced_result: "yunikorn-configs 
 # (2026-09-06) THE public-surface intent objective — composite: currency (ex
 # content_currency) + integrity (adversarial/marketing content, discarded domains,
 # duplicates) + conservation (the surface never shrinks except by a declared-reason
-# removal, collections.card_events). Card: config/supervision/objectives/surface-integrity.md;
+# removal, collections.content_events). Card: config/supervision/objectives/surface-integrity.md;
 # its JSON examples are specimens that surface_integrity.evaluate must resolve identically.
 objectives { name: "surface_integrity" surfaced_result: "the cards a visitor sees on gaius.zndx.org: dates track the present; no marketing/aggregation, discarded-domain or duplicate source; nothing removed without a declared reason" machines: "article_curation" cadence_cron: "38 1,7,13,19 * * *"
   gates { name: "surface_newest_current" kind: GATE_KIND_FRESHNESS_WITHIN tier: TIER_SILVER params { key: "source" value: "newest card-date on the live page vs today" } params { key: "within_seconds" value: "172800" } rationale: "currency: daily curate + day-granular source dates → 2 d" }
@@ -408,7 +408,7 @@ objectives { name: "surface_integrity" surfaced_result: "the cards a visitor see
   gates { name: "no_marketing_shapes" kind: GATE_KIND_PROBE_PASS tier: TIER_SILVER params { key: "probe" value: "published cards matching flows.article_curation.common.looks_like_marketing == 0" } rationale: "integrity: the shape acquisition refuses must not be on the page" }
   gates { name: "no_denied_domains" kind: GATE_KIND_PROBE_PASS tier: TIER_SILVER params { key: "probe" value: "published cards from a config/brave/web-half.goggle $discard,site= domain == 0" } rationale: "integrity: the goggle's discard list is the vendor list" }
   gates { name: "no_duplicate_sources" kind: GATE_KIND_PROBE_PASS tier: TIER_SILVER params { key: "probe" value: "no source_url published more than once" } rationale: "integrity: one card per source across articles (agentic.ai x4, 2026-09-06)" }
-  gates { name: "no_unexplained_removals" kind: GATE_KIND_PROBE_PASS tier: TIER_SILVER params { key: "probe" value: "card_events published→archived in 168 h without a reason == 0" } rationale: "conservation: a currency FAIL was cleared by archiving 79 cards on 2026-09-05; the surface may not shrink silently" }
+  gates { name: "no_unexplained_removals" kind: GATE_KIND_PROBE_PASS tier: TIER_SILVER params { key: "probe" value: "content_events published→archived in 168 h without a reason == 0" } rationale: "conservation: a currency FAIL was cleared by archiving 79 cards on 2026-09-05; the surface may not shrink silently" }
   gates { name: "removal_reasons_declared" kind: GATE_KIND_PROBE_PASS tier: TIER_SILVER params { key: "probe" value: "every explained removal's category ∈ duplicate|adversarial|license|retired|broken|operator" } rationale: "conservation: 'stale' is not a reason; acquisition is" }
   horizon { window_seconds: 43200 }
   resolves: "slot % serves current content%"

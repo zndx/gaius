@@ -17,7 +17,7 @@ pure: facts in, gates out. `collect_facts()` is the only I/O.
 
 Conservation (2026-09-06, user): "expand the objective to also preclude
 dropping content" — a currency gate was satisfiable by archiving, and that is
-how it was satisfied on 2026-09-05. With `collections.card_events` journaling
+how it was satisfied on 2026-09-05. With `collections.content_events` journaling
 every status transition, monotonicity is exactly: no published → archived
 transition without a declared reason (category ∈ REMOVAL_REASONS).
 """
@@ -178,9 +178,9 @@ def evaluate(facts: dict[str, Any], params: dict[str, Any] | None = None) -> lis
         ))
 
     # ---- conservation ---------------------------------------------------
-    ev = facts.get("events")  # {window_hours, journal_since, added, removed: [{card_id, reason}]}
+    ev = facts.get("events")  # {window_hours, journal_since, added, removed: [{content_id, reason}]}
     if ev is None:
-        err = f"collections.card_events unreadable: {facts.get('events_error', 'no journal')} — apply migration 20260906000001"
+        err = f"collections.content_events unreadable: {facts.get('events_error', 'no journal')} — apply migration 20260906000001"
         for g in ("no_unexplained_removals", "removal_reasons_declared"):
             gates.append(_gate(g, "error", err))
     else:
@@ -188,16 +188,16 @@ def evaluate(facts: dict[str, Any], params: dict[str, Any] | None = None) -> lis
         since = ev.get("journal_since")
         coverage = "" if not since else f"; journal since {since}"
         removed = list(ev.get("removed") or [])
-        unexplained = [r["card_id"] for r in removed if not (r.get("reason") or "").strip()]
+        unexplained = [r["content_id"] for r in removed if not (r.get("reason") or "").strip()]
         gates.append(_gate(
             "no_unexplained_removals", "pass" if not unexplained else "fail",
             f"{len(unexplained)}/{len(removed)} published→archived transitions in {window_h}h carry no reason"
             f" (added {int(ev.get('added', 0))}{coverage})"
             + (": " + ", ".join(unexplained[:8]) if unexplained else "")
-            + ("" if not unexplained else " — the surface may not shrink silently: archive with SET LOCAL gaius.card_reason"),
+            + ("" if not unexplained else " — the surface may not shrink silently: archive with SET LOCAL gaius.content_reason"),
         ))
         explained = [r for r in removed if (r.get("reason") or "").strip()]
-        undeclared = [(r["card_id"], r["reason"]) for r in explained
+        undeclared = [(r["content_id"], r["reason"]) for r in explained
                       if r["reason"].split(":", 1)[0].strip().lower() not in REMOVAL_REASONS]
         gates.append(_gate(
             "removal_reasons_declared", "pass" if not undeclared else "fail",
@@ -210,7 +210,7 @@ def evaluate(facts: dict[str, Any], params: dict[str, Any] | None = None) -> lis
 
 async def collect_facts(pool: Any, params: dict[str, Any] | None = None) -> dict[str, Any]:
     """The only I/O: the live page (as the visitor sees it), the published rows,
-    the goggle's discard list, and the card_events window. Every failure lands
+    the goggle's discard list, and the content_events window. Every failure lands
     in the facts as `<section>_error` so evaluate() renders an honest `error`."""
     import aiohttp
     from pathlib import Path
@@ -275,18 +275,18 @@ async def collect_facts(pool: Any, params: dict[str, Any] | None = None) -> dict
     window_h = int(p["conservation_window_hours"])
     try:
         async with pool.acquire() as conn:
-            since = await conn.fetchval("SELECT min(at) FROM collections.card_events")
+            since = await conn.fetchval("SELECT min(at) FROM collections.content_events")
             added = await conn.fetchval(
-                "SELECT count(*) FROM collections.card_events WHERE to_status = 'published' "
+                "SELECT count(*) FROM collections.content_events WHERE content_kind = 'card' AND to_status = 'published' "
                 "AND at > NOW() - make_interval(hours => $1)", window_h)
             removed = await conn.fetch(
-                "SELECT card_id, reason FROM collections.card_events WHERE from_status = 'published' "
+                "SELECT content_id, reason FROM collections.content_events WHERE content_kind = 'card' AND from_status = 'published' "
                 "AND to_status <> 'published' AND at > NOW() - make_interval(hours => $1) ORDER BY at", window_h)
         facts["events"] = {
             "window_hours": window_h,
             "journal_since": since.isoformat() if since else None,
             "added": int(added or 0),
-            "removed": [{"card_id": r["card_id"], "reason": r["reason"]} for r in removed],
+            "removed": [{"content_id": r["content_id"], "reason": r["reason"]} for r in removed],
         }
     except Exception as e:  # noqa: BLE001
         facts["events_error"] = str(e)[:200]
