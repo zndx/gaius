@@ -573,6 +573,24 @@ class GaiusZndxEngineServicer(zpb_grpc.EngineServicer):
             resp = local_response(int(request.kind), self._services)
             if int(request.kind) == zpb.SERVER_QUERY_KIND_NOTE:
                 attach_local_note(resp, request.note_id)
+            if int(request.kind) == zpb.SERVER_QUERY_KIND_THOUGHTS:
+                # (2026-09-07) "What have you been thinking about?" — the newest
+                # persisted thoughts as CONTENT (CognitionHint stays the overview).
+                # Async enrichment like SCHEDULES/COGNITION; the note is honest when
+                # the store is empty, idle, or unreachable — never a fake thought.
+                from ...services.thoughts_hint import collect_thoughts, to_proto
+
+                pool = getattr(self._services, "db_pool", None)
+                if pool is None:
+                    cog = getattr(self._services, "cognition_service", None)
+                    pool = getattr(cog, "_db_pool", None) if cog is not None else None
+                hint = await collect_thoughts(
+                    pool,
+                    limit=int(request.limit or 0),
+                    since_ms=int(request.since_ms or 0),
+                    stream=str(request.stream or ""),
+                )
+                resp.thoughts_hint.CopyFrom(to_proto(hint))
             if int(request.kind) == zpb.SERVER_QUERY_KIND_SCHEDULES:
                 from ...services.summary_schedule import list_schedule_catalog
 
