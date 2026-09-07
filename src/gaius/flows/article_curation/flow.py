@@ -2315,6 +2315,16 @@ Be concise - each summary should be 1-2 sentences max."""
                     source_date = source_date_from_frontmatter(_parse_frontmatter(src_text))
                 except Exception as e:  # noqa: BLE001 — a date is metadata; the card still lands
                     print(f"  {ref.ref_id}: source_date unavailable ({e}); leaving NULL")
+                if source_date is None:
+                    # (2026-09-07) arXiv papers arriving as web results carry no
+                    # frontmatter date; the identifier's month is an honest lower
+                    # bound. Still None → the card stays pending at publish time
+                    # (an undated card never reaches the surface).
+                    from gaius.flows.article_curation.common import source_date_from_url
+
+                    source_date = source_date_from_url(source_url)
+                    if source_date is not None:
+                        print(f"  {ref.ref_id}: source_date {source_date} from the arXiv id month (lower bound)")
 
                 card = await service.add_card(
                     collection_id=self.collection_id,

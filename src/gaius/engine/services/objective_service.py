@@ -288,9 +288,12 @@ OBJECTIVES: dict[str, ObjectiveSpec] = {
             "FINAL SURFACED RESULT: the cards a visitor sees on gaius.zndx.org. "
             "CURRENCY — the newest visible date is within newest_days, at least "
             "min_current_share of the first `band` cards are within current_days, "
-            "the top card was published within refresh_hours. INTEGRITY — no "
-            "published card has a marketing/aggregation shape, comes from a domain "
-            "the acquisition goggle discards, or shares its source URL with another. "
+            "the top card was published within refresh_hours. INTEGRITY — the page "
+            "reads newest-first by the content's own date (0 inversions) and every "
+            "visible card is dated (2026-09-07: a casual visitor must see fresh, "
+            "well-ordered content as proof the pipelines work); no published card "
+            "has a marketing/aggregation shape, comes from a domain the acquisition "
+            "goggle discards, or shares its source URL with another. "
             "CONSERVATION — every published→archived transition in the window "
             "carries a reason of a declared category (collections.content_events): "
             "content tracks the present by addition, never by silent removal "
@@ -311,6 +314,13 @@ OBJECTIVES: dict[str, ObjectiveSpec] = {
             # refresh_hours: slots at 12/17/21/02 UTC → longest gap 10 h → F=13.
             "refresh_hours": 13,
             "surface_url": "https://gaius.zndx.org/",
+            # integrity — ordering and dating (2026-09-07, user): the KV lists are
+            #   ORDER BY source_date DESC NULLS LAST; the page must show 0
+            #   inversions among dated cards and 0 undated cards. Until then the
+            #   page followed publish-slot order and read jumbled once slots
+            #   published their freshest pending content first.
+            "max_inversions": 0,
+            "max_undated": 0,
             # integrity — the same rules acquisition applies (looks_like_marketing,
             #   the goggle's $discard,site= list): what would be refused at
             #   acquisition must not be on the page.

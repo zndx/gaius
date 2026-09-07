@@ -9,7 +9,7 @@
 # until the supervisor's own Brier record earns promotion per scope.
 
 project: "gaius"
-spec_version: "2026-09-06.1"
+spec_version: "2026-09-07.1"
 engine_build: "trunk"            # replaced by the deployed build id at launch; with
                                  # spec_version this is the scoring epoch
 engine_grpc: "127.0.0.1:50051"
@@ -405,6 +405,8 @@ objectives { name: "surface_integrity" surfaced_result: "the cards a visitor see
   gates { name: "surface_newest_current" kind: GATE_KIND_FRESHNESS_WITHIN tier: TIER_SILVER params { key: "source" value: "newest card-date on the live page vs today" } params { key: "within_seconds" value: "172800" } rationale: "currency: daily curate + day-granular source dates → 2 d" }
   gates { name: "surface_band_current" kind: GATE_KIND_PROBE_PASS tier: TIER_SILVER params { key: "probe" value: "share of the first 26 live cards dated within 7 d >= 0.5" } rationale: "currency: one day's intended publishes ≈ 20 curate : 6 slot (0.77); floor is half" }
   gates { name: "surface_refreshed_within_intent" kind: GATE_KIND_FRESHNESS_WITHIN tier: TIER_SILVER params { key: "source" value: "top live card published_at" } params { key: "within_seconds" value: "46800" } rationale: "currency: slots 12/17/21/02 UTC → longest gap 10 h → F=13" }
+  gates { name: "surface_ordered" kind: GATE_KIND_PROBE_PASS tier: TIER_SILVER params { key: "probe" value: "the live page's dated cards read newest-first by the content's own date: 0 inversions top to bottom" } params { key: "rationale" value: "2026-09-07 user: a casual visitor must see well-ordered content as proof the pipelines work; the page followed publish-slot order and read jumbled once slots published freshest-first" } }
+  gates { name: "surface_dates_present" kind: GATE_KIND_PROBE_PASS tier: TIER_SILVER params { key: "probe" value: "every visible card carries a source_date: 0 undated" } params { key: "rationale" value: "an undated card cannot be judged current or ordered; publish_cards_by_ids keeps undated cards pending (2026-09-07)" } }
   gates { name: "no_marketing_shapes" kind: GATE_KIND_PROBE_PASS tier: TIER_SILVER params { key: "probe" value: "published cards matching flows.article_curation.common.looks_like_marketing == 0" } rationale: "integrity: the shape acquisition refuses must not be on the page" }
   gates { name: "no_denied_domains" kind: GATE_KIND_PROBE_PASS tier: TIER_SILVER params { key: "probe" value: "published cards from a config/brave/web-half.goggle $discard,site= domain == 0" } rationale: "integrity: the goggle's discard list is the vendor list" }
   gates { name: "no_duplicate_sources" kind: GATE_KIND_PROBE_PASS tier: TIER_SILVER params { key: "probe" value: "no source_url published more than once" } rationale: "integrity: one card per source across articles (agentic.ai x4, 2026-09-06)" }

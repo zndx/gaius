@@ -492,6 +492,60 @@ def source_date_from_frontmatter(fm: dict[str, Any]) -> Optional[date]:
     return None
 
 
+_ARXIV_URL_ID = re.compile(r"arxiv\.org/(?:abs|html|pdf)/(\d{2})(\d{2})\.\d{4,5}", re.IGNORECASE)
+
+
+def source_date_from_url(url: str | None) -> Optional[date]:
+    """Last-resort honest date from the source URL itself.
+
+    (2026-09-07) The web half of curation hands arXiv papers over as plain web
+    results (`arxiv.org/html/YYMM.NNNNN`), whose frontmatter carries no
+    published/page_age/age and no `arxiv://` traceable_id — so two such cards
+    reached the public surface with NULL source_date and sat undated among
+    dated ones. The arXiv identifier encodes its submission month: the first
+    of that month is a LOWER bound on freshness (rule 4 above), never an
+    overstatement. Anything else → None: an undated source stays undated and
+    `publish_cards_by_ids` will not put it on the surface.
+    """
+    from datetime import date as _date
+
+    m = _ARXIV_URL_ID.search(url or "")
+    if not m:
+        return None
+    arxiv_id = re.search(r"(\d{4}\.\d{4,5})", m.group(0)).group(1)  # type: ignore[union-attr]
+    real = arxiv_published_date(arxiv_id)
+    if real is not None:
+        return real
+    yy, mm = int(m[1]), int(m[2])
+    if not 1 <= mm <= 12:
+        return None
+    return _date(2000 + yy, mm, 1)
+
+
+def arxiv_published_date(arxiv_id: str, timeout_s: float = 10.0) -> Optional[date]:
+    """The paper's REAL first-version date from the arXiv API (`<published>`),
+    or None when the API does not answer — the caller then keeps the id-month
+    lower bound rather than a guess. One GET, no retries: a date is metadata."""
+    import urllib.request
+    from datetime import datetime as _dt
+    from xml.etree import ElementTree as _ET
+
+    url = f"https://export.arxiv.org/api/query?id_list={arxiv_id}"
+    try:
+        with urllib.request.urlopen(url, timeout=timeout_s) as resp:  # noqa: S310 — fixed host
+            root = _ET.fromstring(resp.read())
+    except Exception:  # noqa: BLE001 — unreachable API = no real date, said by the None
+        return None
+    ns = {"a": "http://www.w3.org/2005/Atom"}
+    node = root.find("a:entry/a:published", ns)
+    if node is None or not (node.text or "").strip():
+        return None
+    try:
+        return _dt.fromisoformat(node.text.strip().replace("Z", "+00:00")).date()
+    except ValueError:
+        return None
+
+
 def _extract_h1_title(content: str) -> Optional[str]:
     """Extract H1 title from markdown content.
 

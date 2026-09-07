@@ -1234,6 +1234,14 @@ class CollectionService:
         """Get published cards for landing page.
 
         If collection_id is None, uses the featured collection.
+
+        Reader order (2026-09-07): the CONTENT's own date, newest first —
+        `source_date DESC NULLS LAST`, then publish time, then id. The page
+        used to follow `published_at`; once slots began publishing their
+        freshest pending content first (2026-09-05), a 12:00 slot's 09-02
+        cards sat above a 10:15 slot's 09-05 cards and a batch's ties came out
+        in arbitrary order — "the dates look jumbled". A casual visitor must
+        read the surface as well-ordered proof the pipelines work.
         """
         async with self._pool.acquire() as conn:
             if collection_id:
@@ -1241,7 +1249,7 @@ class CollectionService:
                     """
                     SELECT * FROM collections.cards
                     WHERE collection_id = $1 AND status = 'published'
-                    ORDER BY published_at DESC
+                    ORDER BY source_date DESC NULLS LAST, published_at DESC, card_id
                     LIMIT $2
                     """,
                     collection_id, limit,
@@ -1253,7 +1261,7 @@ class CollectionService:
                     SELECT c.* FROM collections.cards c
                     JOIN collections.collections col ON c.collection_id = col.collection_id
                     WHERE col.featured = TRUE AND c.status = 'published'
-                    ORDER BY c.published_at DESC
+                    ORDER BY c.source_date DESC NULLS LAST, c.published_at DESC, c.card_id
                     LIMIT $1
                     """,
                     limit,
@@ -1457,11 +1465,29 @@ class CollectionService:
             return []
 
         async with self._pool.acquire() as conn:
+            # (2026-09-07) An undated card never reaches the surface: the page is
+            # ordered by the content's own date and the surface_integrity
+            # objective holds every visible card to carrying one
+            # (`surface_dates_present`). Undated cards stay pending, named here.
+            undated = await conn.fetch(
+                """
+                SELECT card_id, source_url FROM collections.cards
+                WHERE card_id = ANY($1) AND status = 'pending' AND source_date IS NULL
+                """,
+                card_ids,
+            )
+            if undated:
+                logger.warning(
+                    "#COL.00000030.UNDATED %d card(s) left pending — no source_date: %s\n"
+                    "  Try: set source_date from the source (arXiv id month, page_age) or archive with a reason",
+                    len(undated),
+                    ", ".join(f"{r['card_id']} ({(r['source_url'] or '')[:60]})" for r in undated),
+                )
             rows = await conn.fetch(
                 """
                 UPDATE collections.cards
                 SET status = 'published', published_at = NOW(), updated_at = NOW()
-                WHERE card_id = ANY($1) AND status = 'pending'
+                WHERE card_id = ANY($1) AND status = 'pending' AND source_date IS NOT NULL
                 RETURNING *
                 """,
                 card_ids,
@@ -1635,9 +1661,12 @@ class CollectionService:
     async def get_cards_for_kv(self, limit: int = 200) -> list[dict[str, Any]]:
         """Get all published cards across active collections for Cloudflare KV.
 
-        Returns cards from ALL active collections as public dicts,
-        sorted by published_at descending — ready for JSON serialization
-        and the landing page published_cards KV key.
+        Returns cards from ALL active collections as public dicts in READER
+        order — the content's own date newest first (`source_date DESC NULLS
+        LAST`, then publish time, then id; see get_published_cards) — ready
+        for JSON serialization and the landing page published_cards KV key.
+        The surface_integrity objective's `surface_ordered` gate holds the
+        live page to exactly this order.
         """
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(
@@ -1645,7 +1674,7 @@ class CollectionService:
                 SELECT c.* FROM collections.cards c
                 JOIN collections.collections col ON c.collection_id = col.collection_id
                 WHERE col.status = 'active' AND c.status = 'published'
-                ORDER BY c.published_at DESC
+                ORDER BY c.source_date DESC NULLS LAST, c.published_at DESC, c.card_id
                 LIMIT $1
                 """,
                 limit,

@@ -1,11 +1,13 @@
 """surface_integrity — the composite objective on the public surface.
 
-One objective, three aspects, eight gates, all deterministic and all defined
+One objective, three aspects, ten gates, all deterministic and all defined
 on what a visitor RECEIVES at gaius.zndx.org (doctrine rule 2):
 
   currency      surface_newest_current · surface_band_current ·
                 surface_refreshed_within_intent          (ex content_currency)
-  integrity     no_marketing_shapes · no_denied_domains · no_duplicate_sources
+  integrity     surface_ordered · surface_dates_present (2026-09-07: the page reads
+                newest-first by the content's own date, every card dated) ·
+                no_marketing_shapes · no_denied_domains · no_duplicate_sources
   conservation  no_unexplained_removals · removal_reasons_declared
 
 The split is the sdg-strategy `objective` pillar's shape (external/sdg-strategy/
@@ -32,6 +34,8 @@ GATES: tuple[str, ...] = (
     "surface_newest_current",
     "surface_band_current",
     "surface_refreshed_within_intent",
+    "surface_ordered",
+    "surface_dates_present",
     "no_marketing_shapes",
     "no_denied_domains",
     "no_duplicate_sources",
@@ -42,6 +46,8 @@ ASPECT: dict[str, str] = {
     "surface_newest_current": "currency",
     "surface_band_current": "currency",
     "surface_refreshed_within_intent": "currency",
+    "surface_ordered": "integrity",
+    "surface_dates_present": "integrity",
     "no_marketing_shapes": "integrity",
     "no_denied_domains": "integrity",
     "no_duplicate_sources": "integrity",
@@ -59,6 +65,13 @@ DEFAULT_PARAMS: dict[str, Any] = {
     "conservation_window_hours": 168,
     "goggle": "config/brave/web-half.goggle",
     "surface_url": "https://gaius.zndx.org/",
+    # (2026-09-07, user) "a casual visitor sees fresh, well-ordered content: proof
+    # the pipelines work" — the surface must read newest-first by the content's
+    # own date (0 inversions) and every visible card must carry that date (0
+    # missing), alongside newest_days = 2 (cards for content published within
+    # the last 48 hours). The page followed publish-slot order until then.
+    "max_inversions": 0,
+    "max_undated": 0,
 }
 
 
@@ -78,7 +91,7 @@ def _gate(name: str, verdict: str, evidence: str) -> dict[str, Any]:
 
 
 def evaluate(facts: dict[str, Any], params: dict[str, Any] | None = None) -> list[dict[str, Any]]:
-    """Pure: the eight gates from a facts dict (shape documented in the card's
+    """Pure: the ten gates from a facts dict (shape documented in the card's
     JSON examples). Verdicts are pass | fail | error — never inconclusive: a gate
     that cannot decide says why in `error` (the 2026-09-03 lesson)."""
     from gaius.flows.article_curation.common import looks_like_marketing
@@ -92,7 +105,8 @@ def evaluate(facts: dict[str, Any], params: dict[str, Any] | None = None) -> lis
     surface = facts.get("surface")  # ordered [[card_id, "YYYY-MM-DD" | null], ...] as the visitor sees it
     if surface is None:
         err = f"surface unreadable: {facts.get('surface_error', 'no surface facts')}"
-        for g in ("surface_newest_current", "surface_band_current", "surface_refreshed_within_intent"):
+        for g in ("surface_newest_current", "surface_band_current", "surface_refreshed_within_intent",
+                  "surface_ordered", "surface_dates_present"):
             gates.append(_gate(g, "error", err))
     else:
         cards = [(cid, _d(d)) for cid, d in surface]
@@ -119,6 +133,35 @@ def evaluate(facts: dict[str, Any], params: dict[str, Any] | None = None) -> lis
             f"≥ {min_share:.2f} required — intent ≈ 20 curate : 6 slot publishes per day)"
             + ("" if ok else " — DAG stage: article_curate's selection returned mostly non-current sources, "
                "or publish_cards' picks are outweighing it, or the curate did not run"),
+        ))
+        # ---- integrity: the page reads as well-ordered, and every card is dated
+        dated_seq = [(i + 1, cid, d) for i, (cid, d) in enumerate(cards) if d is not None]
+        inversions = [
+            (a, b) for a, b in zip(dated_seq, dated_seq[1:]) if b[2] > a[2]
+        ]
+        max_inv = int(p.get("max_inversions", 0))
+        ok = len(inversions) <= max_inv
+        first = (
+            f"; first: #{inversions[0][0][0]} {inversions[0][0][1]} {inversions[0][0][2]} above "
+            f"#{inversions[0][1][0]} {inversions[0][1][1]} {inversions[0][1][2]}"
+            if inversions else ""
+        )
+        gates.append(_gate(
+            "surface_ordered", "pass" if ok else "fail",
+            f"{len(inversions)} date inversion(s) among {len(dated_seq)} dated cards top to bottom "
+            f"(≤ {max_inv} required: the page lists the content's own date newest first){first}"
+            + ("" if ok else " — DAG stage: publish_cards KV sync order (get_cards_for_kv / get_published_cards "
+               "must ORDER BY source_date DESC NULLS LAST)"),
+        ))
+        undated = [(i + 1, cid) for i, (cid, d) in enumerate(cards) if d is None]
+        max_und = int(p.get("max_undated", 0))
+        ok = len(undated) <= max_und
+        gates.append(_gate(
+            "surface_dates_present", "pass" if ok else "fail",
+            f"{len(undated)}/{len(cards)} visible cards carry no date (≤ {max_und} required)"
+            + (": " + ", ".join(f"#{i} {cid}" for i, cid in undated[:6]) if undated else "")
+            + ("" if ok else " — DAG stage: article_curate card creation left source_date NULL and "
+               "publish let it through (publish_cards_by_ids now keeps undated cards pending)"),
         ))
         top_id = cards[0][0] if cards else None
         top_pub = _ts(facts.get("top_published_at"))

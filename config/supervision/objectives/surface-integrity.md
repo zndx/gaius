@@ -3,8 +3,11 @@
 ## Description:
 This objective is defined on the **final surfaced result** — the cards a
 visitor sees at https://gaius.zndx.org/ — and asks one composite question with
-three aspects: is the surface **current**, is it **clean**, and is it
-**conserved**. It replaces `content_currency` (2026-09-01 → 2026-09-06) and
+three aspects: is the surface **current**, is it **clean** (well-ordered, dated,
+free of marketing shapes), and is it **conserved**. (2026-09-07, user: "give a
+casual visitor confidence that the underlying content pipelines and workflows are
+working as intended, consistently … relevant, fresh, compelling information" —
+hence `surface_ordered` and `surface_dates_present` beside the 48 h currency.) It replaces `content_currency` (2026-09-01 → 2026-09-06) and
 absorbs the source-integrity and conservation gates added on 2026-09-06 after
 adversarial marketing content reached the page and after a currency FAIL had
 been cleared by archiving content. The mechanics pair, `site_freshness`,
@@ -40,6 +43,8 @@ efficacy: a specimen that once surfaced a fault is pinned forever.
 | currency | `surface_newest_current` | newest visible date ≥ today − `newest_days` (2) | daily curate (09:07 UTC) + day-granular dates |
 | currency | `surface_band_current` | share of the first `band` (26) cards within `current_days` (7) ≥ `min_current_share` (0.5) | intended mix ≈ 20 curate : 6 slots (0.77); floor is half |
 | currency | `surface_refreshed_within_intent` | top card published ≤ `refresh_hours` (13) ago; unknown to the DB = fail | slots 12/17/21/02 UTC, longest gap 10 h → F=13 |
+| integrity | `surface_ordered` | dated visible cards read newest-first by the content's own date: inversions ≤ `max_inversions` (0) | a casual visitor sees well-ordered content as proof the pipelines work (2026-09-07); the page followed publish-slot order and read jumbled once slots published freshest-first — the KV lists are `ORDER BY source_date DESC NULLS LAST, published_at DESC, card_id` |
+| integrity | `surface_dates_present` | visible cards without a date ≤ `max_undated` (0) | an undated card can be neither current nor ordered; `publish_cards_by_ids` keeps undated cards pending; arXiv-as-web sources take the arXiv API date (id month as the lower bound) |
 | integrity | `no_marketing_shapes` | `looks_like_marketing(url, title)` matches 0 published cards | what acquisition refuses must not be on the page |
 | integrity | `no_denied_domains` | 0 published cards from a goggle-discarded domain | the goggle's discard list is the vendor list |
 | integrity | `no_duplicate_sources` | no `source_url` published more than once | one card per source across articles |

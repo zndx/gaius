@@ -1,6 +1,6 @@
 {
   "name": "Surface Integrity (composite objective on the public surface)",
-  "description": "The cards a visitor sees at gaius.zndx.org are current, clean, and conserved: newest visible date within newest_days; at least min_current_share of the first band cards within current_days; top card published within refresh_hours; no marketing/aggregation shape, no goggle-discarded domain, no duplicate source URL among published cards; no published→archived transition in the window without a declared-category reason. Verdicts are pass|fail|error per gate, never inconclusive; each FAIL names the DAG stage; the flip is the smallest declared action that restores PASS.",
+  "description": "The cards a visitor sees at gaius.zndx.org are current, clean, and conserved: newest visible date within newest_days; at least min_current_share of the first band cards within current_days; top card published within refresh_hours; no marketing/aggregation shape, no goggle-discarded domain, no duplicate source URL among published cards; no published→archived transition in the window without a declared-category reason. Verdicts are pass|fail|error per gate, never inconclusive; each FAIL names the DAG stage; the flip is the smallest declared action that restores PASS. (2026-09-07: two integrity gates added — surface_ordered: the page reads newest-first by the content's own date, 0 inversions; surface_dates_present: every visible card is dated. User: 'a casual visitor sees fresh, well-ordered content: proof the pipelines work'.)",
   "modality": "Structured facts (JSON) collected from the live page, collections.cards, the Brave goggle and collections.content_events",
   "diagram": null,
   "citations": [
@@ -17,87 +17,352 @@
     "refresh_hours": 13,
     "conservation_window_hours": 168,
     "goggle": "config/brave/web-half.goggle",
-    "surface_url": "https://gaius.zndx.org/"
+    "surface_url": "https://gaius.zndx.org/",
+    "max_inversions": 0,
+    "max_undated": 0
   },
   "examples": [
     {
       "name": "A — 2026-09-01: mechanics green, intent failed",
       "note": "site_freshness PASSed for weeks while the page led with 18-day-old content past fresher pending cards. band scaled to 8 for legibility.",
-      "params": {"band": 8},
+      "params": {
+        "band": 8
+      },
       "input": {
-        "today": "2026-09-01", "now": "2026-09-01T23:02:00Z",
-        "surface": [["c1","2026-08-14"],["c2","2026-08-14"],["c3","2026-08-30"],["c4","2026-08-14"],["c5","2026-08-14"],["c6","2026-08-14"],["c7","2026-08-30"],["c8","2026-08-14"]],
+        "today": "2026-09-01",
+        "now": "2026-09-01T23:02:00Z",
+        "surface": [
+          [
+            "c1",
+            "2026-08-14"
+          ],
+          [
+            "c2",
+            "2026-08-14"
+          ],
+          [
+            "c3",
+            "2026-08-30"
+          ],
+          [
+            "c4",
+            "2026-08-14"
+          ],
+          [
+            "c5",
+            "2026-08-14"
+          ],
+          [
+            "c6",
+            "2026-08-14"
+          ],
+          [
+            "c7",
+            "2026-08-30"
+          ],
+          [
+            "c8",
+            "2026-08-14"
+          ]
+        ],
         "top_published_at": "2026-09-01T21:00:00Z",
         "corpus_newest": "2026-08-30",
         "published": [
-          {"card_id":"c1","source_url":"https://arxiv.org/abs/2608.01001","title":"A"},
-          {"card_id":"c2","source_url":"https://arxiv.org/abs/2608.01002","title":"B"},
-          {"card_id":"c3","source_url":"https://arxiv.org/abs/2608.30003","title":"C"},
-          {"card_id":"c4","source_url":"https://arxiv.org/abs/2608.01004","title":"D"},
-          {"card_id":"c5","source_url":"https://arxiv.org/abs/2608.01005","title":"E"},
-          {"card_id":"c6","source_url":"https://arxiv.org/abs/2608.01006","title":"F"},
-          {"card_id":"c7","source_url":"https://arxiv.org/abs/2608.30007","title":"G"},
-          {"card_id":"c8","source_url":"https://arxiv.org/abs/2608.01008","title":"H"}
+          {
+            "card_id": "c1",
+            "source_url": "https://arxiv.org/abs/2608.01001",
+            "title": "A"
+          },
+          {
+            "card_id": "c2",
+            "source_url": "https://arxiv.org/abs/2608.01002",
+            "title": "B"
+          },
+          {
+            "card_id": "c3",
+            "source_url": "https://arxiv.org/abs/2608.30003",
+            "title": "C"
+          },
+          {
+            "card_id": "c4",
+            "source_url": "https://arxiv.org/abs/2608.01004",
+            "title": "D"
+          },
+          {
+            "card_id": "c5",
+            "source_url": "https://arxiv.org/abs/2608.01005",
+            "title": "E"
+          },
+          {
+            "card_id": "c6",
+            "source_url": "https://arxiv.org/abs/2608.01006",
+            "title": "F"
+          },
+          {
+            "card_id": "c7",
+            "source_url": "https://arxiv.org/abs/2608.30007",
+            "title": "G"
+          },
+          {
+            "card_id": "c8",
+            "source_url": "https://arxiv.org/abs/2608.01008",
+            "title": "H"
+          }
         ],
-        "denied_domains": ["answerthis.io","agentic.ai"],
-        "events": {"window_hours": 168, "journal_since": "2026-08-25T00:00:00Z", "added": 8, "removed": []}
+        "denied_domains": [
+          "answerthis.io",
+          "agentic.ai"
+        ],
+        "events": {
+          "window_hours": 168,
+          "journal_since": "2026-08-25T00:00:00Z",
+          "added": 8,
+          "removed": []
+        }
       },
       "output": {
-        "gates": {"surface_newest_current":"pass","surface_band_current":"fail","surface_refreshed_within_intent":"pass","no_marketing_shapes":"pass","no_denied_domains":"pass","no_duplicate_sources":"pass","no_unexplained_removals":"pass","removal_reasons_declared":"pass"},
+        "gates": {
+          "surface_newest_current": "pass",
+          "surface_band_current": "fail",
+          "surface_refreshed_within_intent": "pass",
+          "surface_ordered": "fail",
+          "surface_dates_present": "pass",
+          "no_marketing_shapes": "pass",
+          "no_denied_domains": "pass",
+          "no_duplicate_sources": "pass",
+          "no_unexplained_removals": "pass",
+          "removal_reasons_declared": "pass"
+        },
         "stage": "article_curate selection / publish_cards picks",
         "flip": "slots publish current-only, freshest first; curate at week freshness"
       }
     },
     {
       "name": "B — 2026-09-05 21:44: stale slot cards and year-old web cards in the band",
-      "params": {"band": 8},
+      "params": {
+        "band": 8
+      },
       "input": {
-        "today": "2026-09-05", "now": "2026-09-05T21:44:00Z",
-        "surface": [["s1","2026-08-17"],["s2","2026-08-17"],["a1","2026-09-03"],["w1","2025-09-11"],["a2","2026-09-03"],["w2","2026-07-28"],["a3","2026-09-03"],["s3","2026-08-16"]],
+        "today": "2026-09-05",
+        "now": "2026-09-05T21:44:00Z",
+        "surface": [
+          [
+            "s1",
+            "2026-08-17"
+          ],
+          [
+            "s2",
+            "2026-08-17"
+          ],
+          [
+            "a1",
+            "2026-09-03"
+          ],
+          [
+            "w1",
+            "2025-09-11"
+          ],
+          [
+            "a2",
+            "2026-09-03"
+          ],
+          [
+            "w2",
+            "2026-07-28"
+          ],
+          [
+            "a3",
+            "2026-09-03"
+          ],
+          [
+            "s3",
+            "2026-08-16"
+          ]
+        ],
         "top_published_at": "2026-09-05T21:07:00Z",
         "corpus_newest": "2026-09-03",
         "published": [
-          {"card_id":"s1","source_url":"https://arxiv.org/abs/2608.17001","title":"S1"},
-          {"card_id":"s2","source_url":"https://arxiv.org/abs/2608.17002","title":"S2"},
-          {"card_id":"a1","source_url":"https://arxiv.org/abs/2609.03001","title":"A1"},
-          {"card_id":"w1","source_url":"https://medium.com/integrating-research/ai-agent-ideas","title":"AI Agent Ideas in Research Knowledge Management"},
-          {"card_id":"a2","source_url":"https://arxiv.org/abs/2609.03002","title":"A2"},
-          {"card_id":"w2","source_url":"https://example.org/notes/knowledge-graphs","title":"Knowledge graphs in practice"},
-          {"card_id":"a3","source_url":"https://arxiv.org/abs/2609.03003","title":"A3"},
-          {"card_id":"s3","source_url":"https://arxiv.org/abs/2608.16003","title":"S3"}
+          {
+            "card_id": "s1",
+            "source_url": "https://arxiv.org/abs/2608.17001",
+            "title": "S1"
+          },
+          {
+            "card_id": "s2",
+            "source_url": "https://arxiv.org/abs/2608.17002",
+            "title": "S2"
+          },
+          {
+            "card_id": "a1",
+            "source_url": "https://arxiv.org/abs/2609.03001",
+            "title": "A1"
+          },
+          {
+            "card_id": "w1",
+            "source_url": "https://medium.com/integrating-research/ai-agent-ideas",
+            "title": "AI Agent Ideas in Research Knowledge Management"
+          },
+          {
+            "card_id": "a2",
+            "source_url": "https://arxiv.org/abs/2609.03002",
+            "title": "A2"
+          },
+          {
+            "card_id": "w2",
+            "source_url": "https://example.org/notes/knowledge-graphs",
+            "title": "Knowledge graphs in practice"
+          },
+          {
+            "card_id": "a3",
+            "source_url": "https://arxiv.org/abs/2609.03003",
+            "title": "A3"
+          },
+          {
+            "card_id": "s3",
+            "source_url": "https://arxiv.org/abs/2608.16003",
+            "title": "S3"
+          }
         ],
-        "denied_domains": ["answerthis.io","agentic.ai"],
-        "events": {"window_hours": 168, "journal_since": "2026-08-30T00:00:00Z", "added": 6, "removed": []}
+        "denied_domains": [
+          "answerthis.io",
+          "agentic.ai"
+        ],
+        "events": {
+          "window_hours": 168,
+          "journal_since": "2026-08-30T00:00:00Z",
+          "added": 6,
+          "removed": []
+        }
       },
       "output": {
-        "gates": {"surface_newest_current":"pass","surface_band_current":"fail","surface_refreshed_within_intent":"pass","no_marketing_shapes":"pass","no_denied_domains":"pass","no_duplicate_sources":"pass","no_unexplained_removals":"pass","removal_reasons_declared":"pass"},
+        "gates": {
+          "surface_newest_current": "pass",
+          "surface_band_current": "fail",
+          "surface_refreshed_within_intent": "pass",
+          "surface_ordered": "fail",
+          "surface_dates_present": "pass",
+          "no_marketing_shapes": "pass",
+          "no_denied_domains": "pass",
+          "no_duplicate_sources": "pass",
+          "no_unexplained_removals": "pass",
+          "removal_reasons_declared": "pass"
+        },
         "stage": "article_curate acquisition (Brave freshness=py) + publish_cards oldest-first picks",
         "flip": "currency-aware slot pipeline; Brave pw→pm ladder"
       }
     },
     {
       "name": "C — 2026-09-06 09:07: vendor listicles published as research",
-      "params": {"band": 8},
+      "params": {
+        "band": 8
+      },
       "input": {
-        "today": "2026-09-06", "now": "2026-09-06T10:30:00Z",
-        "surface": [["v1","2026-09-05"],["v2","2026-09-04"],["a1","2026-09-03"],["v3","2026-09-03"],["a2","2026-09-03"],["v2b","2026-09-04"],["a3","2026-09-01"],["a4","2026-09-01"]],
+        "today": "2026-09-06",
+        "now": "2026-09-06T10:30:00Z",
+        "surface": [
+          [
+            "v1",
+            "2026-09-05"
+          ],
+          [
+            "v2",
+            "2026-09-04"
+          ],
+          [
+            "a1",
+            "2026-09-03"
+          ],
+          [
+            "v3",
+            "2026-09-03"
+          ],
+          [
+            "a2",
+            "2026-09-03"
+          ],
+          [
+            "v2b",
+            "2026-09-04"
+          ],
+          [
+            "a3",
+            "2026-09-01"
+          ],
+          [
+            "a4",
+            "2026-09-01"
+          ]
+        ],
         "top_published_at": "2026-09-06T10:16:00Z",
         "corpus_newest": "2026-09-05",
         "published": [
-          {"card_id":"v1","source_url":"https://agentic.ai/best/research-deep-analysis","title":"11 Best AI Research & Analysis Agents in 2026 — Agentic.ai"},
-          {"card_id":"v2","source_url":"https://www.elsevier.com/products/scopus/scopus-ai","title":"Scopus with AI | Elsevier"},
-          {"card_id":"a1","source_url":"https://arxiv.org/abs/2609.03001","title":"A1"},
-          {"card_id":"v3","source_url":"https://answerthis.io/blog/best-ai-research-assistant-tools","title":"Top 10 AI Tools for Researchers in 2026 | AnswerThis"},
-          {"card_id":"a2","source_url":"https://arxiv.org/abs/2609.03002","title":"A2"},
-          {"card_id":"v2b","source_url":"https://agentic.ai/best/research-deep-analysis","title":"11 Best AI Research & Analysis Agents in 2026 — Agentic.ai"},
-          {"card_id":"a3","source_url":"https://arxiv.org/abs/2609.01003","title":"A3"},
-          {"card_id":"a4","source_url":"https://arxiv.org/abs/2609.01004","title":"A4"}
+          {
+            "card_id": "v1",
+            "source_url": "https://agentic.ai/best/research-deep-analysis",
+            "title": "11 Best AI Research & Analysis Agents in 2026 — Agentic.ai"
+          },
+          {
+            "card_id": "v2",
+            "source_url": "https://www.elsevier.com/products/scopus/scopus-ai",
+            "title": "Scopus with AI | Elsevier"
+          },
+          {
+            "card_id": "a1",
+            "source_url": "https://arxiv.org/abs/2609.03001",
+            "title": "A1"
+          },
+          {
+            "card_id": "v3",
+            "source_url": "https://answerthis.io/blog/best-ai-research-assistant-tools",
+            "title": "Top 10 AI Tools for Researchers in 2026 | AnswerThis"
+          },
+          {
+            "card_id": "a2",
+            "source_url": "https://arxiv.org/abs/2609.03002",
+            "title": "A2"
+          },
+          {
+            "card_id": "v2b",
+            "source_url": "https://agentic.ai/best/research-deep-analysis",
+            "title": "11 Best AI Research & Analysis Agents in 2026 — Agentic.ai"
+          },
+          {
+            "card_id": "a3",
+            "source_url": "https://arxiv.org/abs/2609.01003",
+            "title": "A3"
+          },
+          {
+            "card_id": "a4",
+            "source_url": "https://arxiv.org/abs/2609.01004",
+            "title": "A4"
+          }
         ],
-        "denied_domains": ["answerthis.io","agentic.ai","lindy.ai","jenni.ai"],
-        "events": {"window_hours": 168, "journal_since": "2026-09-06T00:00:00Z", "added": 10, "removed": []}
+        "denied_domains": [
+          "answerthis.io",
+          "agentic.ai",
+          "lindy.ai",
+          "jenni.ai"
+        ],
+        "events": {
+          "window_hours": 168,
+          "journal_since": "2026-09-06T00:00:00Z",
+          "added": 10,
+          "removed": []
+        }
       },
       "output": {
-        "gates": {"surface_newest_current":"pass","surface_band_current":"pass","surface_refreshed_within_intent":"pass","no_marketing_shapes":"fail","no_denied_domains":"fail","no_duplicate_sources":"fail","no_unexplained_removals":"pass","removal_reasons_declared":"pass"},
+        "gates": {
+          "surface_newest_current": "pass",
+          "surface_band_current": "pass",
+          "surface_refreshed_within_intent": "pass",
+          "surface_ordered": "fail",
+          "surface_dates_present": "pass",
+          "no_marketing_shapes": "fail",
+          "no_denied_domains": "fail",
+          "no_duplicate_sources": "fail",
+          "no_unexplained_removals": "pass",
+          "removal_reasons_declared": "pass"
+        },
         "stage": "article_curate acquisition (goggle/reflex) and create_cards (URL dedupe)",
         "flip": "archive v1, v2, v3, v2b with reason 'adversarial: …' / 'duplicate: …'; goggle + reflex at acquisition"
       }
@@ -105,105 +370,786 @@
     {
       "name": "D — 2026-09-05 23:00: a currency FAIL cleared by archiving, before the journal",
       "note": "The reason this objective has a conservation aspect: 79 published cards were removed and the band went from 0.38 to 0.81. Removals carry no reason here.",
-      "params": {"band": 8},
+      "params": {
+        "band": 8
+      },
       "input": {
-        "today": "2026-09-06", "now": "2026-09-06T00:30:00Z",
-        "surface": [["a1","2026-09-03"],["a2","2026-09-03"],["a3","2026-09-03"],["a4","2026-09-03"],["a5","2026-09-03"],["a6","2026-09-03"],["s1","2026-08-15"],["s2","2026-08-16"]],
+        "today": "2026-09-06",
+        "now": "2026-09-06T00:30:00Z",
+        "surface": [
+          [
+            "a1",
+            "2026-09-03"
+          ],
+          [
+            "a2",
+            "2026-09-03"
+          ],
+          [
+            "a3",
+            "2026-09-03"
+          ],
+          [
+            "a4",
+            "2026-09-03"
+          ],
+          [
+            "a5",
+            "2026-09-03"
+          ],
+          [
+            "a6",
+            "2026-09-03"
+          ],
+          [
+            "s1",
+            "2026-08-15"
+          ],
+          [
+            "s2",
+            "2026-08-16"
+          ]
+        ],
         "top_published_at": "2026-09-06T00:20:00Z",
         "corpus_newest": "2026-09-03",
         "published": [
-          {"card_id":"a1","source_url":"https://arxiv.org/abs/2609.03001","title":"A1"},
-          {"card_id":"a2","source_url":"https://arxiv.org/abs/2609.03002","title":"A2"},
-          {"card_id":"a3","source_url":"https://arxiv.org/abs/2609.03003","title":"A3"},
-          {"card_id":"a4","source_url":"https://arxiv.org/abs/2609.03004","title":"A4"},
-          {"card_id":"a5","source_url":"https://arxiv.org/abs/2609.03005","title":"A5"},
-          {"card_id":"a6","source_url":"https://arxiv.org/abs/2609.03006","title":"A6"},
-          {"card_id":"s1","source_url":"https://arxiv.org/abs/2608.15001","title":"S1"},
-          {"card_id":"s2","source_url":"https://arxiv.org/abs/2608.16002","title":"S2"}
+          {
+            "card_id": "a1",
+            "source_url": "https://arxiv.org/abs/2609.03001",
+            "title": "A1"
+          },
+          {
+            "card_id": "a2",
+            "source_url": "https://arxiv.org/abs/2609.03002",
+            "title": "A2"
+          },
+          {
+            "card_id": "a3",
+            "source_url": "https://arxiv.org/abs/2609.03003",
+            "title": "A3"
+          },
+          {
+            "card_id": "a4",
+            "source_url": "https://arxiv.org/abs/2609.03004",
+            "title": "A4"
+          },
+          {
+            "card_id": "a5",
+            "source_url": "https://arxiv.org/abs/2609.03005",
+            "title": "A5"
+          },
+          {
+            "card_id": "a6",
+            "source_url": "https://arxiv.org/abs/2609.03006",
+            "title": "A6"
+          },
+          {
+            "card_id": "s1",
+            "source_url": "https://arxiv.org/abs/2608.15001",
+            "title": "S1"
+          },
+          {
+            "card_id": "s2",
+            "source_url": "https://arxiv.org/abs/2608.16002",
+            "title": "S2"
+          }
         ],
-        "denied_domains": ["answerthis.io","agentic.ai"],
-        "events": {"window_hours": 168, "journal_since": null, "added": 3, "removed": [
-          {"content_id":"x1","reason":null},{"content_id":"x2","reason":null},{"content_id":"x3","reason":""},{"content_id":"x4","reason":null},{"content_id":"x5","reason":null}
-        ]}
+        "denied_domains": [
+          "answerthis.io",
+          "agentic.ai"
+        ],
+        "events": {
+          "window_hours": 168,
+          "journal_since": null,
+          "added": 3,
+          "removed": [
+            {
+              "content_id": "x1",
+              "reason": null
+            },
+            {
+              "content_id": "x2",
+              "reason": null
+            },
+            {
+              "content_id": "x3",
+              "reason": ""
+            },
+            {
+              "content_id": "x4",
+              "reason": null
+            },
+            {
+              "content_id": "x5",
+              "reason": null
+            }
+          ]
+        }
       },
       "output": {
-        "gates": {"surface_newest_current":"fail","surface_band_current":"pass","surface_refreshed_within_intent":"pass","no_marketing_shapes":"pass","no_denied_domains":"pass","no_duplicate_sources":"pass","no_unexplained_removals":"fail","removal_reasons_declared":"pass"},
+        "gates": {
+          "surface_newest_current": "fail",
+          "surface_band_current": "pass",
+          "surface_refreshed_within_intent": "pass",
+          "surface_ordered": "fail",
+          "surface_dates_present": "pass",
+          "no_marketing_shapes": "pass",
+          "no_denied_domains": "pass",
+          "no_duplicate_sources": "pass",
+          "no_unexplained_removals": "fail",
+          "removal_reasons_declared": "pass"
+        },
         "stage": "the archiver (no reason recorded) + weekend arXiv gap on newest_current",
         "flip": "journal every transition; archive only via scripts/archive_cards.py --reason"
       }
     },
     {
       "name": "E — 2026-09-06 11:00: after remediation, all removals declared",
-      "params": {"band": 8},
+      "params": {
+        "band": 8
+      },
       "input": {
-        "today": "2026-09-06", "now": "2026-09-06T11:00:00Z",
-        "surface": [["n1","2026-09-05"],["a1","2026-09-03"],["a2","2026-09-03"],["a3","2026-09-03"],["a4","2026-09-03"],["a5","2026-09-03"],["a6","2026-09-03"],["s1","2026-08-16"]],
+        "today": "2026-09-06",
+        "now": "2026-09-06T11:00:00Z",
+        "surface": [
+          [
+            "n1",
+            "2026-09-05"
+          ],
+          [
+            "a1",
+            "2026-09-03"
+          ],
+          [
+            "a2",
+            "2026-09-03"
+          ],
+          [
+            "a3",
+            "2026-09-03"
+          ],
+          [
+            "a4",
+            "2026-09-03"
+          ],
+          [
+            "a5",
+            "2026-09-03"
+          ],
+          [
+            "a6",
+            "2026-09-03"
+          ],
+          [
+            "s1",
+            "2026-08-16"
+          ]
+        ],
         "top_published_at": "2026-09-06T10:16:00Z",
         "corpus_newest": "2026-09-05",
         "published": [
-          {"card_id":"n1","source_url":"https://github.com/VoltAgent/awesome-ai-agent-papers","title":"GitHub - VoltAgent/awesome-ai-agent-papers: A curated list"},
-          {"card_id":"a1","source_url":"https://arxiv.org/abs/2609.03001","title":"A1"},
-          {"card_id":"a2","source_url":"https://arxiv.org/abs/2609.03002","title":"A2"},
-          {"card_id":"a3","source_url":"https://arxiv.org/abs/2609.03003","title":"A3"},
-          {"card_id":"a4","source_url":"https://arxiv.org/abs/2609.03004","title":"A4"},
-          {"card_id":"a5","source_url":"https://arxiv.org/abs/2609.03005","title":"A5"},
-          {"card_id":"a6","source_url":"https://arxiv.org/abs/2609.03006","title":"A6"},
-          {"card_id":"s1","source_url":"https://arxiv.org/abs/2608.16001","title":"S1"}
+          {
+            "card_id": "n1",
+            "source_url": "https://github.com/VoltAgent/awesome-ai-agent-papers",
+            "title": "GitHub - VoltAgent/awesome-ai-agent-papers: A curated list"
+          },
+          {
+            "card_id": "a1",
+            "source_url": "https://arxiv.org/abs/2609.03001",
+            "title": "A1"
+          },
+          {
+            "card_id": "a2",
+            "source_url": "https://arxiv.org/abs/2609.03002",
+            "title": "A2"
+          },
+          {
+            "card_id": "a3",
+            "source_url": "https://arxiv.org/abs/2609.03003",
+            "title": "A3"
+          },
+          {
+            "card_id": "a4",
+            "source_url": "https://arxiv.org/abs/2609.03004",
+            "title": "A4"
+          },
+          {
+            "card_id": "a5",
+            "source_url": "https://arxiv.org/abs/2609.03005",
+            "title": "A5"
+          },
+          {
+            "card_id": "a6",
+            "source_url": "https://arxiv.org/abs/2609.03006",
+            "title": "A6"
+          },
+          {
+            "card_id": "s1",
+            "source_url": "https://arxiv.org/abs/2608.16001",
+            "title": "S1"
+          }
         ],
-        "denied_domains": ["answerthis.io","agentic.ai"],
-        "events": {"window_hours": 168, "journal_since": "2026-09-06T00:00:00Z", "added": 24, "removed": [
-          {"content_id":"v3","reason":"adversarial: vendor marketing / SEO listicle acquired by keyword match"},
-          {"content_id":"v2b","reason":"duplicate: kept earliest v1"},
-          {"content_id":"z1","reason":"operator: stale content archived to restore currency (2026-09-05 remediation, pre-journal)"}
-        ]}
+        "denied_domains": [
+          "answerthis.io",
+          "agentic.ai"
+        ],
+        "events": {
+          "window_hours": 168,
+          "journal_since": "2026-09-06T00:00:00Z",
+          "added": 24,
+          "removed": [
+            {
+              "content_id": "v3",
+              "reason": "adversarial: vendor marketing / SEO listicle acquired by keyword match"
+            },
+            {
+              "content_id": "v2b",
+              "reason": "duplicate: kept earliest v1"
+            },
+            {
+              "content_id": "z1",
+              "reason": "operator: stale content archived to restore currency (2026-09-05 remediation, pre-journal)"
+            }
+          ]
+        }
       },
       "output": {
-        "gates": {"surface_newest_current":"pass","surface_band_current":"pass","surface_refreshed_within_intent":"pass","no_marketing_shapes":"pass","no_denied_domains":"pass","no_duplicate_sources":"pass","no_unexplained_removals":"pass","removal_reasons_declared":"pass"},
+        "gates": {
+          "surface_newest_current": "pass",
+          "surface_band_current": "pass",
+          "surface_refreshed_within_intent": "pass",
+          "surface_ordered": "pass",
+          "surface_dates_present": "pass",
+          "no_marketing_shapes": "pass",
+          "no_denied_domains": "pass",
+          "no_duplicate_sources": "pass",
+          "no_unexplained_removals": "pass",
+          "removal_reasons_declared": "pass"
+        },
         "stage": null,
         "flip": null
       }
     },
     {
       "name": "F — a removal with an undeclared category",
-      "params": {"band": 8},
+      "params": {
+        "band": 8
+      },
       "input": {
-        "today": "2026-09-06", "now": "2026-09-06T11:00:00Z",
-        "surface": [["a1","2026-09-05"],["a2","2026-09-04"],["a3","2026-09-03"],["a4","2026-09-03"]],
+        "today": "2026-09-06",
+        "now": "2026-09-06T11:00:00Z",
+        "surface": [
+          [
+            "a1",
+            "2026-09-05"
+          ],
+          [
+            "a2",
+            "2026-09-04"
+          ],
+          [
+            "a3",
+            "2026-09-03"
+          ],
+          [
+            "a4",
+            "2026-09-03"
+          ]
+        ],
         "top_published_at": "2026-09-06T10:16:00Z",
         "corpus_newest": "2026-09-05",
         "published": [
-          {"card_id":"a1","source_url":"https://arxiv.org/abs/2609.05001","title":"A1"},
-          {"card_id":"a2","source_url":"https://arxiv.org/abs/2609.04002","title":"A2"},
-          {"card_id":"a3","source_url":"https://arxiv.org/abs/2609.03003","title":"A3"},
-          {"card_id":"a4","source_url":"https://arxiv.org/abs/2609.03004","title":"A4"}
+          {
+            "card_id": "a1",
+            "source_url": "https://arxiv.org/abs/2609.05001",
+            "title": "A1"
+          },
+          {
+            "card_id": "a2",
+            "source_url": "https://arxiv.org/abs/2609.04002",
+            "title": "A2"
+          },
+          {
+            "card_id": "a3",
+            "source_url": "https://arxiv.org/abs/2609.03003",
+            "title": "A3"
+          },
+          {
+            "card_id": "a4",
+            "source_url": "https://arxiv.org/abs/2609.03004",
+            "title": "A4"
+          }
         ],
-        "denied_domains": ["answerthis.io"],
-        "events": {"window_hours": 168, "journal_since": "2026-09-06T00:00:00Z", "added": 4, "removed": [
-          {"content_id":"q1","reason":"stale: aged out of the band"}
-        ]}
+        "denied_domains": [
+          "answerthis.io"
+        ],
+        "events": {
+          "window_hours": 168,
+          "journal_since": "2026-09-06T00:00:00Z",
+          "added": 4,
+          "removed": [
+            {
+              "content_id": "q1",
+              "reason": "stale: aged out of the band"
+            }
+          ]
+        }
       },
       "output": {
-        "gates": {"surface_newest_current":"pass","surface_band_current":"pass","surface_refreshed_within_intent":"pass","no_marketing_shapes":"pass","no_denied_domains":"pass","no_duplicate_sources":"pass","no_unexplained_removals":"pass","removal_reasons_declared":"fail"},
+        "gates": {
+          "surface_newest_current": "pass",
+          "surface_band_current": "pass",
+          "surface_refreshed_within_intent": "pass",
+          "surface_ordered": "pass",
+          "surface_dates_present": "pass",
+          "no_marketing_shapes": "pass",
+          "no_denied_domains": "pass",
+          "no_duplicate_sources": "pass",
+          "no_unexplained_removals": "pass",
+          "removal_reasons_declared": "fail"
+        },
         "stage": "the archiver: 'stale' is not a declared category",
         "flip": "re-archive under a declared category, or restore the card"
       }
     },
     {
       "name": "G — the surface is unreadable",
-      "params": {"band": 8},
+      "params": {
+        "band": 8
+      },
       "input": {
-        "today": "2026-09-06", "now": "2026-09-06T11:00:00Z",
+        "today": "2026-09-06",
+        "now": "2026-09-06T11:00:00Z",
         "surface_error": "GET https://gaius.zndx.org/ -> 522",
-        "published": [{"card_id":"a1","source_url":"https://arxiv.org/abs/2609.05001","title":"A1"}],
-        "denied_domains": ["answerthis.io"],
-        "events": {"window_hours": 168, "journal_since": "2026-09-06T00:00:00Z", "added": 1, "removed": []}
+        "published": [
+          {
+            "card_id": "a1",
+            "source_url": "https://arxiv.org/abs/2609.05001",
+            "title": "A1"
+          }
+        ],
+        "denied_domains": [
+          "answerthis.io"
+        ],
+        "events": {
+          "window_hours": 168,
+          "journal_since": "2026-09-06T00:00:00Z",
+          "added": 1,
+          "removed": []
+        }
       },
       "output": {
-        "gates": {"surface_newest_current":"error","surface_band_current":"error","surface_refreshed_within_intent":"error","no_marketing_shapes":"pass","no_denied_domains":"pass","no_duplicate_sources":"pass","no_unexplained_removals":"pass","removal_reasons_declared":"pass"},
+        "gates": {
+          "surface_newest_current": "error",
+          "surface_band_current": "error",
+          "surface_refreshed_within_intent": "error",
+          "surface_ordered": "error",
+          "surface_dates_present": "error",
+          "no_marketing_shapes": "pass",
+          "no_denied_domains": "pass",
+          "no_duplicate_sources": "pass",
+          "no_unexplained_removals": "pass",
+          "removal_reasons_declared": "pass"
+        },
         "stage": "publish_cards KV sync / the Worker",
         "flip": "an honest error verdict, never a local guess"
       }
+    },
+    {
+      "name": "H — 2026-09-07 15:20: reader order live: dated cards newest-first, every card dated",
+      "params": {
+        "band": 8
+      },
+      "input": {
+        "today": "2026-09-06",
+        "now": "2026-09-06T11:00:00Z",
+        "surface": [
+          [
+            "n1",
+            "2026-09-05"
+          ],
+          [
+            "a1",
+            "2026-09-03"
+          ],
+          [
+            "a2",
+            "2026-09-03"
+          ],
+          [
+            "a3",
+            "2026-09-03"
+          ],
+          [
+            "a4",
+            "2026-09-03"
+          ],
+          [
+            "a5",
+            "2026-09-03"
+          ],
+          [
+            "a6",
+            "2026-09-03"
+          ],
+          [
+            "s1",
+            "2026-08-16"
+          ]
+        ],
+        "top_published_at": "2026-09-06T10:16:00Z",
+        "corpus_newest": "2026-09-05",
+        "published": [
+          {
+            "card_id": "n1",
+            "source_url": "https://github.com/VoltAgent/awesome-ai-agent-papers",
+            "title": "GitHub - VoltAgent/awesome-ai-agent-papers: A curated list"
+          },
+          {
+            "card_id": "a1",
+            "source_url": "https://arxiv.org/abs/2609.03001",
+            "title": "A1"
+          },
+          {
+            "card_id": "a2",
+            "source_url": "https://arxiv.org/abs/2609.03002",
+            "title": "A2"
+          },
+          {
+            "card_id": "a3",
+            "source_url": "https://arxiv.org/abs/2609.03003",
+            "title": "A3"
+          },
+          {
+            "card_id": "a4",
+            "source_url": "https://arxiv.org/abs/2609.03004",
+            "title": "A4"
+          },
+          {
+            "card_id": "a5",
+            "source_url": "https://arxiv.org/abs/2609.03005",
+            "title": "A5"
+          },
+          {
+            "card_id": "a6",
+            "source_url": "https://arxiv.org/abs/2609.03006",
+            "title": "A6"
+          },
+          {
+            "card_id": "s1",
+            "source_url": "https://arxiv.org/abs/2608.16001",
+            "title": "S1"
+          }
+        ],
+        "denied_domains": [
+          "answerthis.io",
+          "agentic.ai"
+        ],
+        "events": {
+          "window_hours": 168,
+          "journal_since": "2026-09-06T00:00:00Z",
+          "added": 24,
+          "removed": [
+            {
+              "content_id": "v3",
+              "reason": "adversarial: vendor marketing / SEO listicle acquired by keyword match"
+            },
+            {
+              "content_id": "v2b",
+              "reason": "duplicate: kept earliest v1"
+            },
+            {
+              "content_id": "z1",
+              "reason": "operator: stale content archived to restore currency (2026-09-05 remediation, pre-journal)"
+            }
+          ]
+        }
+      },
+      "output": {
+        "gates": {
+          "surface_newest_current": "pass",
+          "surface_band_current": "pass",
+          "surface_refreshed_within_intent": "pass",
+          "surface_ordered": "pass",
+          "surface_dates_present": "pass",
+          "no_marketing_shapes": "pass",
+          "no_denied_domains": "pass",
+          "no_duplicate_sources": "pass",
+          "no_unexplained_removals": "pass",
+          "removal_reasons_declared": "pass"
+        },
+        "stage": "",
+        "flip": null
+      },
+      "note": "After the KV order moved from published_at to source_date DESC NULLS LAST, the page reads as a casual visitor expects; both new gates pass."
+    },
+    {
+      "name": "I — a slot's freshest-first publish under a published_at-ordered page: one inversion",
+      "params": {
+        "band": 8
+      },
+      "input": {
+        "today": "2026-09-06",
+        "now": "2026-09-06T11:00:00Z",
+        "surface": [
+          [
+            "a1",
+            "2026-09-03"
+          ],
+          [
+            "n1",
+            "2026-09-05"
+          ],
+          [
+            "a2",
+            "2026-09-03"
+          ],
+          [
+            "a3",
+            "2026-09-03"
+          ],
+          [
+            "a4",
+            "2026-09-03"
+          ],
+          [
+            "a5",
+            "2026-09-03"
+          ],
+          [
+            "a6",
+            "2026-09-03"
+          ],
+          [
+            "s1",
+            "2026-08-16"
+          ]
+        ],
+        "top_published_at": "2026-09-06T10:16:00Z",
+        "corpus_newest": "2026-09-05",
+        "published": [
+          {
+            "card_id": "n1",
+            "source_url": "https://github.com/VoltAgent/awesome-ai-agent-papers",
+            "title": "GitHub - VoltAgent/awesome-ai-agent-papers: A curated list"
+          },
+          {
+            "card_id": "a1",
+            "source_url": "https://arxiv.org/abs/2609.03001",
+            "title": "A1"
+          },
+          {
+            "card_id": "a2",
+            "source_url": "https://arxiv.org/abs/2609.03002",
+            "title": "A2"
+          },
+          {
+            "card_id": "a3",
+            "source_url": "https://arxiv.org/abs/2609.03003",
+            "title": "A3"
+          },
+          {
+            "card_id": "a4",
+            "source_url": "https://arxiv.org/abs/2609.03004",
+            "title": "A4"
+          },
+          {
+            "card_id": "a5",
+            "source_url": "https://arxiv.org/abs/2609.03005",
+            "title": "A5"
+          },
+          {
+            "card_id": "a6",
+            "source_url": "https://arxiv.org/abs/2609.03006",
+            "title": "A6"
+          },
+          {
+            "card_id": "s1",
+            "source_url": "https://arxiv.org/abs/2608.16001",
+            "title": "S1"
+          }
+        ],
+        "denied_domains": [
+          "answerthis.io",
+          "agentic.ai"
+        ],
+        "events": {
+          "window_hours": 168,
+          "journal_since": "2026-09-06T00:00:00Z",
+          "added": 24,
+          "removed": [
+            {
+              "content_id": "v3",
+              "reason": "adversarial: vendor marketing / SEO listicle acquired by keyword match"
+            },
+            {
+              "content_id": "v2b",
+              "reason": "duplicate: kept earliest v1"
+            },
+            {
+              "content_id": "z1",
+              "reason": "operator: stale content archived to restore currency (2026-09-05 remediation, pre-journal)"
+            }
+          ]
+        }
+      },
+      "output": {
+        "gates": {
+          "surface_newest_current": "pass",
+          "surface_band_current": "pass",
+          "surface_refreshed_within_intent": "pass",
+          "surface_ordered": "fail",
+          "surface_dates_present": "pass",
+          "no_marketing_shapes": "pass",
+          "no_denied_domains": "pass",
+          "no_duplicate_sources": "pass",
+          "no_unexplained_removals": "pass",
+          "removal_reasons_declared": "pass"
+        },
+        "stage": "publish_cards KV sync order (get_cards_for_kv / get_published_cards ORDER BY source_date DESC NULLS LAST)",
+        "flip": null
+      },
+      "note": "2026-09-07 15:10 shape: a 12:00 slot's 09-02 cards sat above a 10:15 slot's 09-05 cards. surface_ordered names the first inverted pair; the stage is the KV sync order."
+    },
+    {
+      "name": "J — an undated card on the surface",
+      "params": {
+        "band": 8
+      },
+      "input": {
+        "today": "2026-09-06",
+        "now": "2026-09-06T11:00:00Z",
+        "surface": [
+          [
+            "n1",
+            "2026-09-05"
+          ],
+          [
+            "a1",
+            "2026-09-03"
+          ],
+          [
+            "a2",
+            null
+          ],
+          [
+            "a3",
+            "2026-09-03"
+          ],
+          [
+            "a4",
+            "2026-09-03"
+          ],
+          [
+            "a5",
+            "2026-09-03"
+          ],
+          [
+            "a6",
+            "2026-09-03"
+          ],
+          [
+            "s1",
+            "2026-08-16"
+          ]
+        ],
+        "top_published_at": "2026-09-06T10:16:00Z",
+        "corpus_newest": "2026-09-05",
+        "published": [
+          {
+            "card_id": "n1",
+            "source_url": "https://github.com/VoltAgent/awesome-ai-agent-papers",
+            "title": "GitHub - VoltAgent/awesome-ai-agent-papers: A curated list"
+          },
+          {
+            "card_id": "a1",
+            "source_url": "https://arxiv.org/abs/2609.03001",
+            "title": "A1"
+          },
+          {
+            "card_id": "a2",
+            "source_url": "https://arxiv.org/abs/2609.03002",
+            "title": "A2"
+          },
+          {
+            "card_id": "a3",
+            "source_url": "https://arxiv.org/abs/2609.03003",
+            "title": "A3"
+          },
+          {
+            "card_id": "a4",
+            "source_url": "https://arxiv.org/abs/2609.03004",
+            "title": "A4"
+          },
+          {
+            "card_id": "a5",
+            "source_url": "https://arxiv.org/abs/2609.03005",
+            "title": "A5"
+          },
+          {
+            "card_id": "a6",
+            "source_url": "https://arxiv.org/abs/2609.03006",
+            "title": "A6"
+          },
+          {
+            "card_id": "s1",
+            "source_url": "https://arxiv.org/abs/2608.16001",
+            "title": "S1"
+          }
+        ],
+        "denied_domains": [
+          "answerthis.io",
+          "agentic.ai"
+        ],
+        "events": {
+          "window_hours": 168,
+          "journal_since": "2026-09-06T00:00:00Z",
+          "added": 24,
+          "removed": [
+            {
+              "content_id": "v3",
+              "reason": "adversarial: vendor marketing / SEO listicle acquired by keyword match"
+            },
+            {
+              "content_id": "v2b",
+              "reason": "duplicate: kept earliest v1"
+            },
+            {
+              "content_id": "z1",
+              "reason": "operator: stale content archived to restore currency (2026-09-05 remediation, pre-journal)"
+            }
+          ]
+        }
+      },
+      "output": {
+        "gates": {
+          "surface_newest_current": "pass",
+          "surface_band_current": "pass",
+          "surface_refreshed_within_intent": "pass",
+          "surface_ordered": "pass",
+          "surface_dates_present": "fail",
+          "no_marketing_shapes": "pass",
+          "no_denied_domains": "pass",
+          "no_duplicate_sources": "pass",
+          "no_unexplained_removals": "pass",
+          "removal_reasons_declared": "pass"
+        },
+        "stage": "article_curate card creation left source_date NULL; publish_cards_by_ids keeps undated cards pending",
+        "flip": null
+      },
+      "note": "2026-09-07: two arXiv-as-web cards published with NULL source_date (frontmatter had no date). surface_dates_present names them; publish_cards_by_ids now keeps undated cards pending."
     }
   ],
-  "tags": ["objective", "public-surface", "currency", "integrity", "conservation", "adversarial-content", "event-sourced", "gaius", "deterministic", "specimen-pinned"]
+  "tags": [
+    "objective",
+    "public-surface",
+    "currency",
+    "integrity",
+    "conservation",
+    "adversarial-content",
+    "event-sourced",
+    "gaius",
+    "deterministic",
+    "specimen-pinned"
+  ]
 }
