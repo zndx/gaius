@@ -5704,3 +5704,69 @@ class ActivitiesViewResponse(_message.Message):
     last_event_at: str
     error: str
     def __init__(self, rows: _Optional[_Iterable[_Union[ActivityViewRow, _Mapping]]] = ..., watcher_connected: bool = ..., signals_target: _Optional[str] = ..., observed_at: _Optional[str] = ..., last_event_at: _Optional[str] = ..., error: _Optional[str] = ...) -> None: ...
+
+class WorkloadsViewRequest(_message.Message):
+    __slots__ = ("enabled_only", "kind")
+    ENABLED_ONLY_FIELD_NUMBER: _ClassVar[int]
+    KIND_FIELD_NUMBER: _ClassVar[int]
+    enabled_only: bool
+    kind: str
+    def __init__(self, enabled_only: bool = ..., kind: _Optional[str] = ...) -> None: ...
+
+class WorkloadViewRow(_message.Message):
+    __slots__ = ("id", "kind", "task_type", "payload", "gate_sql", "cron", "timezone", "runner", "horizon_s", "after", "claims", "enabled", "source", "airflow_dag_id", "pg_cron_job", "pg_cron_active", "description", "sync_state", "sync_error")
+    ID_FIELD_NUMBER: _ClassVar[int]
+    KIND_FIELD_NUMBER: _ClassVar[int]
+    TASK_TYPE_FIELD_NUMBER: _ClassVar[int]
+    PAYLOAD_FIELD_NUMBER: _ClassVar[int]
+    GATE_SQL_FIELD_NUMBER: _ClassVar[int]
+    CRON_FIELD_NUMBER: _ClassVar[int]
+    TIMEZONE_FIELD_NUMBER: _ClassVar[int]
+    RUNNER_FIELD_NUMBER: _ClassVar[int]
+    HORIZON_S_FIELD_NUMBER: _ClassVar[int]
+    AFTER_FIELD_NUMBER: _ClassVar[int]
+    CLAIMS_FIELD_NUMBER: _ClassVar[int]
+    ENABLED_FIELD_NUMBER: _ClassVar[int]
+    SOURCE_FIELD_NUMBER: _ClassVar[int]
+    AIRFLOW_DAG_ID_FIELD_NUMBER: _ClassVar[int]
+    PG_CRON_JOB_FIELD_NUMBER: _ClassVar[int]
+    PG_CRON_ACTIVE_FIELD_NUMBER: _ClassVar[int]
+    DESCRIPTION_FIELD_NUMBER: _ClassVar[int]
+    SYNC_STATE_FIELD_NUMBER: _ClassVar[int]
+    SYNC_ERROR_FIELD_NUMBER: _ClassVar[int]
+    id: str
+    kind: str
+    task_type: str
+    payload: str
+    gate_sql: str
+    cron: str
+    timezone: str
+    runner: str
+    horizon_s: int
+    after: _containers.RepeatedScalarFieldContainer[str]
+    claims: _containers.RepeatedScalarFieldContainer[str]
+    enabled: bool
+    source: str
+    airflow_dag_id: str
+    pg_cron_job: str
+    pg_cron_active: bool
+    description: str
+    sync_state: str
+    sync_error: str
+    def __init__(self, id: _Optional[str] = ..., kind: _Optional[str] = ..., task_type: _Optional[str] = ..., payload: _Optional[str] = ..., gate_sql: _Optional[str] = ..., cron: _Optional[str] = ..., timezone: _Optional[str] = ..., runner: _Optional[str] = ..., horizon_s: _Optional[int] = ..., after: _Optional[_Iterable[str]] = ..., claims: _Optional[_Iterable[str]] = ..., enabled: bool = ..., source: _Optional[str] = ..., airflow_dag_id: _Optional[str] = ..., pg_cron_job: _Optional[str] = ..., pg_cron_active: bool = ..., description: _Optional[str] = ..., sync_state: _Optional[str] = ..., sync_error: _Optional[str] = ...) -> None: ...
+
+class WorkloadsViewResponse(_message.Message):
+    __slots__ = ("rows", "signals_target", "last_sync_at", "last_sync_error", "syncs", "error")
+    ROWS_FIELD_NUMBER: _ClassVar[int]
+    SIGNALS_TARGET_FIELD_NUMBER: _ClassVar[int]
+    LAST_SYNC_AT_FIELD_NUMBER: _ClassVar[int]
+    LAST_SYNC_ERROR_FIELD_NUMBER: _ClassVar[int]
+    SYNCS_FIELD_NUMBER: _ClassVar[int]
+    ERROR_FIELD_NUMBER: _ClassVar[int]
+    rows: _containers.RepeatedCompositeFieldContainer[WorkloadViewRow]
+    signals_target: str
+    last_sync_at: str
+    last_sync_error: str
+    syncs: int
+    error: str
+    def __init__(self, rows: _Optional[_Iterable[_Union[WorkloadViewRow, _Mapping]]] = ..., signals_target: _Optional[str] = ..., last_sync_at: _Optional[str] = ..., last_sync_error: _Optional[str] = ..., syncs: _Optional[int] = ..., error: _Optional[str] = ...) -> None: ...

@@ -989,8 +989,56 @@ class GrpcEngineClient:
             return await self._call_nautilus(action, params, timeout)
         elif service == "Activities":
             return await self._call_activities(action, params, timeout)
+        elif service == "Workloads":
+            return await self._call_workloads(action, params, timeout)
         else:
             raise ValueError(f"Unknown service: {service}")
+
+    async def _call_workloads(self, action: str, params: dict, timeout: float) -> dict:
+        """The engine's WORKLOAD CATALOGUE + last Scheduler/SyncWorkloads outcome (2026-09-07)."""
+        from ..engine.generated import WorkloadsViewRequest
+
+        if action != "view":
+            raise ValueError(f"Unknown Workloads action: {action}")
+        response = await self._stub.Workloads(
+            WorkloadsViewRequest(
+                enabled_only=bool(params.get("enabled_only", False)),
+                kind=str(params.get("kind") or ""),
+            ),
+            timeout=timeout,
+        )
+        if response.error:
+            return {"error": response.error}
+        return {
+            "rows": [
+                {
+                    "id": r.id,
+                    "kind": r.kind,
+                    "task_type": r.task_type,
+                    "payload": r.payload,
+                    "gate_sql": r.gate_sql or None,
+                    "cron": r.cron,
+                    "timezone": r.timezone,
+                    "runner": r.runner,
+                    "horizon_s": r.horizon_s,
+                    "after": list(r.after),
+                    "claims": list(r.claims),
+                    "enabled": r.enabled,
+                    "source": r.source,
+                    "airflow_dag_id": r.airflow_dag_id,
+                    "pg_cron_job": r.pg_cron_job,
+                    "pg_cron_active": r.pg_cron_active,
+                    "description": r.description,
+                    "sync_state": r.sync_state or None,
+                    "sync_error": r.sync_error or None,
+                }
+                for r in response.rows
+            ],
+            "signals_target": response.signals_target,
+            "last_sync_at": response.last_sync_at or None,
+            "last_sync_error": response.last_sync_error or None,
+            "syncs": response.syncs,
+        }
 
     async def _call_activities(self, action: str, params: dict, timeout: float) -> dict:
         """Coordination Activities as the engine learned them from Signals (2026-09-06)."""

@@ -392,6 +392,11 @@ class GaiusServiceStub:
     (a peer's declared run in the Signals Airflow) as THIS engine learned it
     over Scheduler/WatchActivities. The CLI reads here; it never dials Signals.
     """
+    Workloads: grpc.UnaryUnaryMultiCallable[gaius_service_pb2.WorkloadsViewRequest, gaius_service_pb2.WorkloadsViewResponse]
+    """(2026-09-07) /workloads — this engine's WORKLOAD CATALOGUE (every scheduled
+    class with cadence, ordering, claims = YK queue config, horizon, runner) and
+    the state Signals reported for each entry at the last Scheduler/SyncWorkloads.
+    """
 
 @typing.type_check_only
 class GaiusServiceAsyncStub(GaiusServiceStub):
@@ -756,6 +761,11 @@ class GaiusServiceAsyncStub(GaiusServiceStub):
     """(2026-09-06) Coordination Activities — inter-project intent with a lifetime
     (a peer's declared run in the Signals Airflow) as THIS engine learned it
     over Scheduler/WatchActivities. The CLI reads here; it never dials Signals.
+    """
+    Workloads: grpc.aio.UnaryUnaryMultiCallable[gaius_service_pb2.WorkloadsViewRequest, gaius_service_pb2.WorkloadsViewResponse]  # type: ignore[assignment]
+    """(2026-09-07) /workloads — this engine's WORKLOAD CATALOGUE (every scheduled
+    class with cadence, ordering, claims = YK queue config, horizon, runner) and
+    the state Signals reported for each entry at the last Scheduler/SyncWorkloads.
     """
 
 class GaiusServiceServicer(metaclass=abc.ABCMeta):
@@ -2102,6 +2112,17 @@ class GaiusServiceServicer(metaclass=abc.ABCMeta):
         """(2026-09-06) Coordination Activities — inter-project intent with a lifetime
         (a peer's declared run in the Signals Airflow) as THIS engine learned it
         over Scheduler/WatchActivities. The CLI reads here; it never dials Signals.
+        """
+
+    @abc.abstractmethod
+    def Workloads(
+        self,
+        request: gaius_service_pb2.WorkloadsViewRequest,
+        context: _ServicerContext,
+    ) -> typing.Union[gaius_service_pb2.WorkloadsViewResponse, collections.abc.Awaitable[gaius_service_pb2.WorkloadsViewResponse]]:
+        """(2026-09-07) /workloads — this engine's WORKLOAD CATALOGUE (every scheduled
+        class with cadence, ordering, claims = YK queue config, horizon, runner) and
+        the state Signals reported for each entry at the last Scheduler/SyncWorkloads.
         """
 
 def add_GaiusServiceServicer_to_server(servicer: GaiusServiceServicer, server: typing.Union[grpc.Server, grpc.aio.Server]) -> None: ...

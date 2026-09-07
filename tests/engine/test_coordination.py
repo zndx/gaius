@@ -529,9 +529,43 @@ def test_release_for_task_terminal_outcomes_only(monkeypatch):
     asyncio.run(run())
 
 
-def test_schedule_hints_mark_article_curate_as_airflow_sourced():
+def test_schedule_hints_publish_the_whole_catalogue():
     hints = co.schedule_hints()
     by_id = {h.id: h for h in hints}
     h = by_id["task.article_curate"]
     assert h.source == "airflow" and h.airflow_dag_id == "gaius_article_curate" and h.enabled
-    assert "task.fmp_roll" not in by_id  # pg_cron classes are not invented here
+    # (2026-09-07) pg_cron classes ARE catalogued now — source pg_cron, paused in Airflow
+    roll = by_id["task.fmp_roll"]
+    assert roll.source == "pg_cron" and not roll.enabled and roll.airflow_dag_id == "gaius_fmp_roll"
+    assert roll.cron == "7,37 * * * *" and roll.runner == "metaflow"
+    assert list(by_id["task.clt_skos_label"].after) == ["task.clt_skos_admit"]
+
+
+def test_watcher_starts_any_catalogued_kind(monkeypatch):
+    """The watcher is not curate-specific: an own RUNNING activity of ANY
+    catalogued kind (here fmp_roll — no gate) is enqueued with pg_cron's
+    task_type/payload plus the activity stamp."""
+    pool = FakePool()
+    w, sched = _watcher(pool, monkeypatch)
+    aid = "a-roll"
+    w.view.activities[aid] = {
+        "activity_id": aid, "kind": "fmp_roll", "peer": "gaius", "state": "running",
+        "horizon_ns": co.now_ns() + 3_600_000_000_000,
+    }
+    actions = asyncio.run(w.workload_pass())
+    assert actions == [(aid, "started_workload")]
+    rows = pool.inserts()
+    assert len(rows) == 1
+    assert rows[0]["task_type"] == "fmp_roll"
+    assert rows[0]["payload"]["activity_id"] == aid and rows[0]["payload"]["activity_kind"] == "fmp_roll"
+    assert rows[0]["payload"]["source"] == "airflow"
+    # a second pass finds the row and heartbeats instead of enqueueing again
+    asyncio.run(w.workload_pass(at_ns=co.now_ns() + 61_000_000_000))
+    assert len(pool.inserts()) == 1
+    assert len(sched.named("RenewActivity")) >= 1
+    # an uncatalogued kind is never started
+    w.view.activities["a-x"] = {
+        "activity_id": "a-x", "kind": "no_such_kind", "peer": "gaius", "state": "running",
+        "horizon_ns": co.now_ns() + 3_600_000_000_000,
+    }
+    assert w.own_running() and all(a["kind"] != "no_such_kind" for a in w.own_running())

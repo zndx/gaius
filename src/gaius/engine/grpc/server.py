@@ -95,6 +95,9 @@ class ServiceRegistry:
     # (2026-09-06) Coordination Activities watcher (services.coordination): the
     # engine's view of peers' declared intent, read by ServerQuery/Activities.
     coordination: Any = None
+    # (2026-09-07) Workload catalogue submitter (services.workload_sync): the
+    # last Scheduler/SyncWorkloads outcome, read by /workloads.
+    workload_sync: Any = None
 
     # Caught by #GR.00000005.UNKNOWNSVC on 2026-09-01: all four were
     # registered by server.py and silently dropped for want of a field —

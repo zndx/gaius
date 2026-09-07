@@ -67,6 +67,7 @@ class GaiusEngine:
         # Orchestrator service for endpoint management
         self._orchestrator_service = None
         self._coordination = None  # services.coordination.CoordinationWatcher (2026-09-06)
+        self._workload_sync = None  # services.workload_sync.WorkloadSync (2026-09-07)
 
         # Evolution daemon
         self._evolution_daemon = None
@@ -361,6 +362,24 @@ class GaiusEngine:
                 logger.info("Coordination watcher started (Signals %s)", self._coordination.target)
         except Exception as e:  # noqa: BLE001
             logger.warning("Coordination watcher not started: %s", e)
+        # (2026-09-07) Submit this engine's WORKLOAD CATALOGUE to Signals
+        # (Scheduler/SyncWorkloads) at start and every 30 min: Signals
+        # materialises one Airflow DAG per enabled class whose runs assert the
+        # class's YK configuration for the run's duration. Fail-open at boot.
+        try:
+            if os.environ.get("GAIUS_WORKLOAD_SYNC", "1").lower() in ("0", "false", "no", "off"):
+                logger.info("Workload catalogue sync disabled (GAIUS_WORKLOAD_SYNC=0)")
+            else:
+                from .services.coordination import signals_target
+                from .services.workload_sync import init_workload_sync
+
+                self._workload_sync = init_workload_sync(signals_target())
+                self._workload_sync.start()
+                if self._grpc_server is not None:
+                    self._grpc_server.update_service("workload_sync", self._workload_sync)
+                logger.info("Workload catalogue sync started (Signals %s)", self._workload_sync.target)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("Workload catalogue sync not started: %s", e)
         try:
             from .services.cognition_waterfall import start_strip
 
@@ -1696,6 +1715,12 @@ class GaiusEngine:
                 await coord.stop()
             except Exception:  # noqa: BLE001
                 logger.debug("coordination watcher stop skipped", exc_info=True)
+        wsync = getattr(self, "_workload_sync", None)
+        if wsync is not None:
+            try:
+                await wsync.stop()
+            except Exception:  # noqa: BLE001
+                logger.debug("workload sync stop skipped", exc_info=True)
 
         # Stop all daemons via registry (in reverse dependency order)
         if self._daemon_registry:

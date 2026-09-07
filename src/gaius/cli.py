@@ -217,6 +217,8 @@ class GaiusCLI:
                     result["data"] = self._run_async(self._cmd_nautilus(args))
                 elif command == "activities":
                     result["data"] = self._run_async(self._cmd_activities(args))
+                elif command == "workloads":
+                    result["data"] = self._run_async(self._cmd_workloads(args))
                 # Inference management (high-level)
                 elif command == "inference" or command == "inf":
                     result["data"] = self._run_async(self._cmd_inference(args))
@@ -4136,6 +4138,41 @@ Respond with:
         data["backlog"] = render_backlog(
             data.get("rows", []), filled_at=data.get("filled_at") or "",
             supervisor_connected=data.get("supervisor_connected"),
+        )
+        return data
+
+    async def _cmd_workloads(self, args: str) -> dict:
+        """The WORKLOAD CATALOGUE this engine publishes and submits to Signals
+        (Scheduler/SyncWorkloads): every scheduled class with its cadence,
+        ordering, claims (its YK queue configuration, asserted while it runs),
+        horizon and runner — and the state Signals reported for each at the
+        last sync. Engine-First: the CLI never dials Signals or Airflow.
+
+        Usage:
+            /workloads                 - the whole catalogue
+            /workloads --enabled       - only the classes scheduled in the Signals Airflow
+            /workloads <kind>          - one class (e.g. article_curate)
+        """
+        parts = args.split() if args else []
+        enabled_only = "--enabled" in parts
+        kind = next((p for p in parts if not p.startswith("--")), "")
+        try:
+            client = await self._get_engine_client_cached()
+        except Exception as e:
+            return {
+                "error": f"Failed to connect to engine: {e}",
+                "suggestion": "Run: systemctl restart gaius",
+            }
+        data = await client.call("Workloads", "view", {"enabled_only": enabled_only, "kind": kind})
+        if "error" in data:
+            return data
+        from gaius.cli_render.workloads import render_workloads
+
+        data["workloads"] = render_workloads(
+            data.get("rows", []),
+            signals_target=data.get("signals_target") or "",
+            last_sync_at=data.get("last_sync_at") or "",
+            last_sync_error=data.get("last_sync_error") or "",
         )
         return data
 

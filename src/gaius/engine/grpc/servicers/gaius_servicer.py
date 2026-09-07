@@ -9629,6 +9629,63 @@ class GaiusServicer(GaiusServiceServicer):
             logger.exception("Backlog failed")
             return BacklogViewResponse(error=str(e))
 
+    async def Workloads(self, request, context):
+        """/workloads — this engine's WORKLOAD CATALOGUE (every scheduled class:
+        cadence, ordering, claims = YK queue config, horizon, runner) with the
+        state Signals reported at the last Scheduler/SyncWorkloads. (2026-09-07)"""
+        from ...generated import WorkloadsViewResponse, WorkloadViewRow
+        from ...services import workload_catalog
+        from ...services.workload_sync import get_workload_sync
+
+        try:
+            sync = get_workload_sync()
+            st = sync.status() if sync is not None else {}
+            by_id = {str(r.get("id")): r for r in (st.get("records") or [])}
+            last_ms = int(st.get("last_sync_ms") or 0)
+            resp = WorkloadsViewResponse(
+                signals_target=str(st.get("target") or ""),
+                last_sync_at=(
+                    datetime.fromtimestamp(last_ms / 1000, tz=timezone.utc).isoformat(timespec="seconds")
+                    if last_ms else ""
+                ),
+                last_sync_error=str(st.get("last_error") or ""),
+                syncs=int(st.get("syncs") or 0),
+            )
+            for e in workload_catalog.entries():
+                if request.enabled_only and not e.enabled:
+                    continue
+                if request.kind and e.kind != request.kind and e.id != request.kind:
+                    continue
+                d = workload_catalog.as_dict(e)
+                rec = by_id.get(d["id"]) or {}
+                resp.rows.append(
+                    WorkloadViewRow(
+                        id=d["id"],
+                        kind=d["kind"],
+                        task_type=d["task_type"],
+                        payload=workload_catalog.payload_json(e),
+                        gate_sql=d["gate_sql"] or "",
+                        cron=d["cron"],
+                        timezone=d["timezone"],
+                        runner=d["runner"],
+                        horizon_s=int(d["horizon_s"]),
+                        after=list(d["after"]),
+                        claims=[f"{c['leaf']}:{c['gpu']}" for c in d["claims"]],
+                        enabled=bool(d["enabled"]),
+                        source=d["source"],
+                        airflow_dag_id=d["airflow_dag_id"],
+                        pg_cron_job=d["pg_cron_job"],
+                        pg_cron_active=bool(d["pg_cron_active"]),
+                        description=d["description"],
+                        sync_state=str(rec.get("state") or ""),
+                        sync_error=str(rec.get("error") or ""),
+                    )
+                )
+            return resp
+        except Exception as e:  # noqa: BLE001
+            logger.exception("Workloads view failed")
+            return WorkloadsViewResponse(error=f"#CO.0000000D.WORKLOADSVIEW {e}\n  Try: /health")
+
     async def Activities(self, request, context):
         """/activities — coordination Activities as THIS engine learned them from
         Signals (Scheduler/WatchActivities): peers' declared intent with a

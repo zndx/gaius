@@ -65,22 +65,30 @@ GURU_RELEASEFAIL = "#CO.00000007.RELEASEFAIL"     # release refused/unreachable 
 GURU_ENQUEUEFAIL = "#CO.00000008.ENQUEUEFAIL"     # could not start/attach the workload row
 
 # ── workloads Airflow orders (kind → how pg_cron enqueued the same class) ─────
-# The payload and the gate are pg_cron's `article-curate-daily` job VERBATIM
-# (`INSERT INTO scheduled_tasks (task_type, payload, source, scheduled_for)
-#  SELECT 'article_curate', '{"check_cooldown": true}', 'pg_cron', NOW()
-#  WHERE collections.should_run_curation()`) so the Airflow-declared run and
-# the cron-declared run are the same workload to the processor. A gate that
-# says no releases the activity as "skipped" — the Airflow run closes clean.
-WORKLOAD_KINDS: dict[str, dict[str, Any]] = {
-    "article_curate": {
-        "task_type": "article_curate",
-        "payload": {"check_cooldown": True},
-        "gate_sql": "SELECT collections.should_run_curation()",
-    },
-}
-# Classes whose schedule now lives in the Signals Airflow (ServerQuery SCHEDULES
+# (2026-09-07) The WORKLOAD CATALOGUE (services.workload_catalog) is the one
+# source: every scheduled class with pg_cron's task_type / payload / gate
+# VERBATIM, so an Airflow-declared run and a cron-declared run are the same
+# workload to the processor. The watcher starts ANY catalogued kind whose own
+# Activity is in force; a gate that says no releases the activity as "skipped"
+# — the Airflow run closes clean. Classes whose schedule already lives in the
+# Signals Airflow are the catalogue's `enabled` entries (ServerQuery SCHEDULES
 # reports source=airflow for them; pg_cron stays the source for the rest).
-AIRFLOW_SOURCED_CLASSES: dict[str, str] = {"article_curate": "gaius_article_curate"}
+from gaius.engine.services import workload_catalog as _catalog
+
+
+def _spec_of(entry: Any) -> dict[str, Any]:
+    return {
+        "task_type": entry.task_type,
+        "payload": dict(entry.payload),
+        "gate_sql": entry.gate_sql,
+        "kind": entry.kind,
+    }
+
+
+WORKLOAD_KINDS: dict[str, dict[str, Any]] = {e.kind: _spec_of(e) for e in _catalog.entries()}
+AIRFLOW_SOURCED_CLASSES: dict[str, str] = {
+    e.kind: _catalog.airflow_dag_id(e) for e in _catalog.enabled_entries()
+}
 WORKLOAD_SOURCE = "airflow"
 WORKLOAD_HEARTBEAT_S = 60.0          # Signals' lease TTL is 180 s
 WORKLOAD_HORIZON_S = 2 * 3600.0      # each heartbeat re-sets the horizon this far ahead
@@ -807,35 +815,11 @@ async def release_for_task(payload: Any, status: str, task_type: str, task_id: i
 
 
 def schedule_hints() -> list[Any]:
-    """ServerQuery kind=SCHEDULES: the classes whose schedule lives in the Signals
-    Airflow (source=airflow, the DAG that declares them). pg_cron classes are not
-    listed here (honest: the catalog for those has not landed)."""
-    from gaius.engine.generated.zndx.engine.v1 import engine_pb2 as zpb
-
-    cron_by_class: dict[str, str] = {}
-    try:
-        from gaius.engine.supervision_spec import load_spec
-
-        spec = load_spec()
-        if spec is not None:
-            for cls in AIRFLOW_SOURCED_CLASSES:
-                proc = spec.process(f"task.{cls}")
-                cadence = getattr(proc, "cadence", None) if proc is not None else None
-                cron = str(getattr(cadence, "cron", "") or "") if cadence is not None else ""
-                if cron:
-                    cron_by_class[cls] = cron
-    except Exception:  # noqa: BLE001 — the hint is discovery, not truth
-        logger.debug("schedule_hints: supervision spec unavailable", exc_info=True)
-    return [
-        zpb.ScheduleHint(
-            id=f"task.{cls}",
-            cron=cron_by_class.get(cls, ""),
-            airflow_dag_id=dag_id,
-            source="airflow",
-            enabled=True,
-        )
-        for cls, dag_id in AIRFLOW_SOURCED_CLASSES.items()
-    ]
+    """ServerQuery kind=SCHEDULES: the whole WORKLOAD CATALOGUE — every scheduled
+    class with its cadence, ordering (`after`), claims (its YK queue config),
+    horizon and runner; `source=airflow` for the classes whose schedule lives
+    in the Signals Airflow, `pg_cron` for the rest (catalogued, paused there)."""
+    return _catalog.schedule_hints()
 
 
 # ── singleton ────────────────────────────────────────────────────────────────

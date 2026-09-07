@@ -807,10 +807,12 @@ def local_response(
         if co is not None:
             resp.activities.extend(dict_to_proto(a) for a in co.snapshot())
     if kind == zpb.SERVER_QUERY_KIND_SCHEDULES:
-        # (2026-09-07) The classes whose schedule lives in the Signals Airflow
-        # (source=airflow; their runs declare the Activity this engine runs).
-        # pg_cron classes stay unlisted until that catalog lands — honest.
-        from .services.coordination import schedule_hints
+        # (2026-09-07) The WORKLOAD CATALOGUE: every scheduled class with its
+        # cadence, ordering, claims (YK queue config), horizon and runner —
+        # source=airflow for the classes whose schedule lives in the Signals
+        # Airflow, pg_cron for the rest (catalogued there, paused). The same
+        # entries this engine submits with Scheduler/SyncWorkloads.
+        from .services.workload_catalog import schedule_hints
 
         resp.schedules.extend(schedule_hints())
     return resp

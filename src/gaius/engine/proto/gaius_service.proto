@@ -3780,6 +3780,10 @@ service GaiusService {
   // (a peer's declared run in the Signals Airflow) as THIS engine learned it
   // over Scheduler/WatchActivities. The CLI reads here; it never dials Signals.
   rpc Activities(ActivitiesViewRequest) returns (ActivitiesViewResponse);
+  // (2026-09-07) /workloads — this engine's WORKLOAD CATALOGUE (every scheduled
+  // class with cadence, ordering, claims = YK queue config, horizon, runner) and
+  // the state Signals reported for each entry at the last Scheduler/SyncWorkloads.
+  rpc Workloads(WorkloadsViewRequest) returns (WorkloadsViewResponse);
 }
 
 message OverwatchStatusRequest {}
@@ -4027,5 +4031,42 @@ message ActivitiesViewResponse {
   string signals_target = 3;
   string observed_at = 4;       // Signals' observed_ns of the current view (ISO-8601)
   string last_event_at = 5;     // when this engine last heard from Signals
+  string error = 6;
+}
+
+// (2026-09-07) /workloads — the engine's WORKLOAD CATALOGUE + last sync outcome.
+message WorkloadsViewRequest {
+  bool enabled_only = 1;        // only the classes whose schedule lives in Airflow
+  string kind = 2;              // "" = every kind
+}
+
+message WorkloadViewRow {
+  string id = 1;                // task.<kind>
+  string kind = 2;
+  string task_type = 3;
+  string payload = 4;           // pg_cron payload (JSON)
+  string gate_sql = 5;          // pg_cron WHERE predicate as a SELECT ("" = unconditional)
+  string cron = 6;
+  string timezone = 7;
+  string runner = 8;            // metaflow | task
+  int32 horizon_s = 9;
+  repeated string after = 10;   // catalogue ids it follows (Asset-scheduled)
+  repeated string claims = 11;  // "<leaf>:<gpu>" — the YK queue config asserted while it runs
+  bool enabled = 12;            // schedule lives in the Signals Airflow
+  string source = 13;           // airflow | pg_cron
+  string airflow_dag_id = 14;
+  string pg_cron_job = 15;
+  bool pg_cron_active = 16;
+  string description = 17;
+  string sync_state = 18;       // materialized | paused | engine_declared | error | "" (never synced)
+  string sync_error = 19;
+}
+
+message WorkloadsViewResponse {
+  repeated WorkloadViewRow rows = 1;
+  string signals_target = 2;
+  string last_sync_at = 3;      // ISO-8601 ("" = never)
+  string last_sync_error = 4;
+  int32 syncs = 5;
   string error = 6;
 }
