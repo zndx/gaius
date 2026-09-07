@@ -551,6 +551,22 @@ class GaiusZndxEngineServicer(zpb_grpc.EngineServicer):
         )
         return zpb.RemediationResponse()  # pragma: no cover — abort raises
 
+    async def Announce(
+        self,
+        request: zpb.PeerAnnounce,
+        context: aio.ServicerContext,
+    ) -> zpb.AnnounceAck:
+        # The protocol: engines that are not a peer directory answer UNIMPLEMENTED
+        # (honest). Say so explicitly — the generated default raises
+        # NotImplementedError, which grpc logs as an ERROR traceback on every
+        # announce (Hermes announces to each peer every ~30 s; 12 per boot).
+        await context.abort(
+            grpc.StatusCode.UNIMPLEMENTED,
+            "gaius is not a peer directory (Announce is served by Aegir); "
+            f"peer {request.project or '?'} at {request.engine_target or '?'} not recorded.",
+        )
+        return zpb.AnnounceAck()  # unreachable; abort raises
+
     async def Yield(
         self,
         request: zpb.YieldRequest,

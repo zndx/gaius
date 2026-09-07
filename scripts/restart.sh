@@ -82,7 +82,11 @@ inflight() { $PSQL -c "select coalesce(string_agg(task_type||'#'||id||' '||to_ch
 flows() { pgrep -af "python[0-9.]* -m gaius\.flows\." 2>/dev/null | grep -v "uv run" | cut -c1-110 | tr '\n' ';'; }
 
 # 0. context: the objectives under remediation and what surrounds them
-FAILING_JSON="$($PSQL -c "SELECT coalesce(json_agg(json_build_object('objective', objective_name, 'verdict', verdict, 'verified_at', started_at, 'gates', (SELECT json_agg(json_build_object('gate', g->>'gate', 'verdict', g->>'verdict', 'evidence', left(g->>'evidence', 400))) FROM jsonb_array_elements(gate_results) g WHERE g->>'verdict' <> 'pass'))), '[]') FROM (SELECT DISTINCT ON (objective_name) objective_name, verdict, started_at, gate_results FROM objective_verifications ORDER BY objective_name, started_at DESC) v WHERE verdict = 'fail'" 2>/dev/null || echo "[]")"
+FAILING_JSON="$($PSQL -c "SELECT coalesce(json_agg(json_build_object('objective', objective_name, 'verdict', verdict, 'verified_at', started_at, 'gates', (SELECT json_agg(json_build_object('gate', g->>'gate', 'verdict', g->>'verdict', 'evidence', left(g->>'evidence', 400))) FROM jsonb_array_elements(gate_results) g WHERE g->>'verdict' <> 'pass'))), '[]') FROM (SELECT DISTINCT ON (objective_name) objective_name, verdict, started_at, gate_results FROM objective_verifications ORDER BY objective_name, started_at DESC) v WHERE verdict = 'fail' AND started_at > now() - interval '3 days'" 2>/dev/null || echo "[]")"
+# The 3-day window keeps RETIRED objectives out: content_currency (folded into surface_integrity
+# 2026-09-06) left a last record of 'fail' and the post-restart loop asked the engine to verify a
+# name it no longer knows (ValueError: Unknown objective, 2026-09-07 21:22). An objective the
+# engine still owns is verified every 6 h, so a fail older than 3 days is a retired name.
 OBJECTIVES=$(python3 -c "import json,sys; print(' '.join(o['objective'] for o in json.loads(sys.argv[1])))" "$FAILING_JSON" 2>/dev/null || echo "")
 python3 - "$STATE_DIR/context.json" "$FAILING_JSON" "$ACP_LOG" "$REASON" "$CHANGE_REF" "$REV_BEFORE" "$DIRTY" "$REQUEST_ID" "$FREE" "$(inflight)" "$(flows)" <<'EOF'
 import json, sys, datetime, os
