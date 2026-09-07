@@ -2257,6 +2257,56 @@ class GrpcEngineClient:
                 return {"error": response.error}
             return {"items": [_card(i) for i in response.items]}
 
+        if action == "AgendaBrief":
+            # (2026-09-07) /agenda default — the Brief + index; item_id = one item.
+            from ..engine.generated import AgendaBriefRequest
+
+            response = await self._stub.AgendaBrief(
+                AgendaBriefRequest(
+                    item_id=str(params.get("item_id") or ""),
+                    limit=int(params.get("limit") or 0),
+                ),
+                timeout=timeout,
+            )
+            if response.error:
+                return {"error": response.error}
+
+            def _bi(it) -> dict:
+                return {
+                    "id": it.id,
+                    "starts": it.starts or None,
+                    "ends": it.ends or None,
+                    "kind": it.kind,
+                    "intent": it.intent,
+                    "title": it.title,
+                    "summary": it.summary,
+                    "tags": list(it.tags),
+                    "pinned": bool(it.pinned),
+                    "open_checks": int(it.open_checks or 0),
+                    "with": it.with_whom or None,
+                    "body": it.body or None,
+                    "day": it.day,
+                    "calendar_day": it.calendar_day or None,
+                }
+
+            return {
+                "brief": response.brief or None,
+                "spoken": response.spoken or None,
+                "brief_at": response.brief_at or None,
+                "brief_age_s": int(response.brief_age_s or 0),
+                "brief_id": response.brief_id or None,
+                "timezone": response.timezone or None,
+                "today": response.today or None,
+                "items_considered": int(response.items_considered or 0),
+                "items": [_bi(i) for i in response.items],
+                "item": _bi(response.item) if response.item.id else None,
+                "note_path": response.note_path or None,
+                "prev_note_path": response.prev_note_path or None,
+                "next_note_path": response.next_note_path or None,
+                "total_in_window": int(response.total_in_window or 0),
+                "note": response.note or None,
+            }
+
         if action == "AgendaGet":
             response = await self._stub.AgendaGet(
                 AgendaGetRequest(path=str(params.get("path") or "")),

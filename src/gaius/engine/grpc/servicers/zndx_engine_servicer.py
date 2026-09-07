@@ -591,6 +591,21 @@ class GaiusZndxEngineServicer(zpb_grpc.EngineServicer):
                     stream=str(request.stream or ""),
                 )
                 resp.thoughts_hint.CopyFrom(to_proto(hint))
+            if int(request.kind) == zpb.SERVER_QUERY_KIND_AGENDA:
+                # (2026-09-07) The Agenda BRIEF (today · tomorrow · the week) plus the
+                # index of covered items; note_id = one item in full. No model call;
+                # the note says when there is no brief yet or an item is unknown.
+                from ...services.agenda_brief import collect_agenda
+                from ...services.agenda_brief import to_proto as agenda_to_proto
+
+                pool = getattr(self._services, "db_pool", None)
+                if pool is None:
+                    cog = getattr(self._services, "cognition_service", None)
+                    pool = getattr(cog, "_db_pool", None) if cog is not None else None
+                agenda = await collect_agenda(
+                    pool, note_id=str(request.note_id or ""), limit=int(request.limit or 0)
+                )
+                resp.agenda_hint.CopyFrom(agenda_to_proto(agenda))
             if int(request.kind) == zpb.SERVER_QUERY_KIND_SCHEDULES:
                 from ...services.summary_schedule import list_schedule_catalog
 

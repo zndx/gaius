@@ -2115,6 +2115,69 @@ class GaiusServicer(GaiusServiceServicer):
             )
         return resp
 
+    async def AgendaBrief(self, request, context):
+        """/agenda default — the Agenda Brief the agenda_brief task wrote (today ·
+        tomorrow · the coming week) plus the live index of covered items; with
+        item_id, that one item in full. Read from the store and the KB with NO
+        model call (2026-09-07). Honest note when there is no brief yet."""
+        from ...generated import AgendaBriefItem, AgendaBriefResponse
+        from ...services.agenda_brief import collect_agenda
+
+        pool = getattr(self._services, "db_pool", None)
+        if pool is None:
+            cog = getattr(self._services, "cognition_service", None)
+            pool = getattr(cog, "_db_pool", None) if cog is not None else None
+        try:
+            d = await collect_agenda(
+                pool, note_id=str(request.item_id or ""), limit=min(int(request.limit or 0), 24)
+            )
+        except Exception as e:  # noqa: BLE001 — in-band error, Engine-First style
+            return AgendaBriefResponse(error=f"#AG.00000003.STOREFAIL agenda read failed: {e}")
+
+        def _iso(ms: int) -> str:
+            return datetime.fromtimestamp(ms / 1000, tz=timezone.utc).isoformat(timespec="seconds") if ms else ""
+
+        def _item(r: dict) -> AgendaBriefItem:
+            it = AgendaBriefItem(
+                id=str(r.get("id") or ""),
+                starts=_iso(int(r.get("starts_ms") or 0)),
+                ends=_iso(int(r.get("ends_ms") or 0)),
+                kind=str(r.get("kind") or ""),
+                intent=str(r.get("intent") or ""),
+                title=str(r.get("title") or ""),
+                summary=str(r.get("summary") or ""),
+                pinned=bool(r.get("pinned")),
+                open_checks=int(r.get("open_checks") or 0),
+                with_whom=str(r.get("with_whom") or ""),
+                body=str(r.get("body") or ""),
+                day=str(r.get("day") or ""),
+                calendar_day=str(r.get("calendar_day") or ""),
+            )
+            it.tags.extend(str(x) for x in (r.get("tags") or []))
+            return it
+
+        now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+        resp = AgendaBriefResponse(
+            brief=str(d.get("brief") or ""),
+            spoken=str(d.get("spoken") or ""),
+            brief_at=_iso(int(d.get("brief_at_ms") or 0)),
+            brief_age_s=int((now_ms - int(d.get("brief_at_ms") or 0)) / 1000) if d.get("brief_at_ms") else 0,
+            brief_id=str(d.get("brief_id") or ""),
+            timezone=str(d.get("timezone") or ""),
+            today=str(d.get("today") or ""),
+            items_considered=int(d.get("items_considered") or 0),
+            note_path=str(d.get("note_path") or ""),
+            prev_note_path=str(d.get("prev_note_path") or ""),
+            next_note_path=str(d.get("next_note_path") or ""),
+            total_in_window=int(d.get("total_in_window") or 0),
+            note=str(d.get("note") or ""),
+        )
+        for r in d.get("items") or []:
+            resp.items.append(_item(r))
+        if d.get("item"):
+            resp.item.CopyFrom(_item(d["item"]))
+        return resp
+
     async def TriggerCognition(
         self,
         request: TriggerCognitionRequest,

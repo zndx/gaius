@@ -11185,21 +11185,97 @@ Generated: {now.isoformat()}
     # ─────────────────────────────────────────────────────────────────────
 
     async def _cmd_agenda(self, args: str) -> dict:
-        """KB-oriented day agenda (current/agenda.md + project agendas).
+        """The Agenda — the Brief first, items by id, then the KB-oriented tools.
 
         Usage:
-            /agenda              - List items in the current horizon (day)
-            /agenda list [hz]    - Same, explicit
+            /agenda              - The Agenda BRIEF (today · tomorrow · the coming week)
+                                   the agenda_brief task wrote, plus the index of the
+                                   items it covers (id, when, kind, title). Instant.
+            /agenda <item-id>    - One agenda item in full (the id from the index —
+                                   a scratch/... note path)
+            /agenda brief [n]    - Same as the default (n = index rows)
+            /agenda list [hz]    - The day agenda file (current/agenda.md); hz day|week|quarter|open
             /agenda init [hz]    - Create current/agenda.md if missing
-            /agenda cards [n]    - Consciousness cards (scratch zettels)
+            /agenda cards [n]    - Consciousness cards (scratch zettels, n-day window)
             /agenda create <kind> <title>
-            /agenda get <path>
+            /agenda get <path>   - Same as /agenda <item-id>
         """
         parts = args.split() if args else []
         try:
             engine_client = await self._get_engine_client_cached()
         except Exception:
             engine_client = None
+
+        # (2026-09-07) Default = the Agenda Brief; an item id = that item. The voice
+        # agent needs one command: /agenda, then /agenda <id> for a follow-up.
+        known = ("cards", "create", "get", "init", "list", "day", "week", "quarter", "open", "brief")
+        looks_like_id = bool(parts) and parts[0] not in known and (
+            "/" in parts[0] or parts[0].endswith(".md")
+        )
+        if not parts or parts[0] == "brief" or looks_like_id:
+            if not engine_client:
+                return {"error": "Engine client required.\n  Guru: #THETA.00000008.NOENGINE", "mode": "brief"}
+            item_id = parts[0] if looks_like_id else ""
+            limit = 0
+            if parts and parts[0] == "brief" and len(parts) > 1:
+                try:
+                    limit = int(parts[1])
+                except ValueError:
+                    limit = 0
+            data = await engine_client.call(
+                "Gaius", "AgendaBrief", {"item_id": item_id, "limit": limit}, timeout=30.0
+            )
+            if data.get("error"):
+                return {"mode": "item" if item_id else "brief", "error": data["error"]}
+            if item_id:
+                item = data.get("item")
+                if not item:
+                    return {"mode": "item", "item_id": item_id, "error": data.get("note") or "item not found"}
+                return {
+                    "mode": "item",
+                    "id": item["id"],
+                    "title": item["title"],
+                    "kind": item["kind"],
+                    "intent": item["intent"],
+                    "when": item.get("starts") or item.get("calendar_day"),
+                    "ends": item.get("ends"),
+                    "day": item.get("day"),
+                    "with": item.get("with"),
+                    "tags": item.get("tags"),
+                    "pinned": item.get("pinned"),
+                    "open_checks": item.get("open_checks"),
+                    "body": item.get("body"),
+                    "note": data.get("note"),
+                }
+            return {
+                "mode": "brief",
+                "brief": data.get("brief"),
+                "spoken": data.get("spoken"),
+                "brief_at": data.get("brief_at"),
+                "brief_age_s": data.get("brief_age_s"),
+                "timezone": data.get("timezone"),
+                "today": data.get("today"),
+                "items_considered": data.get("items_considered"),
+                "note_path": data.get("note_path"),
+                "prev_note_path": data.get("prev_note_path"),
+                "next_note_path": data.get("next_note_path"),
+                "items": [
+                    {
+                        "id": i["id"],
+                        "day": i["day"],
+                        "when": i.get("starts") or i.get("calendar_day"),
+                        "kind": i["kind"],
+                        "intent": i["intent"],
+                        "title": i["title"],
+                        "open_checks": i.get("open_checks"),
+                        "pinned": i.get("pinned"),
+                    }
+                    for i in data.get("items") or []
+                ],
+                "total_in_window": data.get("total_in_window"),
+                "note": data.get("note"),
+                "hint": "/agenda <id> shows one item; /agenda list shows the day agenda file",
+            }
 
         if parts and parts[0] == "cards":
             window = 14

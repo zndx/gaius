@@ -236,6 +236,8 @@ class CognitionService(BaseDaemon):
         "tda_computation",
         "held_out_refresh",
         "feed_check",
+        # The Agenda Brief (2026-09-07): today · tomorrow · the week, on thinking.
+        "agenda_brief",
     ]
 
     # Need an inference card. CPU/SQL clocks stay in SUPPORTED_TASK_TYPES
@@ -243,6 +245,7 @@ class CognitionService(BaseDaemon):
     GPU_BOUND_TASK_TYPES = frozenset(
         {
             "cognition_cycle",
+            "agenda_brief",
             "llm_triage",
             "evolution_cycle",
             "task_ideation",
@@ -384,6 +387,7 @@ class CognitionService(BaseDaemon):
             "held_out_refresh": self._run_held_out_refresh,
             "feed_check": self._run_feed_check,
             "article_curate": self._run_article_curate,
+            "agenda_brief": self._run_agenda_brief,
         }.get(task_type)
 
     async def run_claimed_task(
@@ -409,6 +413,30 @@ class CognitionService(BaseDaemon):
     # ─────────────────────────────────────────────────────────────────────────
     # Task Handlers
     # ─────────────────────────────────────────────────────────────────────────
+
+    async def _run_agenda_brief(self, payload: dict) -> dict:
+        """Write the Agenda Brief (today · tomorrow · the coming week) — the
+        /agenda default and the Hermes voice agent's ready answer (2026-09-07).
+        One thinking Complete; persisted to agenda_briefs and as a prev/next-
+        linked zettel (never an Agenda item). Fail-fast: the brief is the product."""
+        from .agenda_brief import compose_agenda_brief
+
+        self._notify_progress("Writing the Agenda Brief...")
+        brief = await compose_agenda_brief(
+            self._db_pool,
+            timezone_name=(payload or {}).get("timezone") or None,
+        )
+        return {
+            "success": True,
+            "status": "completed",
+            "brief_id": brief["id"],
+            "note_path": brief["note_path"],
+            "items_considered": brief["items_considered"],
+            "timezone": brief["timezone"],
+            "today": brief["today"],
+            "tokens_used": brief["tokens"],
+            "spoken_chars": len(brief["spoken"]),
+        }
 
     async def _run_cognition_cycle(self, payload: dict, bypass_rate_limit: bool = False) -> dict:
         """Run a full cognition cycle.

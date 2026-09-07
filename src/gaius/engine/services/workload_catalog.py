@@ -157,6 +157,12 @@ WORKLOAD_CATALOG: tuple[WorkloadEntry, ...] = (
         description="cognition cycle (4 h anchors; pg_cron jitters up to 45 min)", pg_cron_job="cognition-periodic",
     ),
     WorkloadEntry(
+        kind="agenda_brief", task_type="agenda_brief", payload={}, cron="13 1,5,9,13,17,21 * * *",
+        singleton=True, horizon_s=H1,
+        description="Agenda Brief — today · tomorrow · the coming week, on thinking (the /agenda default; 2026-09-07)",
+        pg_cron_job="agenda-brief",
+    ),
+    WorkloadEntry(
         kind="feed_check", task_type="feed_check", payload={}, cron="17 */4 * * *", horizon_s=H2,
         description="feed check (pg_cron jitters up to 30 min)", pg_cron_job="check-due-fetches",
     ),

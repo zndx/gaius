@@ -114,6 +114,7 @@ class GaiusServiceStub:
     GetRecentThoughts: grpc.UnaryUnaryMultiCallable[gaius_service_pb2.GetRecentThoughtsRequest, gaius_service_pb2.GetRecentThoughtsResponse]
     ThoughtsBrief: grpc.UnaryUnaryMultiCallable[gaius_service_pb2.ThoughtsBriefRequest, gaius_service_pb2.ThoughtsBriefResponse]
     """(2026-09-07) /thoughts default: the Brief the cognition cycle wrote — instant, no model call."""
+    AgendaBrief: grpc.UnaryUnaryMultiCallable[gaius_service_pb2.AgendaBriefRequest, gaius_service_pb2.AgendaBriefResponse]
     TriggerCognition: grpc.UnaryUnaryMultiCallable[gaius_service_pb2.TriggerCognitionRequest, gaius_service_pb2.TriggerCognitionResponse]
     CognitionActivity: grpc.UnaryUnaryMultiCallable[google.protobuf.empty_pb2.Empty, gaius_service_pb2.CognitionActivityResponse]
     CognitionSurface: grpc.UnaryUnaryMultiCallable[gaius_service_pb2.CognitionSurfaceRequest, gaius_service_pb2.CognitionSurfaceResponse]
@@ -486,6 +487,7 @@ class GaiusServiceAsyncStub(GaiusServiceStub):
     GetRecentThoughts: grpc.aio.UnaryUnaryMultiCallable[gaius_service_pb2.GetRecentThoughtsRequest, gaius_service_pb2.GetRecentThoughtsResponse]  # type: ignore[assignment]
     ThoughtsBrief: grpc.aio.UnaryUnaryMultiCallable[gaius_service_pb2.ThoughtsBriefRequest, gaius_service_pb2.ThoughtsBriefResponse]  # type: ignore[assignment]
     """(2026-09-07) /thoughts default: the Brief the cognition cycle wrote — instant, no model call."""
+    AgendaBrief: grpc.aio.UnaryUnaryMultiCallable[gaius_service_pb2.AgendaBriefRequest, gaius_service_pb2.AgendaBriefResponse]  # type: ignore[assignment]
     TriggerCognition: grpc.aio.UnaryUnaryMultiCallable[gaius_service_pb2.TriggerCognitionRequest, gaius_service_pb2.TriggerCognitionResponse]  # type: ignore[assignment]
     CognitionActivity: grpc.aio.UnaryUnaryMultiCallable[google.protobuf.empty_pb2.Empty, gaius_service_pb2.CognitionActivityResponse]  # type: ignore[assignment]
     CognitionSurface: grpc.aio.UnaryUnaryMultiCallable[gaius_service_pb2.CognitionSurfaceRequest, gaius_service_pb2.CognitionSurfaceResponse]  # type: ignore[assignment]
@@ -1047,6 +1049,13 @@ class GaiusServiceServicer(metaclass=abc.ABCMeta):
         context: _ServicerContext,
     ) -> typing.Union[gaius_service_pb2.ThoughtsBriefResponse, collections.abc.Awaitable[gaius_service_pb2.ThoughtsBriefResponse]]:
         """(2026-09-07) /thoughts default: the Brief the cognition cycle wrote — instant, no model call."""
+
+    @abc.abstractmethod
+    def AgendaBrief(
+        self,
+        request: gaius_service_pb2.AgendaBriefRequest,
+        context: _ServicerContext,
+    ) -> typing.Union[gaius_service_pb2.AgendaBriefResponse, collections.abc.Awaitable[gaius_service_pb2.AgendaBriefResponse]]: ...
 
     @abc.abstractmethod
     def TriggerCognition(

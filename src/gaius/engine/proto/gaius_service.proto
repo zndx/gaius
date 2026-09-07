@@ -424,6 +424,51 @@ message ThoughtsBriefResponse {
   string prev_brief_id = 15;
 }
 
+// /agenda default (2026-09-07): the Agenda BRIEF the agenda_brief task wrote —
+// today, tomorrow, the coming week in the operator's timezone — plus the INDEX
+// of the items it covered (id = KB note path) so a conversational agent can ask
+// again with item_id for one item in full. No model call.
+message AgendaBriefRequest {
+  string item_id = 1;             // "" = the brief + index; a note path = that item (with body)
+  int32 limit = 2;                // index rows to return (0 = all covered, max 24)
+}
+
+message AgendaBriefItem {
+  string id = 1;                  // the Agenda note path — pass back as item_id
+  string starts = 2;              // ISO-8601 (events)
+  string ends = 3;
+  string kind = 4;                // note | list | event
+  string intent = 5;              // brief | reminder | session
+  string title = 6;
+  string summary = 7;
+  repeated string tags = 8;
+  bool pinned = 9;
+  int32 open_checks = 10;
+  string with_whom = 11;
+  string body = 12;               // only for the item asked for
+  string day = 13;                // today | tomorrow | week | past | later
+  string calendar_day = 14;       // YYYY-MM-DD in the brief's timezone
+}
+
+message AgendaBriefResponse {
+  string brief = 1;               // written form ("" = no brief yet)
+  string spoken = 2;              // plain speech for a voice agent
+  string brief_at = 3;            // ISO-8601 UTC
+  int64 brief_age_s = 4;
+  string brief_id = 5;
+  string timezone = 6;
+  string today = 7;               // YYYY-MM-DD in that zone
+  int32 items_considered = 8;
+  repeated AgendaBriefItem items = 9;   // the live index (today → tomorrow → week → still-open)
+  AgendaBriefItem item = 10;      // the one item asked for (item_id), with body
+  string note_path = 11;          // the brief's KB zettel
+  string prev_note_path = 12;     // the previous agenda brief (the brief CHAIN)
+  string next_note_path = 13;
+  int32 total_in_window = 14;
+  string note = 15;               // honest state: "no agenda brief yet — next at …", "item not found: …"
+  string error = 16;
+}
+
 message TriggerCognitionRequest {
   int32 max_thoughts = 1;  // Default: 5
   string trigger_reason = 2;  // "manual", "scheduled", "session_start"
@@ -3569,6 +3614,7 @@ service GaiusService {
   rpc GetRecentThoughts(GetRecentThoughtsRequest) returns (GetRecentThoughtsResponse);
   // (2026-09-07) /thoughts default: the Brief the cognition cycle wrote — instant, no model call.
   rpc ThoughtsBrief(ThoughtsBriefRequest) returns (ThoughtsBriefResponse);
+  rpc AgendaBrief(AgendaBriefRequest) returns (AgendaBriefResponse);
   rpc TriggerCognition(TriggerCognitionRequest) returns (TriggerCognitionResponse);
   rpc CognitionActivity(google.protobuf.Empty) returns (CognitionActivityResponse);
   rpc CognitionSurface(CognitionSurfaceRequest) returns (CognitionSurfaceResponse);

@@ -693,6 +693,82 @@ class ThoughtsBriefResponse(_message.Message):
     prev_brief_id: str
     def __init__(self, brief: _Optional[str] = ..., spoken: _Optional[str] = ..., brief_at: _Optional[str] = ..., brief_age_s: _Optional[int] = ..., thoughts_considered: _Optional[int] = ..., brief_id: _Optional[str] = ..., note_path: _Optional[str] = ..., thoughts: _Optional[_Iterable[_Union[ThoughtRow, _Mapping]]] = ..., newest_at: _Optional[str] = ..., total_in_window: _Optional[int] = ..., note: _Optional[str] = ..., error: _Optional[str] = ..., prev_note_path: _Optional[str] = ..., next_note_path: _Optional[str] = ..., prev_brief_id: _Optional[str] = ...) -> None: ...
 
+class AgendaBriefRequest(_message.Message):
+    __slots__ = ("item_id", "limit")
+    ITEM_ID_FIELD_NUMBER: _ClassVar[int]
+    LIMIT_FIELD_NUMBER: _ClassVar[int]
+    item_id: str
+    limit: int
+    def __init__(self, item_id: _Optional[str] = ..., limit: _Optional[int] = ...) -> None: ...
+
+class AgendaBriefItem(_message.Message):
+    __slots__ = ("id", "starts", "ends", "kind", "intent", "title", "summary", "tags", "pinned", "open_checks", "with_whom", "body", "day", "calendar_day")
+    ID_FIELD_NUMBER: _ClassVar[int]
+    STARTS_FIELD_NUMBER: _ClassVar[int]
+    ENDS_FIELD_NUMBER: _ClassVar[int]
+    KIND_FIELD_NUMBER: _ClassVar[int]
+    INTENT_FIELD_NUMBER: _ClassVar[int]
+    TITLE_FIELD_NUMBER: _ClassVar[int]
+    SUMMARY_FIELD_NUMBER: _ClassVar[int]
+    TAGS_FIELD_NUMBER: _ClassVar[int]
+    PINNED_FIELD_NUMBER: _ClassVar[int]
+    OPEN_CHECKS_FIELD_NUMBER: _ClassVar[int]
+    WITH_WHOM_FIELD_NUMBER: _ClassVar[int]
+    BODY_FIELD_NUMBER: _ClassVar[int]
+    DAY_FIELD_NUMBER: _ClassVar[int]
+    CALENDAR_DAY_FIELD_NUMBER: _ClassVar[int]
+    id: str
+    starts: str
+    ends: str
+    kind: str
+    intent: str
+    title: str
+    summary: str
+    tags: _containers.RepeatedScalarFieldContainer[str]
+    pinned: bool
+    open_checks: int
+    with_whom: str
+    body: str
+    day: str
+    calendar_day: str
+    def __init__(self, id: _Optional[str] = ..., starts: _Optional[str] = ..., ends: _Optional[str] = ..., kind: _Optional[str] = ..., intent: _Optional[str] = ..., title: _Optional[str] = ..., summary: _Optional[str] = ..., tags: _Optional[_Iterable[str]] = ..., pinned: bool = ..., open_checks: _Optional[int] = ..., with_whom: _Optional[str] = ..., body: _Optional[str] = ..., day: _Optional[str] = ..., calendar_day: _Optional[str] = ...) -> None: ...
+
+class AgendaBriefResponse(_message.Message):
+    __slots__ = ("brief", "spoken", "brief_at", "brief_age_s", "brief_id", "timezone", "today", "items_considered", "items", "item", "note_path", "prev_note_path", "next_note_path", "total_in_window", "note", "error")
+    BRIEF_FIELD_NUMBER: _ClassVar[int]
+    SPOKEN_FIELD_NUMBER: _ClassVar[int]
+    BRIEF_AT_FIELD_NUMBER: _ClassVar[int]
+    BRIEF_AGE_S_FIELD_NUMBER: _ClassVar[int]
+    BRIEF_ID_FIELD_NUMBER: _ClassVar[int]
+    TIMEZONE_FIELD_NUMBER: _ClassVar[int]
+    TODAY_FIELD_NUMBER: _ClassVar[int]
+    ITEMS_CONSIDERED_FIELD_NUMBER: _ClassVar[int]
+    ITEMS_FIELD_NUMBER: _ClassVar[int]
+    ITEM_FIELD_NUMBER: _ClassVar[int]
+    NOTE_PATH_FIELD_NUMBER: _ClassVar[int]
+    PREV_NOTE_PATH_FIELD_NUMBER: _ClassVar[int]
+    NEXT_NOTE_PATH_FIELD_NUMBER: _ClassVar[int]
+    TOTAL_IN_WINDOW_FIELD_NUMBER: _ClassVar[int]
+    NOTE_FIELD_NUMBER: _ClassVar[int]
+    ERROR_FIELD_NUMBER: _ClassVar[int]
+    brief: str
+    spoken: str
+    brief_at: str
+    brief_age_s: int
+    brief_id: str
+    timezone: str
+    today: str
+    items_considered: int
+    items: _containers.RepeatedCompositeFieldContainer[AgendaBriefItem]
+    item: AgendaBriefItem
+    note_path: str
+    prev_note_path: str
+    next_note_path: str
+    total_in_window: int
+    note: str
+    error: str
+    def __init__(self, brief: _Optional[str] = ..., spoken: _Optional[str] = ..., brief_at: _Optional[str] = ..., brief_age_s: _Optional[int] = ..., brief_id: _Optional[str] = ..., timezone: _Optional[str] = ..., today: _Optional[str] = ..., items_considered: _Optional[int] = ..., items: _Optional[_Iterable[_Union[AgendaBriefItem, _Mapping]]] = ..., item: _Optional[_Union[AgendaBriefItem, _Mapping]] = ..., note_path: _Optional[str] = ..., prev_note_path: _Optional[str] = ..., next_note_path: _Optional[str] = ..., total_in_window: _Optional[int] = ..., note: _Optional[str] = ..., error: _Optional[str] = ...) -> None: ...
+
 class TriggerCognitionRequest(_message.Message):
     __slots__ = ("max_thoughts", "trigger_reason")
     MAX_THOUGHTS_FIELD_NUMBER: _ClassVar[int]
