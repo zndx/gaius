@@ -82,10 +82,19 @@ def _spec_of(entry: Any) -> dict[str, Any]:
         "payload": dict(entry.payload),
         "gate_sql": entry.gate_sql,
         "kind": entry.kind,
+        # pg_cron still enqueues this class beside Airflow: attach, never race.
+        "coexists_with_pg_cron": bool(entry.pg_cron_active),
     }
 
 
 WORKLOAD_KINDS: dict[str, dict[str, Any]] = {e.kind: _spec_of(e) for e in _catalog.entries()}
+# While a class's pg_cron job is still active, an Airflow-declared run waits
+# this long after its declaration before ENQUEUEING, so pg_cron's row of the
+# same class+payload (fired at the same cron minute, seconds earlier or later)
+# is there to ATTACH to. Airflow's scheduler lags the cron minute by seconds;
+# pg_cron fires at second 0 — without the grace the Airflow row could land
+# first and pg_cron, which has no memory of it, would add a second run.
+ATTACH_GRACE_S = 90.0
 AIRFLOW_SOURCED_CLASSES: dict[str, str] = {
     e.kind: _catalog.airflow_dag_id(e) for e in _catalog.enabled_entries()
 }
@@ -441,10 +450,16 @@ class CoordinationWatcher:
                     logger.info("coordination: workload %s for activity %s skipped (%s)", task_type, aid, gate)
                     self._publish(a, "skipped_workload", [], at)
                     return "skipped"
+            # Attach key: same class AND the catalogue payload contained in the
+            # row's (the publish slots share one task_type — a predawn activity
+            # must never attach to the afternoon row), not yet stamped by
+            # another activity.
             live = await pool.fetchrow(
                 "SELECT id, picked_up_at FROM scheduled_tasks WHERE task_type = $1 AND completed_at IS NULL "
+                "AND COALESCE(payload, '{}'::jsonb) @> $2::jsonb AND payload->>'activity_id' IS NULL "
                 "ORDER BY id DESC LIMIT 1",
                 task_type,
+                json.dumps(spec.get("payload") or {}, sort_keys=True),
             )
             state = "queued"
             if live is not None:
@@ -457,6 +472,12 @@ class CoordinationWatcher:
                 action = "attached_workload"
                 state = "running" if live["picked_up_at"] is not None else "queued"
                 logger.info("coordination: attached workload %s #%d to activity %s (already %s)", task_type, tid, aid, state)
+            elif spec.get("coexists_with_pg_cron") and at - int(a.get("declared_ns") or 0) < ATTACH_GRACE_S * 1_000_000_000:
+                # pg_cron still enqueues this class: give its row the grace to
+                # appear and attach next pass rather than run beside it.
+                self._workloads.setdefault(aid, {"task_id": 0, "task_type": task_type, "state": "awaiting_pg_cron", "last_heartbeat_ns": 0})
+                await self._heartbeat(aid, at)
+                return "awaiting_pg_cron"
             else:
                 tid = await self._enqueue(pool, spec, aid, kind)
                 action = "started_workload"

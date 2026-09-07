@@ -27,11 +27,20 @@ declared intents in ``config/supervision/gaius.textproto`` (the same
 precedence ``queue_share.share_for_class`` uses at admission), else from the
 kind's resource class occupancy.
 
-Only ``article_curate`` is ``enabled`` today: it is the class whose schedule
-has moved to the Signals Airflow. Every other entry is catalogued so the whole
-procession is visible in Airflow (materialised PAUSED) before each class
-migrates by flipping ``enabled`` — one class at a time, pg_cron retired once
-the Airflow path has proven a run.
+``enabled`` entries are the classes whose schedule lives in the Signals
+Airflow: ``article_curate`` (pg_cron retired 2026-09-07 03:16) and, since
+2026-09-07 evening, the AGENDA PRODUCERS — the four publish slots,
+``prospects_check``, ``cognition_cycle``, ``weekly_signals_summary`` — whose
+Airflow runs end with an Asset event that INITIATES ``agenda_brief`` (user:
+"use Signals via the protocol to arrange Airflow to initiate agenda_brief update
+runs when other workflows perform their updates"). ``agenda_brief`` is
+asset-scheduled ``after`` ANY producer (``after_mode="any"``) and on the day
+rollover (``cron``): time OR assets. Every other entry is catalogued so the
+whole procession is visible in Airflow (materialised PAUSED) before it migrates
+by flipping ``enabled`` — one class at a time, pg_cron retired once the Airflow
+path has proven a run. While a producer's pg_cron job is still active the
+watcher ATTACHES the Airflow run to pg_cron's row of the same class and payload
+(``services.coordination``) instead of running it twice.
 """
 
 from __future__ import annotations
@@ -55,6 +64,24 @@ H5 = 5 * 3600
 RUNNER_METAFLOW = "metaflow"
 RUNNER_TASK = "task"
 
+# ScheduleHint.after_mode (protocol ce31d5d): how `after` schedules the entry.
+AFTER_ALL = "all"   # every named workload must end since the last run (Airflow AssetAll) — default
+AFTER_ANY = "any"   # any one ending runs it (AssetAny); with `cron`, time OR assets
+
+# The classes whose completed runs write Agenda items — `agenda_brief` follows
+# ANY of them. prospects_update (engine-enqueued by prospects_check) and the
+# Theta consolidation are not catalogued classes; their items ride the next
+# producer's run or the day rollover.
+AGENDA_PRODUCERS: tuple[str, ...] = (
+    "task.publish_cards_predawn",
+    "task.publish_cards_morning",
+    "task.publish_cards_afternoon",
+    "task.publish_cards_evening",
+    "task.prospects_check",
+    "task.cognition_cycle",
+    "task.weekly_signals_summary",
+)
+
 
 @dataclass(frozen=True)
 class WorkloadEntry:
@@ -70,6 +97,8 @@ class WorkloadEntry:
     runner: str = RUNNER_TASK
     horizon_s: int = H2
     after: tuple[str, ...] = ()     # catalogue ids this workload follows (Asset-scheduled)
+    after_mode: str = AFTER_ALL     # "all" | "any" — how `after` schedules it (see AFTER_*)
+    timezone: str = ""              # IANA zone for `cron` ("" → TIMEZONE); agenda_brief speaks the operator's
     enabled: bool = False           # True = its schedule lives in the Signals Airflow
     airflow_dag_id: str = ""        # "" → Signals assigns <peer>_<kind>
     pg_cron_job: str = ""           # the enqueuer's jobname (retired once Airflow proves a run)
@@ -154,13 +183,19 @@ WORKLOAD_CATALOG: tuple[WorkloadEntry, ...] = (
     WorkloadEntry(
         kind="cognition_cycle", task_type="cognition_cycle", payload={"trigger": "scheduled"},
         cron="43 0,4,8,12,16,20 * * *", horizon_s=H2,
-        description="cognition cycle (4 h anchors; pg_cron jitters up to 45 min)", pg_cron_job="cognition-periodic",
+        description="cognition cycle (4 h anchors; pg_cron jitters up to 45 min) — agenda producer",
+        enabled=True, airflow_dag_id="gaius_cognition_cycle", pg_cron_job="cognition-periodic",
     ),
     WorkloadEntry(
-        kind="agenda_brief", task_type="agenda_brief", payload={}, cron="13 1,5,9,13,17,21 * * *",
+        # Asset-scheduled: Airflow initiates a run when ANY agenda producer's run
+        # ends (after_mode=any) and at the day rollover (cron, operator's zone) —
+        # time OR assets. Its 4 h pg_cron enqueuer was deactivated 2026-09-07.
+        kind="agenda_brief", task_type="agenda_brief", payload={}, cron="5 0 * * *",
+        after=AGENDA_PRODUCERS, after_mode=AFTER_ANY, timezone="operator",
         singleton=True, horizon_s=H1,
-        description="Agenda Brief — today · tomorrow · the coming week, on thinking (the /agenda default; 2026-09-07)",
-        pg_cron_job="agenda-brief",
+        description="agenda brief — refreshed whenever a producer ends, and at the day rollover",
+        enabled=True, airflow_dag_id="gaius_agenda_brief", pg_cron_job="agenda-brief",
+        pg_cron_active=False,  # Airflow initiates it (2026-09-07); the 4 h job '13 1,5,9,13,17,21' is inactive
     ),
     WorkloadEntry(
         kind="feed_check", task_type="feed_check", payload={}, cron="17 */4 * * *", horizon_s=H2,
@@ -171,27 +206,33 @@ WORKLOAD_CATALOG: tuple[WorkloadEntry, ...] = (
         horizon_s=H5, description="objective verification (6 h; judged verdicts run long)",
         pg_cron_job="objective-verify",
     ),
+    # The four publish slots share ONE task_type; the payload's `slot` is what
+    # tells them apart — the watcher's attach is keyed on it.
     WorkloadEntry(
         kind="publish_cards_predawn", task_type="publish_cards", payload={"count": 3, "slot": "predawn"},
-        cron="0 12 * * *", horizon_s=H5, description="publish slot predawn (3 cards)",
-        pg_cron_job="publish-cards-predawn",
+        cron="0 12 * * *", horizon_s=H5, description="publish slot predawn (3 cards) — agenda producer",
+        enabled=True, airflow_dag_id="gaius_publish_cards_predawn", pg_cron_job="publish-cards-predawn",
     ),
     WorkloadEntry(
         kind="publish_cards_morning", task_type="publish_cards", payload={"count": 1, "slot": "morning"},
-        cron="0 17 * * *", horizon_s=H5, description="publish slot morning", pg_cron_job="publish-cards-morning",
+        cron="0 17 * * *", horizon_s=H5, description="publish slot morning — agenda producer",
+        enabled=True, airflow_dag_id="gaius_publish_cards_morning", pg_cron_job="publish-cards-morning",
     ),
     WorkloadEntry(
         kind="publish_cards_afternoon", task_type="publish_cards", payload={"count": 1, "slot": "afternoon"},
-        cron="0 21 * * *", horizon_s=H5, description="publish slot afternoon", pg_cron_job="publish-cards-afternoon",
+        cron="0 21 * * *", horizon_s=H5, description="publish slot afternoon — agenda producer",
+        enabled=True, airflow_dag_id="gaius_publish_cards_afternoon", pg_cron_job="publish-cards-afternoon",
     ),
     WorkloadEntry(
         kind="publish_cards_evening", task_type="publish_cards", payload={"count": 1, "slot": "evening"},
-        cron="0 2 * * *", horizon_s=H5, description="publish slot evening", pg_cron_job="publish-cards-evening",
+        cron="0 2 * * *", horizon_s=H5, description="publish slot evening — agenda producer",
+        enabled=True, airflow_dag_id="gaius_publish_cards_evening", pg_cron_job="publish-cards-evening",
     ),
     WorkloadEntry(
         kind="prospects_check", task_type="prospects_check", payload={}, cron="0 7 * * *",
         gate_sql="SELECT meta.should_run_prospects_check()", runner=RUNNER_METAFLOW, horizon_s=H3,
-        description="daily prospects check (decides the update; rate-metered FMP)", pg_cron_job="prospects-daily-check",
+        description="daily prospects check (decides the update; rate-metered FMP) — agenda producer",
+        enabled=True, airflow_dag_id="gaius_prospects_check", pg_cron_job="prospects-daily-check",
     ),
     WorkloadEntry(
         kind="content_diversity_check", task_type="content_diversity_check", payload={}, cron="0 6,18 * * *",
@@ -210,7 +251,8 @@ WORKLOAD_CATALOG: tuple[WorkloadEntry, ...] = (
     WorkloadEntry(
         kind="weekly_signals_summary", task_type="weekly_signals_summary", payload={"previous": True},
         cron="0 15 * * 1", gate_sql="SELECT meta.should_run_weekly_signals_summary()", singleton=True,
-        horizon_s=H3, description="weekly Signals summary (Monday)", pg_cron_job="weekly-signals-summary",
+        horizon_s=H3, description="weekly Signals summary (Monday) — agenda producer",
+        enabled=True, airflow_dag_id="gaius_weekly_signals_summary", pg_cron_job="weekly-signals-summary",
     ),
     WorkloadEntry(
         kind="evolution_cycle", task_type="evolution_cycle",
@@ -306,15 +348,36 @@ def claims_for(kind: str) -> list[dict[str, Any]]:
 
 
 # ── wire ─────────────────────────────────────────────────────────────────────
+def timezone_for(entry: WorkloadEntry) -> str:
+    """The IANA zone the entry's `cron` is read in. "operator" resolves to the
+    zone the Agenda speaks (GAIUS_AGENDA_TZ → instance attr → UTC), so the day
+    rollover of `agenda_brief` is the operator's midnight, not UTC's."""
+    tz = (entry.timezone or "").strip()
+    if not tz:
+        return TIMEZONE
+    if tz == "operator":
+        from gaius.engine.services.agenda_brief import operator_timezone
+
+        return operator_timezone()
+    return tz
+
+
+def wire_cron(entry: WorkloadEntry) -> str:
+    """The cron the DAG is given. A plain `after` entry (mode all, e.g.
+    clt_skos_label) is ASSET-scheduled only: its pg_cron cadence stays on the
+    entry as the migration record — Signals refuses cron+after without a mode.
+    An `after_mode=any` entry MAY carry a cron too: time OR assets."""
+    if entry.after and entry.after_mode == AFTER_ALL:
+        return ""
+    return entry.cron
+
+
 def to_hint(entry: WorkloadEntry) -> Any:
     from gaius.engine.generated.zndx.engine.v1 import engine_pb2 as zpb
 
-    # An `after` entry is ASSET-scheduled in Airflow (it runs when the workload it
-    # follows ends); its pg_cron cadence stays on the entry as the migration
-    # record but is not the DAG's schedule — Signals refuses cron+after together.
     hint = zpb.ScheduleHint(
         id=entry.id,
-        cron="" if entry.after else entry.cron,
+        cron=wire_cron(entry),
         airflow_dag_id=airflow_dag_id(entry),
         source=entry.source,
         enabled=bool(entry.enabled),
@@ -322,7 +385,8 @@ def to_hint(entry: WorkloadEntry) -> Any:
         precludes=list(entry.precludes),
         horizon_s=int(entry.horizon_s),
         after=list(entry.after),
-        timezone=TIMEZONE,
+        after_mode=entry.after_mode if entry.after else "",
+        timezone=timezone_for(entry),
         description=entry.description,
         runner=entry.runner,
     )
@@ -346,10 +410,12 @@ def as_dict(entry: WorkloadEntry) -> dict[str, Any]:
         "payload": dict(entry.payload),
         "gate_sql": entry.gate_sql,
         "cron": entry.cron,
-        "timezone": TIMEZONE,
+        "wire_cron": wire_cron(entry),
+        "timezone": timezone_for(entry),
         "runner": entry.runner,
         "horizon_s": int(entry.horizon_s),
         "after": list(entry.after),
+        "after_mode": entry.after_mode if entry.after else "",
         "claims": claims_for(entry.kind),
         "enabled": bool(entry.enabled),
         "source": entry.source,

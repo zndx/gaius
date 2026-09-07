@@ -366,8 +366,13 @@ class FakePool:
         if "payload->>'activity_id' = $1" in sql:
             return self._latest_for(args[0])
         if "task_type = $1 AND completed_at IS NULL" in sql:
+            # the attach key: class + catalogue payload contained + not yet stamped
+            assert "@> $2::jsonb" in sql and "payload->>'activity_id' IS NULL" in sql
+            want = _json.loads(args[1])
             for r in reversed(self.rows):
-                if r["task_type"] == args[0] and r["completed_at"] is None:
+                p = r["payload"] or {}
+                if (r["task_type"] == args[0] and r["completed_at"] is None
+                        and all(p.get(k) == v for k, v in want.items()) and "activity_id" not in p):
                     return {"id": r["id"], "picked_up_at": r["picked_up_at"]}
             return None
         raise AssertionError(f"unexpected fetchrow {sql}")
@@ -465,6 +470,73 @@ def test_attaches_to_inflight_row_instead_of_second_enqueue(monkeypatch):
         assert live["payload"]["activity_id"] == "w1"
         assert w.workload_label("w1") == f"article_curate #{live['id']} running"
         assert len(sched.named("RenewActivity")) == 1
+
+    asyncio.run(run())
+
+
+def _slot(aid, slot, declared=NOW - 10 * 60 * 10**9):
+    """An own RUNNING publish-slot activity declared 10 min ago (past the coexistence grace)."""
+    a = _act(aid=aid, kind=f"publish_cards_{slot}", peer="gaius", owner=f"airflow:gaius_publish_cards_{slot}",
+             state="running", run_id=f"act-{aid}", horizon=NOW + H, postures={}, claims=[])
+    a["declared_ns"] = declared
+    return a
+
+
+def test_attach_is_keyed_by_payload_not_task_type_alone(monkeypatch):
+    """The four publish slots share one task_type: a predawn activity must not
+    attach to pg_cron's AFTERNOON row, and a row another activity already
+    stamped is not attached twice."""
+    pool = FakePool()
+    afternoon = pool.add("publish_cards", {"count": 1, "slot": "afternoon"}, picked=True)
+    w, sched = _watcher(pool, monkeypatch)
+
+    async def run():
+        w.ingest([_slot("p1", "predawn")], NOW)
+        assert await w.workload_pass(NOW) == [("p1", "started_workload")]  # no predawn row → its own run
+        assert "activity_id" not in afternoon["payload"]
+        rows = pool.inserts()
+        assert len(rows) == 1 and rows[0]["payload"]["slot"] == "predawn" and rows[0]["payload"]["count"] == 3
+        # the afternoon activity attaches to pg_cron's afternoon row …
+        w.ingest([_slot("p1", "predawn"), _slot("a1", "afternoon")], NOW + 10**9)
+        assert await w.workload_pass(NOW + 10**9) == [("a1", "attached_workload")]
+        assert afternoon["payload"]["activity_id"] == "a1" and afternoon["payload"]["activity_kind"] == "publish_cards_afternoon"
+        # … and a second afternoon activity (a re-declared run) cannot claim the same stamped row
+        w.ingest([_slot("p1", "predawn"), _slot("a1", "afternoon"), _slot("a2", "afternoon")], NOW + 2 * 10**9)
+        acts = await w.workload_pass(NOW + 2 * 10**9)
+        assert acts == [("a2", "started_workload")]
+        assert afternoon["payload"]["activity_id"] == "a1"
+        assert len(pool.inserts()) == 2
+
+    asyncio.run(run())
+
+
+def test_coexisting_class_waits_the_grace_for_pg_cron_row_then_runs(monkeypatch):
+    """publish_cards still has an active pg_cron job: a fresh Airflow activity
+    waits ATTACH_GRACE_S for pg_cron's row (attach), and only enqueues its own
+    run once the grace has passed with no row. A retired class (article_curate)
+    never waits."""
+    pool = FakePool()
+    w, sched = _watcher(pool, monkeypatch)
+    declared = NOW
+
+    async def run():
+        w.ingest([_slot("m1", "morning", declared=declared)], NOW)
+        assert await w.workload_pass(NOW) == [("m1", "awaiting_pg_cron")]
+        assert pool.inserts() == [] and len(sched.named("RenewActivity")) == 1  # the lease is kept alive
+        assert w.workload_label("m1").endswith("awaiting_pg_cron")
+        # pg_cron's row lands 4 s later → attached, no second run
+        live = pool.add("publish_cards", {"count": 1, "slot": "morning"})
+        assert await w.workload_pass(NOW + 4 * 10**9) == [("m1", "attached_workload")]
+        assert live["payload"]["activity_id"] == "m1" and pool.inserts() == []
+        # a slot whose pg_cron row never comes: runs after the grace
+        w.ingest([_slot("m1", "morning", declared=declared), _slot("e1", "evening", declared=declared)], NOW + 5 * 10**9)
+        assert await w.workload_pass(NOW + 5 * 10**9) == [("e1", "awaiting_pg_cron")]
+        at = NOW + int(co.ATTACH_GRACE_S * 10**9) + 10**9
+        assert await w.workload_pass(at) == [("e1", "started_workload")]
+        assert [r["payload"]["slot"] for r in pool.inserts()] == ["evening"]
+        # article_curate (pg_cron retired) enqueues at once — declared 60 s ago, no coexistence
+        w.ingest([_own(aid="c1")], at)
+        assert ("c1", "started_workload") in await w.workload_pass(at)
 
     asyncio.run(run())
 

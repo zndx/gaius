@@ -42,7 +42,8 @@ def test_workloads_view_lists_the_catalogue_with_sync_state(monkeypatch):
     assert by_id["task.engine_audit"].sync_state == ""  # never reported by Signals
     # filters
     only = asyncio.run(svc.Workloads(WorkloadsViewRequest(enabled_only=True), MagicMock()))
-    assert [r.kind for r in only.rows] == ["article_curate"]
+    assert [r.kind for r in only.rows] == [e.kind for e in wc.enabled_entries()]
+    assert "article_curate" in [r.kind for r in only.rows] and "agenda_brief" in [r.kind for r in only.rows]
     one = asyncio.run(svc.Workloads(WorkloadsViewRequest(kind="clt_skos_label"), MagicMock()))
     assert len(one.rows) == 1 and list(one.rows[0].after) == ["task.clt_skos_admit"]
 
