@@ -312,7 +312,12 @@ class GaiusFlow(FlowSpec):
         Args:
             outputs: List of output datasets
         """
-        if self._lineage_run_id is None or self._lineage_job is None:
+        # getattr: Metaflow runs the step INSIDE FlowSpec.__init__, so attributes
+        # assigned after super().__init__() never exist during a step; a flow whose
+        # start never reached emit_lineage_start (KnowledgeSummaryFlow #33638,
+        # 2026-09-07 15:02) then died here with AttributeError instead of the
+        # honest "no START" warning.
+        if getattr(self, "_lineage_run_id", None) is None or getattr(self, "_lineage_job", None) is None:
             logger.warning("Cannot emit COMPLETE: no START event recorded")
             _request_discover_landing_refresh("complete-no-start")
             return
@@ -352,7 +357,7 @@ class GaiusFlow(FlowSpec):
         Args:
             error_message: Description of the error
         """
-        if self._lineage_run_id is None or self._lineage_job is None:
+        if getattr(self, "_lineage_run_id", None) is None or getattr(self, "_lineage_job", None) is None:
             logger.warning("Cannot emit FAIL: no START event recorded")
             _request_discover_landing_refresh("fail-no-start")
             return

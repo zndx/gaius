@@ -2033,36 +2033,36 @@ class GaiusServicer(GaiusServiceServicer):
         request: GetRecentThoughtsRequest,
         context: aio.ServicerContext,
     ) -> GetRecentThoughtsResponse:
-        """Get recent thoughts from the cognition agent."""
-        from ....agents.cognition import get_cognition_agent
+        """Get recent thoughts from the STORE (cognition_thoughts), newest first.
 
+        (2026-09-07) This used to read the cognition agent's in-memory active
+        list, which lagged the store by days — the health check built on it
+        reported "newest thought 48 h old" while the store had thoughts from
+        four hours earlier. The store is the truth; the agent's list is a cache.
+        """
         limit = request.limit or 10
         response = GetRecentThoughtsResponse()
-
         try:
-            agent = get_cognition_agent()
-            thoughts = await agent.get_active_thoughts(limit=limit)
-
-            for t in thoughts:
-                timestamp_ms = 0
-                if t.created_at:
-                    timestamp_ms = int(t.created_at.timestamp() * 1000)
-
-                thought = ThoughtMessage(
-                    id=t.id or "",
-                    thought_type=t.thought_type.value if hasattr(t.thought_type, "value") else str(t.thought_type),
-                    title=t.title or "",
-                    summary=t.summary or (t.content[:100] if t.content else ""),
-                    salience=t.salience or 0.0,
-                    generation=t.generation or 0,
-                    timestamp_ms=timestamp_ms,
-                    note_path=t.note_path or "",
+            cog = getattr(self._services, "cognition_service", None)
+            rows = await cog.get_recent_thoughts(limit=limit) if cog is not None else []
+            for r in rows:
+                created = r.get("created_at")
+                timestamp_ms = int(created.timestamp() * 1000) if created else 0
+                content = r.get("content") or ""
+                response.thoughts.append(
+                    ThoughtMessage(
+                        id=str(r.get("id") or ""),
+                        thought_type=str(r.get("thought_type") or ""),
+                        title=r.get("title") or "",
+                        summary=(content[:100] if content else ""),
+                        salience=float(r.get("salience") or 0.0),
+                        generation=int(r.get("generation") or 0),
+                        timestamp_ms=timestamp_ms,
+                        note_path=r.get("note_path") or "",
+                    )
                 )
-                response.thoughts.append(thought)
-
         except Exception as e:
             logger.debug(f"Failed to get recent thoughts: {e}")
-
         return response
 
     async def ThoughtsBrief(self, request, context):
