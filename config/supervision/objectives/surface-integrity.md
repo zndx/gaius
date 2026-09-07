@@ -1,18 +1,19 @@
 # Surface Integrity (composite objective on the public surface)
 
 ## Description:
-This objective is defined on the **final surfaced result** — the cards a
-visitor sees at https://gaius.zndx.org/ — and asks one composite question with
-three aspects: is the surface **current**, is it **clean** (well-ordered, dated,
-free of marketing shapes), and is it **conserved**. (2026-09-07, user: "give a
-casual visitor confidence that the underlying content pipelines and workflows are
-working as intended, consistently … relevant, fresh, compelling information" —
-hence `surface_ordered` and `surface_dates_present` beside the 48 h currency.) It replaces `content_currency` (2026-09-01 → 2026-09-06) and
-absorbs the source-integrity and conservation gates added on 2026-09-06 after
-adversarial marketing content reached the page and after a currency FAIL had
-been cleared by archiving content. The mechanics pair, `site_freshness`,
-stays separate: it proves cards flow; this proves the right cards are on the
-page and stay there.
+This objective is defined on the **final surfaced result** in two rooms: the
+cards a visitor sees at https://gaius.zndx.org/, and the Agenda horizon a
+voice session (AgentRTC) receives (today · tomorrow · the coming week). It
+asks one composite question with four aspects: is the website **current**,
+**clean**, and **conserved**; and is the Agenda **conversational** — prose
+ledes, sessions that pose an ask, a brief that matches the calendar, diverse
+intents. (2026-09-07, user: "give a casual visitor confidence that the
+underlying content pipelines and workflows are working as intended" — hence
+`surface_ordered` and `surface_dates_present`; later the same day: Agenda
+items must be a rich basis for conversation, not superficial lists, before
+emit is reengineered.) It replaces `content_currency` (2026-09-01 → 2026-09-06)
+and absorbs the source-integrity and conservation gates added on 2026-09-06.
+The mechanics pair, `site_freshness`, stays separate.
 
 The card follows the sdg-strategy `objective` pillar's task-card shape
 (`external/sdg-strategy/objective/tasks/*.md` + `tasks-json/*.json`): the
@@ -34,6 +35,7 @@ efficacy: a specimen that once surfaced a fault is pinned forever.
 | `published` | `collections.cards WHERE status='published'` | `[{card_id, source_url, title}]` |
 | `denied_domains` | `$discard,site=` lines of `config/brave/web-half.goggle` | `[domain, …]` |
 | `events` | `collections.content_events` over `conservation_window_hours` | `{window_hours, journal_since, added, removed: [{card_id, reason}]}` |
+| `agenda` | KB `list_items` (horizon today/tomorrow/week) + latest `agenda_briefs` | `{horizon: [{id, day, intent, title, summary}], spoken, brief}` |
 | `<section>_error` | any failed collection | string; the section's gates render `error` |
 
 ### Aspects and gates
@@ -50,6 +52,10 @@ efficacy: a specimen that once surfaced a fault is pinned forever.
 | integrity | `no_duplicate_sources` | no `source_url` published more than once | one card per source across articles |
 | conservation | `no_unexplained_removals` | 0 published→archived transitions in the window without a reason | the surface may not shrink silently (2026-09-05) |
 | conservation | `removal_reasons_declared` | every explained removal's category ∈ `duplicate\|adversarial\|license\|retired\|broken\|operator` | "stale" is not a reason; acquisition is |
+| conversation | `agenda_lede_is_prose` | 0 horizon items whose `summary` matches dump shapes (leading `- [ ]`, `BEGIN SESSION`, `episode=`, traceback, `Catch-up with a colleague`, guru packs) | AgentRTC speaks the first ~300 chars; a checklist or invite paste is not a conversation (2026-09-07 UXR) |
+| conversation | `agenda_session_has_a_question` | every horizon `intent=session` poses an ask (`?` / whether / would you / pick one / come with one) | a session is a catch-up with a decision in the room, not headlines |
+| conversation | `agenda_brief_matches_horizon` | spoken/written brief must not claim tomorrow or the coming week empty when those buckets have items | the voice must not invent emptiness; past dump cards stay off this gate (horizon only) |
+| conversation | `agenda_intents_diverse` | when horizon n ≥ `agenda_diversity_min_items` (3): ≥2 of `{session, brief, reminder}` and ≥1 session | the bar is mixed conversation, not a wall of the same reminder |
 
 **Monotonicity.** With every status transition journaled, "the published
 surface is non-decreasing except by declared-reason removals" is exactly the
@@ -80,7 +86,7 @@ with `backfill = TRUE`.
 
 ### Verdict classes
 
-- **pass** — all eight gates pass.
+- **pass** — all fourteen gates pass.
 - **fail** — any gate fails; the objective's aggregate verdict is the
   engine's standard (all pass → pass; any fail → fail; errored and none
   passed → error).
@@ -93,7 +99,13 @@ mechanics green; B the 2026-09-05 stale band; C the 2026-09-06 vendor
 listicles; D the 2026-09-05 archive before the journal; E the clean surface
 after remediation; F an undeclared removal category; G an unreadable surface.
 Example inputs scale `band` down (8) so specimens stay legible; every other
-parameter is the objective's own.
+parameter is the objective's own. K is the 2026-09-07 manually curated Agenda
+horizon (prose ledes, asks, brief names tomorrow and Wednesday). L is the
+pre-UXR live dump (invite paste, checklists, false empty week).
+
+Past-bucket failures (Iceberg traces) are **out of horizon** and do not fail
+these gates; emit redesign is not this card's job — the gates are the bar
+autonomous workflows will be measured against.
 
 ## Tags
-objective · public-surface · currency · integrity · conservation · adversarial-content · event-sourced · gaius
+objective · public-surface · currency · integrity · conservation · conversation · agenda · agent-rtc · adversarial-content · event-sourced · gaius

@@ -1,7 +1,9 @@
 """surface_integrity — the composite objective on the public surface.
 
-One objective, three aspects, ten gates, all deterministic and all defined
-on what a visitor RECEIVES at gaius.zndx.org (doctrine rule 2):
+One objective, four aspects, fourteen gates, all deterministic. Website
+gates are defined on what a visitor RECEIVES at gaius.zndx.org (doctrine
+rule 2). Conversation gates are defined on the Agenda horizon a voice
+session receives (today · tomorrow · week):
 
   currency      surface_newest_current · surface_band_current ·
                 surface_refreshed_within_intent          (ex content_currency)
@@ -9,6 +11,9 @@ on what a visitor RECEIVES at gaius.zndx.org (doctrine rule 2):
                 newest-first by the content's own date, every card dated) ·
                 no_marketing_shapes · no_denied_domains · no_duplicate_sources
   conservation  no_unexplained_removals · removal_reasons_declared
+  conversation  agenda_lede_is_prose · agenda_session_has_a_question ·
+                agenda_brief_matches_horizon · agenda_intents_diverse
+                (2026-09-07: AgentRTC UXR — curated cards, not emit reengineering)
 
 The split is the sdg-strategy `objective` pillar's shape (external/sdg-strategy/
 objective/): the normative card lives in config/supervision/objectives/
@@ -26,6 +31,7 @@ transition without a declared reason (category ∈ REMOVAL_REASONS).
 
 from __future__ import annotations
 
+import re
 from datetime import date, datetime, timezone
 from typing import Any
 from urllib.parse import urlsplit
@@ -41,6 +47,10 @@ GATES: tuple[str, ...] = (
     "no_duplicate_sources",
     "no_unexplained_removals",
     "removal_reasons_declared",
+    "agenda_lede_is_prose",
+    "agenda_session_has_a_question",
+    "agenda_brief_matches_horizon",
+    "agenda_intents_diverse",
 )
 ASPECT: dict[str, str] = {
     "surface_newest_current": "currency",
@@ -53,6 +63,10 @@ ASPECT: dict[str, str] = {
     "no_duplicate_sources": "integrity",
     "no_unexplained_removals": "conservation",
     "removal_reasons_declared": "conservation",
+    "agenda_lede_is_prose": "conversation",
+    "agenda_session_has_a_question": "conversation",
+    "agenda_brief_matches_horizon": "conversation",
+    "agenda_intents_diverse": "conversation",
 }
 REMOVAL_REASONS: tuple[str, ...] = ("duplicate", "adversarial", "license", "retired", "broken", "operator")
 
@@ -72,7 +86,28 @@ DEFAULT_PARAMS: dict[str, Any] = {
     # the last 48 hours). The page followed publish-slot order until then.
     "max_inversions": 0,
     "max_undated": 0,
+    # conversation — Agenda horizon the voice speaks (today/tomorrow/week).
+    # Operator zone for bucketing; spoken brief is judged against those buckets.
+    "agenda_timezone": "America/Denver",
+    "agenda_diversity_min_items": 3,
 }
+
+# Invite paste, guru packs, stack traces, naked checklists — not a conversational lede.
+_AGENDA_DUMP = re.compile(
+    r"(?is)^(?:\s*-\s*\[[ xX]\])"
+    r"|BEGIN SESSION|episode=|\bHX:"
+    r'|File "/|pyiceberg|Traceback \(most recent call last\)'
+    r"|Catch-up with a colleague|Guru:|#AG\.|#COG\."
+)
+# A session card is a conversation if it poses an ask (curated 2026-09-07).
+_AGENDA_ASK = re.compile(
+    r"(?i)\?|\bwhether\b|\bwould you\b|\bwhat (?:I|we) want\b"
+    r"|\bpick one\b|\bthe (?:live |open )?question\b|\bcome with one\b"
+)
+_EMPTY_TOMORROW = re.compile(r"(?i)tomorrow(?:'s)?(?: and the coming week)? is empty")
+_EMPTY_WEEK = re.compile(
+    r"(?i)(?:the )?coming week is(?: also)? empty|week ahead is empty"
+)
 
 
 def _d(s: str | None) -> date | None:
@@ -91,7 +126,7 @@ def _gate(name: str, verdict: str, evidence: str) -> dict[str, Any]:
 
 
 def evaluate(facts: dict[str, Any], params: dict[str, Any] | None = None) -> list[dict[str, Any]]:
-    """Pure: the ten gates from a facts dict (shape documented in the card's
+    """Pure: the fourteen gates from a facts dict (shape documented in the card's
     JSON examples). Verdicts are pass | fail | error — never inconclusive: a gate
     that cannot decide says why in `error` (the 2026-09-03 lesson)."""
     from gaius.flows.article_curation.common import looks_like_marketing
@@ -248,6 +283,74 @@ def evaluate(facts: dict[str, Any], params: dict[str, Any] | None = None) -> lis
             f"({'|'.join(REMOVAL_REASONS)})"
             + (": " + "; ".join(f"{c} ({w[:40]!r})" for c, w in undeclared[:4]) if undeclared else ""),
         ))
+
+    # ---- conversation (Agenda horizon a voice session receives) ----------
+    agenda = facts.get("agenda")
+    conv = (
+        "agenda_lede_is_prose",
+        "agenda_session_has_a_question",
+        "agenda_brief_matches_horizon",
+        "agenda_intents_diverse",
+    )
+    if agenda is None:
+        err = f"agenda unreadable: {facts.get('agenda_error', 'no agenda facts')}"
+        for g in conv:
+            gates.append(_gate(g, "error", err))
+    else:
+        horizon = [r for r in (agenda.get("horizon") or []) if isinstance(r, dict)]
+        dumps = []
+        for r in horizon:
+            lede = (r.get("summary") or r.get("title") or "").strip()
+            if _AGENDA_DUMP.search(lede):
+                dumps.append(r.get("id") or r.get("title") or "?")
+        gates.append(_gate(
+            "agenda_lede_is_prose", "pass" if not dumps else "fail",
+            f"{len(dumps)}/{len(horizon)} horizon items open with a dump "
+            "(checklist, invite paste, traceback, guru) not conversational prose"
+            + (": " + ", ".join(dumps[:6]) if dumps else "")
+            + ("" if not dumps else " — DAG stage: agenda_emit / session_invite_description"),
+        ))
+        sessions = [r for r in horizon if (r.get("intent") or "") == "session"]
+        mute = []
+        for r in sessions:
+            text = " ".join(str(r.get(k) or "") for k in ("title", "summary", "body_head"))
+            if not _AGENDA_ASK.search(text):
+                mute.append(r.get("id") or r.get("title") or "?")
+        gates.append(_gate(
+            "agenda_session_has_a_question", "pass" if not mute else "fail",
+            f"{len(sessions) - len(mute)}/{len(sessions)} horizon sessions pose an ask "
+            "(?, whether, would you, pick one)"
+            + (": " + ", ".join(mute[:6]) if mute else " — none in horizon" if not sessions else "")
+            + ("" if not mute else " — DAG stage: agenda_emit session copy"),
+        ))
+        spoken = f"{agenda.get('spoken') or ''} {agenda.get('brief') or ''}"
+        days = {str(r.get("day") or "") for r in horizon}
+        lies = []
+        if _EMPTY_TOMORROW.search(spoken) and "tomorrow" in days:
+            lies.append("spoken says tomorrow is empty but the horizon has tomorrow")
+        if _EMPTY_WEEK.search(spoken) and "week" in days:
+            lies.append("spoken says the coming week is empty but the horizon has week")
+        gates.append(_gate(
+            "agenda_brief_matches_horizon", "pass" if not lies else "fail",
+            ("; ".join(lies) if lies else "spoken brief matches tomorrow/week occupancy")
+            + ("" if not lies else " — DAG stage: agenda_brief"),
+        ))
+        min_n = int(p.get("agenda_diversity_min_items", 3))
+        intents = {str(r.get("intent") or "") for r in horizon if r.get("intent")}
+        n = len(horizon)
+        has_session = "session" in intents
+        if n < min_n:
+            ok = True
+            ev = f"{n} horizon items (< {min_n}); diversity applies at ≥{min_n}"
+        else:
+            ok = len(intents) >= 2 and has_session
+            ev = (
+                f"{n} horizon items, intents={sorted(intents) or ['—']} "
+                f"(≥2 intents and ≥1 session required)"
+            )
+            if not ok:
+                ev += " — DAG stage: cognition agenda_policy density / agenda_emit kind choice"
+        gates.append(_gate("agenda_intents_diverse", "pass" if ok else "fail", ev))
     return gates
 
 
@@ -333,4 +436,39 @@ async def collect_facts(pool: Any, params: dict[str, Any] | None = None) -> dict
         }
     except Exception as e:  # noqa: BLE001
         facts["events_error"] = str(e)[:200]
+
+    zone = str(p.get("agenda_timezone") or "America/Denver")
+    try:
+        from gaius.engine.services.agenda_brief import gather_items, latest_brief
+        from gaius.engine.services.agenda_notes import kb_root_from_env
+
+        kb = kb_root_from_env()
+        rows, _, _total = gather_items(kb, zone=zone, now=now_ts)
+        horizon = [
+            {
+                "id": r.get("id") or "",
+                "day": r.get("day") or "",
+                "intent": r.get("intent") or "",
+                "title": r.get("title") or "",
+                "summary": r.get("summary") or "",
+            }
+            for r in rows
+            if r.get("day") in ("today", "tomorrow", "week")
+        ]
+        spoken, brief = "", ""
+        try:
+            b = await latest_brief(pool)
+            if b:
+                spoken = str(b.get("spoken") or "")
+                brief = str(b.get("body") or b.get("brief") or "")
+        except Exception as e:  # noqa: BLE001
+            facts["agenda_brief_error"] = str(e)[:160]
+        facts["agenda"] = {
+            "timezone": zone,
+            "horizon": horizon,
+            "spoken": spoken,
+            "brief": brief,
+        }
+    except Exception as e:  # noqa: BLE001
+        facts["agenda_error"] = str(e)[:200]
     return facts

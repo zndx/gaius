@@ -1,13 +1,14 @@
 {
   "name": "Surface Integrity (composite objective on the public surface)",
-  "description": "The cards a visitor sees at gaius.zndx.org are current, clean, and conserved: newest visible date within newest_days; at least min_current_share of the first band cards within current_days; top card published within refresh_hours; no marketing/aggregation shape, no goggle-discarded domain, no duplicate source URL among published cards; no published→archived transition in the window without a declared-category reason. Verdicts are pass|fail|error per gate, never inconclusive; each FAIL names the DAG stage; the flip is the smallest declared action that restores PASS. (2026-09-07: two integrity gates added — surface_ordered: the page reads newest-first by the content's own date, 0 inversions; surface_dates_present: every visible card is dated. User: 'a casual visitor sees fresh, well-ordered content: proof the pipelines work'.)",
+  "description": "The cards a visitor sees at gaius.zndx.org are current, clean, and conserved: newest visible date within newest_days; at least min_current_share of the first band cards within current_days; top card published within refresh_hours; no marketing/aggregation shape, no goggle-discarded domain, no duplicate source URL among published cards; no published\u2192archived transition in the window without a declared-category reason. Verdicts are pass|fail|error per gate, never inconclusive; each FAIL names the DAG stage; the flip is the smallest declared action that restores PASS. (2026-09-07: two integrity gates added \u2014 surface_ordered: the page reads newest-first by the content's own date, 0 inversions; surface_dates_present: every visible card is dated. User: 'a casual visitor sees fresh, well-ordered content: proof the pipelines work'.). (2026-09-07: conversation aspect \u2014 Agenda horizon a voice session receives: lede is prose not dump; each session poses an ask; spoken brief matches tomorrow/week occupancy; \u22653 horizon items imply \u22652 intents and \u22651 session.)",
   "modality": "Structured facts (JSON) collected from the live page, collections.cards, the Brave goggle and collections.content_events",
   "diagram": null,
   "citations": [
     "docs/notes/2026-09-04/175500_content_currency_surface_reframe.md",
     "docs/notes/2026-09-05/214400_published_surface_remediation_and_drift.md",
     "docs/notes/2026-09-06/103000_adversarial_content_on_the_surface.md",
-    "external/sdg-strategy/objective/tasks/causal-chain-analysis-in-verification-loops.md"
+    "external/sdg-strategy/objective/tasks/causal-chain-analysis-in-verification-loops.md",
+    "docs/scratch/2026-09-07/234500_surface_integrity_agenda_conversation.md"
   ],
   "params": {
     "newest_days": 2,
@@ -19,11 +20,13 @@
     "goggle": "config/brave/web-half.goggle",
     "surface_url": "https://gaius.zndx.org/",
     "max_inversions": 0,
-    "max_undated": 0
+    "max_undated": 0,
+    "agenda_timezone": "America/Denver",
+    "agenda_diversity_min_items": 3
   },
   "examples": [
     {
-      "name": "A — 2026-09-01: mechanics green, intent failed",
+      "name": "A \u2014 2026-09-01: mechanics green, intent failed",
       "note": "site_freshness PASSed for weeks while the page led with 18-day-old content past fresher pending cards. band scaled to 8 for legibility.",
       "params": {
         "band": 8
@@ -131,14 +134,18 @@
           "no_denied_domains": "pass",
           "no_duplicate_sources": "pass",
           "no_unexplained_removals": "pass",
-          "removal_reasons_declared": "pass"
+          "removal_reasons_declared": "pass",
+          "agenda_lede_is_prose": "error",
+          "agenda_session_has_a_question": "error",
+          "agenda_brief_matches_horizon": "error",
+          "agenda_intents_diverse": "error"
         },
         "stage": "article_curate selection / publish_cards picks",
         "flip": "slots publish current-only, freshest first; curate at week freshness"
       }
     },
     {
-      "name": "B — 2026-09-05 21:44: stale slot cards and year-old web cards in the band",
+      "name": "B \u2014 2026-09-05 21:44: stale slot cards and year-old web cards in the band",
       "params": {
         "band": 8
       },
@@ -245,14 +252,18 @@
           "no_denied_domains": "pass",
           "no_duplicate_sources": "pass",
           "no_unexplained_removals": "pass",
-          "removal_reasons_declared": "pass"
+          "removal_reasons_declared": "pass",
+          "agenda_lede_is_prose": "error",
+          "agenda_session_has_a_question": "error",
+          "agenda_brief_matches_horizon": "error",
+          "agenda_intents_diverse": "error"
         },
         "stage": "article_curate acquisition (Brave freshness=py) + publish_cards oldest-first picks",
-        "flip": "currency-aware slot pipeline; Brave pw→pm ladder"
+        "flip": "currency-aware slot pipeline; Brave pw\u2192pm ladder"
       }
     },
     {
-      "name": "C — 2026-09-06 09:07: vendor listicles published as research",
+      "name": "C \u2014 2026-09-06 09:07: vendor listicles published as research",
       "params": {
         "band": 8
       },
@@ -299,7 +310,7 @@
           {
             "card_id": "v1",
             "source_url": "https://agentic.ai/best/research-deep-analysis",
-            "title": "11 Best AI Research & Analysis Agents in 2026 — Agentic.ai"
+            "title": "11 Best AI Research & Analysis Agents in 2026 \u2014 Agentic.ai"
           },
           {
             "card_id": "v2",
@@ -324,7 +335,7 @@
           {
             "card_id": "v2b",
             "source_url": "https://agentic.ai/best/research-deep-analysis",
-            "title": "11 Best AI Research & Analysis Agents in 2026 — Agentic.ai"
+            "title": "11 Best AI Research & Analysis Agents in 2026 \u2014 Agentic.ai"
           },
           {
             "card_id": "a3",
@@ -361,14 +372,18 @@
           "no_denied_domains": "fail",
           "no_duplicate_sources": "fail",
           "no_unexplained_removals": "pass",
-          "removal_reasons_declared": "pass"
+          "removal_reasons_declared": "pass",
+          "agenda_lede_is_prose": "error",
+          "agenda_session_has_a_question": "error",
+          "agenda_brief_matches_horizon": "error",
+          "agenda_intents_diverse": "error"
         },
         "stage": "article_curate acquisition (goggle/reflex) and create_cards (URL dedupe)",
-        "flip": "archive v1, v2, v3, v2b with reason 'adversarial: …' / 'duplicate: …'; goggle + reflex at acquisition"
+        "flip": "archive v1, v2, v3, v2b with reason 'adversarial: \u2026' / 'duplicate: \u2026'; goggle + reflex at acquisition"
       }
     },
     {
-      "name": "D — 2026-09-05 23:00: a currency FAIL cleared by archiving, before the journal",
+      "name": "D \u2014 2026-09-05 23:00: a currency FAIL cleared by archiving, before the journal",
       "note": "The reason this objective has a conservation aspect: 79 published cards were removed and the band went from 0.38 to 0.81. Removals carry no reason here.",
       "params": {
         "band": 8
@@ -497,14 +512,18 @@
           "no_denied_domains": "pass",
           "no_duplicate_sources": "pass",
           "no_unexplained_removals": "fail",
-          "removal_reasons_declared": "pass"
+          "removal_reasons_declared": "pass",
+          "agenda_lede_is_prose": "error",
+          "agenda_session_has_a_question": "error",
+          "agenda_brief_matches_horizon": "error",
+          "agenda_intents_diverse": "error"
         },
         "stage": "the archiver (no reason recorded) + weekend arXiv gap on newest_current",
         "flip": "journal every transition; archive only via scripts/archive_cards.py --reason"
       }
     },
     {
-      "name": "E — 2026-09-06 11:00: after remediation, all removals declared",
+      "name": "E \u2014 2026-09-06 11:00: after remediation, all removals declared",
       "params": {
         "band": 8
       },
@@ -624,14 +643,18 @@
           "no_denied_domains": "pass",
           "no_duplicate_sources": "pass",
           "no_unexplained_removals": "pass",
-          "removal_reasons_declared": "pass"
+          "removal_reasons_declared": "pass",
+          "agenda_lede_is_prose": "error",
+          "agenda_session_has_a_question": "error",
+          "agenda_brief_matches_horizon": "error",
+          "agenda_intents_diverse": "error"
         },
         "stage": null,
         "flip": null
       }
     },
     {
-      "name": "F — a removal with an undeclared category",
+      "name": "F \u2014 a removal with an undeclared category",
       "params": {
         "band": 8
       },
@@ -706,14 +729,18 @@
           "no_denied_domains": "pass",
           "no_duplicate_sources": "pass",
           "no_unexplained_removals": "pass",
-          "removal_reasons_declared": "fail"
+          "removal_reasons_declared": "fail",
+          "agenda_lede_is_prose": "error",
+          "agenda_session_has_a_question": "error",
+          "agenda_brief_matches_horizon": "error",
+          "agenda_intents_diverse": "error"
         },
         "stage": "the archiver: 'stale' is not a declared category",
         "flip": "re-archive under a declared category, or restore the card"
       }
     },
     {
-      "name": "G — the surface is unreadable",
+      "name": "G \u2014 the surface is unreadable",
       "params": {
         "band": 8
       },
@@ -749,14 +776,18 @@
           "no_denied_domains": "pass",
           "no_duplicate_sources": "pass",
           "no_unexplained_removals": "pass",
-          "removal_reasons_declared": "pass"
+          "removal_reasons_declared": "pass",
+          "agenda_lede_is_prose": "error",
+          "agenda_session_has_a_question": "error",
+          "agenda_brief_matches_horizon": "error",
+          "agenda_intents_diverse": "error"
         },
         "stage": "publish_cards KV sync / the Worker",
         "flip": "an honest error verdict, never a local guess"
       }
     },
     {
-      "name": "H — 2026-09-07 15:20: reader order live: dated cards newest-first, every card dated",
+      "name": "H \u2014 2026-09-07 15:20: reader order live: dated cards newest-first, every card dated",
       "params": {
         "band": 8
       },
@@ -876,7 +907,11 @@
           "no_denied_domains": "pass",
           "no_duplicate_sources": "pass",
           "no_unexplained_removals": "pass",
-          "removal_reasons_declared": "pass"
+          "removal_reasons_declared": "pass",
+          "agenda_lede_is_prose": "error",
+          "agenda_session_has_a_question": "error",
+          "agenda_brief_matches_horizon": "error",
+          "agenda_intents_diverse": "error"
         },
         "stage": "",
         "flip": null
@@ -884,7 +919,7 @@
       "note": "After the KV order moved from published_at to source_date DESC NULLS LAST, the page reads as a casual visitor expects; both new gates pass."
     },
     {
-      "name": "I — a slot's freshest-first publish under a published_at-ordered page: one inversion",
+      "name": "I \u2014 a slot's freshest-first publish under a published_at-ordered page: one inversion",
       "params": {
         "band": 8
       },
@@ -1004,7 +1039,11 @@
           "no_denied_domains": "pass",
           "no_duplicate_sources": "pass",
           "no_unexplained_removals": "pass",
-          "removal_reasons_declared": "pass"
+          "removal_reasons_declared": "pass",
+          "agenda_lede_is_prose": "error",
+          "agenda_session_has_a_question": "error",
+          "agenda_brief_matches_horizon": "error",
+          "agenda_intents_diverse": "error"
         },
         "stage": "publish_cards KV sync order (get_cards_for_kv / get_published_cards ORDER BY source_date DESC NULLS LAST)",
         "flip": null
@@ -1012,7 +1051,7 @@
       "note": "2026-09-07 15:10 shape: a 12:00 slot's 09-02 cards sat above a 10:15 slot's 09-05 cards. surface_ordered names the first inverted pair; the stage is the KV sync order."
     },
     {
-      "name": "J — an undated card on the surface",
+      "name": "J \u2014 an undated card on the surface",
       "params": {
         "band": 8
       },
@@ -1132,12 +1171,357 @@
           "no_denied_domains": "pass",
           "no_duplicate_sources": "pass",
           "no_unexplained_removals": "pass",
-          "removal_reasons_declared": "pass"
+          "removal_reasons_declared": "pass",
+          "agenda_lede_is_prose": "error",
+          "agenda_session_has_a_question": "error",
+          "agenda_brief_matches_horizon": "error",
+          "agenda_intents_diverse": "error"
         },
         "stage": "article_curate card creation left source_date NULL; publish_cards_by_ids keeps undated cards pending",
         "flip": null
       },
       "note": "2026-09-07: two arXiv-as-web cards published with NULL source_date (frontmatter had no date). surface_dates_present names them; publish_cards_by_ids now keeps undated cards pending."
+    },
+    {
+      "name": "K \u2014 2026-09-07: curated Agenda horizon (AgentRTC conversation bar)",
+      "note": "Manually rewritten cards: prose ledes, each session poses an ask, spoken brief names tomorrow and Wednesday, intents session+reminder+brief. Website facts from E so website gates stay pass.",
+      "params": {
+        "band": 8
+      },
+      "input": {
+        "today": "2026-09-06",
+        "now": "2026-09-06T11:00:00Z",
+        "surface": [
+          [
+            "n1",
+            "2026-09-05"
+          ],
+          [
+            "a1",
+            "2026-09-03"
+          ],
+          [
+            "a2",
+            "2026-09-03"
+          ],
+          [
+            "a3",
+            "2026-09-03"
+          ],
+          [
+            "a4",
+            "2026-09-03"
+          ],
+          [
+            "a5",
+            "2026-09-03"
+          ],
+          [
+            "a6",
+            "2026-09-03"
+          ],
+          [
+            "s1",
+            "2026-08-16"
+          ]
+        ],
+        "top_published_at": "2026-09-06T10:16:00Z",
+        "corpus_newest": "2026-09-05",
+        "published": [
+          {
+            "card_id": "n1",
+            "source_url": "https://github.com/VoltAgent/awesome-ai-agent-papers",
+            "title": "GitHub - VoltAgent/awesome-ai-agent-papers: A curated list"
+          },
+          {
+            "card_id": "a1",
+            "source_url": "https://arxiv.org/abs/2609.03001",
+            "title": "A1"
+          },
+          {
+            "card_id": "a2",
+            "source_url": "https://arxiv.org/abs/2609.03002",
+            "title": "A2"
+          },
+          {
+            "card_id": "a3",
+            "source_url": "https://arxiv.org/abs/2609.03003",
+            "title": "A3"
+          },
+          {
+            "card_id": "a4",
+            "source_url": "https://arxiv.org/abs/2609.03004",
+            "title": "A4"
+          },
+          {
+            "card_id": "a5",
+            "source_url": "https://arxiv.org/abs/2609.03005",
+            "title": "A5"
+          },
+          {
+            "card_id": "a6",
+            "source_url": "https://arxiv.org/abs/2609.03006",
+            "title": "A6"
+          },
+          {
+            "card_id": "s1",
+            "source_url": "https://arxiv.org/abs/2608.16001",
+            "title": "S1"
+          }
+        ],
+        "denied_domains": [
+          "answerthis.io",
+          "agentic.ai"
+        ],
+        "events": {
+          "window_hours": 168,
+          "journal_since": "2026-09-06T00:00:00Z",
+          "added": 24,
+          "removed": [
+            {
+              "content_id": "v3",
+              "reason": "adversarial: vendor marketing / SEO listicle acquired by keyword match"
+            },
+            {
+              "content_id": "v2b",
+              "reason": "duplicate: kept earliest v1"
+            },
+            {
+              "content_id": "z1",
+              "reason": "operator: stale content archived to restore currency (2026-09-05 remediation, pre-journal)"
+            }
+          ]
+        },
+        "agenda": {
+          "timezone": "America/Denver",
+          "spoken": "Today is still Discover at four UTC: would you send a colleague to that screen. Tomorrow afternoon Mountain time we have a half hour on the watchlist after the tape. Wednesday at three Mountain is an hour to ask whether Theta is still doing real consolidation.",
+          "brief": "Discover today; watchlist tomorrow; Theta on Wednesday.",
+          "horizon": [
+            {
+              "id": "scratch/2026-09-06/discover.md",
+              "day": "today",
+              "intent": "session",
+              "title": "Discover coherence check-in",
+              "summary": "Half an hour to decide whether Discover currently feels like a product someone could land on. The question I want in the room: would you send a colleague to this screen today?"
+            },
+            {
+              "id": "scratch/2026-09-07/week-34.md",
+              "day": "today",
+              "intent": "reminder",
+              "title": "Week 34 follow-ups",
+              "summary": "These are not a backlog of chores. They are the three yes-or-no questions I would not let the Discover check-in end without."
+            },
+            {
+              "id": "scratch/2026-09-07/prospects.md",
+              "day": "today",
+              "intent": "brief",
+              "title": "Prospects update",
+              "summary": "Quiet afternoon on the watchlist \u2014 nothing new was filed that we should book. This is a calm day on the names, not a miss."
+            },
+            {
+              "id": "scratch/2026-09-07/watchlist.md",
+              "day": "tomorrow",
+              "intent": "session",
+              "title": "Watchlist after the tape",
+              "summary": "A half hour on AgentRTC to decide whether anything on the watchlist actually moved enough to change our mind, not to recite headlines. Pick one name to add, one to lighten, or the book stays put."
+            },
+            {
+              "id": "scratch/2026-09-07/theta.md",
+              "day": "week",
+              "intent": "session",
+              "title": "AgentRTC retrospective \u2014 Theta after the voice",
+              "summary": "An operations retrospective with a philosophical undercurrent: whether the Theta cycle is still doing the work we think it is. Come with one thing the cycle did that changed a decision."
+            }
+          ]
+        }
+      },
+      "output": {
+        "gates": {
+          "surface_newest_current": "pass",
+          "surface_band_current": "pass",
+          "surface_refreshed_within_intent": "pass",
+          "surface_ordered": "pass",
+          "surface_dates_present": "pass",
+          "no_marketing_shapes": "pass",
+          "no_denied_domains": "pass",
+          "no_duplicate_sources": "pass",
+          "no_unexplained_removals": "pass",
+          "removal_reasons_declared": "pass",
+          "agenda_lede_is_prose": "pass",
+          "agenda_session_has_a_question": "pass",
+          "agenda_brief_matches_horizon": "pass",
+          "agenda_intents_diverse": "pass"
+        },
+        "stage": null,
+        "flip": null
+      }
+    },
+    {
+      "name": "L \u2014 2026-09-07 pre-UXR: invite paste, checklists, false empty week",
+      "note": "The live horizon before in-place rewrite: session invite paste, naked checkboxes, stack-trace brief, spoken claiming tomorrow/week empty while tomorrow exists.",
+      "params": {
+        "band": 8
+      },
+      "input": {
+        "today": "2026-09-06",
+        "now": "2026-09-06T11:00:00Z",
+        "surface": [
+          [
+            "n1",
+            "2026-09-05"
+          ],
+          [
+            "a1",
+            "2026-09-03"
+          ],
+          [
+            "a2",
+            "2026-09-03"
+          ],
+          [
+            "a3",
+            "2026-09-03"
+          ],
+          [
+            "a4",
+            "2026-09-03"
+          ],
+          [
+            "a5",
+            "2026-09-03"
+          ],
+          [
+            "a6",
+            "2026-09-03"
+          ],
+          [
+            "s1",
+            "2026-08-16"
+          ]
+        ],
+        "top_published_at": "2026-09-06T10:16:00Z",
+        "corpus_newest": "2026-09-05",
+        "published": [
+          {
+            "card_id": "n1",
+            "source_url": "https://github.com/VoltAgent/awesome-ai-agent-papers",
+            "title": "GitHub - VoltAgent/awesome-ai-agent-papers: A curated list"
+          },
+          {
+            "card_id": "a1",
+            "source_url": "https://arxiv.org/abs/2609.03001",
+            "title": "A1"
+          },
+          {
+            "card_id": "a2",
+            "source_url": "https://arxiv.org/abs/2609.03002",
+            "title": "A2"
+          },
+          {
+            "card_id": "a3",
+            "source_url": "https://arxiv.org/abs/2609.03003",
+            "title": "A3"
+          },
+          {
+            "card_id": "a4",
+            "source_url": "https://arxiv.org/abs/2609.03004",
+            "title": "A4"
+          },
+          {
+            "card_id": "a5",
+            "source_url": "https://arxiv.org/abs/2609.03005",
+            "title": "A5"
+          },
+          {
+            "card_id": "a6",
+            "source_url": "https://arxiv.org/abs/2609.03006",
+            "title": "A6"
+          },
+          {
+            "card_id": "s1",
+            "source_url": "https://arxiv.org/abs/2608.16001",
+            "title": "S1"
+          }
+        ],
+        "denied_domains": [
+          "answerthis.io",
+          "agentic.ai"
+        ],
+        "events": {
+          "window_hours": 168,
+          "journal_since": "2026-09-06T00:00:00Z",
+          "added": 24,
+          "removed": [
+            {
+              "content_id": "v3",
+              "reason": "adversarial: vendor marketing / SEO listicle acquired by keyword match"
+            },
+            {
+              "content_id": "v2b",
+              "reason": "duplicate: kept earliest v1"
+            },
+            {
+              "content_id": "z1",
+              "reason": "operator: stale content archived to restore currency (2026-09-05 remediation, pre-journal)"
+            }
+          ]
+        },
+        "agenda": {
+          "timezone": "UTC",
+          "spoken": "Today is mostly about Discover coherence. Tomorrow is empty. The coming week is empty too.",
+          "brief": "Tomorrow is empty. The coming week is empty too.",
+          "horizon": [
+            {
+              "id": "scratch/2026-09-06/discover.md",
+              "day": "today",
+              "intent": "session",
+              "title": "Discover coherence check-in",
+              "summary": "Catch-up with a colleague \u2014 Discover coherence check-in\n\nDiscussion headlines:\n\u2022 Review Discover first-screen behavior\nBEGIN SESSION\nepisode=f749a5a3"
+            },
+            {
+              "id": "scratch/2026-09-07/week-34.md",
+              "day": "today",
+              "intent": "reminder",
+              "title": "Week 34 follow-ups",
+              "summary": "- [ ] Watch facet-count latency as the 36-hour window scales\n- [ ] Verify SKOS alignment coverage"
+            },
+            {
+              "id": "scratch/2026-09-07/failed.md",
+              "day": "today",
+              "intent": "brief",
+              "title": "Prospects update failed",
+              "summary": "Prospects update failed (failed, exit 143). File \"/home/rch/local/src/zndx/gaius/.devenv/state/venv/lib/python3.12/site-packages/pyiceberg/io/pyarrow.py\""
+            },
+            {
+              "id": "scratch/2026-09-07/watchlist.md",
+              "day": "tomorrow",
+              "intent": "session",
+              "title": "Watchlist after the tape",
+              "summary": "Catch-up with a colleague \u2014 Watchlist after the tape\nBEGIN SESSION"
+            }
+          ]
+        }
+      },
+      "output": {
+        "gates": {
+          "surface_newest_current": "pass",
+          "surface_band_current": "pass",
+          "surface_refreshed_within_intent": "pass",
+          "surface_ordered": "pass",
+          "surface_dates_present": "pass",
+          "no_marketing_shapes": "pass",
+          "no_denied_domains": "pass",
+          "no_duplicate_sources": "pass",
+          "no_unexplained_removals": "pass",
+          "removal_reasons_declared": "pass",
+          "agenda_lede_is_prose": "fail",
+          "agenda_session_has_a_question": "fail",
+          "agenda_brief_matches_horizon": "fail",
+          "agenda_intents_diverse": "pass"
+        },
+        "stage": "agenda_emit / session_invite_description / agenda_brief",
+        "flip": "rewrite horizon cards as conversational ledes with an ask; agenda_brief must not say tomorrow/week empty when those buckets have items"
+      }
     }
   ],
   "tags": [

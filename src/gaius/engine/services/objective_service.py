@@ -285,7 +285,8 @@ OBJECTIVES: dict[str, ObjectiveSpec] = {
         resolves=("slot % serves current content%",),
         cadence=timedelta(hours=6),
         description=(
-            "FINAL SURFACED RESULT: the cards a visitor sees on gaius.zndx.org. "
+            "FINAL SURFACED RESULT: the cards a visitor sees on gaius.zndx.org, "
+            "and the Agenda horizon a voice session receives. "
             "CURRENCY — the newest visible date is within newest_days, at least "
             "min_current_share of the first `band` cards are within current_days, "
             "the top card was published within refresh_hours. INTEGRITY — the page "
@@ -297,7 +298,11 @@ OBJECTIVES: dict[str, ObjectiveSpec] = {
             "CONSERVATION — every published→archived transition in the window "
             "carries a reason of a declared category (collections.content_events): "
             "content tracks the present by addition, never by silent removal "
-            "(2026-09-05: a currency FAIL was cleared by archiving 79 cards)."
+            "(2026-09-05: a currency FAIL was cleared by archiving 79 cards). "
+            "CONVERSATION — horizon summaries are prose not dumps; each session "
+            "poses an ask; the spoken brief must not claim tomorrow/week empty "
+            "when those buckets have items; ≥3 horizon items imply ≥2 intents "
+            "and ≥1 session (2026-09-07 AgentRTC UXR bar)."
         ),
         verifier="verify_surface_integrity",
         params={
@@ -328,6 +333,8 @@ OBJECTIVES: dict[str, ObjectiveSpec] = {
             # conservation — removals are judged over a week (F=168 h is not a
             #   Fibonacci hour; 144 would be; the week is the schedule's own unit).
             "conservation_window_hours": 168,
+            "agenda_timezone": "America/Denver",
+            "agenda_diversity_min_items": 3,
             "card": "config/supervision/objectives/surface-integrity.md",
         },
     ),
