@@ -143,7 +143,11 @@ EOF
 }
 
 PAUSED=0
-reenable() {
+resume_enqueuers() {
+  # Idempotent: the moment the engine is HEALTHY the enqueuers come back —
+  # NOT at exit. (2026-09-07 14:02–14:13: the objective re-verification below
+  # judged prospects for 10+ min while every tick class stayed paused; the
+  # market roll and ambient slid another window for nothing.)
   if [[ $PAUSED == 1 ]]; then
     for _ in 1 2 3 4 5 6; do
       if $PSQL -c "UPDATE cron.job SET active=true WHERE jobname IN ($JOBS)" >/dev/null 2>&1; then
@@ -153,6 +157,9 @@ reenable() {
     done
     [[ $PAUSED == 1 ]] && say "FAILED to re-enable enqueuers — run: UPDATE cron.job SET active=true WHERE jobname IN ($JOBS)"
   fi
+}
+reenable() {
+  resume_enqueuers   # safety net for ANY exit path (drain deferred, systemctl failed, killed)
   emit_result
 }
 trap reenable EXIT
@@ -214,6 +221,9 @@ for _ in $(seq 1 90); do
   sleep 10
 done
 THINKING_STATUS="${st:-unknown}"; THINKING_S=$(( $(date +%s) - t0 )); say "thinking status: $THINKING_STATUS after ${THINKING_S}s"
+# The engine is back: the tick classes resume NOW; verification below may take
+# minutes on the judge and must not hold the schedule hostage.
+resume_enqueuers
 
 # 5. verify
 ENGINE_LOG="$(ls -t /run/user/1001/devenv-*/processes/logs/gaius-engine.stderr.log 2>/dev/null | head -1)"
