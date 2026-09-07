@@ -94,6 +94,7 @@ WORKLOAD_CATALOG: tuple[WorkloadEntry, ...] = (
         runner=RUNNER_METAFLOW, horizon_s=H5,
         description="daily article curation (Brave + arXiv, goggle) — extract floor while docling runs",
         enabled=True, airflow_dag_id="gaius_article_curate", pg_cron_job="article-curate-daily",
+        pg_cron_active=False,  # retired 2026-09-07 03:16 after the first full Airflow-ordered run
     ),
     WorkloadEntry(
         kind="ambient_synthesis", task_type="ambient_synthesis", payload={}, cron="*/20 * * * *",
@@ -302,9 +303,12 @@ def claims_for(kind: str) -> list[dict[str, Any]]:
 def to_hint(entry: WorkloadEntry) -> Any:
     from gaius.engine.generated.zndx.engine.v1 import engine_pb2 as zpb
 
+    # An `after` entry is ASSET-scheduled in Airflow (it runs when the workload it
+    # follows ends); its pg_cron cadence stays on the entry as the migration
+    # record but is not the DAG's schedule — Signals refuses cron+after together.
     hint = zpb.ScheduleHint(
         id=entry.id,
-        cron=entry.cron,
+        cron="" if entry.after else entry.cron,
         airflow_dag_id=airflow_dag_id(entry),
         source=entry.source,
         enabled=bool(entry.enabled),
