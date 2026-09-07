@@ -508,7 +508,17 @@ class CoordinationWatcher:
                 return "retried_workload"
             await self._heartbeat(aid, at)
             return ""
-        # Terminal: the processor released it (or the lease TTL will expire it).
+        # Terminal. The processor's release_for_task releases the rows IT books; a
+        # row that went terminal outside it (an operator skip, a watchdog reset that
+        # booked the row, a completion whose release hook failed) would otherwise
+        # leave the lease to lapse by TTL — 2026-09-07 21:26: three operator-skipped
+        # rows left three Airflow runs waiting the full TTL for a heartbeat that
+        # never came. Release here, once.
+        if aid not in self._released:
+            outcome = f"{state}: {task_type} #{tid} (terminal outside the processor)"
+            if await self.release_activity(aid, outcome):
+                logger.info("coordination: released activity %s (%s)", aid, outcome)
+                return "released_workload"
         return ""
 
     @staticmethod

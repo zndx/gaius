@@ -572,6 +572,29 @@ def test_deferred_row_is_retried_while_in_force(monkeypatch):
     asyncio.run(run())
 
 
+def test_terminal_row_outside_the_processor_is_released_once(monkeypatch):
+    # 2026-09-07 21:26: three operator-skipped rows (never picked, so the processor's
+    # release_for_task never ran) left their Airflow runs waiting the full lease TTL.
+    pool = FakePool()
+    pool.add("article_curate", {"check_cooldown": True, "activity_id": "w1"}, picked=False,
+             completed=datetime.now(timezone.utc),
+             result={"status": "skipped", "reason": "airflow_unpause_catchup"})
+    w, sched = _watcher(pool, monkeypatch)
+
+    async def run():
+        w.ingest([_own()], NOW)
+        assert await w.workload_pass(NOW) == [("w1", "released_workload")]
+        rel = sched.named("ReleaseActivity")
+        assert len(rel) == 1
+        assert rel[0]["outcome"].startswith("skipped: article_curate #")
+        assert "terminal outside the processor" in rel[0]["outcome"]
+        assert pool.inserts() == []
+        assert await w.workload_pass(NOW + 10**9) == []  # released once, never again
+        assert len(sched.named("ReleaseActivity")) == 1
+
+    asyncio.run(run())
+
+
 def test_peer_activity_never_starts_a_workload(monkeypatch):
     pool = FakePool()
     w, sched = _watcher(pool, monkeypatch)
