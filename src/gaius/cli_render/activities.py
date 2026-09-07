@@ -42,6 +42,8 @@ def render_activities(
         line = f"  {g} {state:<10} {r.get('kind') or '?':<20} {who:<28} until {horizon}"
         lines.append(line)
         detail: list[str] = []
+        if r.get("workload"):
+            detail.append("workload " + str(r["workload"]))
         if r.get("ceded"):
             detail.append("holds " + ", ".join(r["ceded"]))
         if r.get("precludes"):

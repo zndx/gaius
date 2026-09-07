@@ -806,7 +806,13 @@ def local_response(
         co = get_coordination()
         if co is not None:
             resp.activities.extend(dict_to_proto(a) for a in co.snapshot())
-    # SCHEDULES: empty until the catalog lands (P3). Honest, not invented.
+    if kind == zpb.SERVER_QUERY_KIND_SCHEDULES:
+        # (2026-09-07) The classes whose schedule lives in the Signals Airflow
+        # (source=airflow; their runs declare the Activity this engine runs).
+        # pg_cron classes stay unlisted until that catalog lands — honest.
+        from .services.coordination import schedule_hints
+
+        resp.schedules.extend(schedule_hints())
     return resp
 
 

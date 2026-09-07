@@ -5645,7 +5645,7 @@ class ActivitiesViewRequest(_message.Message):
     def __init__(self, include_ended: bool = ..., kind: _Optional[str] = ..., peer: _Optional[str] = ...) -> None: ...
 
 class ActivityViewRow(_message.Message):
-    __slots__ = ("activity_id", "kind", "peer", "owner", "dag_id", "run_id", "state", "declared_at", "horizon_at", "ended_at", "claims", "precludes", "postures", "reason", "note", "ceded")
+    __slots__ = ("activity_id", "kind", "peer", "owner", "dag_id", "run_id", "state", "declared_at", "horizon_at", "ended_at", "claims", "precludes", "postures", "reason", "note", "ceded", "workload")
     class PosturesEntry(_message.Message):
         __slots__ = ("key", "value")
         KEY_FIELD_NUMBER: _ClassVar[int]
@@ -5669,6 +5669,7 @@ class ActivityViewRow(_message.Message):
     REASON_FIELD_NUMBER: _ClassVar[int]
     NOTE_FIELD_NUMBER: _ClassVar[int]
     CEDED_FIELD_NUMBER: _ClassVar[int]
+    WORKLOAD_FIELD_NUMBER: _ClassVar[int]
     activity_id: str
     kind: str
     peer: str
@@ -5685,7 +5686,8 @@ class ActivityViewRow(_message.Message):
     reason: str
     note: str
     ceded: _containers.RepeatedScalarFieldContainer[str]
-    def __init__(self, activity_id: _Optional[str] = ..., kind: _Optional[str] = ..., peer: _Optional[str] = ..., owner: _Optional[str] = ..., dag_id: _Optional[str] = ..., run_id: _Optional[str] = ..., state: _Optional[str] = ..., declared_at: _Optional[str] = ..., horizon_at: _Optional[str] = ..., ended_at: _Optional[str] = ..., claims: _Optional[_Iterable[str]] = ..., precludes: _Optional[_Iterable[str]] = ..., postures: _Optional[_Mapping[str, str]] = ..., reason: _Optional[str] = ..., note: _Optional[str] = ..., ceded: _Optional[_Iterable[str]] = ...) -> None: ...
+    workload: str
+    def __init__(self, activity_id: _Optional[str] = ..., kind: _Optional[str] = ..., peer: _Optional[str] = ..., owner: _Optional[str] = ..., dag_id: _Optional[str] = ..., run_id: _Optional[str] = ..., state: _Optional[str] = ..., declared_at: _Optional[str] = ..., horizon_at: _Optional[str] = ..., ended_at: _Optional[str] = ..., claims: _Optional[_Iterable[str]] = ..., precludes: _Optional[_Iterable[str]] = ..., postures: _Optional[_Mapping[str, str]] = ..., reason: _Optional[str] = ..., note: _Optional[str] = ..., ceded: _Optional[_Iterable[str]] = ..., workload: _Optional[str] = ...) -> None: ...
 
 class ActivitiesViewResponse(_message.Message):
     __slots__ = ("rows", "watcher_connected", "signals_target", "observed_at", "last_event_at", "error")

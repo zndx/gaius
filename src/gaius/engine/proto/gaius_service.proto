@@ -4018,6 +4018,7 @@ message ActivityViewRow {
   string reason = 14;
   string note = 15;
   repeated string ceded = 16;   // this engine's process ids held by it (endpoint.<alias>)
+  string workload = 17;         // OUR activities: "<task_type> #<task_id> <state>" — the Airflow-ordered workload this engine runs for it (2026-09-07)
 }
 
 message ActivitiesViewResponse {

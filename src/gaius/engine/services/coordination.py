@@ -28,11 +28,26 @@ safety: an activity whose ``horizon_ns`` has passed is dropped — and its cessi
 restored — even while Signals is dark. A silent stream (> 150 s) is a dead
 stream and is redialled; a Signals that predates the Activity RPCs
 (UNIMPLEMENTED) is logged once and retried every 5 min.
+
+- **Run our own.** (2026-09-07) Airflow ORDERS workloads: a scheduled Airflow run
+  declares an activity at Signals with ``peer=gaius`` and ``kind=<workload>``
+  whose ``claims[]`` are the workload's YuniKorn queue configuration; Signals
+  asserts those claims into the arbiter while the run is in force. When THIS
+  engine sees its own activity RUNNING it starts the workload exactly as
+  pg_cron would (one ``scheduled_tasks`` row — the row is the memory, so a
+  repeated event or an engine restart never double-runs), heartbeats the lease
+  every 60 s while the row is queued or in flight, and RELEASES the activity
+  when the row books a terminal outcome — which completes the Airflow ``hold``
+  sensor and retracts the queue configuration. A deferral (YuniKorn
+  backpressure) is retried while the activity is in force; a workload of the
+  same class already in flight is ATTACHED (its completion releases the
+  activity) rather than run twice beside pg_cron.
 """
 
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import time
@@ -45,6 +60,37 @@ GURU_NOACTIVITIES = "#CO.00000001.NOACTIVITIES"   # Signals predates Scheduler/W
 GURU_STREAMDROP = "#CO.00000002.STREAMDROP"       # the watch stream ended / failed
 GURU_SILENT = "#CO.00000003.SILENT"               # no event (not even a heartbeat) for SILENCE_S
 GURU_NOWATCHER = "#CO.00000004.NOWATCHER"         # watcher not running (disabled or booting)
+GURU_RENEWFAIL = "#CO.00000006.RENEWFAIL"         # lease heartbeat refused/unreachable (retry next pass)
+GURU_RELEASEFAIL = "#CO.00000007.RELEASEFAIL"     # release refused/unreachable (the lease TTL expires it)
+GURU_ENQUEUEFAIL = "#CO.00000008.ENQUEUEFAIL"     # could not start/attach the workload row
+
+# ── workloads Airflow orders (kind → how pg_cron enqueued the same class) ─────
+# The payload and the gate are pg_cron's `article-curate-daily` job VERBATIM
+# (`INSERT INTO scheduled_tasks (task_type, payload, source, scheduled_for)
+#  SELECT 'article_curate', '{"check_cooldown": true}', 'pg_cron', NOW()
+#  WHERE collections.should_run_curation()`) so the Airflow-declared run and
+# the cron-declared run are the same workload to the processor. A gate that
+# says no releases the activity as "skipped" — the Airflow run closes clean.
+WORKLOAD_KINDS: dict[str, dict[str, Any]] = {
+    "article_curate": {
+        "task_type": "article_curate",
+        "payload": {"check_cooldown": True},
+        "gate_sql": "SELECT collections.should_run_curation()",
+    },
+}
+# Classes whose schedule now lives in the Signals Airflow (ServerQuery SCHEDULES
+# reports source=airflow for them; pg_cron stays the source for the rest).
+AIRFLOW_SOURCED_CLASSES: dict[str, str] = {"article_curate": "gaius_article_curate"}
+WORKLOAD_SOURCE = "airflow"
+WORKLOAD_HEARTBEAT_S = 60.0          # Signals' lease TTL is 180 s
+WORKLOAD_HORIZON_S = 2 * 3600.0      # each heartbeat re-sets the horizon this far ahead
+WORKLOAD_RETRY_S = 120.0             # a deferred/yielded row is re-enqueued after this while in force
+# Terminal outcomes that release the activity. deferred/yielded are NOT terminal
+# for an Airflow-ordered workload: the cadence that would retry them is gone, so
+# the watcher re-enqueues while the activity is in force.
+RELEASE_STATUSES = frozenset({"completed", "failed", "error", "stalled", "skipped"})
+RETRY_STATUSES = frozenset({"deferred", "yielded"})
+RPC_TIMEOUT_S = 15.0
 
 PROJECT = "gaius"
 POSTURE_HOLD_UPTIME = "hold-uptime"
@@ -261,9 +307,16 @@ class CoordinationWatcher:
     target: str = field(default_factory=signals_target)
     project: str = PROJECT
     view: CoordinationView = field(default_factory=CoordinationView)
+    # Returns the engine's shared asyncpg pool (or None while booting): the
+    # workload pass reads/writes scheduled_tasks through it.
+    pool_getter: Any = None
     _task: asyncio.Task | None = None
     _stop: asyncio.Event = field(default_factory=asyncio.Event)
     _ceded: dict[str, str] = field(default_factory=dict)  # alias → activity_id we applied
+    # activity_id → {task_id, task_type, state, last_heartbeat_ns} for OUR workloads
+    _workloads: dict[str, dict[str, Any]] = field(default_factory=dict)
+    _released: set[str] = field(default_factory=set)      # we released these (gate said no / done)
+    _wl_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     connected: bool = False
     last_event_ns: int = 0
     events: int = 0
@@ -312,7 +365,180 @@ class CoordinationWatcher:
             "reconnects": self.reconnects,
             "activities": len(self.view.activities),
             "ceded": dict(self._ceded),
+            "workloads": {aid: dict(w) for aid, w in self._workloads.items()},
         }
+
+    def workload_for(self, activity_id: str) -> dict[str, Any] | None:
+        w = self._workloads.get(str(activity_id))
+        return dict(w) if w else None
+
+    def workload_label(self, activity_id: str) -> str:
+        w = self._workloads.get(str(activity_id))
+        if not w:
+            return ""
+        return f"{w.get('task_type')} #{w.get('task_id')} {w.get('state')}"
+
+    # ── our own workloads (Airflow orders; the row is the memory) ────────────
+    def own_running(self) -> list[dict[str, Any]]:
+        """Our RUNNING activities whose kind names a workload we know how to start."""
+        return [
+            a for a in self.view.activities.values()
+            if a.get("peer") == self.project
+            and a.get("state") == "running"
+            and str(a.get("kind") or "") in WORKLOAD_KINDS
+            and str(a.get("activity_id") or "") not in self._released
+        ]
+
+    async def workload_pass(self, at_ns: int | None = None) -> list[tuple[str, str]]:
+        """Start / attach / retry / heartbeat our own in-force workloads.
+
+        Idempotent: the scheduled_tasks row carrying ``payload.activity_id`` is
+        the memory, so repeated watch events and engine restarts converge on one
+        run. Returns [(activity_id, action)] for what happened this pass.
+        """
+        pool = self.pool_getter() if callable(self.pool_getter) else None
+        if pool is None:
+            return []
+        at = int(at_ns if at_ns is not None else now_ns())
+        actions: list[tuple[str, str]] = []
+        async with self._wl_lock:
+            for a in self.own_running():
+                aid = str(a.get("activity_id") or "")
+                kind = str(a.get("kind") or "")
+                spec = WORKLOAD_KINDS[kind]
+                try:
+                    action = await self._workload_step(pool, a, aid, kind, spec, at)
+                except Exception as e:  # noqa: BLE001 — one activity's failure never stops the pass
+                    logger.warning("%s workload step for activity %s (%s): %s", GURU_ENQUEUEFAIL, aid, kind, e)
+                    continue
+                if action:
+                    actions.append((aid, action))
+        return actions
+
+    async def _workload_step(self, pool: Any, a: dict[str, Any], aid: str, kind: str, spec: dict[str, Any], at: int) -> str:
+        task_type = str(spec["task_type"])
+        row = await pool.fetchrow(
+            "SELECT id, task_type, picked_up_at, completed_at, result, error FROM scheduled_tasks "
+            "WHERE payload->>'activity_id' = $1 ORDER BY id DESC LIMIT 1",
+            aid,
+        )
+        if row is None:
+            gate = spec.get("gate_sql")
+            if gate:
+                ok = await pool.fetchval(str(gate))
+                if not ok:
+                    outcome = f"skipped: {gate} is false"
+                    await self.release_activity(aid, outcome)
+                    self._workloads[aid] = {"task_id": 0, "task_type": task_type, "state": "skipped", "last_heartbeat_ns": at}
+                    logger.info("coordination: workload %s for activity %s skipped (%s)", task_type, aid, gate)
+                    self._publish(a, "skipped_workload", [], at)
+                    return "skipped"
+            live = await pool.fetchrow(
+                "SELECT id, picked_up_at FROM scheduled_tasks WHERE task_type = $1 AND completed_at IS NULL "
+                "ORDER BY id DESC LIMIT 1",
+                task_type,
+            )
+            state = "queued"
+            if live is not None:
+                tid = int(live["id"])
+                await pool.execute(
+                    "UPDATE scheduled_tasks SET payload = COALESCE(payload, '{}'::jsonb) || $2::jsonb WHERE id = $1",
+                    tid,
+                    json.dumps({"activity_id": aid, "activity_kind": kind}),
+                )
+                action = "attached_workload"
+                state = "running" if live["picked_up_at"] is not None else "queued"
+                logger.info("coordination: attached workload %s #%d to activity %s (already %s)", task_type, tid, aid, state)
+            else:
+                tid = await self._enqueue(pool, spec, aid, kind)
+                action = "started_workload"
+                logger.info("coordination: started workload %s #%d for activity %s", task_type, tid, aid)
+            self._workloads[aid] = {"task_id": tid, "task_type": task_type, "state": state, "last_heartbeat_ns": 0}
+            self._publish(a, action, [], at)
+            await self._heartbeat(aid, at)
+            return action
+
+        tid = int(row["id"])
+        state = self._row_state(row)
+        wl = self._workloads.setdefault(aid, {"task_id": tid, "task_type": task_type, "state": state, "last_heartbeat_ns": 0})
+        wl.update({"task_id": tid, "task_type": task_type, "state": state})
+        if row["completed_at"] is None:
+            await self._heartbeat(aid, at)
+            return ""
+        if state in RETRY_STATUSES:
+            completed_ns = int(row["completed_at"].timestamp() * 1_000_000_000)
+            if at - completed_ns >= WORKLOAD_RETRY_S * 1_000_000_000:
+                new_tid = await self._enqueue(pool, spec, aid, kind)
+                wl.update({"task_id": new_tid, "state": "queued"})
+                logger.info(
+                    "coordination: re-enqueued workload %s #%d for activity %s after %s #%d",
+                    task_type, new_tid, aid, state, tid,
+                )
+                self._publish(a, "retried_workload", [], at)
+                await self._heartbeat(aid, at)
+                return "retried_workload"
+            await self._heartbeat(aid, at)
+            return ""
+        # Terminal: the processor released it (or the lease TTL will expire it).
+        return ""
+
+    @staticmethod
+    def _row_state(row: Any) -> str:
+        if row["completed_at"] is None:
+            return "running" if row["picked_up_at"] is not None else "queued"
+        result = row["result"]
+        if isinstance(result, str):
+            try:
+                result = json.loads(result)
+            except ValueError:
+                result = {}
+        status = str((result or {}).get("status") or "") if isinstance(result, dict) else ""
+        if status:
+            return status
+        return "error" if row["error"] else "completed"
+
+    async def _enqueue(self, pool: Any, spec: dict[str, Any], aid: str, kind: str) -> int:
+        payload = dict(spec.get("payload") or {})
+        payload.update({"activity_id": aid, "activity_kind": kind, "source": WORKLOAD_SOURCE})
+        tid = await pool.fetchval(
+            "INSERT INTO scheduled_tasks (task_type, payload, source, scheduled_for) "
+            "VALUES ($1, $2::jsonb, $3, NOW()) RETURNING id",
+            str(spec["task_type"]),
+            json.dumps(payload),
+            WORKLOAD_SOURCE,
+        )
+        return int(tid)
+
+    async def _heartbeat(self, aid: str, at: int) -> None:
+        wl = self._workloads.get(aid)
+        if wl is None:
+            return
+        if at - int(wl.get("last_heartbeat_ns") or 0) < WORKLOAD_HEARTBEAT_S * 1_000_000_000:
+            return
+        horizon = at + int(WORKLOAD_HORIZON_S * 1_000_000_000)
+        if await self.renew_activity(aid, horizon):
+            wl["last_heartbeat_ns"] = at
+
+    # ── Scheduler RPCs the ENGINE (the peer) makes for its own activities ─────
+    async def renew_activity(self, activity_id: str, horizon_ns: int) -> bool:
+        try:
+            resp = await _scheduler_call(self.target, "RenewActivity", peer=self.project, activity_id=activity_id, horizon_ns=int(horizon_ns))
+        except Exception as e:  # noqa: BLE001
+            logger.warning("%s RenewActivity(%s) on %s: %s — retry next pass (lease TTL bounds it)", GURU_RENEWFAIL, activity_id, self.target, e)
+            return False
+        if not resp.accepted:
+            logger.warning("%s RenewActivity(%s) refused: %s", GURU_RENEWFAIL, activity_id, resp.error)
+            return False
+        return True
+
+    async def release_activity(self, activity_id: str, outcome: str) -> bool:
+        ok = await release_rpc(self.target, activity_id, outcome, peer=self.project)
+        if ok:
+            self._released.add(activity_id)
+            a = self.view.activities.get(activity_id)
+            if a is not None:
+                self._publish(dict(a, state="released", note=outcome), "released", [], now_ns())
+        return ok
 
     # ── ingest ───────────────────────────────────────────────────────────────
     def ingest(self, incoming: list[dict[str, Any]], at_ns: int | None = None) -> list[tuple[dict[str, Any], str]]:
@@ -476,6 +702,7 @@ class CoordinationWatcher:
                     if not done:
                         quiet_s += READ_TIMEOUT_S
                         self.sweep()
+                        await self._workload_pass_safely()
                         if quiet_s >= SILENCE_S:
                             raise _Silent()
                         continue
@@ -493,6 +720,7 @@ class CoordinationWatcher:
                     # timestamps the view.
                     self.ingest([activity_to_dict(a) for a in msg.activities], now_ns())
                     self.view.observed_ns = at
+                    await self._workload_pass_safely()
             finally:
                 if reader is not None and not reader.done():
                     reader.cancel()
@@ -500,6 +728,13 @@ class CoordinationWatcher:
                     call.cancel()
                 except Exception:  # noqa: BLE001
                     pass
+
+
+    async def _workload_pass_safely(self) -> None:
+        try:
+            await self.workload_pass()
+        except Exception:  # noqa: BLE001 — the workload pass never kills the watch stream
+            logger.exception("coordination: workload pass failed")
 
 
 class _Silent(Exception):
@@ -516,14 +751,107 @@ def _iso(ns: int) -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(ns / 1e9))
 
 
+# ── Scheduler RPC helpers (grpc.aio; the engine is the peer) ─────────────────
+async def _scheduler_call(target: str, method: str, **fields: Any) -> Any:
+    from grpc import aio
+
+    from gaius.engine.generated.zndx.scheduler.v1 import scheduler_pb2 as spb
+    from gaius.engine.generated.zndx.scheduler.v1 import scheduler_pb2_grpc as spb_grpc
+
+    req_cls = getattr(spb, f"{method}Request")
+    async with aio.insecure_channel(target) as channel:
+        stub = spb_grpc.SchedulerStub(channel)
+        return await getattr(stub, method)(req_cls(**fields), timeout=RPC_TIMEOUT_S)
+
+
+async def release_rpc(target: str, activity_id: str, outcome: str, *, peer: str = PROJECT) -> bool:
+    """ReleaseActivity at Signals. Never raises: a failed release is logged with
+    its guru and the lease TTL (no more heartbeats) expires the activity."""
+    try:
+        resp = await _scheduler_call(target, "ReleaseActivity", peer=peer, activity_id=activity_id, outcome=str(outcome)[:200])
+    except Exception as e:  # noqa: BLE001
+        logger.warning("%s ReleaseActivity(%s) on %s: %s — the lease TTL will expire it", GURU_RELEASEFAIL, activity_id, target, e)
+        return False
+    if not resp.accepted:
+        logger.warning("%s ReleaseActivity(%s) refused: %s", GURU_RELEASEFAIL, activity_id, resp.error)
+        return False
+    logger.info("coordination: released activity %s (%s)", activity_id, outcome)
+    return True
+
+
+async def release_for_task(payload: Any, status: str, task_type: str, task_id: int) -> bool:
+    """Called by the task processor when a row books a TERMINAL outcome.
+
+    A row carrying ``payload.activity_id`` belongs to an Airflow-ordered
+    workload: releasing the activity completes the Airflow ``hold`` sensor and
+    Signals retracts the workload's queue configuration. Deferred / yielded
+    outcomes are not terminal here (the watcher retries while in force).
+    """
+    if isinstance(payload, str):
+        try:
+            payload = json.loads(payload)
+        except ValueError:
+            payload = {}
+    aid = str((payload or {}).get("activity_id") or "") if isinstance(payload, dict) else ""
+    if not aid or str(status) not in RELEASE_STATUSES:
+        return False
+    outcome = f"{status}: {task_type} #{task_id}"
+    co = get_coordination()
+    if co is not None:
+        ok = await co.release_activity(aid, outcome)
+        wl = co._workloads.get(aid)
+        if wl is not None:
+            wl["state"] = str(status)
+        return ok
+    return await release_rpc(signals_target(), aid, outcome)
+
+
+def schedule_hints() -> list[Any]:
+    """ServerQuery kind=SCHEDULES: the classes whose schedule lives in the Signals
+    Airflow (source=airflow, the DAG that declares them). pg_cron classes are not
+    listed here (honest: the catalog for those has not landed)."""
+    from gaius.engine.generated.zndx.engine.v1 import engine_pb2 as zpb
+
+    cron_by_class: dict[str, str] = {}
+    try:
+        from gaius.engine.supervision_spec import load_spec
+
+        spec = load_spec()
+        if spec is not None:
+            for cls in AIRFLOW_SOURCED_CLASSES:
+                proc = spec.process(f"task.{cls}")
+                cadence = getattr(proc, "cadence", None) if proc is not None else None
+                cron = str(getattr(cadence, "cron", "") or "") if cadence is not None else ""
+                if cron:
+                    cron_by_class[cls] = cron
+    except Exception:  # noqa: BLE001 — the hint is discovery, not truth
+        logger.debug("schedule_hints: supervision spec unavailable", exc_info=True)
+    return [
+        zpb.ScheduleHint(
+            id=f"task.{cls}",
+            cron=cron_by_class.get(cls, ""),
+            airflow_dag_id=dag_id,
+            source="airflow",
+            enabled=True,
+        )
+        for cls, dag_id in AIRFLOW_SOURCED_CLASSES.items()
+    ]
+
+
 # ── singleton ────────────────────────────────────────────────────────────────
 _COORD: CoordinationWatcher | None = None
 
 
-def init_coordination(orchestrator: Any, bus: Any = None, target: str | None = None) -> CoordinationWatcher:
+def init_coordination(
+    orchestrator: Any, bus: Any = None, target: str | None = None, pool_getter: Any = None
+) -> CoordinationWatcher:
     global _COORD
     if _COORD is None:
-        _COORD = CoordinationWatcher(orchestrator=orchestrator, bus=bus, target=target or signals_target())
+        _COORD = CoordinationWatcher(
+            orchestrator=orchestrator, bus=bus, target=target or signals_target(), pool_getter=pool_getter
+        )
+    elif pool_getter is not None and _COORD.pool_getter is None:
+        _COORD.pool_getter = pool_getter
     return _COORD
 
 

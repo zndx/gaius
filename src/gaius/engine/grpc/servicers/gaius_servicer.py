@@ -9683,6 +9683,7 @@ class GaiusServicer(GaiusServiceServicer):
                     reason=str(a.get("reason") or ""),
                     note=str(a.get("note") or ""),
                     ceded=held.get(str(a.get("activity_id") or ""), []),
+                    workload=str(co.workload_label(str(a.get("activity_id") or "")) or ""),
                 )
                 for k, v in (a.get("postures") or {}).items():
                     row.postures[str(k)] = str(v)

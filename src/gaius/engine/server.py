@@ -350,7 +350,11 @@ class GaiusEngine:
                 from .services.coordination import init_coordination
                 from .services.supervision_bus import get_bus
 
-                self._coordination = init_coordination(self._orchestrator_service, get_bus())
+                # pool_getter: the shared asyncpg pool may not exist yet at this
+                # point of the boot; the workload pass reads it lazily.
+                self._coordination = init_coordination(
+                    self._orchestrator_service, get_bus(), pool_getter=lambda: self._db_pool
+                )
                 self._coordination.start()
                 if self._grpc_server is not None:
                     self._grpc_server.update_service("coordination", self._coordination)

@@ -1027,6 +1027,7 @@ class GrpcEngineClient:
                     "reason": r.reason,
                     "note": r.note or None,
                     "ceded": list(r.ceded),
+                    "workload": r.workload or None,
                 }
                 for r in response.rows
             ],

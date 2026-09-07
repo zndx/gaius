@@ -58,6 +58,28 @@ def _ms(ts: Any) -> int:
         return 0
 
 
+async def _coord_release(done_row: Any, task: Any, status: str, task_id: int) -> None:
+    """Release the coordination Activity an Airflow-ordered row belongs to.
+
+    Fail-open: coordination bookkeeping never fails a task; a missed release
+    is logged there and the Signals lease TTL expires the activity.
+    """
+    try:
+        payload: Any = None
+        if done_row is not None:
+            try:
+                payload = done_row["payload"]
+            except (KeyError, TypeError):
+                payload = None
+        if payload is None:
+            payload = getattr(task, "payload", None)
+        from .coordination import release_for_task
+
+        await release_for_task(payload, status, str(getattr(task, "task_type", "")), int(task_id))
+    except Exception:  # noqa: BLE001
+        logger.debug("coordination release skipped for task %s", task_id, exc_info=True)
+
+
 def _sv_publish_task(row: Any, state: str, **extra: Any) -> None:
     """Emit a TaskLifecycle event to the supervision bus (the resident Nautilus's
     view of this queue). Fail-open bookkeeping — never disturbs the task.
@@ -1759,6 +1781,12 @@ class ScheduledTaskProcessor(BaseDaemon):
                  "stalled": "STALLED", "yielded": "YIELDED", "skipped": "SKIPPED"}.get(str(result_status), "COMPLETED"),
                 reason=str(result.get("reason") or "") if isinstance(result, dict) else "",
             )
+            # (2026-09-07) An Airflow-ordered workload carries payload.activity_id:
+            # a TERMINAL outcome releases the activity at Signals (the hold sensor
+            # completes, the queue configuration is retracted). Read the payload
+            # from the RETURNING row — an activity may have been ATTACHED to this
+            # row after it was claimed.
+            await _coord_release(done_row, task, str(result_status), task_id)
 
         except Exception as e:
             self._tasks_failed += 1
@@ -1778,6 +1806,7 @@ class ScheduledTaskProcessor(BaseDaemon):
                     error_msg[:1000],
                 )
             _sv_publish_task(done_row if done_row is not None else {"id": task_id, "task_type": task.task_type}, "ERROR", error=error_msg[:300])
+            await _coord_release(done_row, task, "error", task_id)
 
     async def _mark_task_error(self, task_id: int, error: str) -> None:
         """Mark a task as failed with error."""

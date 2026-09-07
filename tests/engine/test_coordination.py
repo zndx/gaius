@@ -324,3 +324,214 @@ def test_servicer_activities_view_and_render() -> None:
         watcher_connected=True, signals_target="127.0.0.1:50551",
     )
     assert "● running" in text and "holds endpoint.thinking" in text and "watching 127.0.0.1:50551" in text
+
+
+# ── 2026-09-07: Airflow orders our workloads — own activity in force → run ──────
+
+import json as _json
+from datetime import datetime, timedelta, timezone
+
+
+def _own(aid="w1", kind="article_curate", state="running", horizon=NOW + H):
+    return _act(aid=aid, kind=kind, peer="gaius", owner="airflow:gaius_article_curate",
+                state=state, run_id=f"act-{aid}", horizon=horizon, postures={}, claims=[
+                    {"leaf": "root.internal.inference.extract", "gpu": 1}])
+
+
+class FakePool:
+    """Just enough of asyncpg for the workload pass; SQL matched by shape."""
+
+    def __init__(self, gate=True):
+        self.rows: list[dict] = []
+        self.gate = gate
+        self.sql: list[str] = []
+        self._next = 100
+
+    def add(self, task_type, payload, *, picked=False, completed=None, result=None, error=None):
+        self._next += 1
+        row = {"id": self._next, "task_type": task_type, "payload": dict(payload), "source": "pg_cron",
+               "picked_up_at": datetime.now(timezone.utc) if picked else None,
+               "completed_at": completed, "result": result, "error": error}
+        self.rows.append(row)
+        return row
+
+    def _latest_for(self, aid):
+        for r in reversed(self.rows):
+            if (r["payload"] or {}).get("activity_id") == aid:
+                return r
+        return None
+
+    async def fetchrow(self, sql, *args):
+        self.sql.append(sql)
+        if "payload->>'activity_id' = $1" in sql:
+            return self._latest_for(args[0])
+        if "task_type = $1 AND completed_at IS NULL" in sql:
+            for r in reversed(self.rows):
+                if r["task_type"] == args[0] and r["completed_at"] is None:
+                    return {"id": r["id"], "picked_up_at": r["picked_up_at"]}
+            return None
+        raise AssertionError(f"unexpected fetchrow {sql}")
+
+    async def fetchval(self, sql, *args):
+        self.sql.append(sql)
+        if "should_run_curation" in sql:
+            return self.gate
+        if sql.startswith("INSERT INTO scheduled_tasks"):
+            self._next += 1
+            self.rows.append({"id": self._next, "task_type": args[0], "payload": _json.loads(args[1]), "source": args[2],
+                              "picked_up_at": None, "completed_at": None, "result": None, "error": None})
+            return self._next
+        raise AssertionError(f"unexpected fetchval {sql}")
+
+    async def execute(self, sql, *args):
+        self.sql.append(sql)
+        if sql.startswith("UPDATE scheduled_tasks SET payload"):
+            for r in self.rows:
+                if r["id"] == args[0]:
+                    r["payload"] = {**(r["payload"] or {}), **_json.loads(args[1])}
+                    return "UPDATE 1"
+            raise AssertionError("no such row")
+        raise AssertionError(f"unexpected execute {sql}")
+
+    def inserts(self):
+        return [r for r in self.rows if r["source"] == "airflow"]
+
+
+class FakeScheduler:
+    def __init__(self, accepted=True):
+        self.calls: list[tuple[str, dict]] = []
+        self.accepted = accepted
+
+    async def __call__(self, target, method, **fields):
+        self.calls.append((method, fields))
+        return SimpleNamespace(accepted=self.accepted, error="" if self.accepted else "refused")
+
+    def named(self, method):
+        return [f for m, f in self.calls if m == method]
+
+
+def _watcher(pool, monkeypatch, sched=None):
+    sched = sched or FakeScheduler()
+    monkeypatch.setattr(co, "_scheduler_call", sched)
+    w = CoordinationWatcher(orchestrator=FakeOrch(), bus=FakeBus(), target="signals:1", pool_getter=lambda: pool)
+    return w, sched
+
+
+def test_own_running_activity_enqueues_exactly_once_and_heartbeats(monkeypatch):
+    pool = FakePool()
+    w, sched = _watcher(pool, monkeypatch)
+
+    async def run():
+        w.ingest([_own()], NOW)
+        acts = await w.workload_pass(NOW)
+        assert acts == [("w1", "started_workload")]
+        # repeated events / passes / a "restart" (new watcher over the same pool) never double-run
+        await w.workload_pass(NOW + 5 * 10**9)
+        w.ingest([_own()], NOW + 6 * 10**9)
+        await w.workload_pass(NOW + 6 * 10**9)
+        w2, _ = _watcher(pool, monkeypatch, sched)
+        w2.ingest([_own()], NOW + 7 * 10**9)
+        await w2.workload_pass(NOW + 7 * 10**9)
+        rows = pool.inserts()
+        assert len(rows) == 1
+        assert rows[0]["task_type"] == "article_curate"
+        assert rows[0]["payload"] == {"check_cooldown": True, "activity_id": "w1",
+                                      "activity_kind": "article_curate", "source": "airflow"}
+        # heartbeat: once at start; not again inside 60 s on the same watcher; a
+        # restarted engine (w2) heartbeats at once — it cannot know the last one.
+        assert len(sched.named("RenewActivity")) == 2
+        await w.workload_pass(NOW + 30 * 10**9)
+        assert len(sched.named("RenewActivity")) == 2
+        await w.workload_pass(NOW + 61 * 10**9)
+        renews = sched.named("RenewActivity")
+        assert len(renews) == 3 and renews[-1]["peer"] == "gaius" and renews[-1]["activity_id"] == "w1"
+        assert renews[-1]["horizon_ns"] > NOW + 61 * 10**9
+        assert w.workload_label("w1").startswith("article_curate #") and w.workload_label("w1").endswith("queued")
+        assert any((ev.get("transition") if isinstance(ev, dict) else getattr(ev, "payload", {}).get("transition")) == "started_workload" for ev in w.bus.events)
+
+    asyncio.run(run())
+
+
+def test_attaches_to_inflight_row_instead_of_second_enqueue(monkeypatch):
+    pool = FakePool()
+    live = pool.add("article_curate", {"check_cooldown": True}, picked=True)  # pg_cron's run, in flight
+    w, sched = _watcher(pool, monkeypatch)
+
+    async def run():
+        w.ingest([_own()], NOW)
+        acts = await w.workload_pass(NOW)
+        assert acts == [("w1", "attached_workload")]
+        assert pool.inserts() == []
+        assert live["payload"]["activity_id"] == "w1"
+        assert w.workload_label("w1") == f"article_curate #{live['id']} running"
+        assert len(sched.named("RenewActivity")) == 1
+
+    asyncio.run(run())
+
+
+def test_gate_false_releases_as_skipped(monkeypatch):
+    pool = FakePool(gate=False)
+    w, sched = _watcher(pool, monkeypatch)
+
+    async def run():
+        w.ingest([_own()], NOW)
+        assert await w.workload_pass(NOW) == [("w1", "skipped")]
+        assert pool.inserts() == []
+        rel = sched.named("ReleaseActivity")
+        assert len(rel) == 1 and rel[0]["outcome"].startswith("skipped:")
+        assert await w.workload_pass(NOW + 10**9) == []  # released: never reconsidered
+
+    asyncio.run(run())
+
+
+def test_deferred_row_is_retried_while_in_force(monkeypatch):
+    pool = FakePool()
+    old = datetime.now(timezone.utc) - timedelta(seconds=200)
+    pool.add("article_curate", {"check_cooldown": True, "activity_id": "w1"}, picked=True,
+             completed=old, result={"status": "deferred", "reason": "yk_admission"})
+    w, sched = _watcher(pool, monkeypatch)
+
+    async def run():
+        w.ingest([_own()], NOW)
+        assert await w.workload_pass(NOW) == [("w1", "retried_workload")]
+        assert len(pool.inserts()) == 1
+        assert len(sched.named("ReleaseActivity")) == 0
+
+    asyncio.run(run())
+
+
+def test_peer_activity_never_starts_a_workload(monkeypatch):
+    pool = FakePool()
+    w, sched = _watcher(pool, monkeypatch)
+
+    async def run():
+        w.ingest([_act(aid="h1")], NOW)  # hermes interactive session
+        assert await w.workload_pass(NOW) == []
+        assert pool.sql == [] and sched.calls == []
+
+    asyncio.run(run())
+
+
+def test_release_for_task_terminal_outcomes_only(monkeypatch):
+    sched = FakeScheduler()
+    monkeypatch.setattr(co, "_scheduler_call", sched)
+
+    async def run():
+        assert await co.release_for_task({"activity_id": "w1"}, "deferred", "article_curate", 7) is False
+        assert await co.release_for_task({"activity_id": "w1"}, "yielded", "article_curate", 7) is False
+        assert await co.release_for_task({"check_cooldown": True}, "completed", "article_curate", 7) is False
+        assert sched.calls == []
+        assert await co.release_for_task('{"activity_id": "w1"}', "completed", "article_curate", 7) is True
+        rel = sched.named("ReleaseActivity")
+        assert rel[0]["peer"] == "gaius" and rel[0]["outcome"] == "completed: article_curate #7"
+        assert await co.release_for_task({"activity_id": "w2"}, "failed", "article_curate", 8) is True
+
+    asyncio.run(run())
+
+
+def test_schedule_hints_mark_article_curate_as_airflow_sourced():
+    hints = co.schedule_hints()
+    by_id = {h.id: h for h in hints}
+    h = by_id["task.article_curate"]
+    assert h.source == "airflow" and h.airflow_dag_id == "gaius_article_curate" and h.enabled
+    assert "task.fmp_roll" not in by_id  # pg_cron classes are not invented here
