@@ -1843,6 +1843,34 @@ class GrpcEngineClient:
                 "current_task": response.current_task or None,
             }
 
+        elif action == "brief":
+            # (2026-09-07) /thoughts default — the Brief the cognition cycle wrote.
+            from ..engine.generated import ThoughtsBriefRequest
+
+            response = await self._stub.ThoughtsBrief(
+                ThoughtsBriefRequest(limit=int(params.get("limit") or 6)), timeout=timeout
+            )
+            if response.error:
+                return {"error": response.error}
+            return {
+                "brief": response.brief or None,
+                "spoken": response.spoken or None,
+                "brief_at": response.brief_at or None,
+                "brief_age_s": int(response.brief_age_s or 0),
+                "thoughts_considered": int(response.thoughts_considered or 0),
+                "brief_id": response.brief_id or None,
+                "note_path": response.note_path or None,
+                "prev_note_path": response.prev_note_path or None,
+                "next_note_path": response.next_note_path or None,
+                "prev_brief_id": response.prev_brief_id or None,
+                "thoughts": [
+                    {"at": r.at, "kind": r.kind, "title": r.title, "summary": r.summary, "id": r.id}
+                    for r in response.thoughts
+                ],
+                "newest_at": response.newest_at or None,
+                "total_in_window": int(response.total_in_window or 0),
+                "note": response.note or None,
+            }
         elif action == "recent_thoughts":
             from ..engine.generated import GetRecentThoughtsRequest
 

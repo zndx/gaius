@@ -6156,8 +6156,11 @@ Respond with:
         - Audit engine health
 
         Usage:
-            /thoughts           - Trigger cognition cycle, create thoughts note
-            /thoughts deep      - Run deeper analysis
+            /thoughts           - The Thoughts Brief the cognition cycle wrote (instant, no model
+                                  call): what has been on the mind, plus the newest thoughts.
+                                  Also: /thoughts brief [n]
+            /thoughts cycle     - Trigger a cognition cycle (writes thoughts + a fresh Brief)
+            /thoughts deep      - Trigger a deeper cycle
             /thoughts recent    - Show recent thoughts without triggering new cycle
             /thoughts recent 5  - Show last 5 thoughts
             /thoughts surface   - Federation cognition dashboard (default 365d)
@@ -6446,7 +6449,53 @@ Respond with:
             except Exception as e:
                 return {"error": str(e), "mode": "test-cycle"}
 
-        # Default: trigger full cognition cycle via Engine gRPC
+        # Default (2026-09-07): the Thoughts BRIEF — Engine-First, instant, no model
+        # call. "what have you been thinking about?" answered from the store; the
+        # cognition cycle wrote it (cognition_briefs + a prev/next-linked zettel).
+        if args_lower in ("", "brief") or args_lower.startswith("brief "):
+            parts = args_lower.split()
+            try:
+                limit = int(parts[1]) if len(parts) > 1 else 6
+            except ValueError:
+                limit = 6
+            try:
+                from .client.grpc_client import get_grpc_client
+
+                client = await get_grpc_client()
+                if not client:
+                    return {
+                        "error": (
+                            "Engine gRPC not available.\n"
+                            "  Guru: #COG.00000029.NOENGINE\n"
+                            "  Try: /health fix engine"
+                        ),
+                        "mode": "brief",
+                    }
+                data = await client.call("Cognition", "brief", {"limit": limit})
+                if data.get("error"):
+                    return {"mode": "brief", "error": data["error"]}
+                return {
+                    "mode": "brief",
+                    "brief": data.get("brief"),
+                    "spoken": data.get("spoken"),
+                    "brief_at": data.get("brief_at"),
+                    "brief_age_s": data.get("brief_age_s"),
+                    "thoughts_considered": data.get("thoughts_considered"),
+                    "note_path": data.get("note_path"),
+                    "prev_note_path": data.get("prev_note_path"),
+                    "next_note_path": data.get("next_note_path"),
+                    "recent_thoughts": [
+                        f"{t['at'][:16]} {t['kind']}: {t['title']}" for t in data.get("thoughts") or []
+                    ],
+                    "newest_at": data.get("newest_at"),
+                    "total_in_window": data.get("total_in_window"),
+                    "note": data.get("note"),
+                    "hint": "/thoughts cycle triggers a new cognition cycle (and rewrites the Brief)",
+                }
+            except Exception as e:
+                return {"error": str(e), "mode": "brief"}
+
+        # /thoughts cycle | deep: trigger a full cognition cycle via Engine gRPC
         # (L5 agents must not call inference directly - all cognition goes through Engine)
         depth = "deep" if args_lower == "deep" else "moderate"
         max_thoughts = 10 if depth == "deep" else 5

@@ -24,7 +24,13 @@ class _Conn:
             return self.newest
         if "cognition_cycles" in sql:
             return self.cycles
+        if "cron.job" in sql:
+            return "43 0,4,8,12,16,20 * * *"
         raise AssertionError(sql)
+
+    async def fetchrow(self, sql, *args):
+        assert "FROM cognition_briefs" in sql, sql
+        return None  # no brief yet in these tests
 
 
 class _Acq:
@@ -73,7 +79,7 @@ def test_collect_bounds_text_and_reports_totals():
     assert out["project"] == "gaius"
     assert out["total_in_window"] == 9 and out["cycles_in_window"] == 3
     assert out["newest_ms"] == int(datetime(2026, 9, 7, 12, 48, tzinfo=timezone.utc).timestamp() * 1000)
-    assert out["note"] == ""  # fresh: 12 minutes old
+    assert out["note"].startswith("no brief yet — next cognition cycle at")  # fresh thoughts, no brief yet
     t = out["thoughts"][0]
     assert t["kind"] == "connection" and t["title"].startswith("State as")
     assert len(t["excerpt"]) <= th.EXCERPT_CHARS and t["excerpt"].endswith("…")
@@ -89,7 +95,7 @@ def test_idle_and_empty_are_said_plainly():
     now = datetime(2026, 9, 7, 13, 0, tzinfo=timezone.utc)
     stale = _Conn([], newest=now - timedelta(hours=40), total=0)
     out = asyncio.run(th.collect_thoughts(_Pool(stale), now=now))
-    assert out["thoughts"] == [] and "idle" in out["note"] and "40 h" in out["note"]
+    assert out["thoughts"] == [] and "idle" in out["note"] and "40 h" in out["note"] and "no brief yet" in out["note"]
     empty = _Conn([], newest=None, total=0)
     out2 = asyncio.run(th.collect_thoughts(_Pool(empty), now=now))
     assert "store empty" in out2["note"]

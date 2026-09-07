@@ -2065,6 +2065,56 @@ class GaiusServicer(GaiusServiceServicer):
 
         return response
 
+    async def ThoughtsBrief(self, request, context):
+        """/thoughts default — the Brief the cognition cycle wrote plus the newest
+        thoughts, read from the store with NO model call (2026-09-07). Honest
+        note when there is no brief yet or cognition is idle; never invents one."""
+        from ...generated import ThoughtRow, ThoughtsBriefResponse
+        from ...services.thoughts_hint import collect_thoughts
+
+        limit = min(int(request.limit or 6), 12)
+        pool = getattr(self._services, "db_pool", None)
+        if pool is None:
+            cog = getattr(self._services, "cognition_service", None)
+            pool = getattr(cog, "_db_pool", None) if cog is not None else None
+        try:
+            d = await collect_thoughts(pool, limit=limit)
+        except Exception as e:  # noqa: BLE001 — in-band error, Engine-First style
+            return ThoughtsBriefResponse(error=f"#CG.00000002.STOREFAIL thoughts read failed: {e}")
+        if d.get("note", "").startswith("#CG.00000001.NOPOOL"):
+            return ThoughtsBriefResponse(error=d["note"])
+
+        def _iso(ms: int) -> str:
+            return datetime.fromtimestamp(ms / 1000, tz=timezone.utc).isoformat(timespec="seconds") if ms else ""
+
+        now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+        resp = ThoughtsBriefResponse(
+            brief=str(d.get("brief") or ""),
+            spoken=str(d.get("spoken") or ""),
+            brief_at=_iso(int(d.get("brief_at_ms") or 0)),
+            brief_age_s=int((now_ms - int(d.get("brief_at_ms") or 0)) / 1000) if d.get("brief_at_ms") else 0,
+            thoughts_considered=int(d.get("brief_thoughts") or 0),
+            brief_id=str(d.get("brief_id") or ""),
+            note_path=str(d.get("brief_note_path") or ""),
+            newest_at=_iso(int(d.get("newest_ms") or 0)),
+            total_in_window=int(d.get("total_in_window") or 0),
+            note=str(d.get("note") or ""),
+            prev_note_path=str(d.get("brief_prev_note_path") or ""),
+            next_note_path=str(d.get("brief_next_note_path") or ""),
+            prev_brief_id=str(d.get("brief_prev_id") or ""),
+        )
+        for t in d.get("thoughts") or []:
+            resp.thoughts.append(
+                ThoughtRow(
+                    id=str(t.get("id") or ""),
+                    at=_iso(int(t.get("at_ms") or 0)),
+                    kind=str(t.get("kind") or ""),
+                    title=str(t.get("title") or ""),
+                    summary=str(t.get("summary") or t.get("excerpt") or ""),
+                )
+            )
+        return resp
+
     async def TriggerCognition(
         self,
         request: TriggerCognitionRequest,

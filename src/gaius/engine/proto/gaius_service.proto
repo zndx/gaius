@@ -391,6 +391,39 @@ message GetRecentThoughtsResponse {
   repeated ThoughtMessage thoughts = 1;
 }
 
+// (2026-09-07) The Thoughts Brief: written by the cognition cycle in the
+// Agenda's framing (never an Agenda item; a prev/next-linked zettel), read here
+// without a model call so /thoughts and the voice agent answer instantly.
+message ThoughtsBriefRequest {
+  int32 limit = 1;  // recent thoughts to list beside the brief (default 6, max 12)
+}
+
+message ThoughtRow {
+  string id = 1;
+  string at = 2;        // ISO-8601 UTC
+  string kind = 3;      // pattern | connection | curiosity | reflection | …
+  string title = 4;
+  string summary = 5;
+}
+
+message ThoughtsBriefResponse {
+  string brief = 1;               // written form ("" = no brief yet)
+  string spoken = 2;              // plain-speech form for a voice agent
+  string brief_at = 3;            // ISO-8601 UTC when the brief was written
+  int64 brief_age_s = 4;
+  int32 thoughts_considered = 5;
+  string brief_id = 6;
+  string note_path = 7;           // KB zettel (relative to the KB root)
+  repeated ThoughtRow thoughts = 8;  // newest first
+  string newest_at = 9;           // newest thought in the store
+  int32 total_in_window = 10;     // thoughts in the last 7 days
+  string note = 11;               // honest state: "no brief yet — next cognition cycle at …", "cognition idle …"
+  string error = 12;              // guru when the store cannot be read
+  string prev_note_path = 13;     // the previous brief's zettel (the brief CHAIN; "" = first brief)
+  string next_note_path = 14;     // the next brief's zettel ("" = this is the latest)
+  string prev_brief_id = 15;
+}
+
 message TriggerCognitionRequest {
   int32 max_thoughts = 1;  // Default: 5
   string trigger_reason = 2;  // "manual", "scheduled", "session_start"
@@ -3534,6 +3567,8 @@ service GaiusService {
   // ─────────────────────────────────────────────────────────────────────────
   rpc CognitionStatus(google.protobuf.Empty) returns (CognitionStatusResponse);
   rpc GetRecentThoughts(GetRecentThoughtsRequest) returns (GetRecentThoughtsResponse);
+  // (2026-09-07) /thoughts default: the Brief the cognition cycle wrote — instant, no model call.
+  rpc ThoughtsBrief(ThoughtsBriefRequest) returns (ThoughtsBriefResponse);
   rpc TriggerCognition(TriggerCognitionRequest) returns (TriggerCognitionResponse);
   rpc CognitionActivity(google.protobuf.Empty) returns (CognitionActivityResponse);
   rpc CognitionSurface(CognitionSurfaceRequest) returns (CognitionSurfaceResponse);

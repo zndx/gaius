@@ -151,16 +151,47 @@ async def collect_thoughts(
     out["total_in_window"] = int(total or 0)
     out["newest_ms"] = _ms(newest)
     out["cycles_in_window"] = int(cycles or 0)
+    notes: list[str] = []
     if newest is None:
-        out["note"] = "store empty — no thoughts have been persisted yet"
+        notes.append("store empty — no thoughts have been persisted yet")
     else:
         newest_dt = newest if newest.tzinfo else newest.replace(tzinfo=timezone.utc)
         age = now - newest_dt
         if age > IDLE_AFTER:
             hours = int(age.total_seconds() // 3600)
-            out["note"] = f"cognition idle: newest thought is {hours} h old (cadence 4 h)"
+            notes.append(f"cognition idle: newest thought is {hours} h old (cadence 4 h)")
         elif not out["thoughts"]:
-            out["note"] = "no thoughts match the filter in this window"
+            notes.append("no thoughts match the filter in this window")
+    # (2026-09-07) The Thoughts BRIEF the cognition cycle wrote — the ready
+    # answer. Absent = say when the next cycle is due; never invent one.
+    out.update({"brief": "", "spoken": "", "brief_at_ms": 0, "brief_id": "", "brief_thoughts": 0,
+                "brief_note_path": "", "brief_prev_note_path": "", "brief_next_note_path": "", "brief_prev_id": ""})
+    try:
+        from gaius.engine.services.thoughts_brief import latest_brief, next_cycle_at
+
+        b = await latest_brief(pool)
+        if b is not None:
+            out.update(
+                {
+                    "brief": b["body"],
+                    "spoken": b["spoken"],
+                    "brief_at_ms": b["at_ms"],
+                    "brief_id": b["id"],
+                    "brief_thoughts": b["thoughts_considered"],
+                    "brief_note_path": b["note_path"],
+                    "brief_prev_note_path": b.get("prev_note_path", ""),
+                    "brief_next_note_path": b.get("next_note_path", ""),
+                    "brief_prev_id": b.get("prev_brief_id", ""),
+                }
+            )
+        else:
+            nxt = await next_cycle_at(pool, now)
+            when = nxt.strftime("%H:%M UTC") if nxt else "the next cognition cycle"
+            notes.append(f"no brief yet — next cognition cycle at {when}")
+    except Exception as e:  # noqa: BLE001 — a brief store problem is said, not hidden
+        logger.warning("%s brief read failed: %s", GURU_STOREFAIL, e)
+        notes.append(f"{GURU_STOREFAIL} brief unavailable: {e}")
+    out["note"] = "; ".join(notes)
     return out
 
 
@@ -175,6 +206,11 @@ def to_proto(d: dict[str, Any]):
         window_ms=int(d.get("window_ms") or 0),
         cycles_in_window=int(d.get("cycles_in_window") or 0),
         note=str(d.get("note") or ""),
+        brief=str(d.get("brief") or ""),
+        spoken=str(d.get("spoken") or ""),
+        brief_at_ms=int(d.get("brief_at_ms") or 0),
+        brief_id=str(d.get("brief_id") or ""),
+        brief_thoughts=int(d.get("brief_thoughts") or 0),
     )
     for t in d.get("thoughts") or []:
         th = zpb.Thought(

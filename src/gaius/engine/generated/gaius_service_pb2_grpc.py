@@ -190,6 +190,11 @@ class GaiusServiceStub(object):
                 request_serializer=gaius__service__pb2.GetRecentThoughtsRequest.SerializeToString,
                 response_deserializer=gaius__service__pb2.GetRecentThoughtsResponse.FromString,
                 _registered_method=True)
+        self.ThoughtsBrief = channel.unary_unary(
+                '/gaius.engine.GaiusService/ThoughtsBrief',
+                request_serializer=gaius__service__pb2.ThoughtsBriefRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.ThoughtsBriefResponse.FromString,
+                _registered_method=True)
         self.TriggerCognition = channel.unary_unary(
                 '/gaius.engine.GaiusService/TriggerCognition',
                 request_serializer=gaius__service__pb2.TriggerCognitionRequest.SerializeToString,
@@ -1085,6 +1090,13 @@ class GaiusServiceServicer(object):
 
     def GetRecentThoughts(self, request, context):
         """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def ThoughtsBrief(self, request, context):
+        """(2026-09-07) /thoughts default: the Brief the cognition cycle wrote — instant, no model call.
+        """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
@@ -2173,6 +2185,11 @@ def add_GaiusServiceServicer_to_server(servicer, server):
                     servicer.GetRecentThoughts,
                     request_deserializer=gaius__service__pb2.GetRecentThoughtsRequest.FromString,
                     response_serializer=gaius__service__pb2.GetRecentThoughtsResponse.SerializeToString,
+            ),
+            'ThoughtsBrief': grpc.unary_unary_rpc_method_handler(
+                    servicer.ThoughtsBrief,
+                    request_deserializer=gaius__service__pb2.ThoughtsBriefRequest.FromString,
+                    response_serializer=gaius__service__pb2.ThoughtsBriefResponse.SerializeToString,
             ),
             'TriggerCognition': grpc.unary_unary_rpc_method_handler(
                     servicer.TriggerCognition,
@@ -3682,6 +3699,33 @@ class GaiusService(object):
             '/gaius.engine.GaiusService/GetRecentThoughts',
             gaius__service__pb2.GetRecentThoughtsRequest.SerializeToString,
             gaius__service__pb2.GetRecentThoughtsResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ThoughtsBrief(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/gaius.engine.GaiusService/ThoughtsBrief',
+            gaius__service__pb2.ThoughtsBriefRequest.SerializeToString,
+            gaius__service__pb2.ThoughtsBriefResponse.FromString,
             options,
             channel_credentials,
             insecure,

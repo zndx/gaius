@@ -70,6 +70,12 @@ class CognitionCycleResult:
     error: Optional[str] = None
     thought_ids: list[str] = field(default_factory=list)
     kb_path: Optional[str] = None  # Zettelkasten file where thoughts were saved
+    # (2026-09-07) The Thoughts Brief the cycle wrote from its newest thoughts —
+    # what /thoughts and the voice agent answer with. A brief failure is
+    # recorded here and never undoes the persisted thoughts.
+    brief_id: Optional[str] = None
+    brief_note_path: Optional[str] = None
+    brief_error: Optional[str] = None
 
 
 @dataclass
@@ -327,6 +333,27 @@ async def process_cognition_cycle(
         result.curiosities_generated = sum(
             1 for t in thoughts if t.get("type") == "curiosity"
         )
+
+        # (2026-09-07) Write the Thoughts Brief as part of the cycle, so
+        # "what have you been thinking about?" has its reply ready (user).
+        # Agenda-LIKE framing, persisted to cognition_briefs and as a
+        # prev/next-linked zettel — never an Agenda item. Its failure is a
+        # recorded fact on this result, not a failed cycle.
+        if result.thoughts_generated > 0:
+            try:
+                from gaius.engine.services.thoughts_brief import compose_thoughts_brief
+
+                brief = await compose_thoughts_brief(
+                    db_pool, cycle_id=None, inference_client=inference_client
+                )
+                result.brief_id = brief.get("id")
+                result.brief_note_path = brief.get("note_path")
+                result.tokens_out += int(brief.get("tokens") or 0)
+                if span:
+                    span.set_attribute("brief_id", result.brief_id or "")
+            except Exception as be:  # noqa: BLE001 — recorded, never undoes the thoughts
+                result.brief_error = str(be)
+                logger.warning("thoughts brief not written this cycle: %s", be)
 
         if span:
             span.set_attribute("thoughts_generated", result.thoughts_generated)

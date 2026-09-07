@@ -639,6 +639,60 @@ class GetRecentThoughtsResponse(_message.Message):
     thoughts: _containers.RepeatedCompositeFieldContainer[ThoughtMessage]
     def __init__(self, thoughts: _Optional[_Iterable[_Union[ThoughtMessage, _Mapping]]] = ...) -> None: ...
 
+class ThoughtsBriefRequest(_message.Message):
+    __slots__ = ("limit",)
+    LIMIT_FIELD_NUMBER: _ClassVar[int]
+    limit: int
+    def __init__(self, limit: _Optional[int] = ...) -> None: ...
+
+class ThoughtRow(_message.Message):
+    __slots__ = ("id", "at", "kind", "title", "summary")
+    ID_FIELD_NUMBER: _ClassVar[int]
+    AT_FIELD_NUMBER: _ClassVar[int]
+    KIND_FIELD_NUMBER: _ClassVar[int]
+    TITLE_FIELD_NUMBER: _ClassVar[int]
+    SUMMARY_FIELD_NUMBER: _ClassVar[int]
+    id: str
+    at: str
+    kind: str
+    title: str
+    summary: str
+    def __init__(self, id: _Optional[str] = ..., at: _Optional[str] = ..., kind: _Optional[str] = ..., title: _Optional[str] = ..., summary: _Optional[str] = ...) -> None: ...
+
+class ThoughtsBriefResponse(_message.Message):
+    __slots__ = ("brief", "spoken", "brief_at", "brief_age_s", "thoughts_considered", "brief_id", "note_path", "thoughts", "newest_at", "total_in_window", "note", "error", "prev_note_path", "next_note_path", "prev_brief_id")
+    BRIEF_FIELD_NUMBER: _ClassVar[int]
+    SPOKEN_FIELD_NUMBER: _ClassVar[int]
+    BRIEF_AT_FIELD_NUMBER: _ClassVar[int]
+    BRIEF_AGE_S_FIELD_NUMBER: _ClassVar[int]
+    THOUGHTS_CONSIDERED_FIELD_NUMBER: _ClassVar[int]
+    BRIEF_ID_FIELD_NUMBER: _ClassVar[int]
+    NOTE_PATH_FIELD_NUMBER: _ClassVar[int]
+    THOUGHTS_FIELD_NUMBER: _ClassVar[int]
+    NEWEST_AT_FIELD_NUMBER: _ClassVar[int]
+    TOTAL_IN_WINDOW_FIELD_NUMBER: _ClassVar[int]
+    NOTE_FIELD_NUMBER: _ClassVar[int]
+    ERROR_FIELD_NUMBER: _ClassVar[int]
+    PREV_NOTE_PATH_FIELD_NUMBER: _ClassVar[int]
+    NEXT_NOTE_PATH_FIELD_NUMBER: _ClassVar[int]
+    PREV_BRIEF_ID_FIELD_NUMBER: _ClassVar[int]
+    brief: str
+    spoken: str
+    brief_at: str
+    brief_age_s: int
+    thoughts_considered: int
+    brief_id: str
+    note_path: str
+    thoughts: _containers.RepeatedCompositeFieldContainer[ThoughtRow]
+    newest_at: str
+    total_in_window: int
+    note: str
+    error: str
+    prev_note_path: str
+    next_note_path: str
+    prev_brief_id: str
+    def __init__(self, brief: _Optional[str] = ..., spoken: _Optional[str] = ..., brief_at: _Optional[str] = ..., brief_age_s: _Optional[int] = ..., thoughts_considered: _Optional[int] = ..., brief_id: _Optional[str] = ..., note_path: _Optional[str] = ..., thoughts: _Optional[_Iterable[_Union[ThoughtRow, _Mapping]]] = ..., newest_at: _Optional[str] = ..., total_in_window: _Optional[int] = ..., note: _Optional[str] = ..., error: _Optional[str] = ..., prev_note_path: _Optional[str] = ..., next_note_path: _Optional[str] = ..., prev_brief_id: _Optional[str] = ...) -> None: ...
+
 class TriggerCognitionRequest(_message.Message):
     __slots__ = ("max_thoughts", "trigger_reason")
     MAX_THOUGHTS_FIELD_NUMBER: _ClassVar[int]
