@@ -144,14 +144,20 @@ class _Reject(spbg.SchedulerServicer):
         )
 
 
-def test_rejected_does_not_admit(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_rejected_floor_admits_preemptible(monkeypatch: pytest.MonkeyPatch) -> None:
+    """(2026-09-07) REJECTED is the arbiter's answer — the floor cannot be
+    guaranteed within the physical GPUs — not a failure: the workload admits into
+    its leaf and runs preemptible. The 00:20 ambient synthesis died on the old
+    raise for asking a light floor the SoR (heavy 4 + extract 1 + agent-rtc 1)
+    could never grant."""
+    from gaius.engine.queue_share import LAST_APPLY_WAIT
+
     server, addr = _serve(_Reject())
     monkeypatch.setenv("SIGNALS_ENGINE_TARGET", addr)
     try:
-        with pytest.raises(RuntimeError, match=r"#YK\.00000007\.SHAREFAIL"):
-            request_queue_share("thinking", HEAVY)
-        with pytest.raises(RuntimeError, match="SHAREFAIL"):
-            notify_admit("thinking", HEAVY)
+        assert request_queue_share("thinking", HEAVY) is False
+        assert LAST_APPLY_WAIT["thinking"]["final_state"] == "REJECTED"
+        assert notify_admit("thinking", HEAVY) is False  # no raise → admission proceeds
     finally:
         server.stop(grace=0)
 
@@ -165,12 +171,11 @@ class _RejectSilent(spbg.SchedulerServicer):
         )
 
 
-def test_rejected_without_error_still_blocks_admit(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_rejected_without_error_still_admits_preemptible(monkeypatch: pytest.MonkeyPatch) -> None:
     server, addr = _serve(_RejectSilent())
     monkeypatch.setenv("SIGNALS_ENGINE_TARGET", addr)
     try:
-        with pytest.raises(RuntimeError, match=r"REJECTED"):
-            notify_admit("thinking", HEAVY)
+        assert notify_admit("thinking", HEAVY) is False
     finally:
         server.stop(grace=0)
 

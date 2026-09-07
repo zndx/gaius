@@ -25,6 +25,7 @@ if TYPE_CHECKING:
 log = logging.getLogger("gaius.engine.queue_share")
 
 GURU_SHAREFAIL = "#YK.00000007.SHAREFAIL"
+GURU_FLOORREFUSED = "#YK.00000014.FLOORREFUSED"
 GPU_KEY = "federation.zndx.org/gpu"
 PEER = "gaius"
 
@@ -226,10 +227,22 @@ def _send(req) -> object:
     finally:
         channel.close()
     if resp.state == spb.QUEUE_SHARE_REJECTED:
-        raise RuntimeError(
-            f"{GURU_SHAREFAIL} {resp.error or 'REJECTED'}\n"
-            "  Signals Scheduler on SIGNALS_ENGINE_TARGET; do not write queues.yaml"
+        # (2026-09-07) REJECTED is the arbiter's ANSWER, not a failure: the floor
+        # cannot be guaranteed within the physical GPUs (Signals now judges every
+        # merge against capacity — heavy 4 + extract 1 + agent-rtc 1 commit all
+        # six today, so no light/medium floor can be promised). Contention is
+        # resolved by floors and priorities: the workload still admits into its
+        # leaf (YuniKorn admits within the leaf max) and runs PREEMPTIBLE. Before
+        # this, the 00:20 ambient synthesis run died on this line
+        # (#AMB.00000004.SYNTHFAIL) for asking a floor nobody could grant.
+        log.warning(
+            "%s floor refused by the arbiter for wrk=%s queue=%s — running preemptible: %s",
+            GURU_FLOORREFUSED,
+            req.workloads[0].wrk if req.workloads else "",
+            req.shares[0].queue if req.shares else "",
+            (resp.error or "REJECTED").splitlines()[0][:240],
         )
+        return resp
     if not resp.accepted and (resp.error or "").strip():
         raise RuntimeError(
             f"{GURU_SHAREFAIL} {resp.error}\n"
@@ -362,13 +375,27 @@ def request_queue_share(kind: str, rc: ResourceClass) -> bool:
     """Tell Signals the occupancy intent, then positively wait for APPLIED.
 
     UNIMPLEMENTED: log, do not fail admit.
-    REJECTED or persist error: fail-fast SHAREFAIL, do not admit.
+    REJECTED: the floor is refused (capacity committed) — admit anyway, run
+    preemptible, return False (no floor to wait for).
+    Persist error / refused peer: fail-fast SHAREFAIL, do not admit.
     """
+    from gaius.engine.generated.zndx.scheduler.v1 import scheduler_pb2 as spb
+
     req = share_for_class(kind, rc)
     resp = _send(req)
     if resp is None:
         return False
     _ADMIT_IDS[kind.replace("_", "-")] = req.request_id
+    if resp.state == spb.QUEUE_SHARE_REJECTED:
+        LAST_APPLY_WAIT[kind.replace("_", "-")] = {
+            "request_id": req.request_id,
+            "queue": rc.queue,
+            "elapsed_s": 0.0,
+            "final_state": "REJECTED",
+            "apply_ms": 0,
+            "transitions": [],
+        }
+        return False
     if resp.accepted and int(getattr(rc, "gpu_tokens", 0)):
         # GPU occupancy: gate on the queue actually being promoted before we let the
         # pod race YuniKorn admission. Zero-floor (ends) don't need to wait.
@@ -510,6 +537,8 @@ def emit_phase_intents(owner_wid: str, owner_kind: str, intents, horizon_s: int)
     Returns the number of requests sent. Never raises — emission is bookkeeping
     toward the arbiter; the claim itself is made (and gated) elsewhere.
     """
+    from gaius.engine.generated.zndx.scheduler.v1 import scheduler_pb2 as spb
+
     sent = 0
     wanted = {(owner_wid, (i.workload or "").replace("_", "-")): i for i in intents}
     now = time.time_ns()
@@ -542,7 +571,11 @@ def emit_phase_intents(owner_wid: str, owner_kind: str, intents, horizon_s: int)
                 owner_id=owner_wid,
             )
             resp = _send(req)
-            if resp is not None and getattr(resp, "accepted", False):
+            if (
+                resp is not None
+                and getattr(resp, "accepted", False)
+                and getattr(resp, "state", None) != spb.QUEUE_SHARE_REJECTED
+            ):
                 _PHASE_SHARES[key] = (req.request_id, it.leaf)
                 sent += 1
         # (2026-09-04) A SHARED claim outlives its declarers: gaius-embedding
