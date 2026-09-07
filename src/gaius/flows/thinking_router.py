@@ -87,7 +87,17 @@ async def summarize_with_thinking(prompt: str) -> str:
     #BUF.00000001.COMPACTFAIL names the class, the window stays intact for
     the next attempt, nothing poisoned is written.
     """
-    resp = await LatticeRouter().complete(prompt=prompt, temperature=0.2, task_type="buffer_compaction")
+    from gaius.core.budgets import COMPACTION_MAX_TOKENS
+    from gaius.engine.services.cognition_buffer import thinking_output_tokens
+
+    # (2026-09-07) Bound the compaction's generation: the scratch-budget
+    # ceiling (~150k tokens) let a think-to-EOS compaction run 3.5 h before
+    # TRUNCATED (fmp_roll #33324). The state needs ~33k tokens; 65k leaves
+    # room for it and its reasoning and ends a runaway in ~1.7 h, not 4.
+    ceiling = min(COMPACTION_MAX_TOKENS, thinking_output_tokens(prompt))
+    resp = await LatticeRouter().complete(
+        prompt=prompt, temperature=0.2, task_type="buffer_compaction", max_tokens=ceiling
+    )
     text = (resp.content or "").strip()
     if not text:
         raise RuntimeError(
