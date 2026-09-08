@@ -148,20 +148,27 @@ def test_calendar_omits_presenterm_deck_and_puts_join_in_location(tmp_path: Path
         ),
     )
     join = item.join_url()
-    assert join.startswith("https://tinybox.dev.vista.zndx.org/listen?agenda=")
-    assert "watchlist-after-the-tape" in join
-    url = item.calendar_url()
     from urllib.parse import parse_qs, unquote, urlparse
+
+    ju = urlparse(join)
+    assert ju.scheme == "https"
+    assert ju.hostname == "tinybox.dev.vista.zndx.org"
+    assert ju.port == 9120
+    assert ju.path == "/listen"
+    assert "watchlist-after-the-tape" in ju.query
+    url = item.calendar_url()
 
     q = parse_qs(urlparse(url).query)
     details = q.get("details", [""])[0]
     location = q.get("location", [""])[0]
     assert "Join AgentRTC" in details
-    assert "tinybox.dev.vista.zndx.org/listen" in details
+    assert "tinybox.dev.vista.zndx.org:9120/listen" in details
     assert "speaker_note" not in details
     assert "end_slide" not in details
     assert "Would you change the book" not in details
-    assert unquote(location).startswith("https://tinybox.dev.vista.zndx.org/listen")
+    loc = urlparse(unquote(location))
+    assert loc.hostname == "tinybox.dev.vista.zndx.org"
+    assert loc.port == 9120
     assert "speaker_note" not in item.excerpt()
     assert "half hour" in item.excerpt()
 

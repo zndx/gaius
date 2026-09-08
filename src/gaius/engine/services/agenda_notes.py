@@ -169,7 +169,7 @@ CAL_MARKDOWN = re.compile(
 )
 # presenterm deck: off-invite presentation guide (slides, speaker notes, wiki links).
 DECK_HEADING = re.compile(r"(?im)^##\s+Deck\s*$")
-DEFAULT_JOIN_URL = "https://tinybox.dev.vista.zndx.org/listen"
+DEFAULT_JOIN_URL = "https://tinybox.dev.vista.zndx.org:9120/listen"
 
 
 def split_public_deck(body: str) -> tuple[str, str]:
