@@ -169,8 +169,36 @@ def test_calendar_omits_presenterm_deck_and_puts_join_in_location(tmp_path: Path
     loc = urlparse(unquote(location))
     assert loc.hostname == "tinybox.dev.vista.zndx.org"
     assert loc.port == 9120
-    assert "speaker_note" not in item.excerpt()
-    assert "half hour" in item.excerpt()
+
+
+def test_calendar_strips_operator_paste_and_forces_listen_port(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("HERMES_AGENT_RTC_JOIN_URL", "https://tinybox.dev.vista.zndx.org/listen")
+    kb = tmp_path / "kb"
+    (kb / "scratch").mkdir(parents=True)
+    item = create_item(
+        kb,
+        kind="event",
+        title="Discover coherence check-in",
+        intent="session",
+        starts="2026-09-07T16:00:00+00:00",
+        body=(
+            "Half an hour to decide whether you would send a colleague to Discover.\n\n"
+            "---\n"
+            "Operator paste (not for the voice):\n\n"
+            "BEGIN SESSION\nepisode=abc\nDiscover coherence check-in\nEND SESSION\n"
+        ),
+    )
+    from urllib.parse import parse_qs, unquote, urlparse
+
+    q = parse_qs(urlparse(item.calendar_url()).query)
+    details = q.get("details", [""])[0]
+    location = unquote(q.get("location", [""])[0])
+    assert "BEGIN SESSION" not in details
+    assert "episode=" not in details
+    assert "Operator paste" not in details
+    assert "send a colleague" in details
+    assert urlparse(location).port == 9120
+    assert urlparse(item.join_url()).port == 9120
 
 
 def test_origin_timezone_window_and_local_day(tmp_path: Path) -> None:

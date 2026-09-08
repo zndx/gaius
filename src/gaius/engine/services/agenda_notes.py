@@ -169,7 +169,14 @@ CAL_MARKDOWN = re.compile(
 )
 # presenterm deck: off-invite presentation guide (slides, speaker notes, wiki links).
 DECK_HEADING = re.compile(r"(?im)^##\s+Deck\s*$")
+OPERATOR_PASTE = re.compile(
+    r"(?is)\n+---\s*\n+\s*Operator paste\b.*$",
+)
+BEGIN_SESSION = re.compile(
+    r"(?is)\n*BEGIN SESSION\b.*?END SESSION\s*",
+)
 DEFAULT_JOIN_URL = "https://tinybox.dev.vista.zndx.org:9120/listen"
+LISTEN_PORT = 9120
 
 
 def split_public_deck(body: str) -> tuple[str, str]:
@@ -194,16 +201,34 @@ def agent_rtc_join_url(item_path: str, *, base: str = "") -> str:
         or os.environ.get("GAIUS_AGENDA_JOIN_URL", "").strip()
         or DEFAULT_JOIN_URL
     )
-    root = root.rstrip("/")
+    root = _ensure_listen_port(root)
     path = (item_path or "").strip()
     if not path:
         return root
     return f"{root}?agenda={quote(path, safe='')}"
 
 
+def _ensure_listen_port(root: str) -> str:
+    """Calendar joins must hit Caddy :9120; a portless FQDN misses the TLS front."""
+    from urllib.parse import urlparse, urlunparse
+
+    raw = (root or "").strip().rstrip("/")
+    u = urlparse(raw)
+    host = (u.hostname or "").lower()
+    if host == "tinybox.dev.vista.zndx.org" and not u.port:
+        netloc = f"{u.hostname}:{LISTEN_PORT}"
+        if u.username:
+            netloc = f"{u.username}@{netloc}"
+        return urlunparse(u._replace(netloc=netloc)).rstrip("/")
+    return raw
+
+
 def strip_calendar_markup(text: str) -> str:
-    """Drop the Agenda's own calendar CTA so it is not pasted into Google."""
-    return re.sub(r"\n{3,}", "\n\n", CAL_MARKDOWN.sub("", text or "")).strip()
+    """Drop calendar CTA, operator paste, and BEGIN SESSION — invite-safe prose only."""
+    out = CAL_MARKDOWN.sub("", text or "")
+    out = OPERATOR_PASTE.sub("", out)
+    out = BEGIN_SESSION.sub("", out)
+    return re.sub(r"\n{3,}", "\n\n", out).strip()
 
 
 def google_calendar_url(
