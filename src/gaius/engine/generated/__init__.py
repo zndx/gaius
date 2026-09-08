@@ -530,10 +530,13 @@ from .gaius_service_pb2 import (
 
 from .gaius_service_pb2_grpc import (
     GaiusServiceStub,
-    GaiusServiceAsyncStub,
     GaiusServiceServicer,
     add_GaiusServiceServicer_to_server,
 )
+try:
+    from .gaius_service_pb2_grpc import GaiusServiceAsyncStub
+except ImportError:  # grpcio-tools 1.76 emits sync stubs only
+    GaiusServiceAsyncStub = GaiusServiceStub  # type: ignore[misc,assignment]
 
 __all__ = [
     # Process Status Enum

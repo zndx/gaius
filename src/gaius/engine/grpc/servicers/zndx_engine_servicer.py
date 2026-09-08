@@ -607,6 +607,15 @@ class GaiusZndxEngineServicer(zpb_grpc.EngineServicer):
                     stream=str(request.stream or ""),
                 )
                 resp.thoughts_hint.CopyFrom(to_proto(hint))
+            if int(request.kind) == zpb.SERVER_QUERY_KIND_SEARCH:
+                from ...services.search_hint import collect_search, to_proto as search_to_proto
+
+                search = await collect_search(
+                    str(getattr(request, "query", "") or request.note_id or ""),
+                    stream=str(request.stream or ""),
+                    limit=int(request.limit or 0),
+                )
+                resp.search_hint.CopyFrom(search_to_proto(search))
             if int(request.kind) == zpb.SERVER_QUERY_KIND_AGENDA:
                 # (2026-09-07) The Agenda BRIEF (today · tomorrow · the week) plus the
                 # index of covered items; note_id = one item in full. No model call;
