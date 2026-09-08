@@ -219,15 +219,36 @@ def build_status_response(services: "ServiceRegistry") -> zpb.StatusResponse:
             detail = f"alias={alias}"
             if caps:
                 detail += f" capabilities=[{','.join(caps)}]"
+            healthy = _endpoint_healthy(str(ep.get("status") or ""))
             endpoints.append(
                 zpb.Endpoint(
                     capability=str(cap),
                     model=str(ep.get("model") or ""),
-                    healthy=_endpoint_healthy(str(ep.get("status") or "")),
+                    healthy=healthy,
                     gpu_ids=list(ep.get("gpu_ids") or []),
                     detail=detail,
                 )
             )
+            # Operating profiles this alias SERVES on the same model (e.g. `instruct` on the
+            # thinking endpoint) are real capabilities: advertise each so a forwarding peer
+            # resolves them by Status (capabilities.md §Operating profiles). Same health,
+            # same GPUs — one model, several call profiles.
+            from ...capabilities import operating_profile
+
+            for extra in caps:
+                prof = operating_profile(extra)
+                if prof is None or str(extra) == str(cap):
+                    continue
+                endpoints.append(
+                    zpb.Endpoint(
+                        capability=str(extra),
+                        model=str(ep.get("model") or ""),
+                        healthy=healthy,
+                        gpu_ids=list(ep.get("gpu_ids") or []),
+                        detail=f"alias={alias} profile: thinking={'on' if prof.thinking else 'off'} "
+                               f"effort={prof.reasoning_effort}",
+                    )
+                )
 
     from ...s2s import local_surfaces
 
@@ -473,6 +494,16 @@ class GaiusZndxEngineServicer(zpb_grpc.EngineServicer):
             default_temperature = METHOD_DEFAULT_TEMPERATURE
             default_max_tokens = METHOD_DEFAULT_MAX_TOKENS
 
+        # Operating profile (capabilities.md §Operating profiles): the SERVING engine aligns
+        # thinking / reasoning_effort to the requested MODEL capability — `instruct` is this
+        # same model at effort low. guided_json keeps precedence (it disables thinking).
+        from ...capabilities import operating_profile
+
+        requested_cap = plan.model_capability if plan is not None else (request.capability or "")
+        profile = operating_profile(requested_cap)
+        enable_thinking = (profile.thinking if profile is not None else True) and not bool(request.json_schema)
+        reasoning_effort = profile.reasoning_effort if profile is not None else "xhigh"
+
         try:
             result = await router.complete(
                 prompt=request.prompt,
@@ -483,8 +514,9 @@ class GaiusZndxEngineServicer(zpb_grpc.EngineServicer):
                 max_tokens=request.max_tokens or default_max_tokens,
                 plan=plan,
                 task_type="zndx_complete",
-                enable_thinking=not bool(request.json_schema),
-                preserve_thinking=not bool(request.json_schema),
+                enable_thinking=enable_thinking,
+                reasoning_effort=reasoning_effort,
+                preserve_thinking=enable_thinking,
                 extra_body=extra_body,
             )
         except Exception as e:
@@ -522,6 +554,11 @@ class GaiusZndxEngineServicer(zpb_grpc.EngineServicer):
         # Dual-constraint: every reasoning layer the fulfilment produced
         # (model layer first when present) + how it was fulfilled.
         resp.fulfilled_by = getattr(result, "fulfilled_by", "") or ""
+        # What actually ran: the aligned profile (thinking may be off under guided_json).
+        resp.profile.CopyFrom(zpb.OperatingProfile(
+            capability=requested_cap or "thinking", thinking=enable_thinking,
+            reasoning_effort=reasoning_effort if enable_thinking else "",
+            note=profile.note if profile is not None else ""))
         for layer in getattr(result, "reasoning_layers", None) or []:
             resp.reasoning.add(
                 layer=str(layer.get("layer") or ""),

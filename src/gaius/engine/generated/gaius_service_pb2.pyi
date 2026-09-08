@@ -2656,7 +2656,7 @@ class AgendaCheck(_message.Message):
     def __init__(self, done: bool = ..., text: _Optional[str] = ...) -> None: ...
 
 class AgendaCard(_message.Message):
-    __slots__ = ("path", "kind", "title", "body", "excerpt", "prev", "next", "starts", "ends", "tags", "pin", "checks", "created_ms", "intent", "with_whom", "calendar_url", "timezone")
+    __slots__ = ("path", "kind", "title", "body", "excerpt", "prev", "next", "starts", "ends", "tags", "pin", "checks", "created_ms", "intent", "with_whom", "calendar_url", "timezone", "join_url")
     PATH_FIELD_NUMBER: _ClassVar[int]
     KIND_FIELD_NUMBER: _ClassVar[int]
     TITLE_FIELD_NUMBER: _ClassVar[int]
@@ -2674,6 +2674,7 @@ class AgendaCard(_message.Message):
     WITH_WHOM_FIELD_NUMBER: _ClassVar[int]
     CALENDAR_URL_FIELD_NUMBER: _ClassVar[int]
     TIMEZONE_FIELD_NUMBER: _ClassVar[int]
+    JOIN_URL_FIELD_NUMBER: _ClassVar[int]
     path: str
     kind: str
     title: str
@@ -2691,7 +2692,8 @@ class AgendaCard(_message.Message):
     with_whom: str
     calendar_url: str
     timezone: str
-    def __init__(self, path: _Optional[str] = ..., kind: _Optional[str] = ..., title: _Optional[str] = ..., body: _Optional[str] = ..., excerpt: _Optional[str] = ..., prev: _Optional[str] = ..., next: _Optional[str] = ..., starts: _Optional[str] = ..., ends: _Optional[str] = ..., tags: _Optional[_Iterable[str]] = ..., pin: bool = ..., checks: _Optional[_Iterable[_Union[AgendaCheck, _Mapping]]] = ..., created_ms: _Optional[int] = ..., intent: _Optional[str] = ..., with_whom: _Optional[str] = ..., calendar_url: _Optional[str] = ..., timezone: _Optional[str] = ...) -> None: ...
+    join_url: str
+    def __init__(self, path: _Optional[str] = ..., kind: _Optional[str] = ..., title: _Optional[str] = ..., body: _Optional[str] = ..., excerpt: _Optional[str] = ..., prev: _Optional[str] = ..., next: _Optional[str] = ..., starts: _Optional[str] = ..., ends: _Optional[str] = ..., tags: _Optional[_Iterable[str]] = ..., pin: bool = ..., checks: _Optional[_Iterable[_Union[AgendaCheck, _Mapping]]] = ..., created_ms: _Optional[int] = ..., intent: _Optional[str] = ..., with_whom: _Optional[str] = ..., calendar_url: _Optional[str] = ..., timezone: _Optional[str] = ..., join_url: _Optional[str] = ...) -> None: ...
 
 class AgendaListRequest(_message.Message):
     __slots__ = ("window_days", "kind", "tag", "origin", "timezone")

@@ -230,7 +230,9 @@ DEPLOYMENT_PROFILES: dict[str, ModelDeploymentProfile] = {
         model="Qwen/Qwen3.8-27B",
         gpu_tokens=4,
         tensor_parallel=4,
-        capabilities=("thinking", "complete"),
+        # `instruct` = the same model at effort low (operating profile) — served here, not
+        # by a second endpoint (capabilities.py OPERATING_PROFILES).
+        capabilities=("thinking", "instruct", "complete"),
     ),
     "ask-sae": ModelDeploymentProfile(
         wrk="ask-sae",

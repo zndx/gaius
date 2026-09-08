@@ -7396,3 +7396,7 @@ class GaiusService(object):
             timeout,
             metadata,
             _registered_method=True)
+
+# Async stub alias - same class works with grpc.aio.Channel
+# Type hints in .pyi declare this as a subclass for type checking
+GaiusServiceAsyncStub = GaiusServiceStub

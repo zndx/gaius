@@ -963,6 +963,13 @@ def declared_workloads(peer: str = "gaius") -> list:
             resource_class=_resource_class_enum(gpu),
             queue=getattr(p, "queue", ""),
         )
+        # Operating profiles this offer serves (capabilities.md §Operating profiles):
+        # how `instruct` / `thinking` are actually run on this model. (added 2026-09-08)
+        from gaius.engine.capabilities import profiles_for
+
+        for prof in profiles_for(p.capabilities):
+            offer.profiles.add(capability=prof.capability, thinking=prof.thinking,
+                               reasoning_effort=prof.reasoning_effort, note=prof.note)
         if str(getattr(p, "model", "") or "") == "proxy":
             # The optillm proxy profile: advertise the METHOD capabilities
             # (technique classes) this peer can serve in a Complete

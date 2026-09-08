@@ -54,6 +54,40 @@ ENGINE_NATIVE_TECHNIQUES = frozenset({"cot_reflection"})
 
 DEFAULT_MODEL_CAPABILITY = "thinking"
 
+# ── Operating profiles (signals-protocol capabilities.md §Operating profiles, 2026-09-08) ──
+# "Capabilities, not models" also means capabilities, not call parameters: one resident
+# model serves several MODEL capabilities, each an operating profile the SERVING engine
+# aligns its call parameters to. `instruct` keeps thinking ON at effort `low` so every
+# fulfilment still yields a model reasoning layer (hx_reasoning keeps one structure) at a
+# fraction of the trace cost. A capability without a profile runs at the model default.
+@dataclass(frozen=True)
+class OperatingProfile:
+    capability: str
+    thinking: bool
+    reasoning_effort: str  # Qwen3.8: xhigh | medium | low
+    note: str = ""
+
+
+OPERATING_PROFILES: dict[str, OperatingProfile] = {
+    "thinking": OperatingProfile("thinking", True, "xhigh", "full trace — the corpus value-add"),
+    "instruct": OperatingProfile("instruct", True, "low", "same model, brief trace, less overhead"),
+}
+
+
+def operating_profile(capability: str) -> Optional[OperatingProfile]:
+    """The profile the serving engine aligns to for a MODEL capability; None = model default."""
+    return OPERATING_PROFILES.get((capability or "").strip().lower())
+
+
+def profiles_for(capabilities) -> list[OperatingProfile]:
+    """Profiles this engine serves among `capabilities` (for WorkloadOffer.profiles)."""
+    out = []
+    for cap in capabilities or ():
+        prof = operating_profile(str(cap))
+        if prof is not None and prof not in out:
+            out.append(prof)
+    return out
+
 # optillm's own request defaults for technique calls (cot_reflection.py) —
 # used for parity when a capabilities[] request leaves them unset.
 METHOD_DEFAULT_TEMPERATURE = 0.6
