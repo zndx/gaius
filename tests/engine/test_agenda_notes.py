@@ -129,6 +129,43 @@ def test_calendar_details_omit_cta(tmp_path: Path) -> None:
     assert "Add to Google Calendar" not in item.excerpt()
 
 
+def test_calendar_omits_presenterm_deck_and_puts_join_in_location(tmp_path: Path) -> None:
+    kb = tmp_path / "kb"
+    (kb / "scratch").mkdir(parents=True)
+    item = create_item(
+        kb,
+        kind="event",
+        title="Watchlist after the tape",
+        intent="session",
+        starts="2026-09-08T20:00:00+00:00",
+        body=(
+            "A half hour to decide whether the book moves.\n\n"
+            "## Deck\n\n"
+            "Opening\n===\n\n"
+            "Would you change the book today?\n\n"
+            "<!-- speaker_note: Intel raise, Lilly growth, Disney beat. -->\n"
+            "<!-- end_slide -->\n"
+        ),
+    )
+    join = item.join_url()
+    assert join.startswith("https://tinybox.dev.vista.zndx.org/listen?agenda=")
+    assert "watchlist-after-the-tape" in join
+    url = item.calendar_url()
+    from urllib.parse import parse_qs, unquote, urlparse
+
+    q = parse_qs(urlparse(url).query)
+    details = q.get("details", [""])[0]
+    location = q.get("location", [""])[0]
+    assert "Join AgentRTC" in details
+    assert "tinybox.dev.vista.zndx.org/listen" in details
+    assert "speaker_note" not in details
+    assert "end_slide" not in details
+    assert "Would you change the book" not in details
+    assert unquote(location).startswith("https://tinybox.dev.vista.zndx.org/listen")
+    assert "speaker_note" not in item.excerpt()
+    assert "half hour" in item.excerpt()
+
+
 def test_origin_timezone_window_and_local_day(tmp_path: Path) -> None:
     kb = tmp_path / "kb"
     (kb / "scratch").mkdir(parents=True)

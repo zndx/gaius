@@ -1752,6 +1752,7 @@ message AgendaCard {
   string with_whom = 15;           // e.g. agents
   string calendar_url = 16;        // Google Calendar TEMPLATE (iPad-safe)
   string timezone = 17;            // IANA zone the item was booked in (empty = unspecified)
+  string join_url = 18;            // AgentRTC Listen deep link (Cloudflare FQDN); empty if not a session
 }
 
 message AgendaListRequest {

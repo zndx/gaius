@@ -167,6 +167,38 @@ CAL_MARKDOWN = re.compile(
     r"\[Add to Google Calendar\]\([^)]+\)",
     re.IGNORECASE,
 )
+# presenterm deck: off-invite presentation guide (slides, speaker notes, wiki links).
+DECK_HEADING = re.compile(r"(?im)^##\s+Deck\s*$")
+DEFAULT_JOIN_URL = "https://tinybox.dev.vista.zndx.org/listen"
+
+
+def split_public_deck(body: str) -> tuple[str, str]:
+    """(invite-safe public prose, presenterm deck). Deck is never calendar details."""
+    text = body or ""
+    m = DECK_HEADING.search(text)
+    if not m:
+        return strip_calendar_markup(text), ""
+    public = strip_calendar_markup(text[: m.start()])
+    deck = text[m.end() :].strip()
+    return public, deck
+
+
+def agent_rtc_join_url(item_path: str, *, base: str = "") -> str:
+    """Cloudflare-FQDN Listen deep link. Query is the Agenda note path."""
+    import os
+    from urllib.parse import quote
+
+    root = (
+        (base or "").strip()
+        or os.environ.get("HERMES_AGENT_RTC_JOIN_URL", "").strip()
+        or os.environ.get("GAIUS_AGENDA_JOIN_URL", "").strip()
+        or DEFAULT_JOIN_URL
+    )
+    root = root.rstrip("/")
+    path = (item_path or "").strip()
+    if not path:
+        return root
+    return f"{root}?agenda={quote(path, safe='')}"
 
 
 def strip_calendar_markup(text: str) -> str:
@@ -174,7 +206,14 @@ def strip_calendar_markup(text: str) -> str:
     return re.sub(r"\n{3,}", "\n\n", CAL_MARKDOWN.sub("", text or "")).strip()
 
 
-def google_calendar_url(*, title: str, starts: str, ends: str = "", details: str = "") -> str:
+def google_calendar_url(
+    *,
+    title: str,
+    starts: str,
+    ends: str = "",
+    details: str = "",
+    location: str = "",
+) -> str:
     """TEMPLATE URL that iPad Safari / Google Calendar.app can open."""
     from urllib.parse import urlencode
 
@@ -186,15 +225,15 @@ def google_calendar_url(*, title: str, starts: str, ends: str = "", details: str
     def stamp(dt: datetime) -> str:
         return dt.strftime("%Y%m%dT%H%M%SZ")
 
-    q = urlencode(
-        {
-            "action": "TEMPLATE",
-            "text": title or "Gaius session",
-            "dates": f"{stamp(start)}/{stamp(stop)}",
-            "details": strip_calendar_markup(details or "")[:1500],
-        }
-    )
-    return f"https://calendar.google.com/calendar/render?{q}"
+    q: dict[str, str] = {
+        "action": "TEMPLATE",
+        "text": title or "Gaius session",
+        "dates": f"{stamp(start)}/{stamp(stop)}",
+        "details": strip_calendar_markup(details or "")[:1500],
+    }
+    if (location or "").strip():
+        q["location"] = location.strip()
+    return f"https://calendar.google.com/calendar/render?{urlencode(q)}"
 
 
 def jail_path(root: Path, rel: str) -> Path:
@@ -230,18 +269,29 @@ class AgendaItem:
     with_whom: str = ""
     timezone: str = ""
 
+    def join_url(self) -> str:
+        if self.intent != "session":
+            return ""
+        return agent_rtc_join_url(self.path)
+
     def calendar_url(self) -> str:
         if self.intent != "session":
             return ""
+        public, _deck = split_public_deck(self.body)
+        join = self.join_url()
+        details = public
+        if join:
+            details = (public + "\n\nJoin AgentRTC: " + join).strip()
         return google_calendar_url(
             title=self.title,
             starts=self.starts,
             ends=self.ends,
-            details=strip_calendar_markup(self.body)[:1500],
+            details=details[:1500],
+            location=join,
         )
 
     def excerpt(self, n: int = 180) -> str:
-        text = strip_calendar_markup(self.body)
+        text, _deck = split_public_deck(self.body)
         if len(text) <= n:
             return text
         return text[: n - 1].rstrip() + "…"

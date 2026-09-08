@@ -134,7 +134,7 @@ def _open_checks(item: Any) -> int:
 
 def item_row(item: Any, *, zone: str, today: date, with_body: bool = False) -> dict[str, Any]:
     """The index shape (AgendaHintItem): id = note path; body only on request."""
-    from gaius.engine.services.agenda_notes import parse_when, strip_calendar_markup
+    from gaius.engine.services.agenda_notes import parse_when, split_public_deck
 
     def _ms(iso: str) -> int:
         dt = parse_when(iso) if iso else None
@@ -148,7 +148,7 @@ def item_row(item: Any, *, zone: str, today: date, with_body: bool = False) -> d
         "kind": item.kind,
         "intent": item.intent,
         "title": item.title,
-        "summary": _clip(strip_calendar_markup(item.body), SUMMARY_CHARS),
+        "summary": _clip(split_public_deck(item.body)[0], SUMMARY_CHARS),
         "tags": list(item.tags or []),
         "pinned": bool(item.pin),
         "open_checks": _open_checks(item),
@@ -158,7 +158,11 @@ def item_row(item: Any, *, zone: str, today: date, with_body: bool = False) -> d
         "calendar_day": day,
     }
     if with_body:
-        row["body"] = _clip_body(item.body)
+        # Sessions keep the presenterm deck intact (off-invite guide).
+        if item.intent == "session":
+            row["body"] = (item.body or "").strip()
+        else:
+            row["body"] = _clip_body(item.body)
     return row
 
 

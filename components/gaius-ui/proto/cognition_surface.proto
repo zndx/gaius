@@ -189,6 +189,7 @@ message AgendaCard {
   string with_whom = 15;
   string calendar_url = 16;
   string timezone = 17;
+  string join_url = 18;
 }
 
 message AgendaListRequest {

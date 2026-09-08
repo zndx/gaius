@@ -308,6 +308,18 @@
       p.textContent = it.excerpt;
       body.appendChild(p);
     }
+    if (it.intent === "session" && it.join_url) {
+      var join = document.createElement("a");
+      join.className = "agenda-cal-link";
+      join.href = it.join_url;
+      join.target = "_blank";
+      join.rel = "noopener";
+      join.textContent = "Join AgentRTC";
+      join.addEventListener("click", function (ev) {
+        ev.stopPropagation();
+      });
+      body.appendChild(join);
+    }
     if (it.intent === "session" && it.calendar_url) {
       var cal = document.createElement("a");
       cal.className = "agenda-cal-link";
@@ -721,6 +733,15 @@
         hop(btn.getAttribute("data-wiki"));
       });
     });
+    if (it.intent === "session" && it.join_url) {
+      var join = document.createElement("a");
+      join.className = "agenda-cal-link";
+      join.href = it.join_url;
+      join.target = "_blank";
+      join.rel = "noopener";
+      join.textContent = "Join AgentRTC";
+      host.appendChild(join);
+    }
     if (it.intent === "session" && it.calendar_url) {
       var cal = document.createElement("a");
       cal.className = "agenda-cal-link";

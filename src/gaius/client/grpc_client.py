@@ -2240,6 +2240,7 @@ class GrpcEngineClient:
                 "with": getattr(c, "with_whom", ""),
                 "calendar_url": getattr(c, "calendar_url", ""),
                 "timezone": getattr(c, "timezone", ""),
+                "join_url": getattr(c, "join_url", ""),
             }
 
         if action == "AgendaList":

@@ -3,7 +3,7 @@
 import grpc
 import warnings
 
-from . import gaius_service_pb2 as gaius__service__pb2
+import gaius_service_pb2 as gaius__service__pb2
 from google.protobuf import empty_pb2 as google_dot_protobuf_dot_empty__pb2
 
 GRPC_GENERATED_VERSION = '1.76.0'
@@ -7396,7 +7396,3 @@ class GaiusService(object):
             timeout,
             metadata,
             _registered_method=True)
-
-# Async stub alias - same class works with grpc.aio.Channel
-# Type hints in .pyi declare this as a subclass for type checking
-GaiusServiceAsyncStub = GaiusServiceStub

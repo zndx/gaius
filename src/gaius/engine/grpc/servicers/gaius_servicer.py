@@ -5581,6 +5581,7 @@ class GaiusServicer(GaiusServiceServicer):
             with_whom=item.with_whom,
             calendar_url=item.calendar_url(),
             timezone=getattr(item, "timezone", "") or "",
+            join_url=item.join_url() if hasattr(item, "join_url") else "",
         )
 
     async def AgendaList(
