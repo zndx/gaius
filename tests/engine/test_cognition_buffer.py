@@ -72,6 +72,30 @@ def test_budget_rejects_eating_the_next_question_reserve() -> None:
     assert buf.reserve_tokens == NEXT_QUESTION_RESERVE_TOKENS
 
 
+def test_succinct_is_keep_score_not_the_full_scratchpad() -> None:
+    buf = CognitionBuffer(_schema(), token_budget=4000)
+    buf.merge("ambient", "hn", "rustc nightly thread " * 20, role="hn", ts=1.0)
+    buf.merge(
+        "prospects",
+        "slb",
+        "SLB 10-K liquidity covenant " * 20,
+        role="fmp",
+        ts=2.0,
+        code="SDG.ICE",
+        margin=0.40,
+        admitted=True,
+    )
+    rows = buf.succinct(max_items=4, excerpt=80)
+    assert rows
+    assert rows[0]["flag"] == "ADMIT"
+    assert rows[0]["stream"] == "prospects"
+    assert "SLB" in rows[0]["excerpt"]
+    assert len(rows[0]["excerpt"]) <= 80
+    assembled = buf.assemble()
+    assert "rustc nightly" in assembled
+    assert assembled != rows[0]["excerpt"]
+
+
 def test_merge_keeps_full_content() -> None:
     buf = CognitionBuffer(_schema(), token_budget=4000)
     body = "liquidity covenant " * 40

@@ -358,6 +358,46 @@ class CognitionBuffer:
     def review_worklist(self) -> list[ScratchEntry]:
         return [e for e in self._entries if e.review]
 
+    def _flag(self, entry: ScratchEntry) -> str:
+        if entry.review:
+            return "REVIEW"
+        if entry.suppressed:
+            return "SUPPRESS"
+        if entry.admitted:
+            return "ADMIT"
+        return "HOLD"
+
+    def succinct(self, *, max_items: int = 8, excerpt: int = 180) -> list[dict[str, str]]:
+        """AST upper buffer: attended items by keep-score, not the full scratchpad.
+
+        Voice / AgentRTC silence uses this, not ``assemble()``. Rank is the
+        schema's keep-score (situation-biased); excerpts stay short.
+        """
+        ranked = sorted(
+            self._entries,
+            key=lambda e: (
+                self.schema.keep_score(e, self.situation),
+                e.ts,
+            ),
+            reverse=True,
+        )
+        rows: list[dict[str, str]] = []
+        for e in ranked[: max(1, int(max_items))]:
+            clip = " ".join((e.content or "").split())
+            if len(clip) > excerpt:
+                clip = clip[: excerpt - 1].rstrip() + "…"
+            rows.append(
+                {
+                    "flag": self._flag(e),
+                    "stream": e.stream,
+                    "role": e.role or e.stream,
+                    "source_id": e.source_id,
+                    "code": e.sdg_code or "",
+                    "excerpt": clip,
+                }
+            )
+        return rows
+
     def assemble(self) -> str:
         """Pre-conditioned context for one next question."""
         ap = self.schema.aperture
@@ -379,13 +419,7 @@ class CognitionBuffer:
             "## Attention",
         ]
         for e in self._entries:
-            flag = "HOLD"
-            if e.review:
-                flag = "REVIEW"
-            elif e.suppressed:
-                flag = "SUPPRESS"
-            elif e.admitted:
-                flag = "ADMIT"
+            flag = self._flag(e)
             code = e.sdg_code or "—"
             lines.append(
                 f"- {flag} {e.stream} {code} margin={e.margin:.3f} "

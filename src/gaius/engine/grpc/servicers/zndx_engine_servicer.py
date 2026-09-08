@@ -614,6 +614,7 @@ class GaiusZndxEngineServicer(zpb_grpc.EngineServicer):
                     str(getattr(request, "query", "") or request.note_id or ""),
                     stream=str(request.stream or ""),
                     limit=int(request.limit or 0),
+                    services=self._services,
                 )
                 resp.search_hint.CopyFrom(search_to_proto(search))
             if int(request.kind) == zpb.SERVER_QUERY_KIND_AGENDA:

@@ -9,6 +9,8 @@ import logging
 import os
 from typing import Any
 
+from gaius.engine.services.buffer_hint import BUFFER_STREAMS, collect_buffer
+
 log = logging.getLogger("gaius.engine.services.search_hint")
 
 _MAX = 8
@@ -26,9 +28,12 @@ async def collect_search(
     *,
     stream: str = "",
     limit: int = 0,
+    services: Any | None = None,
 ) -> dict[str, Any]:
     q = " ".join((query or "").split())
     kind = (stream or "all").strip().lower() or "all"
+    if kind in BUFFER_STREAMS:
+        return await collect_buffer(services, stream=kind, limit=limit)
     if kind not in ("kb", "web", "all"):
         kind = "all"
     n = int(limit or 0) or 6
