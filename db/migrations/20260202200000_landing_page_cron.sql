@@ -10,6 +10,8 @@
 --     - 2 PM MST  (21:00 UTC) - afternoon, 1 card
 --     - 7 PM MST  (02:00 UTC) - early evening, 1 card
 
+-- migrate:up
+
 -- ============================================================================
 -- Article Curation Task Handler
 -- ============================================================================
@@ -71,7 +73,8 @@ SELECT cron.schedule(
     $$INSERT INTO scheduled_tasks (task_type, payload, source, scheduled_for)
       SELECT 'article_curate', '{"check_cooldown": true}', 'pg_cron', NOW()
       WHERE collections.should_run_curation()$$
-);
+)
+WHERE NOT EXISTS (SELECT 1 FROM cron.job WHERE jobname = 'article-curate-daily');
 
 -- Publish Cards: 4x daily (MST times)
 -- Pre-dawn: 5 AM MST = 12:00 UTC (3 cards - bigger morning drop)
@@ -80,7 +83,8 @@ SELECT cron.schedule(
     '0 12 * * *',
     $$INSERT INTO scheduled_tasks (task_type, payload, source, scheduled_for)
       VALUES ('publish_cards', '{"count": 3, "slot": "predawn"}', 'pg_cron', NOW())$$
-);
+)
+WHERE NOT EXISTS (SELECT 1 FROM cron.job WHERE jobname = 'publish-cards-predawn');
 
 -- Mid-morning: 10 AM MST = 17:00 UTC
 SELECT cron.schedule(
@@ -88,7 +92,8 @@ SELECT cron.schedule(
     '0 17 * * *',
     $$INSERT INTO scheduled_tasks (task_type, payload, source, scheduled_for)
       VALUES ('publish_cards', '{"count": 1, "slot": "morning"}', 'pg_cron', NOW())$$
-);
+)
+WHERE NOT EXISTS (SELECT 1 FROM cron.job WHERE jobname = 'publish-cards-morning');
 
 -- Afternoon: 2 PM MST = 21:00 UTC
 SELECT cron.schedule(
@@ -96,7 +101,8 @@ SELECT cron.schedule(
     '0 21 * * *',
     $$INSERT INTO scheduled_tasks (task_type, payload, source, scheduled_for)
       VALUES ('publish_cards', '{"count": 1, "slot": "afternoon"}', 'pg_cron', NOW())$$
-);
+)
+WHERE NOT EXISTS (SELECT 1 FROM cron.job WHERE jobname = 'publish-cards-afternoon');
 
 -- Early evening: 7 PM MST = 02:00 UTC (next day)
 SELECT cron.schedule(
@@ -104,7 +110,8 @@ SELECT cron.schedule(
     '0 2 * * *',
     $$INSERT INTO scheduled_tasks (task_type, payload, source, scheduled_for)
       VALUES ('publish_cards', '{"count": 1, "slot": "evening"}', 'pg_cron', NOW())$$
-);
+)
+WHERE NOT EXISTS (SELECT 1 FROM cron.job WHERE jobname = 'publish-cards-evening');
 
 -- ============================================================================
 -- Comments
@@ -117,3 +124,6 @@ Used by pg_cron job to implement non-standard cron intervals.';
 COMMENT ON FUNCTION collections.should_run_curation() IS
 'Returns TRUE if 36+ hours have passed since last curation run.
 Called by pg_cron job to enforce cooldown period.';
+
+-- migrate:down
+-- Live publish slots are still scheduled; do not unschedule on rollback of this catch-up.

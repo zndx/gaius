@@ -3,8 +3,14 @@
 -- scheduled__ runs on 2026-09-08/09 proved the path. Retire the pg_cron
 -- twin so Airflow is the only clock (thoughts brief is written in-cycle).
 
-SELECT cron.unschedule('cognition-periodic')
-WHERE EXISTS (SELECT 1 FROM cron.job WHERE jobname = 'cognition-periodic');
+DO $$
+DECLARE jid bigint;
+BEGIN
+  SELECT jobid INTO jid FROM cron.job WHERE jobname = 'cognition-periodic';
+  IF jid IS NOT NULL THEN
+    PERFORM cron.unschedule(jid);
+  END IF;
+END $$;
 
 -- migrate:down
 SELECT cron.schedule(

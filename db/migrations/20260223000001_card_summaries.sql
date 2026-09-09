@@ -1,6 +1,8 @@
 -- Card summaries: dual-model AI summaries for individual card pages
 -- Mirrors collection_summaries table structure
 
+-- migrate:up
+
 CREATE TABLE IF NOT EXISTS collections.card_summaries (
     summary_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     card_id TEXT NOT NULL REFERENCES collections.cards(card_id) ON DELETE CASCADE,
@@ -15,6 +17,9 @@ CREATE TABLE IF NOT EXISTS collections.card_summaries (
     UNIQUE(card_id, summary_type)
 );
 
-CREATE INDEX idx_card_summaries_card ON collections.card_summaries(card_id);
+CREATE INDEX IF NOT EXISTS idx_card_summaries_card ON collections.card_summaries(card_id);
 
 GRANT SELECT, INSERT, UPDATE, DELETE ON collections.card_summaries TO gaius;
+
+-- migrate:down
+-- catch-up apply; schema already live on later migrations.

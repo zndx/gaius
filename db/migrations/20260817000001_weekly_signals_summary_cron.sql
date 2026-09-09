@@ -51,13 +51,17 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
-SELECT cron.unschedule('weekly-signals-summary')
-WHERE EXISTS (SELECT 1 FROM cron.job WHERE jobname = 'weekly-signals-summary');
-
-SELECT cron.schedule(
+DO $$
+DECLARE jid bigint;
+BEGIN
+  SELECT jobid INTO jid FROM cron.job WHERE jobname = 'weekly-signals-summary';
+  IF jid IS NOT NULL THEN
+    PERFORM cron.unschedule(jid);
+  END IF;
+  PERFORM cron.schedule(
     'weekly-signals-summary',
     '0 15 * * 1',
-    $$INSERT INTO scheduled_tasks (task_type, payload, source, scheduled_for)
+    $job$INSERT INTO scheduled_tasks (task_type, payload, source, scheduled_for)
       SELECT 'weekly_signals_summary', '{"previous": true}'::jsonb, 'pg_cron', NOW()
       WHERE meta.should_run_weekly_signals_summary()
         AND NOT EXISTS (
@@ -65,8 +69,9 @@ SELECT cron.schedule(
           WHERE task_type = 'weekly_signals_summary'
             AND picked_up_at IS NULL
             AND completed_at IS NULL
-        )$$
-);
+        )$job$
+  );
+END $$;
 
 GRANT SELECT, INSERT, UPDATE ON meta.weekly_signals_summary_state TO gaius;
 GRANT EXECUTE ON FUNCTION meta.should_run_weekly_signals_summary() TO gaius;

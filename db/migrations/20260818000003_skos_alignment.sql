@@ -18,3 +18,6 @@ CREATE INDEX IF NOT EXISTS skos_alignment_verdict ON public.skos_alignment (verd
 
 GRANT SELECT, INSERT, UPDATE ON public.skos_alignment TO gaius;
 GRANT USAGE, SELECT ON SEQUENCE public.skos_alignment_id_seq TO gaius;
+
+-- migrate:down
+-- catch-up apply; schema already live on later migrations.

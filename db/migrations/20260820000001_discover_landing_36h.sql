@@ -5,7 +5,7 @@
 CREATE INDEX IF NOT EXISTS feature_tape_created_at
     ON public.feature_tape (created_at DESC);
 
-CREATE MATERIALIZED VIEW public.discover_landing_36h AS
+CREATE MATERIALIZED VIEW IF NOT EXISTS public.discover_landing_36h AS
 WITH last AS (
     SELECT max(created_at) AS t FROM public.feature_tape
 ),
@@ -127,7 +127,7 @@ SELECT
     )
 FROM bounds b;
 
-CREATE UNIQUE INDEX discover_landing_36h_kind_key
+CREATE UNIQUE INDEX IF NOT EXISTS discover_landing_36h_kind_key
     ON public.discover_landing_36h (kind, key);
 
 GRANT SELECT ON public.discover_landing_36h TO gaius;

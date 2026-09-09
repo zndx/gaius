@@ -22,18 +22,26 @@ CREATE INDEX IF NOT EXISTS feature_tape_feat ON public.feature_tape (layer, feat
 GRANT SELECT, INSERT, UPDATE ON public.feature_tape TO gaius;
 GRANT USAGE, SELECT ON SEQUENCE public.feature_tape_id_seq TO gaius;
 
-SELECT cron.unschedule('feature-probe')
-WHERE EXISTS (SELECT 1 FROM cron.job WHERE jobname = 'feature-probe');
-
-SELECT cron.schedule(
+DO $$
+DECLARE jid bigint;
+BEGIN
+  SELECT jobid INTO jid FROM cron.job WHERE jobname = 'feature-probe';
+  IF jid IS NOT NULL THEN
+    PERFORM cron.unschedule(jid);
+  END IF;
+  PERFORM cron.schedule(
     'feature-probe',
     '*/5 * * * *',
-    $$INSERT INTO scheduled_tasks (task_type, payload, source, scheduled_for)
+    $job$INSERT INTO scheduled_tasks (task_type, payload, source, scheduled_for)
       SELECT 'feature_probe', '{"gpu_index":4}'::jsonb, 'pg_cron', NOW()
       WHERE NOT EXISTS (
           SELECT 1 FROM scheduled_tasks
           WHERE task_type = 'feature_probe'
             AND picked_up_at IS NULL
             AND completed_at IS NULL
-      )$$
-);
+      )$job$
+  );
+END $$;
+
+-- migrate:down
+-- catch-up apply; schema already live on later migrations.

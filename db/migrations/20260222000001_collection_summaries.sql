@@ -7,7 +7,7 @@
 -- Full LLM output lives in Iceberg HX; this table holds denormalized text
 -- for fast KV sync and the Iceberg reference for full provenance.
 
-CREATE TABLE collections.collection_summaries (
+CREATE TABLE IF NOT EXISTS collections.collection_summaries (
     summary_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     collection_id TEXT NOT NULL REFERENCES collections.collections(collection_id) ON DELETE CASCADE,
     summary_type TEXT NOT NULL CHECK (summary_type IN ('frontier', 'open_weights')),
@@ -30,7 +30,7 @@ CREATE TABLE collections.collection_summaries (
     UNIQUE(collection_id, summary_type)
 );
 
-CREATE INDEX idx_collection_summaries_collection
+CREATE INDEX IF NOT EXISTS idx_collection_summaries_collection
     ON collections.collection_summaries(collection_id);
 
 COMMENT ON TABLE collections.collection_summaries
@@ -53,7 +53,7 @@ ALTER TABLE collections.cards
 COMMENT ON COLUMN collections.cards.zettle_slug
     IS 'Zettelkasten slug current when card was created (human-readable alias)';
 
-CREATE INDEX idx_cards_zettle_slug
+CREATE INDEX IF NOT EXISTS idx_cards_zettle_slug
     ON collections.cards(zettle_slug)
     WHERE zettle_slug IS NOT NULL;
 

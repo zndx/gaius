@@ -48,13 +48,17 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
-SELECT cron.unschedule('board-reindex')
-WHERE EXISTS (SELECT 1 FROM cron.job WHERE jobname = 'board-reindex');
-
-SELECT cron.schedule(
+DO $$
+DECLARE jid bigint;
+BEGIN
+  SELECT jobid INTO jid FROM cron.job WHERE jobname = 'board-reindex';
+  IF jid IS NOT NULL THEN
+    PERFORM cron.unschedule(jid);
+  END IF;
+  PERFORM cron.schedule(
     'board-reindex',
     '* * * * *',
-    $$INSERT INTO scheduled_tasks (task_type, payload, source, scheduled_for)
+    $job$INSERT INTO scheduled_tasks (task_type, payload, source, scheduled_for)
       SELECT 'board_reindex', '{}'::jsonb, 'pg_cron', NOW()
       WHERE meta.should_run_board_reindex()
         AND NOT EXISTS (
@@ -62,8 +66,9 @@ SELECT cron.schedule(
           WHERE task_type = 'board_reindex'
             AND picked_up_at IS NULL
             AND completed_at IS NULL
-        )$$
-);
+        )$job$
+  );
+END $$;
 
 GRANT SELECT, INSERT, UPDATE ON meta.board_reindex_state TO gaius;
 GRANT EXECUTE ON FUNCTION meta.should_run_board_reindex() TO gaius;

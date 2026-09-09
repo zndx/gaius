@@ -52,18 +52,22 @@ $$ LANGUAGE plpgsql;
 -- Replace broken pg_cron job
 -- ============================================================================
 
--- Remove the old broken job that SELECTed to nowhere
-SELECT cron.unschedule('prospects-daily-check');
-
--- New job: INSERT into scheduled_tasks with cooldown gate
--- Runs at 7 AM daily, but only inserts if 24+ hours since last run
-SELECT cron.schedule(
+-- Remove the old broken job that SELECTed to nowhere, then (re)schedule.
+-- cron.unschedule(name) errors if the job is absent; skip in that case.
+-- If the job already exists from a later catch-up, leave it alone.
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM cron.job WHERE jobname = 'prospects-daily-check') THEN
+    RETURN;
+  END IF;
+  PERFORM cron.schedule(
     'prospects-daily-check',
     '0 7 * * *',
-    $$INSERT INTO scheduled_tasks (task_type, payload, source, scheduled_for)
+    $job$INSERT INTO scheduled_tasks (task_type, payload, source, scheduled_for)
       SELECT 'prospects_check', '{}', 'pg_cron', NOW()
-      WHERE meta.should_run_prospects_check()$$
-);
+      WHERE meta.should_run_prospects_check()$job$
+  );
+END $$;
 
 -- ============================================================================
 -- Permissions

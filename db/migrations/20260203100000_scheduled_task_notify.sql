@@ -5,6 +5,8 @@
 -- When pg_cron inserts a task, this trigger fires NOTIFY on 'scheduled_task_ready'.
 -- The engine's ScheduledTaskProcessor listens on this channel and picks up tasks.
 
+-- migrate:up
+
 -- ============================================================================
 -- NOTIFY Trigger Function
 -- ============================================================================
@@ -47,3 +49,6 @@ Engine listens on this channel to process tasks in real-time.';
 COMMENT ON TRIGGER scheduled_task_notify_trigger ON scheduled_tasks IS
 'Fires NOTIFY for real-time task processing by engine.
 Falls back to polling if engine is down during INSERT.';
+
+-- migrate:down
+-- catch-up apply; schema already live on later migrations.

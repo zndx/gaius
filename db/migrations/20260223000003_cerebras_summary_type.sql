@@ -1,6 +1,8 @@
 -- Add 'cerebras' to summary_type CHECK constraints
 -- Enables Cerebras GLM-4.7 thinking summaries alongside frontier and open_weights
 
+-- migrate:up
+
 -- card_summaries
 ALTER TABLE collections.card_summaries
   DROP CONSTRAINT IF EXISTS card_summaries_summary_type_check;
@@ -14,3 +16,6 @@ ALTER TABLE collections.collection_summaries
 ALTER TABLE collections.collection_summaries
   ADD CONSTRAINT collection_summaries_summary_type_check
   CHECK (summary_type IN ('frontier', 'open_weights', 'cerebras'));
+
+-- migrate:down
+-- catch-up apply; schema already live on later migrations.

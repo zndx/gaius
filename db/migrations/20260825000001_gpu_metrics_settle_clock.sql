@@ -3,21 +3,15 @@
 -- Kudu DROP RANGE). Signals :5455 pg_cron runs the same honesty SQL.
 -- Metaflow/Airflow analog closed hours first.
 
-SELECT cron.unschedule('gpu-metrics-settle')
-WHERE EXISTS (SELECT 1 FROM cron.job WHERE jobname = 'gpu-metrics-settle');
-
-SELECT cron.schedule(
-    'gpu-metrics-settle',
-    '5 * * * *',
-    $$INSERT INTO scheduled_tasks (task_type, payload, source, scheduled_for)
-      SELECT 'gpu_metrics_settle', '{}'::jsonb, 'pg_cron', NOW()
-      WHERE NOT EXISTS (
-        SELECT 1 FROM scheduled_tasks
-         WHERE task_type = 'gpu_metrics_settle'
-           AND picked_up_at IS NULL
-           AND completed_at IS NULL
-      )$$
-);
+-- Catch-up: 20260828000002 already retired this clock. Do not resurrect it.
+DO $$
+DECLARE jid bigint;
+BEGIN
+  SELECT jobid INTO jid FROM cron.job WHERE jobname = 'gpu-metrics-settle';
+  IF jid IS NOT NULL THEN
+    PERFORM cron.unschedule(jid);
+  END IF;
+END $$;
 
 -- migrate:down
 SELECT cron.unschedule('gpu-metrics-settle')

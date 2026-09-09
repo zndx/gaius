@@ -98,26 +98,28 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
-SELECT cron.unschedule('clt-skos-admit')
-WHERE EXISTS (SELECT 1 FROM cron.job WHERE jobname = 'clt-skos-admit');
-SELECT cron.unschedule('clt-skos-label')
-WHERE EXISTS (SELECT 1 FROM cron.job WHERE jobname = 'clt-skos-label');
-
-SELECT cron.schedule(
+DO $$
+DECLARE jid bigint;
+BEGIN
+  SELECT jobid INTO jid FROM cron.job WHERE jobname = 'clt-skos-admit';
+  IF jid IS NOT NULL THEN PERFORM cron.unschedule(jid); END IF;
+  SELECT jobid INTO jid FROM cron.job WHERE jobname = 'clt-skos-label';
+  IF jid IS NOT NULL THEN PERFORM cron.unschedule(jid); END IF;
+  PERFORM cron.schedule(
     'clt-skos-admit',
     '*/15 * * * *',
-    $$INSERT INTO scheduled_tasks (task_type, payload, source, scheduled_for)
+    $job$INSERT INTO scheduled_tasks (task_type, payload, source, scheduled_for)
       SELECT 'clt_skos_admit', '{}'::jsonb, 'pg_cron', NOW()
-      WHERE public.should_run_clt_skos('admit')$$
-);
-
-SELECT cron.schedule(
+      WHERE public.should_run_clt_skos('admit')$job$
+  );
+  PERFORM cron.schedule(
     'clt-skos-label',
     '*/15 * * * *',
-    $$INSERT INTO scheduled_tasks (task_type, payload, source, scheduled_for)
+    $job$INSERT INTO scheduled_tasks (task_type, payload, source, scheduled_for)
       SELECT 'clt_skos_label', '{}'::jsonb, 'pg_cron', NOW()
-      WHERE public.should_run_clt_skos('label')$$
-);
+      WHERE public.should_run_clt_skos('label')$job$
+  );
+END $$;
 
 GRANT SELECT, INSERT, UPDATE, DELETE ON public.admit_progress TO gaius;
 GRANT SELECT, INSERT, UPDATE, DELETE ON public.admitted_quarantine TO gaius;

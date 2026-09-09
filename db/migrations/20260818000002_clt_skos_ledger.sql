@@ -35,3 +35,6 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON public.admitted_item TO gaius;
 GRANT USAGE, SELECT ON SEQUENCE public.admitted_item_id_seq TO gaius;
 GRANT SELECT, INSERT, UPDATE, DELETE ON public.activation TO gaius;
 GRANT USAGE, SELECT ON SEQUENCE public.activation_id_seq TO gaius;
+
+-- migrate:down
+-- catch-up apply; schema already live on later migrations.

@@ -1,7 +1,7 @@
 -- migrate:up
 
 -- Add source_date column for original publication date (e.g., arXiv submission date)
-ALTER TABLE collections.cards ADD COLUMN source_date DATE;
+ALTER TABLE collections.cards ADD COLUMN IF NOT EXISTS source_date DATE;
 
 COMMENT ON COLUMN collections.cards.source_date IS 'Original source publication date (e.g., arXiv submission date)';
 
