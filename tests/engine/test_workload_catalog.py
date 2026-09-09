@@ -137,8 +137,10 @@ def test_enabled_entries_are_curate_the_agenda_producers_and_the_brief():
         en = wc.entry_for(kind)
         assert en.source == "airflow" and wc.airflow_dag_id(en) == f"gaius_{kind}"
     # producers coexist with their pg_cron jobs until Airflow has proven a run
-    for kind in AIRFLOW_ENABLED - {"article_curate", "agenda_brief"}:
+    still_cron = AIRFLOW_ENABLED - {"article_curate", "agenda_brief", "cognition_cycle"}
+    for kind in still_cron:
         assert wc.entry_for(kind).pg_cron_active, kind
+    assert not wc.entry_for("cognition_cycle").pg_cron_active
     # every other class: catalogued, pg_cron-sourced, Signals assigns the DAG id
     for other in wc.entries():
         if other.kind not in AIRFLOW_ENABLED:

@@ -183,8 +183,9 @@ WORKLOAD_CATALOG: tuple[WorkloadEntry, ...] = (
     WorkloadEntry(
         kind="cognition_cycle", task_type="cognition_cycle", payload={"trigger": "scheduled"},
         cron="43 0,4,8,12,16,20 * * *", horizon_s=H2,
-        description="cognition cycle (4 h anchors; pg_cron jitters up to 45 min) — agenda producer",
+        description="cognition cycle (4 h Airflow anchors; writes thoughts + thoughts brief) — agenda producer",
         enabled=True, airflow_dag_id="gaius_cognition_cycle", pg_cron_job="cognition-periodic",
+        pg_cron_active=False,  # Airflow proven 2026-09-08/09 (released scheduled__ runs)
     ),
     WorkloadEntry(
         # Asset-scheduled: Airflow initiates a run when ANY agenda producer's run
