@@ -654,6 +654,15 @@ class GaiusZndxEngineServicer(zpb_grpc.EngineServicer):
                     services=self._services,
                 )
                 resp.search_hint.CopyFrom(search_to_proto(search))
+            if int(request.kind) == zpb.SERVER_QUERY_KIND_FMP:
+                from ...services.fmp_hint import collect_fmp, to_proto as fmp_to_proto
+
+                fmp = await collect_fmp(
+                    str(getattr(request, "query", "") or request.note_id or ""),
+                    stream=str(request.stream or ""),
+                    limit=int(request.limit or 0),
+                )
+                resp.fmp_hint.CopyFrom(fmp_to_proto(fmp))
             if int(request.kind) == zpb.SERVER_QUERY_KIND_AGENDA:
                 # (2026-09-07) The Agenda BRIEF (today · tomorrow · the week) plus the
                 # index of covered items; note_id = one item in full. No model call;
