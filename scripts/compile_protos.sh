@@ -85,6 +85,10 @@ for file in "$OUTPUT_DIR"/*_pb2_grpc.py; do
         sed -i 's/^import \([a-z_]*_pb2\)/from . import \1/' "$file"
     fi
 done
+# Nested zndx.* packages: grpc_tools emits `from zndx.engine.v1 import engine_pb2`.
+# That is not on PYTHONPATH; WatchActivities/SyncWorkloads then STREAMDROP.
+find "$OUTPUT_DIR" -name '*_pb2*.py' -print0 | xargs -0 sed -i \
+  's#^from zndx\.engine\.v1 import engine_pb2 as zndx_dot_engine_dot_v1_dot_engine__pb2$#from gaius.engine.generated.zndx.engine.v1 import engine_pb2 as zndx_dot_engine_dot_v1_dot_engine__pb2#'
 
 # Check if __init__.py has manual edits (look for sections not in base template)
 INIT_FILE="$OUTPUT_DIR/__init__.py"
