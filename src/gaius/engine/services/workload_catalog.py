@@ -213,27 +213,32 @@ WORKLOAD_CATALOG: tuple[WorkloadEntry, ...] = (
         kind="publish_cards_predawn", task_type="publish_cards", payload={"count": 3, "slot": "predawn"},
         cron="0 12 * * *", horizon_s=H5, description="publish slot predawn (3 cards) — agenda producer",
         enabled=True, airflow_dag_id="gaius_publish_cards_predawn", pg_cron_job="publish-cards-predawn",
+        pg_cron_active=False,  # Airflow hub 2026-09-11; WatchActivities restored
     ),
     WorkloadEntry(
         kind="publish_cards_morning", task_type="publish_cards", payload={"count": 1, "slot": "morning"},
         cron="0 17 * * *", horizon_s=H5, description="publish slot morning — agenda producer",
         enabled=True, airflow_dag_id="gaius_publish_cards_morning", pg_cron_job="publish-cards-morning",
+        pg_cron_active=False,
     ),
     WorkloadEntry(
         kind="publish_cards_afternoon", task_type="publish_cards", payload={"count": 1, "slot": "afternoon"},
         cron="0 21 * * *", horizon_s=H5, description="publish slot afternoon — agenda producer",
         enabled=True, airflow_dag_id="gaius_publish_cards_afternoon", pg_cron_job="publish-cards-afternoon",
+        pg_cron_active=False,
     ),
     WorkloadEntry(
         kind="publish_cards_evening", task_type="publish_cards", payload={"count": 1, "slot": "evening"},
         cron="0 2 * * *", horizon_s=H5, description="publish slot evening — agenda producer",
         enabled=True, airflow_dag_id="gaius_publish_cards_evening", pg_cron_job="publish-cards-evening",
+        pg_cron_active=False,
     ),
     WorkloadEntry(
         kind="prospects_check", task_type="prospects_check", payload={}, cron="0 7 * * *",
         gate_sql="SELECT meta.should_run_prospects_check()", runner=RUNNER_METAFLOW, horizon_s=H3,
         description="daily prospects check (decides the update; rate-metered FMP) — agenda producer",
         enabled=True, airflow_dag_id="gaius_prospects_check", pg_cron_job="prospects-daily-check",
+        pg_cron_active=False,  # Airflow + Metaflow; do not dual-fire with pg_cron
     ),
     WorkloadEntry(
         kind="content_diversity_check", task_type="content_diversity_check", payload={}, cron="0 6,18 * * *",
@@ -254,6 +259,7 @@ WORKLOAD_CATALOG: tuple[WorkloadEntry, ...] = (
         cron="0 15 * * 1", gate_sql="SELECT meta.should_run_weekly_signals_summary()", singleton=True,
         horizon_s=H3, description="weekly Signals summary (Monday) — agenda producer",
         enabled=True, airflow_dag_id="gaius_weekly_signals_summary", pg_cron_job="weekly-signals-summary",
+        pg_cron_active=False,
     ),
     WorkloadEntry(
         kind="evolution_cycle", task_type="evolution_cycle",
