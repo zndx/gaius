@@ -343,7 +343,9 @@ def local_surfaces() -> list[zpb.Surface]:
         co = get_coordination()
     except Exception:  # noqa: BLE001
         co = None
-    if co is not None:
+    if co is None:
+        out.append(zpb.Surface(kind="coordination", url="#CO.00000004.NOWATCHER", healthy=False))
+    else:
         st = co.status()
         healthy = bool(st.get("hub_healthy"))
         detail = str(st.get("last_guru") or "")
