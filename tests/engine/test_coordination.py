@@ -381,6 +381,14 @@ class FakePool:
         self.sql.append(sql)
         if "should_run_curation" in sql:
             return self.gate
+        if "max(completed_at)" in sql:
+            tt = args[0]
+            times = [
+                r["completed_at"]
+                for r in self.rows
+                if r["task_type"] == tt and r.get("source") == "airflow" and r["completed_at"]
+            ]
+            return max(times) if times else None
         if sql.startswith("INSERT INTO scheduled_tasks"):
             self._next += 1
             self.rows.append({"id": self._next, "task_type": args[0], "payload": _json.loads(args[1]), "source": args[2],
@@ -510,35 +518,29 @@ def test_attach_is_keyed_by_payload_not_task_type_alone(monkeypatch):
     asyncio.run(run())
 
 
-def test_coexisting_class_waits_the_grace_for_pg_cron_row_then_runs(monkeypatch):
-    """publish_cards still has an active pg_cron job: a fresh Airflow activity
-    waits ATTACH_GRACE_S for pg_cron's row (attach), and only enqueues its own
-    run once the grace has passed with no row. A retired class (article_curate)
-    never waits."""
+def test_airflow_enabled_kinds_enqueue_immediately_without_pg_cron_grace(monkeypatch):
+    """pg_cron cover hid WatchActivities death. Enabled kinds start at once."""
     pool = FakePool()
     w, sched = _watcher(pool, monkeypatch)
     declared = NOW
 
     async def run():
         w.ingest([_slot("m1", "morning", declared=declared)], NOW)
-        assert await w.workload_pass(NOW) == [("m1", "awaiting_pg_cron")]
-        assert pool.inserts() == [] and len(sched.named("RenewActivity")) == 1  # the lease is kept alive
-        assert w.workload_label("m1").endswith("awaiting_pg_cron")
-        # pg_cron's row lands 4 s later → attached, no second run
-        live = pool.add("publish_cards", {"count": 1, "slot": "morning"})
-        assert await w.workload_pass(NOW + 4 * 10**9) == [("m1", "attached_workload")]
-        assert live["payload"]["activity_id"] == "m1" and pool.inserts() == []
-        # a slot whose pg_cron row never comes: runs after the grace
-        w.ingest([_slot("m1", "morning", declared=declared), _slot("e1", "evening", declared=declared)], NOW + 5 * 10**9)
-        assert await w.workload_pass(NOW + 5 * 10**9) == [("e1", "awaiting_pg_cron")]
-        at = NOW + int(co.ATTACH_GRACE_S * 10**9) + 10**9
-        assert await w.workload_pass(at) == [("e1", "started_workload")]
-        assert [r["payload"]["slot"] for r in pool.inserts()] == ["evening"]
-        # article_curate (pg_cron retired) enqueues at once — declared 60 s ago, no coexistence
-        w.ingest([_own(aid="c1")], at)
-        assert ("c1", "started_workload") in await w.workload_pass(at)
+        assert await w.workload_pass(NOW) == [("m1", "started_workload")]
+        assert [r["payload"]["slot"] for r in pool.inserts()] == ["morning"]
+        w.ingest([_own(aid="c1")], NOW)
+        assert ("c1", "started_workload") in await w.workload_pass(NOW)
 
     asyncio.run(run())
+
+
+def test_streamdrop_is_a_hub_failure_on_status():
+    w = CoordinationWatcher(orchestrator=FakeOrch(), bus=FakeBus(), target="signals:1")
+    w._note_guru(co.GURU_STREAMDROP, "No module named 'zndx'")
+    st = w.status()
+    assert st["hub_healthy"] is False
+    assert st["last_guru"] == co.GURU_STREAMDROP
+    assert "zndx" in st["last_guru_detail"]
 
 
 def test_gate_false_releases_as_skipped(monkeypatch):
@@ -602,7 +604,8 @@ def test_peer_activity_never_starts_a_workload(monkeypatch):
     async def run():
         w.ingest([_act(aid="h1")], NOW)  # hermes interactive session
         assert await w.workload_pass(NOW) == []
-        assert pool.sql == [] and sched.calls == []
+        assert pool.inserts() == [] and sched.calls == []
+        assert w.missed_ticks  # Airflow miss is visible, not covered by pg_cron
 
     asyncio.run(run())
 

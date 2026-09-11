@@ -33,15 +33,15 @@ stream and is redialled; a Signals that predates the Activity RPCs
   declares an activity at Signals with ``peer=gaius`` and ``kind=<workload>``
   whose ``claims[]`` are the workload's YuniKorn queue configuration; Signals
   asserts those claims into the arbiter while the run is in force. When THIS
-  engine sees its own activity RUNNING it starts the workload exactly as
-  pg_cron would (one ``scheduled_tasks`` row — the row is the memory, so a
-  repeated event or an engine restart never double-runs), heartbeats the lease
-  every 60 s while the row is queued or in flight, and RELEASES the activity
-  when the row books a terminal outcome — which completes the Airflow ``hold``
-  sensor and retracts the queue configuration. A deferral (YuniKorn
-  backpressure) is retried while the activity is in force; a workload of the
-  same class already in flight is ATTACHED (its completion releases the
-  activity) rather than run twice beside pg_cron.
+  engine sees its own activity RUNNING it starts the workload (one
+  ``scheduled_tasks`` row — the row is the memory, so a repeated event or an
+  engine restart never double-runs), heartbeats the lease every 60 s while the
+  row is queued or in flight, and RELEASES the activity when the row books a
+  terminal outcome — which completes the Airflow ``hold`` sensor and retracts
+  the queue configuration. A deferral (YuniKorn backpressure) is retried while
+  the activity is in force. pg_cron is NOT a fallback for enabled kinds — that
+  hid WatchActivities STREAMDROP for days. Missed Airflow ticks and a dead
+  watch stream are first-class failures on Engine/Status.
 """
 
 from __future__ import annotations
@@ -63,6 +63,7 @@ GURU_NOWATCHER = "#CO.00000004.NOWATCHER"         # watcher not running (disable
 GURU_RENEWFAIL = "#CO.00000006.RENEWFAIL"         # lease heartbeat refused/unreachable (retry next pass)
 GURU_RELEASEFAIL = "#CO.00000007.RELEASEFAIL"     # release refused/unreachable (the lease TTL expires it)
 GURU_ENQUEUEFAIL = "#CO.00000008.ENQUEUEFAIL"     # could not start/attach the workload row
+GURU_MISSTICK = "#CO.0000000D.MISSTICK"           # enabled Airflow kind missed its cadence (no pg_cron cover)
 
 # ── workloads Airflow orders (kind → how pg_cron enqueued the same class) ─────
 # (2026-09-07) The WORKLOAD CATALOGUE (services.workload_catalog) is the one
@@ -82,8 +83,8 @@ def _spec_of(entry: Any) -> dict[str, Any]:
         "payload": dict(entry.payload),
         "gate_sql": entry.gate_sql,
         "kind": entry.kind,
-        # pg_cron still enqueues this class beside Airflow: attach, never race.
-        "coexists_with_pg_cron": bool(entry.pg_cron_active),
+        # Never true for enabled kinds. pg_cron cover hid Airflow death.
+        "coexists_with_pg_cron": bool(entry.pg_cron_active) and not entry.enabled,
     }
 
 
@@ -94,6 +95,8 @@ WORKLOAD_KINDS: dict[str, dict[str, Any]] = {e.kind: _spec_of(e) for e in _catal
 # is there to ATTACH to. Airflow's scheduler lags the cron minute by seconds;
 # pg_cron fires at second 0 — without the grace the Airflow row could land
 # first and pg_cron, which has no memory of it, would add a second run.
+# Only for catalogued kinds that are still pg_cron-sourced (enabled=False).
+# Enabled Airflow kinds enqueue at once — a 90s wait was a hidden fallback.
 ATTACH_GRACE_S = 90.0
 AIRFLOW_SOURCED_CLASSES: dict[str, str] = {
     e.kind: _catalog.airflow_dag_id(e) for e in _catalog.enabled_entries()
@@ -338,6 +341,10 @@ class CoordinationWatcher:
     last_event_ns: int = 0
     events: int = 0
     reconnects: int = 0
+    last_guru: str = ""
+    last_guru_detail: str = ""
+    last_guru_ns: int = 0
+    missed_ticks: list[str] = field(default_factory=list)
     _unimplemented_logged: bool = False
 
     # ── lifecycle ────────────────────────────────────────────────────────────
@@ -380,10 +387,19 @@ class CoordinationWatcher:
             "observed_ms": self.view.observed_ns // 1_000_000,
             "events": self.events,
             "reconnects": self.reconnects,
+            "last_guru": self.last_guru,
+            "last_guru_detail": self.last_guru_detail,
+            "missed_ticks": list(self.missed_ticks),
+            "hub_healthy": bool(self.connected) and not self.last_guru and not self.missed_ticks,
             "activities": len(self.view.activities),
             "ceded": dict(self._ceded),
             "workloads": {aid: dict(w) for aid, w in self._workloads.items()},
         }
+
+    def _note_guru(self, guru: str, detail: str = "") -> None:
+        self.last_guru = guru
+        self.last_guru_detail = (detail or "")[:240]
+        self.last_guru_ns = now_ns()
 
     def workload_for(self, activity_id: str) -> dict[str, Any] | None:
         w = self._workloads.get(str(activity_id))
@@ -417,6 +433,7 @@ class CoordinationWatcher:
         if pool is None:
             return []
         at = int(at_ns if at_ns is not None else now_ns())
+        await self._flag_missed_airflow(pool, at)
         actions: list[tuple[str, str]] = []
         async with self._wl_lock:
             for a in self.own_running():
@@ -473,8 +490,8 @@ class CoordinationWatcher:
                 state = "running" if live["picked_up_at"] is not None else "queued"
                 logger.info("coordination: attached workload %s #%d to activity %s (already %s)", task_type, tid, aid, state)
             elif spec.get("coexists_with_pg_cron") and at - int(a.get("declared_ns") or 0) < ATTACH_GRACE_S * 1_000_000_000:
-                # pg_cron still enqueues this class: give its row the grace to
-                # appear and attach next pass rather than run beside it.
+                # Only pg_cron-sourced (enabled=False) classes wait. Enabled
+                # Airflow kinds must not — that wait hid STREAMDROP.
                 self._workloads.setdefault(aid, {"task_id": 0, "task_type": task_type, "state": "awaiting_pg_cron", "last_heartbeat_ns": 0})
                 await self._heartbeat(aid, at)
                 return "awaiting_pg_cron"
@@ -535,6 +552,50 @@ class CoordinationWatcher:
         if status:
             return status
         return "error" if row["error"] else "completed"
+
+    async def _flag_missed_airflow(self, pool: Any, at: int) -> None:
+        """Enabled kinds with no recent Airflow completion are a hub failure.
+
+        pg_cron rows do not count — that is how publish looked healthy while
+        WatchActivities was dead.
+        """
+        from datetime import datetime, timezone
+
+        missed: list[str] = []
+        seen: set[str] = set()
+        now = datetime.now(timezone.utc)
+        for entry in _catalog.enabled_entries():
+            tt = entry.task_type
+            if tt in seen:
+                continue
+            seen.add(tt)
+            try:
+                last = await pool.fetchval(
+                    "SELECT max(completed_at) FROM scheduled_tasks "
+                    "WHERE task_type = $1 AND source = 'airflow'",
+                    tt,
+                )
+            except Exception:  # noqa: BLE001
+                continue
+            limit_s = {
+                "cognition_cycle": 8 * 3600,
+                "article_curate": 40 * 3600,
+                "agenda_brief": 36 * 3600,
+                "prospects_check": 36 * 3600,
+                "weekly_signals_summary": 10 * 86400,
+                "publish_cards": 30 * 3600,
+            }.get(tt, max(int(entry.horizon_s) * 3, 8 * 3600))
+            age = None if last is None else (now - last).total_seconds()
+            if last is None or (age is not None and age > limit_s):
+                missed.append(tt)
+        if missed != self.missed_ticks:
+            if missed:
+                self._note_guru(GURU_MISSTICK, ",".join(missed))
+                logger.warning("%s Airflow kinds with no recent completion: %s", GURU_MISSTICK, ",".join(missed))
+            elif self.last_guru == GURU_MISSTICK:
+                self.last_guru = ""
+                self.last_guru_detail = ""
+        self.missed_ticks = missed
 
     async def _enqueue(self, pool: Any, spec: dict[str, Any], aid: str, kind: str) -> int:
         payload = dict(spec.get("payload") or {})
@@ -695,18 +756,24 @@ class CoordinationWatcher:
                         self._unimplemented_logged = True
                     await self._sleep(UNIMPLEMENTED_RETRY_S)
                     continue
+                self._note_guru(
+                    GURU_STREAMDROP,
+                    f"{e.code().name} {(e.details() or '')[:160]}",
+                )
                 logger.warning(
                     "%s WatchActivities on %s: %s %s — redial in %.0fs",
                     GURU_STREAMDROP, self.target, e.code().name, (e.details() or "")[:160], backoff,
                 )
             except _Silent:
                 self.connected = False
+                self._note_guru(GURU_SILENT, f"silent {SILENCE_S:.0f}s")
                 logger.warning(
                     "%s no activity event from %s for %.0fs (Signals heartbeats every 60 s) — redial",
                     GURU_SILENT, self.target, SILENCE_S,
                 )
             except Exception as e:  # noqa: BLE001
                 self.connected = False
+                self._note_guru(GURU_STREAMDROP, str(e)[:160])
                 logger.warning("%s WatchActivities on %s: %s — redial in %.0fs", GURU_STREAMDROP, self.target, e, backoff)
             self.sweep()
             self.reconnects += 1
@@ -753,6 +820,9 @@ class CoordinationWatcher:
                     if not self.connected:
                         self.connected = True
                         self._unimplemented_logged = False
+                        if self.last_guru in (GURU_STREAMDROP, GURU_SILENT, GURU_NOACTIVITIES):
+                            self.last_guru = ""
+                            self.last_guru_detail = ""
                         logger.info("coordination: watching activities on %s", self.target)
                     at = int(msg.observed_ns) if int(msg.observed_ns) > 0 else now_ns()
                     # The local clock decides horizons; Signals' observed_ns

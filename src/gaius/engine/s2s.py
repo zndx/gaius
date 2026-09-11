@@ -333,10 +333,30 @@ def local_primary_ui() -> str:
 
 
 def local_surfaces() -> list[zpb.Surface]:
+    out: list[zpb.Surface] = []
     url = local_primary_ui()
-    if not url:
-        return []
-    return [zpb.Surface(kind="primary", url=url, healthy=True)]
+    if url:
+        out.append(zpb.Surface(kind="primary", url=url, healthy=True))
+    try:
+        from .services.coordination import get_coordination
+
+        co = get_coordination()
+    except Exception:  # noqa: BLE001
+        co = None
+    if co is not None:
+        st = co.status()
+        healthy = bool(st.get("hub_healthy"))
+        detail = str(st.get("last_guru") or "")
+        if st.get("missed_ticks"):
+            detail = (detail + " miss:" + ",".join(st["missed_ticks"])).strip()
+        out.append(
+            zpb.Surface(
+                kind="coordination",
+                url=detail or str(st.get("target") or ""),
+                healthy=healthy,
+            )
+        )
+    return out
 
 
 def directory_seeds() -> list[tuple[str, str]]:
