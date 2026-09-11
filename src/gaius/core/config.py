@@ -102,9 +102,8 @@ class OptillmConfig:
 class VllmConfig:
     """vLLM-specific settings."""
 
-    # Default to instruct endpoint (8082) per base.conf
-    # Engine manages endpoints; this is overridden by HOCON config
-    url: str = "http://localhost:8082/v1"
+    # Instruct is an operating profile of thinking (zndx Complete), not :8082.
+    url: str = "http://localhost:8081/v1"
 
 
 @dataclass
@@ -521,7 +520,7 @@ def _parse_config_tree(tree: ConfigTree) -> GaiusConfig:
     )
 
     vllm = VllmConfig(
-        url=g.get("inference.vllm.url", "http://localhost:8082/v1"),  # instruct endpoint
+        url=g.get("inference.vllm.url", "http://localhost:8081/v1"),  # thinking
     )
 
     phase_models = PhaseModels(

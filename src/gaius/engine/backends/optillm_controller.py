@@ -448,7 +448,7 @@ class OptillmController:
         config_dir = getattr(gunicorn_cfg, "config_dir", "/tmp/gaius") if gunicorn_cfg else "/tmp/gaius"
 
         # Create gunicorn config generator
-        # Get backend URL from config (vLLM instruct endpoint)
+        # Get backend URL from config (thinking :8081; instruct is a profile)
         backend_url = self._bound_vllm_url
         settings = GunicornSettings(
             bind=f"127.0.0.1:{self._port}",
@@ -860,14 +860,16 @@ class OptillmController:
             return False
 
         try:
-            response = await self._client.get("/v1/models")
+            # Probe the proxy on :8000. /v1/models used to be forwarded to
+            # vestigial instruct :8082 and 404 forever even when /health was 200.
+            response = await self._client.get("/health")
+            if response.status_code != 200:
+                response = await self._client.get("/v1/models")
             self._healthy = response.status_code == 200
             self._last_health_check = datetime.now()
 
             if self._healthy:
-                data = response.json()
-                model_count = len(data.get("data", []))
-                logger.debug(f"optillm healthy, {model_count} models available")
+                logger.debug("optillm healthy at %s (%s)", self._base_url, response.status_code)
 
         except Exception as e:
             logger.warning(f"optillm health check failed: {e}")
