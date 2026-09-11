@@ -235,10 +235,10 @@ WORKLOAD_CATALOG: tuple[WorkloadEntry, ...] = (
     ),
     WorkloadEntry(
         kind="prospects_check", task_type="prospects_check", payload={}, cron="0 7 * * *",
-        gate_sql="SELECT meta.should_run_prospects_check()", runner=RUNNER_METAFLOW, horizon_s=H3,
-        description="daily prospects check (decides the update; rate-metered FMP) — agenda producer",
+        gate_sql="SELECT meta.should_run_prospects_check()", runner=RUNNER_TASK, horizon_s=H3,
+        description="daily prospects check (in-engine; enqueues Metaflow prospects_update if needed) — agenda producer",
         enabled=True, airflow_dag_id="gaius_prospects_check", pg_cron_job="prospects-daily-check",
-        pg_cron_active=False,  # Airflow + Metaflow; do not dual-fire with pg_cron
+        pg_cron_active=False,  # Airflow orders; check is task, update is Metaflow
     ),
     WorkloadEntry(
         kind="content_diversity_check", task_type="content_diversity_check", payload={}, cron="0 6,18 * * *",

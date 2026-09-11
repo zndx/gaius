@@ -139,6 +139,13 @@ def test_enabled_entries_are_curate_the_agenda_producers_and_the_brief():
     # Airflow is the only initiator for enabled kinds (WatchActivities restored 2026-09-11)
     for kind in AIRFLOW_ENABLED:
         assert not wc.entry_for(kind).pg_cron_active, kind
+    # Airflow orders; Metaflow executes only the heavy enabled flow.
+    assert wc.entry_for("article_curate").runner == wc.RUNNER_METAFLOW
+    assert wc.entry_for("prospects_check").runner == wc.RUNNER_TASK
+    assert wc.entry_for("cognition_cycle").runner == wc.RUNNER_TASK
+    assert {e.kind for e in wc.enabled_entries() if e.runner == wc.RUNNER_METAFLOW} == {
+        "article_curate"
+    }
     # every other class: catalogued, pg_cron-sourced, Signals assigns the DAG id
     for other in wc.entries():
         if other.kind not in AIRFLOW_ENABLED:
