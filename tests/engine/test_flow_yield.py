@@ -51,7 +51,11 @@ class _Services:
 
 
 @pytest.mark.asyncio
-async def test_zndx_yield_rpc_unknown():
+async def test_zndx_yield_rpc_unknown(monkeypatch):
+    from gaius.engine import sentinel_yield as sy
+
+    retired: list[str] = []
+    monkeypatch.setattr(sy, "delete_flow_sentinel", lambda wid: retired.append(wid))
     svc = GaiusZndxEngineServicer(_Services())
     r = await svc.Yield(
         zpb.YieldRequest(workload_id="nope", reason=zpb.YIELD_REASON_PREEMPTED),
@@ -59,6 +63,26 @@ async def test_zndx_yield_rpc_unknown():
     )
     assert r.ok
     assert not r.process_ended
+    assert retired == ["nope"]
+    assert "retired sentinel" in r.message
+
+
+@pytest.mark.asyncio
+async def test_yield_orphan_retires_sentinel(monkeypatch):
+    from gaius.engine import sentinel_yield as sy
+    from gaius.engine.sentinel_yield import yield_workload
+
+    retired: list[str] = []
+    monkeypatch.setattr(sy, "delete_flow_sentinel", lambda wid: retired.append(wid))
+    r = await yield_workload(
+        _Services(),
+        zpb.YieldRequest(
+            workload_id="clt-skos-admit-36884", reason=zpb.YIELD_REASON_ORPHAN
+        ),
+    )
+    assert r.ok and not r.process_ended
+    assert retired == ["clt-skos-admit-36884"]
+    assert "retired sentinel" in r.message
 
 
 def test_alias_for_workload():

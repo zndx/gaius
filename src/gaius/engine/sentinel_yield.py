@@ -163,9 +163,15 @@ async def yield_workload(services: Any, request: zpb.YieldRequest) -> zpb.YieldR
             message=msg,
         )
 
+    # Unknown id: still retire the YK sentinel. A missing host process is not
+    # a missing Application — clt-skos-admit-36884 held a light GPU for days
+    # after the Metaflow child exited (YK 6/6 vs nvidia-smi GPU 5 empty).
+    import asyncio as _aio
+
+    await _aio.to_thread(delete_flow_sentinel, wid)
     return zpb.YieldResponse(
         ok=True,
         process_ended=False,
         restore_started=False,
-        message=f"no host process for workload_id={wid}",
+        message=f"no host process; retired sentinel {wid}",
     )
