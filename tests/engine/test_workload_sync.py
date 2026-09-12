@@ -68,7 +68,7 @@ def test_sync_submits_the_whole_catalogue_as_a_replace():
     assert sync.syncs == 1 and sync.last_error == "" and sync.last_sync_ms > 0
     states = {r["id"]: r["state"] for r in records}
     assert states["task.article_curate"] == "materialized"
-    assert states["task.fmp_roll"] == "paused"
+    assert states["task.fmp_roll"] == "materialized"
     assert sync.status()["records"] == records
 
 

@@ -4,7 +4,7 @@ Aperture admission is a read-time window scan, not an ingest filter.
 
 (2026-09-04) The axis no longer rolls itself. Its 60 s ingest + thinking
 compaction loop was an in-engine model workload on a private timer; the
-``ambient_synthesis`` flow (pg_cron) now refreshes and compacts the
+``ambient_synthesis`` flow (Airflow since 2026-09-12) now refreshes and compacts the
 ``publishing`` buffer in ``buffer_entries`` and this object is the engine's
 read-through view of it. ``load_publishing_items`` is the shared query the
 flow runs with its own pool.

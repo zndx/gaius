@@ -108,8 +108,8 @@ _PERIODIC_TASK_CADENCES: dict[str, tuple[timedelta, str, str]] = {
     "prospect-refresh":      (timedelta(hours=12),   "Prospect refresh",      "Check pg_cron: SELECT * FROM cron.job WHERE jobname LIKE '%prospect%'"),
     "calibration":           (timedelta(days=1),     "Calibration",           "Check pg_cron: SELECT * FROM cron.job WHERE jobname LIKE '%calibrat%'"),
     # (2026-09-04) The engine's private model timers, now flows on pg_cron.
-    "fmp_roll":              (timedelta(minutes=30), "FMP market roll",       "Check pg_cron job 'fmp-roll' and /objective verify market_buffer"),
-    "ambient_synthesis":     (timedelta(minutes=20), "Ambient synthesis",     "Check pg_cron job 'ambient-synthesis' and /ambient status"),
+    "fmp_roll":              (timedelta(minutes=30), "FMP market roll",       "Check Airflow DAG gaius_fmp_roll and /objective verify market_buffer"),
+    "ambient_synthesis":     (timedelta(minutes=20), "Ambient synthesis",     "Check Airflow DAG gaius_ambient_synthesis and /ambient status"),
 }
 
 

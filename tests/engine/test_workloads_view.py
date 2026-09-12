@@ -24,7 +24,7 @@ def test_workloads_view_lists_the_catalogue_with_sync_state(monkeypatch):
     sync.syncs = 2
     sync.last_records = [
         {"id": "task.article_curate", "kind": "article_curate", "dag_id": "gaius_article_curate", "state": "materialized", "error": ""},
-        {"id": "task.fmp_roll", "kind": "fmp_roll", "dag_id": "gaius_fmp_roll", "state": "paused", "error": ""},
+        {"id": "task.fmp_roll", "kind": "fmp_roll", "dag_id": "gaius_fmp_roll", "state": "materialized", "error": ""},
     ]
     monkeypatch.setattr(ws, "_SYNC", sync)
     svc = _servicer()
@@ -38,7 +38,7 @@ def test_workloads_view_lists_the_catalogue_with_sync_state(monkeypatch):
     assert list(cur.claims) == ["root.internal.inference.extract:1"]
     assert cur.gate_sql == "SELECT collections.should_run_curation()" and cur.runner == "metaflow"
     roll = by_id["task.fmp_roll"]
-    assert not roll.enabled and roll.source == "pg_cron" and roll.sync_state == "paused"
+    assert roll.enabled and roll.source == "airflow" and roll.sync_state == "materialized"
     assert by_id["task.engine_audit"].sync_state == ""  # never reported by Signals
     # filters
     only = asyncio.run(svc.Workloads(WorkloadsViewRequest(enabled_only=True), MagicMock()))

@@ -124,6 +124,8 @@ AIRFLOW_ENABLED = {
     "prospects_check", "cognition_cycle", "weekly_signals_summary",
     # … and the digest Airflow initiates when any of them ends
     "agenda_brief",
+    # GPU Metaflow that pg_cron was still launching while the DAGs sat paused
+    "ambient_synthesis", "fmp_roll",
 }
 
 
@@ -144,7 +146,7 @@ def test_enabled_entries_are_curate_the_agenda_producers_and_the_brief():
     assert wc.entry_for("prospects_check").runner == wc.RUNNER_TASK
     assert wc.entry_for("cognition_cycle").runner == wc.RUNNER_TASK
     assert {e.kind for e in wc.enabled_entries() if e.runner == wc.RUNNER_METAFLOW} == {
-        "article_curate"
+        "article_curate", "ambient_synthesis", "fmp_roll",
     }
     # every other class: catalogued, pg_cron-sourced, Signals assigns the DAG id
     for other in wc.entries():
@@ -214,6 +216,8 @@ def test_schedule_hints_serialise_every_field():
     assert list(label.after) == ["task.clt_skos_admit"] and label.source == "pg_cron" and not label.enabled
     assert label.after_mode == "all" and label.cron == ""
     assert hints["task.fmp_roll"].airflow_dag_id == "gaius_fmp_roll"
+    assert hints["task.fmp_roll"].enabled and hints["task.fmp_roll"].source == "airflow"
+    assert hints["task.ambient_synthesis"].enabled and hints["task.ambient_synthesis"].source == "airflow"
     assert hints["task.fmp_roll"].after_mode == ""  # no `after` → no mode on the wire
     slot = hints["task.publish_cards_morning"]
     assert slot.enabled and slot.source == "airflow" and slot.cron == "0 17 * * *" and slot.after_mode == ""

@@ -28,18 +28,18 @@ precedence ``queue_share.share_for_class`` uses at admission), else from the
 kind's resource class occupancy.
 
 ``enabled`` entries are the classes whose schedule lives in the Signals
-Airflow: ``article_curate`` (pg_cron retired 2026-09-07 03:16) and, since
-2026-09-07 evening, the AGENDA PRODUCERS — the four publish slots,
-``prospects_check``, ``cognition_cycle``, ``weekly_signals_summary`` — whose
-Airflow runs end with an Asset event that INITIATES ``agenda_brief`` (user:
-"use Signals via the protocol to arrange Airflow to initiate agenda_brief update
-runs when other workflows perform their updates"). ``agenda_brief`` is
-asset-scheduled ``after`` ANY producer (``after_mode="any"``) and on the day
-rollover (``cron``): time OR assets. Every other entry is catalogued so the
-whole procession is visible in Airflow (materialised PAUSED) before it migrates
-by flipping ``enabled`` — one class at a time, pg_cron retired once the Airflow
-path has proven a run. While a producer's pg_cron job is still active the
-watcher ATTACHES the Airflow run to pg_cron's row of the same class and payload
+Airflow: ``article_curate`` (pg_cron retired 2026-09-07 03:16); the AGENDA
+PRODUCERS — the four publish slots, ``prospects_check``, ``cognition_cycle``,
+``weekly_signals_summary`` — whose Airflow runs end with an Asset event that
+INITIATES ``agenda_brief``; and since 2026-09-12 ``ambient_synthesis`` and
+``fmp_roll`` (pg_cron twins were still launching Metaflow while the DAGs sat
+paused, so GPU burn had no Airflow run). ``agenda_brief`` is asset-scheduled
+``after`` ANY producer (``after_mode="any"``) and on the day rollover (``cron``):
+time OR assets. Every other entry is catalogued so the whole procession is
+visible in Airflow (materialised PAUSED) before it migrates by flipping
+``enabled`` — one class at a time, pg_cron retired once the Airflow path has
+proven a run. While a producer's pg_cron job is still active the watcher
+ATTACHES the Airflow run to pg_cron's row of the same class and payload
 (``services.coordination``) instead of running it twice.
 """
 
@@ -129,13 +129,15 @@ WORKLOAD_CATALOG: tuple[WorkloadEntry, ...] = (
         kind="ambient_synthesis", task_type="ambient_synthesis", payload={}, cron="*/20 * * * *",
         singleton=True, runner=RUNNER_METAFLOW, horizon_s=H1,
         description="ambient synthesis (HN fetch → compact → synthesize on thinking; shared embedding claim)",
-        pg_cron_job="ambient-synthesis",
+        enabled=True, airflow_dag_id="gaius_ambient_synthesis", pg_cron_job="ambient-synthesis",
+        pg_cron_active=False,  # Airflow hub 2026-09-12; pg_cron hid GPU burn from the hub
     ),
     WorkloadEntry(
         kind="fmp_roll", task_type="fmp_roll", payload={}, cron="7,37 * * * *",
         singleton=True, runner=RUNNER_METAFLOW, horizon_s=H3,
         description="FMP market buffer roll (rate-metered API; compaction on thinking)",
-        pg_cron_job="fmp-roll",
+        enabled=True, airflow_dag_id="gaius_fmp_roll", pg_cron_job="fmp-roll",
+        pg_cron_active=False,  # Airflow hub 2026-09-12; pg_cron hid GPU burn from the hub
     ),
     WorkloadEntry(
         kind="clt_skos_admit", task_type="clt_skos_admit", payload={}, cron="*/15 * * * *",

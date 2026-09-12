@@ -1013,8 +1013,8 @@ class GaiusEngine:
                     self._collection_service._axis
                 )
             # (2026-09-04) The axis no longer rolls or compacts in-engine; the
-            # ambient_synthesis flow (pg_cron) writes buffer_entries and this
-            # axis is the read-through view.
+            # ambient_synthesis flow (Airflow since 2026-09-12) writes
+            # buffer_entries and this axis is the read-through view.
             logger.info("Collections service initialized (publishing axis read-through)")
 
             # Update gRPC service registry
