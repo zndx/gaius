@@ -391,8 +391,14 @@ class FakePool:
             return max(times) if times else None
         if sql.startswith("INSERT INTO scheduled_tasks"):
             self._next += 1
-            self.rows.append({"id": self._next, "task_type": args[0], "payload": _json.loads(args[1]), "source": args[2],
-                              "picked_up_at": None, "completed_at": None, "result": None, "error": None})
+            row = {"id": self._next, "task_type": args[0], "payload": _json.loads(args[1]), "source": args[2],
+                   "picked_up_at": None, "completed_at": None, "result": None, "error": None}
+            if "completed_at" in sql:
+                now = datetime.now(timezone.utc)
+                row["picked_up_at"] = now
+                row["completed_at"] = now
+                row["result"] = _json.loads(args[3]) if len(args) > 3 else {"status": "skipped"}
+            self.rows.append(row)
             return self._next
         raise AssertionError(f"unexpected fetchval {sql}")
 
@@ -402,6 +408,8 @@ class FakePool:
             for r in self.rows:
                 if r["id"] == args[0]:
                     r["payload"] = {**(r["payload"] or {}), **_json.loads(args[1])}
+                    if "source" in sql and len(args) >= 3:
+                        r["source"] = args[2]
                     return "UPDATE 1"
             raise AssertionError("no such row")
         raise AssertionError(f"unexpected execute {sql}")
@@ -474,8 +482,8 @@ def test_attaches_to_inflight_row_instead_of_second_enqueue(monkeypatch):
         w.ingest([_own()], NOW)
         acts = await w.workload_pass(NOW)
         assert acts == [("w1", "attached_workload")]
-        assert pool.inserts() == []
         assert live["payload"]["activity_id"] == "w1"
+        assert live["source"] == "airflow"
         assert w.workload_label("w1") == f"article_curate #{live['id']} running"
         assert len(sched.named("RenewActivity")) == 1
 
@@ -513,7 +521,8 @@ def test_attach_is_keyed_by_payload_not_task_type_alone(monkeypatch):
         acts = await w.workload_pass(NOW + 2 * 10**9)
         assert acts == [("a2", "started_workload")]
         assert afternoon["payload"]["activity_id"] == "a1"
-        assert len(pool.inserts()) == 2
+        assert afternoon["source"] == "airflow"
+        assert len(pool.inserts()) == 3  # predawn start + afternoon attach + a2 start
 
     asyncio.run(run())
 
@@ -550,7 +559,9 @@ def test_gate_false_releases_as_skipped(monkeypatch):
     async def run():
         w.ingest([_own()], NOW)
         assert await w.workload_pass(NOW) == [("w1", "skipped")]
-        assert pool.inserts() == []
+        rows = pool.inserts()
+        assert len(rows) == 1 and rows[0]["completed_at"] is not None
+        assert rows[0]["result"]["status"] == "skipped"
         rel = sched.named("ReleaseActivity")
         assert len(rel) == 1 and rel[0]["outcome"].startswith("skipped:")
         assert await w.workload_pass(NOW + 10**9) == []  # released: never reconsidered
@@ -634,7 +645,7 @@ def test_schedule_hints_publish_the_whole_catalogue():
     assert h.source == "airflow" and h.airflow_dag_id == "gaius_article_curate" and h.enabled
     # (2026-09-07) pg_cron classes ARE catalogued now — source pg_cron, paused in Airflow
     roll = by_id["task.fmp_roll"]
-    assert roll.source == "pg_cron" and not roll.enabled and roll.airflow_dag_id == "gaius_fmp_roll"
+    assert roll.source == "airflow" and roll.enabled and roll.airflow_dag_id == "gaius_fmp_roll"
     assert roll.cron == "7,37 * * * *" and roll.runner == "metaflow"
     assert list(by_id["task.clt_skos_label"].after) == ["task.clt_skos_admit"]
 

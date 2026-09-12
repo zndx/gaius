@@ -462,8 +462,18 @@ class CoordinationWatcher:
                 ok = await pool.fetchval(str(gate))
                 if not ok:
                     outcome = f"skipped: {gate} is false"
+                    payload = dict(spec.get("payload") or {})
+                    payload.update({"activity_id": aid, "activity_kind": kind, "source": WORKLOAD_SOURCE})
+                    tid = await pool.fetchval(
+                        "INSERT INTO scheduled_tasks (task_type, payload, source, scheduled_for, picked_up_at, completed_at, result) "
+                        "VALUES ($1, $2::jsonb, $3, NOW(), NOW(), NOW(), $4::jsonb) RETURNING id",
+                        str(spec["task_type"]),
+                        json.dumps(payload),
+                        WORKLOAD_SOURCE,
+                        json.dumps({"status": "skipped", "reason": "gate_false"}),
+                    )
                     await self.release_activity(aid, outcome)
-                    self._workloads[aid] = {"task_id": 0, "task_type": task_type, "state": "skipped", "last_heartbeat_ns": at}
+                    self._workloads[aid] = {"task_id": int(tid), "task_type": task_type, "state": "skipped", "last_heartbeat_ns": at}
                     logger.info("coordination: workload %s for activity %s skipped (%s)", task_type, aid, gate)
                     self._publish(a, "skipped_workload", [], at)
                     return "skipped"
@@ -482,9 +492,10 @@ class CoordinationWatcher:
             if live is not None:
                 tid = int(live["id"])
                 await pool.execute(
-                    "UPDATE scheduled_tasks SET payload = COALESCE(payload, '{}'::jsonb) || $2::jsonb WHERE id = $1",
+                    "UPDATE scheduled_tasks SET payload = COALESCE(payload, '{}'::jsonb) || $2::jsonb, source = $3 WHERE id = $1",
                     tid,
                     json.dumps({"activity_id": aid, "activity_kind": kind}),
+                    WORKLOAD_SOURCE,
                 )
                 action = "attached_workload"
                 state = "running" if live["picked_up_at"] is not None else "queued"
@@ -584,6 +595,8 @@ class CoordinationWatcher:
                 "prospects_check": 36 * 3600,
                 "weekly_signals_summary": 10 * 86400,
                 "publish_cards": 30 * 3600,
+                "ambient_synthesis": 60 * 60,   # 3 × */20
+                "fmp_roll": 90 * 60,            # 3 × :07/:37
             }.get(tt, max(int(entry.horizon_s) * 3, 8 * 3600))
             age = None if last is None else (now - last).total_seconds()
             if last is None or (age is not None and age > limit_s):
