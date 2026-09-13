@@ -65,6 +65,16 @@ GURU_RELEASEFAIL = "#CO.00000007.RELEASEFAIL"     # release refused/unreachable 
 GURU_ENQUEUEFAIL = "#CO.00000008.ENQUEUEFAIL"     # could not start/attach the workload row
 GURU_MISSTICK = "#CO.0000000D.MISSTICK"           # enabled Airflow kind missed its cadence (no pg_cron cover)
 
+# Failed Metaflow ticks book completed_at and used to clear MISSTICK (article_curate
+# 2026-09-13 #ACF.00000007.NOSOURCES). Only success or skip is a hub tick.
+LAST_AIRFLOW_TICK_SQL = (
+    "SELECT max(completed_at) FROM scheduled_tasks "
+    "WHERE task_type = $1 AND source = 'airflow' "
+    "AND completed_at IS NOT NULL "
+    "AND COALESCE(error, '') = '' "
+    "AND COALESCE(result->>'status', 'completed') NOT IN ('failed', 'error')"
+)
+
 # ── workloads Airflow orders (kind → how pg_cron enqueued the same class) ─────
 # (2026-09-07) The WORKLOAD CATALOGUE (services.workload_catalog) is the one
 # source: every scheduled class with pg_cron's task_type / payload / gate
@@ -581,11 +591,7 @@ class CoordinationWatcher:
                 continue
             seen.add(tt)
             try:
-                last = await pool.fetchval(
-                    "SELECT max(completed_at) FROM scheduled_tasks "
-                    "WHERE task_type = $1 AND source = 'airflow'",
-                    tt,
-                )
+                last = await pool.fetchval(LAST_AIRFLOW_TICK_SQL, tt)
             except Exception:  # noqa: BLE001
                 continue
             limit_s = {

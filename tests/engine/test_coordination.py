@@ -347,9 +347,9 @@ class FakePool:
         self.sql: list[str] = []
         self._next = 100
 
-    def add(self, task_type, payload, *, picked=False, completed=None, result=None, error=None):
+    def add(self, task_type, payload, *, picked=False, completed=None, result=None, error=None, source="pg_cron"):
         self._next += 1
-        row = {"id": self._next, "task_type": task_type, "payload": dict(payload), "source": "pg_cron",
+        row = {"id": self._next, "task_type": task_type, "payload": dict(payload), "source": source,
                "picked_up_at": datetime.now(timezone.utc) if picked else None,
                "completed_at": completed, "result": result, "error": error}
         self.rows.append(row)
@@ -383,11 +383,19 @@ class FakePool:
             return self.gate
         if "max(completed_at)" in sql:
             tt = args[0]
-            times = [
-                r["completed_at"]
-                for r in self.rows
-                if r["task_type"] == tt and r.get("source") == "airflow" and r["completed_at"]
-            ]
+            times = []
+            for r in self.rows:
+                if r["task_type"] != tt or r.get("source") != "airflow" or not r["completed_at"]:
+                    continue
+                if r.get("error"):
+                    continue
+                st = ""
+                res = r.get("result")
+                if isinstance(res, dict):
+                    st = str(res.get("status") or "")
+                if st in ("failed", "error"):
+                    continue
+                times.append(r["completed_at"])
             return max(times) if times else None
         if sql.startswith("INSERT INTO scheduled_tasks"):
             self._next += 1
@@ -617,6 +625,65 @@ def test_peer_activity_never_starts_a_workload(monkeypatch):
         assert await w.workload_pass(NOW) == []
         assert pool.inserts() == [] and sched.calls == []
         assert w.missed_ticks  # Airflow miss is visible, not covered by pg_cron
+
+    asyncio.run(run())
+
+
+def test_failed_airflow_tick_does_not_clear_misstick(monkeypatch):
+    from datetime import datetime, timezone
+
+    pool = FakePool()
+    now = datetime.now(timezone.utc)
+    pool.add(
+        "article_curate",
+        {"check_cooldown": True},
+        picked=True,
+        completed=now,
+        result={"status": "failed"},
+        error="NOSOURCES",
+        source="airflow",
+    )
+    w, _ = _watcher(pool, monkeypatch)
+
+    async def run():
+        w.ingest([_act(aid="h1")], NOW)
+        await w.workload_pass(NOW)
+        assert "article_curate" in w.missed_ticks
+
+    asyncio.run(run())
+
+
+def test_skipped_airflow_tick_clears_misstick_for_that_kind(monkeypatch):
+    from datetime import datetime, timezone
+
+    pool = FakePool()
+    now = datetime.now(timezone.utc)
+    for tt in (
+        "article_curate",
+        "cognition_cycle",
+        "agenda_brief",
+        "prospects_check",
+        "weekly_signals_summary",
+        "publish_cards",
+        "ambient_synthesis",
+        "fmp_roll",
+    ):
+        pool.add(tt, {}, picked=True, completed=now, result={"status": "completed"}, source="airflow")
+    pool.add(
+        "prospects_check",
+        {},
+        picked=True,
+        completed=now,
+        result={"status": "skipped", "reason": "gate_false"},
+        source="airflow",
+    )
+    w, _ = _watcher(pool, monkeypatch)
+
+    async def run():
+        w.ingest([_act(aid="h1")], NOW)
+        await w.workload_pass(NOW)
+        assert "prospects_check" not in w.missed_ticks
+        assert "article_curate" not in w.missed_ticks
 
     asyncio.run(run())
 
