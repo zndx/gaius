@@ -526,14 +526,14 @@ def arxiv_published_date(arxiv_id: str, timeout_s: float = 10.0) -> Optional[dat
     """The paper's REAL first-version date from the arXiv API (`<published>`),
     or None when the API does not answer — the caller then keeps the id-month
     lower bound rather than a guess. One GET, no retries: a date is metadata."""
-    import urllib.request
     from datetime import datetime as _dt
     from xml.etree import ElementTree as _ET
 
     url = f"https://export.arxiv.org/api/query?id_list={arxiv_id}"
     try:
-        with urllib.request.urlopen(url, timeout=timeout_s) as resp:  # noqa: S310 — fixed host
-            root = _ET.fromstring(resp.read())
+        from gaius.flows.article_curation.arxiv_client import arxiv_get_sync
+
+        root = _ET.fromstring(arxiv_get_sync(url, timeout=timeout_s))
     except Exception:  # noqa: BLE001 — unreachable API = no real date, said by the None
         return None
     ns = {"a": "http://www.w3.org/2005/Atom"}

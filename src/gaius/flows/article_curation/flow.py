@@ -887,7 +887,6 @@ Respond with JSON:
         import httpx
         import feedparser
         import re
-        from urllib.parse import urlencode
 
         categories = hints.get("arxiv_categories")
         if not categories:
@@ -948,42 +947,35 @@ Respond with JSON:
             "sortOrder": "descending",
         }
 
-        url = f"https://export.arxiv.org/api/query?{urlencode(params)}"
+        from gaius.flows.article_curation.arxiv_client import arxiv_get, query_url
+
+        url = query_url(params)
         logger.debug(f"arXiv query: {search_query}")
 
         try:
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                response = await client.get(url)
+            response = await arxiv_get(url)
+            feed = feedparser.parse(response.text)
+            sources = []
 
-                if response.status_code != 200:
-                    raise RuntimeError(
-                        f"arXiv API returned status {response.status_code}.\n"
-                        "  Guru Meditation: #ACF.00000007.NOSOURCES\n"
-                        "  Check network connectivity and arXiv API status"
-                    )
+            for entry in feed.entries:
+                sources.append(AcquiredSource.from_fetcher_result(
+                    source_type="arxiv",
+                    url=entry.get("link", ""),
+                    title=entry.get("title", "").replace("\n", " ").strip(),
+                    summary=entry.get("summary", "").strip()[:500],
+                    metadata={
+                        "authors": [a.get("name", "") for a in entry.get("authors", [])],
+                        "categories": [t.get("term", "") for t in entry.get("tags", [])],
+                        # Publication date rides to the source file and on to
+                        # the card's source_date — the content_currency intent
+                        # objective was blind to curated cards without it
+                        # (2026-09-03: 374 cards, every curation batch, NULL).
+                        "published": entry.get("published", ""),
+                        "updated": entry.get("updated", ""),
+                    },
+                ))
 
-                feed = feedparser.parse(response.text)
-                sources = []
-
-                for entry in feed.entries:
-                    sources.append(AcquiredSource.from_fetcher_result(
-                        source_type="arxiv",
-                        url=entry.get("link", ""),
-                        title=entry.get("title", "").replace("\n", " ").strip(),
-                        summary=entry.get("summary", "").strip()[:500],
-                        metadata={
-                            "authors": [a.get("name", "") for a in entry.get("authors", [])],
-                            "categories": [t.get("term", "") for t in entry.get("tags", [])],
-                            # Publication date rides to the source file and on to
-                            # the card's source_date — the content_currency intent
-                            # objective was blind to curated cards without it
-                            # (2026-09-03: 374 cards, every curation batch, NULL).
-                            "published": entry.get("published", ""),
-                            "updated": entry.get("updated", ""),
-                        },
-                    ))
-
-                return sources[:int(self.max_sources)]
+            return sources[:int(self.max_sources)]
 
         except httpx.RequestError as e:
             raise RuntimeError(
