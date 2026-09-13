@@ -392,8 +392,8 @@ class FakePool:
                 st = ""
                 res = r.get("result")
                 if isinstance(res, dict):
-                    st = str(res.get("status") or "")
-                if st in ("failed", "error"):
+                    st = str(res.get("status") or "") or "completed"
+                if st not in ("completed", "ok", "success"):
                     continue
                 times.append(r["completed_at"])
             return max(times) if times else None
@@ -653,8 +653,31 @@ def test_failed_airflow_tick_does_not_clear_misstick(monkeypatch):
     asyncio.run(run())
 
 
-def test_skipped_airflow_tick_clears_misstick_for_that_kind(monkeypatch):
+def test_skipped_airflow_tick_does_not_count_as_success(monkeypatch):
     from datetime import datetime, timezone
+
+    pool = FakePool()
+    now = datetime.now(timezone.utc)
+    pool.add(
+        "prospects_check",
+        {},
+        picked=True,
+        completed=now,
+        result={"status": "skipped", "reason": "gate_false"},
+        source="airflow",
+    )
+    w, _ = _watcher(pool, monkeypatch)
+
+    async def run():
+        w.ingest([_act(aid="h1")], NOW)
+        await w.workload_pass(NOW)
+        assert "prospects_check" in w.missed_ticks
+
+    asyncio.run(run())
+
+
+def test_prior_success_still_counts_when_later_tick_skipped(monkeypatch):
+    from datetime import datetime, timezone, timedelta
 
     pool = FakePool()
     now = datetime.now(timezone.utc)
@@ -673,7 +696,7 @@ def test_skipped_airflow_tick_clears_misstick_for_that_kind(monkeypatch):
         "prospects_check",
         {},
         picked=True,
-        completed=now,
+        completed=now + timedelta(seconds=1),
         result={"status": "skipped", "reason": "gate_false"},
         source="airflow",
     )
@@ -683,7 +706,6 @@ def test_skipped_airflow_tick_clears_misstick_for_that_kind(monkeypatch):
         w.ingest([_act(aid="h1")], NOW)
         await w.workload_pass(NOW)
         assert "prospects_check" not in w.missed_ticks
-        assert "article_curate" not in w.missed_ticks
 
     asyncio.run(run())
 

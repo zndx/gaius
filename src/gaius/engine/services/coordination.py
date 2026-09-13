@@ -65,14 +65,16 @@ GURU_RELEASEFAIL = "#CO.00000007.RELEASEFAIL"     # release refused/unreachable 
 GURU_ENQUEUEFAIL = "#CO.00000008.ENQUEUEFAIL"     # could not start/attach the workload row
 GURU_MISSTICK = "#CO.0000000D.MISSTICK"           # enabled Airflow kind missed its cadence (no pg_cron cover)
 
-# Failed Metaflow ticks book completed_at and used to clear MISSTICK (article_curate
-# 2026-09-13 #ACF.00000007.NOSOURCES). Only success or skip is a hub tick.
+# Failed and skipped ticks book completed_at and used to clear MISSTICK
+# (article_curate 2026-09-13 NOSOURCES; prospects_check gate_false skip).
+# Only a completed run that produced the intended result is a hub tick.
 LAST_AIRFLOW_TICK_SQL = (
     "SELECT max(completed_at) FROM scheduled_tasks "
     "WHERE task_type = $1 AND source = 'airflow' "
     "AND completed_at IS NOT NULL "
     "AND COALESCE(error, '') = '' "
-    "AND COALESCE(result->>'status', 'completed') NOT IN ('failed', 'error')"
+    "AND COALESCE(NULLIF(result->>'status', ''), 'completed') "
+    "IN ('completed', 'ok', 'success')"
 )
 
 # ── workloads Airflow orders (kind → how pg_cron enqueued the same class) ─────
@@ -575,10 +577,11 @@ class CoordinationWatcher:
         return "error" if row["error"] else "completed"
 
     async def _flag_missed_airflow(self, pool: Any, at: int) -> None:
-        """Enabled kinds with no recent Airflow completion are a hub failure.
+        """Enabled kinds with no recent Airflow *success* are a hub failure.
 
         pg_cron rows do not count — that is how publish looked healthy while
-        WatchActivities was dead.
+        WatchActivities was dead. Failed and skipped rows book completed_at
+        but did not achieve the intended result; they do not count.
         """
         from datetime import datetime, timezone
 
