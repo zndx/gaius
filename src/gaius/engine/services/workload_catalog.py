@@ -257,9 +257,10 @@ WORKLOAD_CATALOG: tuple[WorkloadEntry, ...] = (
         pg_cron_job="weekly-summary",
     ),
     WorkloadEntry(
-        kind="weekly_signals_summary", task_type="weekly_signals_summary", payload={"previous": True},
-        cron="0 15 * * 1", gate_sql="SELECT meta.should_run_weekly_signals_summary()", singleton=True,
-        horizon_s=H3, description="weekly Signals summary (Monday) — agenda producer",
+        kind="weekly_signals_summary", task_type="weekly_signals_summary", payload={"previous": False},
+        cron="0 6 * * 5", timezone="America/Denver",
+        gate_sql="SELECT meta.should_run_weekly_signals_summary()", singleton=True,
+        horizon_s=H3, description="weekly Signals summary (Friday 06:00 America/Denver) — agenda producer",
         enabled=True, airflow_dag_id="gaius_weekly_signals_summary", pg_cron_job="weekly-signals-summary",
         pg_cron_active=False,
     ),

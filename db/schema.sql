@@ -1,7 +1,7 @@
-\restrict EkR3l6PfIHFSPOxDGOLf2i2NrEJNUNN9Xjb8qktk52bDptNmb1CnmrpUXdASvfF
+\restrict GhEDvJIPzQv6ekkxTNvm2XfMesFB0PCcHpcIYQ0LNBanTJfVrzLAN7HdUADk2jS
 
--- Dumped from database version 16.10
--- Dumped by pg_dump version 16.10
+-- Dumped from database version 16.11
+-- Dumped by pg_dump version 16.11
 
 SET statement_timeout = 0;
 SET lock_timeout = 0;
@@ -13,13 +13,6 @@ SET check_function_bodies = false;
 SET xmloption = content;
 SET client_min_messages = warning;
 SET row_security = off;
-
---
--- Name: ag_catalog; Type: SCHEMA; Schema: -; Owner: -
---
-
-CREATE SCHEMA ag_catalog;
-
 
 --
 -- Name: bases; Type: SCHEMA; Schema: -; Owner: -
@@ -64,13 +57,6 @@ COMMENT ON EXTENSION pg_cron IS 'Job scheduler for PostgreSQL';
 
 
 --
--- Name: gaius_hx; Type: SCHEMA; Schema: -; Owner: -
---
-
-CREATE SCHEMA gaius_hx;
-
-
---
 -- Name: meta; Type: SCHEMA; Schema: -; Owner: -
 --
 
@@ -85,17 +71,17 @@ COMMENT ON SCHEMA meta IS 'MetaAgent analytics tables for Metabase dashboards';
 
 
 --
--- Name: age; Type: EXTENSION; Schema: -; Owner: -
+-- Name: nautilus; Type: SCHEMA; Schema: -; Owner: -
 --
 
-CREATE EXTENSION IF NOT EXISTS age WITH SCHEMA ag_catalog;
+CREATE SCHEMA nautilus;
 
 
 --
--- Name: EXTENSION age; Type: COMMENT; Schema: -; Owner: -
+-- Name: SCHEMA nautilus; Type: COMMENT; Schema: -; Owner: -
 --
 
-COMMENT ON EXTENSION age IS 'AGE database extension';
+COMMENT ON SCHEMA nautilus IS 'Resident Nautilus supervisor contract rows. The supervisor writes; the engine reads. Product rows (backlog cells, supervisor events, positions) are NOT here — they are Kudu tier0 via the impala_fdw foreign tables nautilus_*_tier0 (THS pattern).';
 
 
 --
@@ -248,7 +234,6 @@ CREATE TYPE public.source_type AS ENUM (
     'scraper',
     'philpapers',
     'docs',
-    'brave',
     'philevents'
 );
 
@@ -359,6 +344,23 @@ $$;
 
 
 --
+-- Name: mark_curation_started(text); Type: FUNCTION; Schema: collections; Owner: -
+--
+
+CREATE FUNCTION collections.mark_curation_started(p_slug text DEFAULT NULL::text) RETURNS void
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+    UPDATE collections.curation_state
+    SET last_run_at = NOW(),
+        last_article_slug = COALESCE(p_slug, last_article_slug),
+        run_count = run_count + 1
+    WHERE key = 'article_curate';
+END;
+$$;
+
+
+--
 -- Name: publish_cards(integer); Type: FUNCTION; Schema: collections; Owner: -
 --
 
@@ -398,6 +400,43 @@ COMMENT ON FUNCTION collections.publish_cards(card_count integer) IS 'Publish N 
 
 
 --
+-- Name: record_content_event(); Type: FUNCTION; Schema: collections; Owner: -
+--
+
+CREATE FUNCTION collections.record_content_event() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+    v_kind   TEXT := TG_ARGV[0];
+    v_id     TEXT;
+    v_url    TEXT;
+    v_title  TEXT;
+    v_reason TEXT := COALESCE(NULLIF(current_setting('gaius.content_reason', true), ''),
+                              NULLIF(current_setting('gaius.card_reason', true), ''));
+    v_actor  TEXT := COALESCE(NULLIF(current_setting('gaius.content_actor', true), ''),
+                              NULLIF(current_setting('gaius.card_actor', true), ''),
+                              current_user);
+BEGIN
+    IF v_kind = 'card' THEN
+        v_id := NEW.card_id; v_url := NEW.source_url; v_title := NEW.title;
+    ELSIF v_kind = 'article' THEN
+        v_id := NEW.article_id; v_url := NEW.external_url; v_title := NEW.title;
+    ELSE
+        RAISE EXCEPTION 'record_content_event: unknown content_kind %', v_kind;
+    END IF;
+    IF TG_OP = 'INSERT' THEN
+        INSERT INTO collections.content_events (content_kind, content_id, from_status, to_status, reason, actor, source_url, title)
+        VALUES (v_kind, v_id, NULL, NEW.status, v_reason, v_actor, v_url, LEFT(v_title, 200));
+    ELSIF NEW.status IS DISTINCT FROM OLD.status THEN
+        INSERT INTO collections.content_events (content_kind, content_id, from_status, to_status, reason, actor, source_url, title)
+        VALUES (v_kind, v_id, OLD.status, NEW.status, v_reason, v_actor, v_url, LEFT(v_title, 200));
+    END IF;
+    RETURN NEW;
+END;
+$$;
+
+
+--
 -- Name: set_updated_at(); Type: FUNCTION; Schema: collections; Owner: -
 --
 
@@ -409,6 +448,39 @@ BEGIN
     RETURN NEW;
 END;
 $$;
+
+
+--
+-- Name: should_run_curation(); Type: FUNCTION; Schema: collections; Owner: -
+--
+
+CREATE FUNCTION collections.should_run_curation() RETURNS boolean
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+    v_last_run TIMESTAMPTZ;
+    v_hours_since NUMERIC;
+BEGIN
+    SELECT last_run_at INTO v_last_run
+    FROM collections.curation_state
+    WHERE key = 'article_curate';
+
+    IF v_last_run IS NULL THEN
+        RETURN TRUE;
+    END IF;
+
+    v_hours_since := EXTRACT(EPOCH FROM (NOW() - v_last_run)) / 3600;
+    RETURN v_hours_since >= 36;
+END;
+$$;
+
+
+--
+-- Name: FUNCTION should_run_curation(); Type: COMMENT; Schema: collections; Owner: -
+--
+
+COMMENT ON FUNCTION collections.should_run_curation() IS 'Returns TRUE if 36+ hours have passed since last curation run.
+Called by pg_cron job to enforce cooldown period.';
 
 
 --
@@ -541,6 +613,66 @@ COMMENT ON FUNCTION meta.cron_job_status() IS 'Check status of meta observabilit
 
 
 --
+-- Name: mark_board_reindex_started(bigint, integer); Type: FUNCTION; Schema: meta; Owner: -
+--
+
+CREATE FUNCTION meta.mark_board_reindex_started(p_generation bigint DEFAULT NULL::bigint, p_n_documents integer DEFAULT NULL::integer) RETURNS void
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+    UPDATE meta.board_reindex_state
+    SET last_run_at = NOW(),
+        run_count = run_count + 1,
+        last_generation = COALESCE(p_generation, last_generation),
+        last_n_documents = COALESCE(p_n_documents, last_n_documents)
+    WHERE key = 'board_reindex';
+END;
+$$;
+
+
+--
+-- Name: mark_prospects_check_started(); Type: FUNCTION; Schema: meta; Owner: -
+--
+
+CREATE FUNCTION meta.mark_prospects_check_started() RETURNS void
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+    UPDATE meta.prospects_cron_state
+    SET last_run_at = NOW(),
+        run_count = run_count + 1
+    WHERE key = 'prospects_check';
+END;
+$$;
+
+
+--
+-- Name: FUNCTION mark_prospects_check_started(); Type: COMMENT; Schema: meta; Owner: -
+--
+
+COMMENT ON FUNCTION meta.mark_prospects_check_started() IS 'Updates last_run_at and increments run_count. Called by the
+ScheduledTaskProcessor handler after picking up a prospects_check task.';
+
+
+--
+-- Name: mark_weekly_signals_summary_started(text, text); Type: FUNCTION; Schema: meta; Owner: -
+--
+
+CREATE FUNCTION meta.mark_weekly_signals_summary_started(p_iso_week text DEFAULT NULL::text, p_path text DEFAULT NULL::text) RETURNS void
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+    UPDATE meta.weekly_signals_summary_state
+    SET last_run_at = NOW(),
+        run_count = run_count + 1,
+        last_iso_week = COALESCE(p_iso_week, last_iso_week),
+        last_path = COALESCE(p_path, last_path)
+    WHERE key = 'weekly_signals_summary';
+END;
+$$;
+
+
+--
 -- Name: notify_article_curation_progress(); Type: FUNCTION; Schema: meta; Owner: -
 --
 
@@ -572,52 +704,6 @@ $$;
 --
 
 COMMENT ON FUNCTION meta.notify_article_curation_progress() IS 'Push article curation progress events via pg_notify on insert';
-
-
---
--- Name: notify_flow_event(); Type: FUNCTION; Schema: meta; Owner: -
---
-
-CREATE FUNCTION meta.notify_flow_event() RETURNS trigger
-    LANGUAGE plpgsql
-    AS $$
-BEGIN
-    -- Only notify on status changes to completed/failed
-    IF NEW.status IN ('completed', 'failed') AND
-       (OLD.status IS NULL OR OLD.status != NEW.status) THEN
-
-        -- Send notification to channel
-        PERFORM pg_notify(
-            'flow_events',
-            json_build_object(
-                'run_id', NEW.run_id::text,
-                'flow_type', NEW.flow_type,
-                'status', NEW.status,
-                'started_at', COALESCE(NEW.started_at::text, ''),
-                'completed_at', COALESCE(NEW.completed_at::text, ''),
-                'duration_ms', COALESCE(NEW.duration_ms, 0)
-            )::text
-        );
-
-        -- Insert audit record
-        INSERT INTO meta.flow_events (
-            run_id, flow_type, status, started_at, completed_at, duration_ms
-        ) VALUES (
-            NEW.run_id, NEW.flow_type, NEW.status,
-            NEW.started_at, NEW.completed_at, NEW.duration_ms
-        );
-    END IF;
-
-    RETURN NEW;
-END;
-$$;
-
-
---
--- Name: FUNCTION notify_flow_event(); Type: COMMENT; Schema: meta; Owner: -
---
-
-COMMENT ON FUNCTION meta.notify_flow_event() IS 'Trigger function for flow completion LISTEN/NOTIFY';
 
 
 --
@@ -712,6 +798,88 @@ $$;
 
 
 --
+-- Name: should_run_board_reindex(); Type: FUNCTION; Schema: meta; Owner: -
+--
+
+CREATE FUNCTION meta.should_run_board_reindex() RETURNS boolean
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+    v_last_run TIMESTAMPTZ;
+BEGIN
+    SELECT last_run_at INTO v_last_run
+    FROM meta.board_reindex_state
+    WHERE key = 'board_reindex';
+
+    IF v_last_run IS NULL THEN
+        RETURN TRUE;
+    END IF;
+
+    RETURN EXTRACT(EPOCH FROM (NOW() - v_last_run)) >= 60;
+END;
+$$;
+
+
+--
+-- Name: should_run_prospects_check(); Type: FUNCTION; Schema: meta; Owner: -
+--
+
+CREATE FUNCTION meta.should_run_prospects_check() RETURNS boolean
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+    v_last_run TIMESTAMPTZ;
+    v_hours_since NUMERIC;
+BEGIN
+    SELECT last_run_at INTO v_last_run
+    FROM meta.prospects_cron_state
+    WHERE key = 'prospects_check';
+
+    IF v_last_run IS NULL THEN
+        RETURN TRUE;
+    END IF;
+
+    v_hours_since := EXTRACT(EPOCH FROM (NOW() - v_last_run)) / 3600;
+    RETURN v_hours_since >= 24;
+END;
+$$;
+
+
+--
+-- Name: FUNCTION should_run_prospects_check(); Type: COMMENT; Schema: meta; Owner: -
+--
+
+COMMENT ON FUNCTION meta.should_run_prospects_check() IS 'Returns TRUE if 24+ hours have passed since last prospects check.
+Called by pg_cron job to enforce cooldown period.';
+
+
+--
+-- Name: should_run_weekly_signals_summary(); Type: FUNCTION; Schema: meta; Owner: -
+--
+
+CREATE FUNCTION meta.should_run_weekly_signals_summary() RETURNS boolean
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+    v_last_week TEXT;
+    v_this_week TEXT;
+BEGIN
+    SELECT last_iso_week INTO v_last_week
+    FROM meta.weekly_signals_summary_state
+    WHERE key = 'weekly_signals_summary';
+
+    v_this_week := to_char((NOW() AT TIME ZONE 'America/Denver')::date, 'IYYY-"W"IW');
+
+    IF v_last_week IS NULL THEN
+        RETURN TRUE;
+    END IF;
+
+    RETURN v_last_week <> v_this_week;
+END;
+$$;
+
+
+--
 -- Name: start_fmp_sync_run(character varying, character varying, character varying); Type: FUNCTION; Schema: meta; Owner: -
 --
 
@@ -770,20 +938,6 @@ $$;
 --
 
 COMMENT ON FUNCTION meta.sync_prospect_watchlist(p_symbols character varying[], p_profile character varying) IS 'Sync watchlist config to DB: activate configured symbols, archive removed ones';
-
-
---
--- Name: update_flow_runs_timestamp(); Type: FUNCTION; Schema: meta; Owner: -
---
-
-CREATE FUNCTION meta.update_flow_runs_timestamp() RETURNS trigger
-    LANGUAGE plpgsql
-    AS $$
-BEGIN
-    NEW.updated_at = NOW();
-    RETURN NEW;
-END;
-$$;
 
 
 --
@@ -1158,28 +1312,6 @@ $$;
 --
 
 COMMENT ON FUNCTION public.count_exact_duplicates(p_content_hash text, p_profile text, p_days integer) IS 'Count exact hash matches (semantic similarity uses Qdrant)';
-
-
---
--- Name: count_similar_thoughts(text, text, integer); Type: FUNCTION; Schema: public; Owner: -
---
-
-CREATE FUNCTION public.count_similar_thoughts(p_content_hash text, p_profile text DEFAULT 'default'::text, p_days integer DEFAULT 7) RETURNS integer
-    LANGUAGE sql STABLE
-    AS $$
-    SELECT COUNT(*)::INTEGER
-    FROM cognition_thoughts
-    WHERE content_hash = p_content_hash
-      AND profile_name = p_profile
-      AND created_at > NOW() - (p_days || ' days')::INTERVAL;
-$$;
-
-
---
--- Name: FUNCTION count_similar_thoughts(p_content_hash text, p_profile text, p_days integer); Type: COMMENT; Schema: public; Owner: -
---
-
-COMMENT ON FUNCTION public.count_similar_thoughts(p_content_hash text, p_profile text, p_days integer) IS 'Count recent thoughts with same content hash';
 
 
 --
@@ -1568,6 +1700,89 @@ $$;
 
 
 --
+-- Name: gpu_metrics_settle(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.gpu_metrics_settle() RETURNS jsonb
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+  rec RECORD;
+  now_h integer;
+  ice_n bigint;
+  dropped integer[] := ARRAY[]::integer[];
+BEGIN
+  now_h := floor(extract(epoch FROM clock_timestamp()) / 3600)::integer;
+  FOR rec IN
+    SELECT epoch_hour, count(*)::bigint AS n
+      FROM gpu_metrics_tier0
+     GROUP BY epoch_hour
+  LOOP
+    IF rec.epoch_hour >= now_h THEN
+      CONTINUE;  -- live hour stays on Kudu
+    END IF;
+    SELECT count(*) INTO ice_n
+      FROM gpu_metrics_tier1
+     WHERE epoch_hour = rec.epoch_hour;
+    IF ice_n IS NULL OR ice_n = 0 THEN
+      RAISE EXCEPTION
+        '#SL.00000026.SETTLE iceberg missing hour % — analog first (Metaflow GpuMetricsSettle)',
+        rec.epoch_hour;
+    END IF;
+    IF ice_n < rec.n THEN
+      RAISE EXCEPTION
+        '#SL.00000026.SETTLE refuse DROP hour % ice % < kudu %',
+        rec.epoch_hour, ice_n, rec.n;
+    END IF;
+    PERFORM impala_fdw_exec(
+      'impala_kudu_srv',
+      format(
+        'ALTER TABLE signals_dataproducts.gpu_metrics_tier0 DROP RANGE PARTITION VALUE = %s',
+        rec.epoch_hour
+      )
+    );
+    dropped := array_append(dropped, rec.epoch_hour);
+  END LOOP;
+  RETURN jsonb_build_object('dropped', dropped, 'now_hour', now_h);
+END;
+$$;
+
+
+--
+-- Name: FUNCTION gpu_metrics_settle(); Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON FUNCTION public.gpu_metrics_settle() IS 'Iceberg-verify then Kudu DROP RANGE for closed gpu_metrics hours. Live hour is skipped. Fail-closed if analog is missing.';
+
+
+--
+-- Name: impala_fdw_exec(text, text); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.impala_fdw_exec(server_name text, sql text) RETURNS text
+    LANGUAGE c STRICT
+    AS '/home/rch/local/src/zndx/gaius/.devenv/pg-ext/lib/impala_fdw.so', 'impala_fdw_exec';
+
+
+--
+-- Name: impala_fdw_handler(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.impala_fdw_handler() RETURNS fdw_handler
+    LANGUAGE c STRICT
+    AS '/home/rch/local/src/zndx/gaius/.devenv/pg-ext/lib/impala_fdw.so', 'impala_fdw_handler';
+
+
+--
+-- Name: impala_fdw_validator(text[], oid); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.impala_fdw_validator(text[], oid) RETURNS void
+    LANGUAGE c STRICT
+    AS '/home/rch/local/src/zndx/gaius/.devenv/pg-ext/lib/impala_fdw.so', 'impala_fdw_validator';
+
+
+--
 -- Name: increment_ambient_cycle(integer, integer); Type: FUNCTION; Schema: public; Owner: -
 --
 
@@ -1609,6 +1824,53 @@ $$;
 COMMENT ON FUNCTION public.is_duplicate_thought(p_content_hash text, p_profile text) IS 'Check if exact content hash exists (semantic similarity uses Qdrant)';
 
 
+--
+-- Name: mark_clt_skos_started(text, text); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.mark_clt_skos_started(p_key text, p_run_id text DEFAULT NULL::text) RETURNS void
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+    UPDATE public.clt_skos_clock
+       SET last_run_at = NOW(),
+           run_count = run_count + 1,
+           last_run_id = COALESCE(p_run_id, last_run_id)
+     WHERE key = p_key;
+END;
+$$;
+
+
+--
+-- Name: notify_scheduled_task(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.notify_scheduled_task() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+    -- Send notification with task_type and id for efficient pickup
+    PERFORM pg_notify(
+        'scheduled_task_ready',
+        json_build_object(
+            'id', NEW.id,
+            'task_type', NEW.task_type,
+            'scheduled_for', NEW.scheduled_for
+        )::text
+    );
+    RETURN NEW;
+END;
+$$;
+
+
+--
+-- Name: FUNCTION notify_scheduled_task(); Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON FUNCTION public.notify_scheduled_task() IS 'Sends pg_notify on scheduled_task_ready channel when new task is inserted.
+Engine listens on this channel to process tasks in real-time.';
+
+
 SET default_tablespace = '';
 
 SET default_table_access_method = heap;
@@ -1628,7 +1890,8 @@ CREATE TABLE public.scheduled_tasks (
     completed_at timestamp with time zone,
     result jsonb,
     error text,
-    created_at timestamp with time zone DEFAULT now() NOT NULL
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    heartbeat_at timestamp with time zone
 );
 
 
@@ -1637,6 +1900,13 @@ CREATE TABLE public.scheduled_tasks (
 --
 
 COMMENT ON TABLE public.scheduled_tasks IS 'Generic task dispatch for pg_cron and daemon execution';
+
+
+--
+-- Name: COLUMN scheduled_tasks.heartbeat_at; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.scheduled_tasks.heartbeat_at IS 'Last progress signal from the handler (spawned-flow output line, throttled ~60 s). The task-watchdog resets on silence since COALESCE(heartbeat_at, picked_up_at), never on age alone.';
 
 
 --
@@ -1680,7 +1950,7 @@ $$;
 -- Name: FUNCTION pick_up_task(p_task_types text[]); Type: COMMENT; Schema: public; Owner: -
 --
 
-COMMENT ON FUNCTION public.pick_up_task(p_task_types text[]) IS 'Atomically claim a pending task for execution';
+COMMENT ON FUNCTION public.pick_up_task(p_task_types text[]) IS 'Atomically claim a pending (not completed) task for execution';
 
 
 --
@@ -1946,6 +2216,37 @@ $$;
 
 
 --
+-- Name: should_run_clt_skos(text); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.should_run_clt_skos(p_key text) RETURNS boolean
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+    v_last TIMESTAMPTZ;
+    v_task TEXT;
+BEGIN
+    SELECT last_run_at INTO v_last
+      FROM public.clt_skos_clock
+     WHERE key = p_key;
+    v_task := CASE WHEN p_key = 'label' THEN 'clt_skos_label' ELSE 'clt_skos_admit' END;
+    IF EXISTS (
+        SELECT 1 FROM scheduled_tasks
+         WHERE task_type = v_task
+           AND picked_up_at IS NULL
+           AND completed_at IS NULL
+    ) THEN
+        RETURN FALSE;
+    END IF;
+    IF v_last IS NULL THEN
+        RETURN TRUE;
+    END IF;
+    RETURN EXTRACT(EPOCH FROM (NOW() - v_last)) >= 600;
+END;
+$$;
+
+
+--
 -- Name: start_archive_sync(integer, text, text); Type: FUNCTION; Schema: public; Owner: -
 --
 
@@ -2044,6 +2345,8 @@ CREATE TABLE public.ambient_daemon_state (
     started_at timestamp with time zone,
     stopped_at timestamp with time zone,
     updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    operator_disabled boolean DEFAULT false NOT NULL,
+    preempted boolean DEFAULT false NOT NULL,
     CONSTRAINT ambient_daemon_state_singleton CHECK ((id = 1))
 );
 
@@ -2053,6 +2356,20 @@ CREATE TABLE public.ambient_daemon_state (
 --
 
 COMMENT ON TABLE public.ambient_daemon_state IS 'Singleton table for ambient daemon state persistence. Auto-restart on engine restart.';
+
+
+--
+-- Name: COLUMN ambient_daemon_state.operator_disabled; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.ambient_daemon_state.operator_disabled IS 'True after explicit /ambient stop. Engine start will not auto-start.';
+
+
+--
+-- Name: COLUMN ambient_daemon_state.preempted; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.ambient_daemon_state.preempted IS 'True while YK Yield paused GPU phases. RAM buffer stays.';
 
 
 --
@@ -2700,6 +3017,46 @@ $$;
 
 
 --
+-- Name: impala_fdw; Type: FOREIGN DATA WRAPPER; Schema: -; Owner: -
+--
+
+CREATE FOREIGN DATA WRAPPER impala_fdw HANDLER public.impala_fdw_handler VALIDATOR public.impala_fdw_validator;
+
+
+--
+-- Name: impala_kudu_srv; Type: SERVER; Schema: -; Owner: -
+--
+
+CREATE SERVER impala_kudu_srv FOREIGN DATA WRAPPER impala_fdw OPTIONS (
+    auth 'kerberos',
+    default_access 'auto',
+    host 'tinybox.dev.vista.zndx.org',
+    kudu_masters 'tinybox.dev.vista.zndx.org:7051',
+    port '21050'
+);
+
+
+--
+-- Name: USER MAPPING gaius SERVER impala_kudu_srv; Type: USER MAPPING; Schema: -; Owner: -
+--
+
+CREATE USER MAPPING FOR gaius SERVER impala_kudu_srv OPTIONS (
+    keytab '/home/rch/local/src/wxs/signals/.devenv/kdc/signals.keytab',
+    principal 'signals@DEV.VISTA.ZNDX.ORG'
+);
+
+
+--
+-- Name: USER MAPPING rch SERVER impala_kudu_srv; Type: USER MAPPING; Schema: -; Owner: -
+--
+
+CREATE USER MAPPING FOR rch SERVER impala_kudu_srv OPTIONS (
+    keytab '/home/rch/local/src/wxs/signals/.devenv/kdc/signals.keytab',
+    principal 'signals@DEV.VISTA.ZNDX.ORG'
+);
+
+
+--
 -- Name: bases; Type: TABLE; Schema: bases; Owner: -
 --
 
@@ -2914,6 +3271,27 @@ CREATE TABLE collections.acquired_sources (
 
 
 --
+-- Name: TABLE acquired_sources; Type: COMMENT; Schema: collections; Owner: -
+--
+
+COMMENT ON TABLE collections.acquired_sources IS 'External sources acquired via ACP fetchers';
+
+
+--
+-- Name: COLUMN acquired_sources.source_id; Type: COMMENT; Schema: collections; Owner: -
+--
+
+COMMENT ON COLUMN collections.acquired_sources.source_id IS 'Format: src_{type}_{hash[:12]}';
+
+
+--
+-- Name: COLUMN acquired_sources.dedupe_similarity; Type: COMMENT; Schema: collections; Owner: -
+--
+
+COMMENT ON COLUMN collections.acquired_sources.dedupe_similarity IS 'Semantic similarity to KB (reject if > 0.92)';
+
+
+--
 -- Name: article_references; Type: TABLE; Schema: collections; Owner: -
 --
 
@@ -2929,6 +3307,27 @@ CREATE TABLE collections.article_references (
     iao_type text DEFAULT 'IAO:0000300'::text,
     created_at timestamp with time zone DEFAULT now()
 );
+
+
+--
+-- Name: TABLE article_references; Type: COMMENT; Schema: collections; Owner: -
+--
+
+COMMENT ON TABLE collections.article_references IS 'BFO-grounded references with character offsets';
+
+
+--
+-- Name: COLUMN article_references.ref_start; Type: COMMENT; Schema: collections; Owner: -
+--
+
+COMMENT ON COLUMN collections.article_references.ref_start IS 'Character offset start in article body';
+
+
+--
+-- Name: COLUMN article_references.iao_type; Type: COMMENT; Schema: collections; Owner: -
+--
+
+COMMENT ON COLUMN collections.article_references.iao_type IS 'IAO ontology type (default: IAO:0000300 textual entity)';
 
 
 --
@@ -2958,6 +3357,27 @@ CREATE TABLE collections.articles (
     CONSTRAINT articles_external_platform_check CHECK ((external_platform = ANY (ARRAY['substack'::text, 'x_thread'::text, 'medium'::text, 'custom'::text]))),
     CONSTRAINT articles_status_check CHECK ((status = ANY (ARRAY['pending'::text, 'researching'::text, 'drafting'::text, 'review'::text, 'published'::text, 'abandoned'::text])))
 );
+
+
+--
+-- Name: TABLE articles; Type: COMMENT; Schema: collections; Owner: -
+--
+
+COMMENT ON TABLE collections.articles IS 'KB article state tracking for ArticleCurationFlow';
+
+
+--
+-- Name: COLUMN articles.status; Type: COMMENT; Schema: collections; Owner: -
+--
+
+COMMENT ON COLUMN collections.articles.status IS 'Article lifecycle: pending → researching → drafting → review → published';
+
+
+--
+-- Name: COLUMN articles.current_version; Type: COMMENT; Schema: collections; Owner: -
+--
+
+COMMENT ON COLUMN collections.articles.current_version IS 'Current draft version number (archived to hx/)';
 
 
 --
@@ -3022,6 +3442,40 @@ CREATE VIEW collections.articles_ready AS
 
 
 --
+-- Name: VIEW articles_ready; Type: COMMENT; Schema: collections; Owner: -
+--
+
+COMMENT ON VIEW collections.articles_ready IS 'Articles ready for curation (pending/researching with zk notes)';
+
+
+--
+-- Name: card_summaries; Type: TABLE; Schema: collections; Owner: -
+--
+
+CREATE TABLE collections.card_summaries (
+    summary_id uuid DEFAULT gen_random_uuid() NOT NULL,
+    card_id text NOT NULL,
+    summary_type text NOT NULL,
+    hx_generation_id text NOT NULL,
+    summary_text text NOT NULL,
+    model_label text DEFAULT 'frontier model'::text NOT NULL,
+    brave_followups jsonb,
+    input_tokens integer,
+    output_tokens integer,
+    generated_at timestamp with time zone DEFAULT now(),
+    needs_retry boolean DEFAULT false,
+    CONSTRAINT card_summaries_summary_type_check CHECK ((summary_type = ANY (ARRAY['frontier'::text, 'open_weights'::text, 'cerebras'::text])))
+);
+
+
+--
+-- Name: COLUMN card_summaries.needs_retry; Type: COMMENT; Schema: collections; Owner: -
+--
+
+COMMENT ON COLUMN collections.card_summaries.needs_retry IS 'True when generation produced low-quality output (e.g., frontier with zero citations)';
+
+
+--
 -- Name: cards; Type: TABLE; Schema: collections; Owner: -
 --
 
@@ -3043,6 +3497,7 @@ CREATE TABLE collections.cards (
     created_at timestamp with time zone DEFAULT now(),
     updated_at timestamp with time zone DEFAULT now(),
     source_date date,
+    zettle_slug text,
     CONSTRAINT cards_source_type_check CHECK ((source_type = ANY (ARRAY['arxiv'::text, 'huggingface'::text, 'cloudera'::text, 'web'::text, 'x_bookmark'::text, 'sec_filing'::text, 'research'::text]))),
     CONSTRAINT cards_status_check CHECK ((status = ANY (ARRAY['pending'::text, 'published'::text, 'archived'::text])))
 );
@@ -3070,6 +3525,146 @@ COMMENT ON COLUMN collections.cards.source_url IS 'Link to original PUBLIC sourc
 
 
 --
+-- Name: COLUMN cards.source_date; Type: COMMENT; Schema: collections; Owner: -
+--
+
+COMMENT ON COLUMN collections.cards.source_date IS 'Original source publication date (e.g., arXiv submission date)';
+
+
+--
+-- Name: COLUMN cards.zettle_slug; Type: COMMENT; Schema: collections; Owner: -
+--
+
+COMMENT ON COLUMN collections.cards.zettle_slug IS 'Zettelkasten slug current when card was created (human-readable alias)';
+
+
+--
+-- Name: collection_summaries; Type: TABLE; Schema: collections; Owner: -
+--
+
+CREATE TABLE collections.collection_summaries (
+    summary_id uuid DEFAULT gen_random_uuid() NOT NULL,
+    collection_id text NOT NULL,
+    summary_type text NOT NULL,
+    hx_generation_id text NOT NULL,
+    summary_text text NOT NULL,
+    model_label text DEFAULT 'frontier model'::text NOT NULL,
+    input_tokens integer,
+    output_tokens integer,
+    generated_at timestamp with time zone DEFAULT now(),
+    CONSTRAINT collection_summaries_summary_type_check CHECK ((summary_type = ANY (ARRAY['frontier'::text, 'open_weights'::text, 'cerebras'::text])))
+);
+
+
+--
+-- Name: TABLE collection_summaries; Type: COMMENT; Schema: collections; Owner: -
+--
+
+COMMENT ON TABLE collections.collection_summaries IS 'AI-generated collection summaries with dual-model perspectives';
+
+
+--
+-- Name: COLUMN collection_summaries.hx_generation_id; Type: COMMENT; Schema: collections; Owner: -
+--
+
+COMMENT ON COLUMN collections.collection_summaries.hx_generation_id IS 'Reference to Iceberg HX llm.generations record for full provenance';
+
+
+--
+-- Name: COLUMN collection_summaries.model_label; Type: COMMENT; Schema: collections; Owner: -
+--
+
+COMMENT ON COLUMN collections.collection_summaries.model_label IS 'Public-facing label - never expose internal model identifiers';
+
+
+--
+-- Name: content_events; Type: TABLE; Schema: collections; Owner: -
+--
+
+CREATE TABLE collections.content_events (
+    event_id bigint NOT NULL,
+    content_id text NOT NULL,
+    from_status text,
+    to_status text NOT NULL,
+    at timestamp with time zone DEFAULT now() NOT NULL,
+    reason text,
+    actor text,
+    source_url text,
+    title text,
+    backfill boolean DEFAULT false NOT NULL,
+    content_kind text DEFAULT 'card'::text NOT NULL,
+    CONSTRAINT content_events_kind_check CHECK ((content_kind = ANY (ARRAY['card'::text, 'panel'::text, 'article'::text])))
+);
+
+
+--
+-- Name: TABLE content_events; Type: COMMENT; Schema: collections; Owner: -
+--
+
+COMMENT ON TABLE collections.content_events IS 'Append-only journal of published-content status transitions (cards today; panels and articles as they publish). surface_integrity conservation aspect reads it. One row per change; reason/actor from SET LOCAL gaius.content_reason / gaius.content_actor.';
+
+
+--
+-- Name: COLUMN content_events.reason; Type: COMMENT; Schema: collections; Owner: -
+--
+
+COMMENT ON COLUMN collections.content_events.reason IS 'Why the transition happened. Required for published -> archived; empty means UNEXPLAINED. Category prefix: duplicate|adversarial|license|retired|broken|operator.';
+
+
+--
+-- Name: COLUMN content_events.backfill; Type: COMMENT; Schema: collections; Owner: -
+--
+
+COMMENT ON COLUMN collections.content_events.backfill IS 'TRUE for rows reconstructed from the 2026-09-05/06 archive TSVs, before the trigger existed.';
+
+
+--
+-- Name: COLUMN content_events.content_kind; Type: COMMENT; Schema: collections; Owner: -
+--
+
+COMMENT ON COLUMN collections.content_events.content_kind IS 'card | panel | article — which table the content_id names.';
+
+
+--
+-- Name: content_events_event_id_seq; Type: SEQUENCE; Schema: collections; Owner: -
+--
+
+CREATE SEQUENCE collections.content_events_event_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: content_events_event_id_seq; Type: SEQUENCE OWNED BY; Schema: collections; Owner: -
+--
+
+ALTER SEQUENCE collections.content_events_event_id_seq OWNED BY collections.content_events.event_id;
+
+
+--
+-- Name: curation_state; Type: TABLE; Schema: collections; Owner: -
+--
+
+CREATE TABLE collections.curation_state (
+    key text NOT NULL,
+    last_run_at timestamp with time zone,
+    last_article_slug text,
+    run_count integer DEFAULT 0
+);
+
+
+--
+-- Name: TABLE curation_state; Type: COMMENT; Schema: collections; Owner: -
+--
+
+COMMENT ON TABLE collections.curation_state IS 'Tracks article curation state for 36-hour cooldown enforcement.
+Used by pg_cron job to implement non-standard cron intervals.';
+
+
+--
 -- Name: draft_history; Type: TABLE; Schema: collections; Owner: -
 --
 
@@ -3086,6 +3681,20 @@ CREATE TABLE collections.draft_history (
     parent_version integer,
     archived_at timestamp with time zone DEFAULT now()
 );
+
+
+--
+-- Name: TABLE draft_history; Type: COMMENT; Schema: collections; Owner: -
+--
+
+COMMENT ON TABLE collections.draft_history IS 'Draft version history for articles (archived to hx/)';
+
+
+--
+-- Name: COLUMN draft_history.filename; Type: COMMENT; Schema: collections; Owner: -
+--
+
+COMMENT ON COLUMN collections.draft_history.filename IS 'Filename in hx/: {ISO8601}_draft_v{NNN}.md';
 
 
 --
@@ -3152,6 +3761,34 @@ CREATE TABLE collections.selection_traces (
 
 
 --
+-- Name: TABLE selection_traces; Type: COMMENT; Schema: collections; Owner: -
+--
+
+COMMENT ON TABLE collections.selection_traces IS 'Atropos-RL training data from article selection decisions';
+
+
+--
+-- Name: COLUMN selection_traces.item_id; Type: COMMENT; Schema: collections; Owner: -
+--
+
+COMMENT ON COLUMN collections.selection_traces.item_id IS 'Atropos-compatible item ID: selection_<collection_id>_<timestamp>';
+
+
+--
+-- Name: COLUMN selection_traces.criteria_scores; Type: COMMENT; Schema: collections; Owner: -
+--
+
+COMMENT ON COLUMN collections.selection_traces.criteria_scores IS 'Per-criterion scores for each candidate';
+
+
+--
+-- Name: COLUMN selection_traces.technique; Type: COMMENT; Schema: collections; Owner: -
+--
+
+COMMENT ON COLUMN collections.selection_traces.technique IS 'optillm technique used: cot_reflection, plansearch, bon, etc.';
+
+
+--
 -- Name: selection_trace_stats; Type: VIEW; Schema: collections; Owner: -
 --
 
@@ -3166,6 +3803,13 @@ CREATE VIEW collections.selection_trace_stats AS
   WHERE (created_at > (now() - '7 days'::interval))
   GROUP BY technique
   ORDER BY (count(*)) DESC;
+
+
+--
+-- Name: VIEW selection_trace_stats; Type: COMMENT; Schema: collections; Owner: -
+--
+
+COMMENT ON VIEW collections.selection_trace_stats IS 'Selection trace statistics by optillm technique (last 7 days)';
 
 
 --
@@ -3200,276 +3844,6 @@ COMMENT ON TABLE collections.sources IS 'Detailed provenance for card sources wi
 --
 
 COMMENT ON COLUMN collections.sources.excerpt_char_range IS 'Character range [start, end) for precise excerpt location';
-
-
---
--- Name: _ag_label_vertex; Type: TABLE; Schema: gaius_hx; Owner: -
---
-
-CREATE TABLE gaius_hx._ag_label_vertex (
-    id ag_catalog.graphid NOT NULL,
-    properties ag_catalog.agtype DEFAULT ag_catalog.agtype_build_map() NOT NULL
-);
-
-
---
--- Name: Dataset; Type: TABLE; Schema: gaius_hx; Owner: -
---
-
-CREATE TABLE gaius_hx."Dataset" (
-)
-INHERITS (gaius_hx._ag_label_vertex);
-
-
---
--- Name: Dataset_id_seq; Type: SEQUENCE; Schema: gaius_hx; Owner: -
---
-
-CREATE SEQUENCE gaius_hx."Dataset_id_seq"
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    MAXVALUE 281474976710655
-    CACHE 1;
-
-
---
--- Name: Dataset_id_seq; Type: SEQUENCE OWNED BY; Schema: gaius_hx; Owner: -
---
-
-ALTER SEQUENCE gaius_hx."Dataset_id_seq" OWNED BY gaius_hx."Dataset".id;
-
-
---
--- Name: _ag_label_edge; Type: TABLE; Schema: gaius_hx; Owner: -
---
-
-CREATE TABLE gaius_hx._ag_label_edge (
-    id ag_catalog.graphid NOT NULL,
-    start_id ag_catalog.graphid NOT NULL,
-    end_id ag_catalog.graphid NOT NULL,
-    properties ag_catalog.agtype DEFAULT ag_catalog.agtype_build_map() NOT NULL
-);
-
-
---
--- Name: EXECUTES; Type: TABLE; Schema: gaius_hx; Owner: -
---
-
-CREATE TABLE gaius_hx."EXECUTES" (
-)
-INHERITS (gaius_hx._ag_label_edge);
-
-
---
--- Name: EXECUTES_id_seq; Type: SEQUENCE; Schema: gaius_hx; Owner: -
---
-
-CREATE SEQUENCE gaius_hx."EXECUTES_id_seq"
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    MAXVALUE 281474976710655
-    CACHE 1;
-
-
---
--- Name: EXECUTES_id_seq; Type: SEQUENCE OWNED BY; Schema: gaius_hx; Owner: -
---
-
-ALTER SEQUENCE gaius_hx."EXECUTES_id_seq" OWNED BY gaius_hx."EXECUTES".id;
-
-
---
--- Name: INPUT_TO; Type: TABLE; Schema: gaius_hx; Owner: -
---
-
-CREATE TABLE gaius_hx."INPUT_TO" (
-)
-INHERITS (gaius_hx._ag_label_edge);
-
-
---
--- Name: INPUT_TO_id_seq; Type: SEQUENCE; Schema: gaius_hx; Owner: -
---
-
-CREATE SEQUENCE gaius_hx."INPUT_TO_id_seq"
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    MAXVALUE 281474976710655
-    CACHE 1;
-
-
---
--- Name: INPUT_TO_id_seq; Type: SEQUENCE OWNED BY; Schema: gaius_hx; Owner: -
---
-
-ALTER SEQUENCE gaius_hx."INPUT_TO_id_seq" OWNED BY gaius_hx."INPUT_TO".id;
-
-
---
--- Name: Job; Type: TABLE; Schema: gaius_hx; Owner: -
---
-
-CREATE TABLE gaius_hx."Job" (
-)
-INHERITS (gaius_hx._ag_label_vertex);
-
-
---
--- Name: Job_id_seq; Type: SEQUENCE; Schema: gaius_hx; Owner: -
---
-
-CREATE SEQUENCE gaius_hx."Job_id_seq"
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    MAXVALUE 281474976710655
-    CACHE 1;
-
-
---
--- Name: Job_id_seq; Type: SEQUENCE OWNED BY; Schema: gaius_hx; Owner: -
---
-
-ALTER SEQUENCE gaius_hx."Job_id_seq" OWNED BY gaius_hx."Job".id;
-
-
---
--- Name: OUTPUTS; Type: TABLE; Schema: gaius_hx; Owner: -
---
-
-CREATE TABLE gaius_hx."OUTPUTS" (
-)
-INHERITS (gaius_hx._ag_label_edge);
-
-
---
--- Name: OUTPUTS_id_seq; Type: SEQUENCE; Schema: gaius_hx; Owner: -
---
-
-CREATE SEQUENCE gaius_hx."OUTPUTS_id_seq"
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    MAXVALUE 281474976710655
-    CACHE 1;
-
-
---
--- Name: OUTPUTS_id_seq; Type: SEQUENCE OWNED BY; Schema: gaius_hx; Owner: -
---
-
-ALTER SEQUENCE gaius_hx."OUTPUTS_id_seq" OWNED BY gaius_hx."OUTPUTS".id;
-
-
---
--- Name: PARENT; Type: TABLE; Schema: gaius_hx; Owner: -
---
-
-CREATE TABLE gaius_hx."PARENT" (
-)
-INHERITS (gaius_hx._ag_label_edge);
-
-
---
--- Name: PARENT_id_seq; Type: SEQUENCE; Schema: gaius_hx; Owner: -
---
-
-CREATE SEQUENCE gaius_hx."PARENT_id_seq"
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    MAXVALUE 281474976710655
-    CACHE 1;
-
-
---
--- Name: PARENT_id_seq; Type: SEQUENCE OWNED BY; Schema: gaius_hx; Owner: -
---
-
-ALTER SEQUENCE gaius_hx."PARENT_id_seq" OWNED BY gaius_hx."PARENT".id;
-
-
---
--- Name: Run; Type: TABLE; Schema: gaius_hx; Owner: -
---
-
-CREATE TABLE gaius_hx."Run" (
-)
-INHERITS (gaius_hx._ag_label_vertex);
-
-
---
--- Name: Run_id_seq; Type: SEQUENCE; Schema: gaius_hx; Owner: -
---
-
-CREATE SEQUENCE gaius_hx."Run_id_seq"
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    MAXVALUE 281474976710655
-    CACHE 1;
-
-
---
--- Name: Run_id_seq; Type: SEQUENCE OWNED BY; Schema: gaius_hx; Owner: -
---
-
-ALTER SEQUENCE gaius_hx."Run_id_seq" OWNED BY gaius_hx."Run".id;
-
-
---
--- Name: _ag_label_edge_id_seq; Type: SEQUENCE; Schema: gaius_hx; Owner: -
---
-
-CREATE SEQUENCE gaius_hx._ag_label_edge_id_seq
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    MAXVALUE 281474976710655
-    CACHE 1;
-
-
---
--- Name: _ag_label_edge_id_seq; Type: SEQUENCE OWNED BY; Schema: gaius_hx; Owner: -
---
-
-ALTER SEQUENCE gaius_hx._ag_label_edge_id_seq OWNED BY gaius_hx._ag_label_edge.id;
-
-
---
--- Name: _ag_label_vertex_id_seq; Type: SEQUENCE; Schema: gaius_hx; Owner: -
---
-
-CREATE SEQUENCE gaius_hx._ag_label_vertex_id_seq
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    MAXVALUE 281474976710655
-    CACHE 1;
-
-
---
--- Name: _ag_label_vertex_id_seq; Type: SEQUENCE OWNED BY; Schema: gaius_hx; Owner: -
---
-
-ALTER SEQUENCE gaius_hx._ag_label_vertex_id_seq OWNED BY gaius_hx._ag_label_vertex.id;
-
-
---
--- Name: _label_id_seq; Type: SEQUENCE; Schema: gaius_hx; Owner: -
---
-
-CREATE SEQUENCE gaius_hx._label_id_seq
-    AS integer
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    MAXVALUE 65535
-    CACHE 1
-    CYCLE;
 
 
 --
@@ -4018,6 +4392,26 @@ ALTER SEQUENCE meta.audit_recommendations_id_seq OWNED BY meta.audit_recommendat
 
 
 --
+-- Name: board_reindex_state; Type: TABLE; Schema: meta; Owner: -
+--
+
+CREATE TABLE meta.board_reindex_state (
+    key text NOT NULL,
+    last_run_at timestamp with time zone,
+    run_count integer DEFAULT 0,
+    last_generation bigint,
+    last_n_documents integer
+);
+
+
+--
+-- Name: TABLE board_reindex_state; Type: COMMENT; Schema: meta; Owner: -
+--
+
+COMMENT ON TABLE meta.board_reindex_state IS 'Clock for continuous 19x19 board reindex. UI reads current_state; this job is why that row is current.';
+
+
+--
 -- Name: control_mode_health; Type: VIEW; Schema: meta; Owner: -
 --
 
@@ -4192,71 +4586,6 @@ COMMENT ON VIEW meta.endpoint_transition_metrics IS 'Endpoint state transitions 
 
 
 --
--- Name: flow_events; Type: TABLE; Schema: meta; Owner: -
---
-
-CREATE TABLE meta.flow_events (
-    event_id integer NOT NULL,
-    run_id uuid NOT NULL,
-    flow_type text NOT NULL,
-    status text NOT NULL,
-    started_at timestamp with time zone,
-    completed_at timestamp with time zone,
-    duration_ms integer,
-    created_at timestamp with time zone DEFAULT now(),
-    metadata jsonb DEFAULT '{}'::jsonb
-);
-
-
---
--- Name: TABLE flow_events; Type: COMMENT; Schema: meta; Owner: -
---
-
-COMMENT ON TABLE meta.flow_events IS 'Audit trail for flow completion events (LISTEN/NOTIFY)';
-
-
---
--- Name: COLUMN flow_events.run_id; Type: COMMENT; Schema: meta; Owner: -
---
-
-COMMENT ON COLUMN meta.flow_events.run_id IS 'References meta.flow_runs';
-
-
---
--- Name: COLUMN flow_events.flow_type; Type: COMMENT; Schema: meta; Owner: -
---
-
-COMMENT ON COLUMN meta.flow_events.flow_type IS 'Type of flow (ResearchFlow, ArxivDoclingFlow, etc.)';
-
-
---
--- Name: COLUMN flow_events.status; Type: COMMENT; Schema: meta; Owner: -
---
-
-COMMENT ON COLUMN meta.flow_events.status IS 'Terminal status: completed or failed';
-
-
---
--- Name: flow_events_event_id_seq; Type: SEQUENCE; Schema: meta; Owner: -
---
-
-CREATE SEQUENCE meta.flow_events_event_id_seq
-    AS integer
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1;
-
-
---
--- Name: flow_events_event_id_seq; Type: SEQUENCE OWNED BY; Schema: meta; Owner: -
---
-
-ALTER SEQUENCE meta.flow_events_event_id_seq OWNED BY meta.flow_events.event_id;
-
-
---
 -- Name: flow_runs; Type: TABLE; Schema: meta; Owner: -
 --
 
@@ -4269,8 +4598,7 @@ CREATE TABLE meta.flow_runs (
     status text,
     inputs_count integer DEFAULT 0,
     outputs_count integer DEFAULT 0,
-    metadata jsonb DEFAULT '{}'::jsonb,
-    updated_at timestamp with time zone DEFAULT now()
+    metadata jsonb DEFAULT '{}'::jsonb
 );
 
 
@@ -5070,6 +5398,25 @@ CREATE SEQUENCE meta.prospect_strategies_id_seq
 --
 
 ALTER SEQUENCE meta.prospect_strategies_id_seq OWNED BY meta.prospect_strategies.id;
+
+
+--
+-- Name: prospects_cron_state; Type: TABLE; Schema: meta; Owner: -
+--
+
+CREATE TABLE meta.prospects_cron_state (
+    key text NOT NULL,
+    last_run_at timestamp with time zone,
+    run_count integer DEFAULT 0
+);
+
+
+--
+-- Name: TABLE prospects_cron_state; Type: COMMENT; Schema: meta; Owner: -
+--
+
+COMMENT ON TABLE meta.prospects_cron_state IS 'Tracks prospects check state for 24-hour cooldown enforcement.
+Used by pg_cron job to implement daily interval via should_run_prospects_check().';
 
 
 --
@@ -6401,6 +6748,46 @@ COMMENT ON VIEW meta.v_recommendation_funnel IS 'Recommendation status funnel fo
 
 
 --
+-- Name: weekly_signals_summary_state; Type: TABLE; Schema: meta; Owner: -
+--
+
+CREATE TABLE meta.weekly_signals_summary_state (
+    key text NOT NULL,
+    last_run_at timestamp with time zone,
+    last_iso_week text,
+    last_path text,
+    run_count integer DEFAULT 0
+);
+
+
+--
+-- Name: TABLE weekly_signals_summary_state; Type: COMMENT; Schema: meta; Owner: -
+--
+
+COMMENT ON TABLE meta.weekly_signals_summary_state IS 'Clock for weekly Signals Summary (S2S remotes). One zettel per ISO week; Friday 06:00 America/Denver.';
+
+
+--
+-- Name: supervisor_status; Type: TABLE; Schema: nautilus; Owner: -
+--
+
+CREATE TABLE nautilus.supervisor_status (
+    project text NOT NULL,
+    epoch text NOT NULL,
+    spec_loaded_at timestamp with time zone NOT NULL,
+    status jsonb NOT NULL,
+    filled_at timestamp with time zone DEFAULT now() NOT NULL
+);
+
+
+--
+-- Name: TABLE supervisor_status; Type: COMMENT; Schema: nautilus; Owner: -
+--
+
+COMMENT ON TABLE nautilus.supervisor_status IS 'Nautilus upserts its SupervisorStatus (processes[], armed[], breaker, buffered_records, engine_connected, last_tick) each poll. /nautilus status answers from this row and reports its staleness (#SV.00000011.NOSUPERVISOR when filled_at is older than 2x the poll).';
+
+
+--
 -- Name: action; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -6540,6 +6927,43 @@ ALTER TABLE public.action ALTER COLUMN id ADD GENERATED BY DEFAULT AS IDENTITY (
     NO MAXVALUE
     CACHE 1
 );
+
+
+--
+-- Name: activation; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.activation (
+    id bigint NOT NULL,
+    item_id bigint NOT NULL,
+    model text NOT NULL,
+    layer integer NOT NULL,
+    feature_idx integer NOT NULL,
+    "position" integer NOT NULL,
+    span_start integer NOT NULL,
+    span_end integer NOT NULL,
+    activation double precision NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL
+);
+
+
+--
+-- Name: activation_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.activation_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: activation_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.activation_id_seq OWNED BY public.activation.id;
 
 
 --
@@ -6694,6 +7118,217 @@ CREATE VIEW public.activity_today AS
 
 
 --
+-- Name: admit_progress; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.admit_progress (
+    source_id text NOT NULL,
+    fetched_at timestamp with time zone,
+    status text NOT NULL,
+    run_id text DEFAULT ''::text NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL
+);
+
+
+--
+-- Name: admitted_item; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.admitted_item (
+    id bigint NOT NULL,
+    source_id text NOT NULL,
+    char_start integer NOT NULL,
+    char_end integer NOT NULL,
+    text text NOT NULL,
+    aperture_code text DEFAULT ''::text NOT NULL,
+    margin double precision DEFAULT 0 NOT NULL,
+    admitted_at timestamp with time zone DEFAULT now() NOT NULL,
+    run_id text DEFAULT ''::text NOT NULL
+);
+
+
+--
+-- Name: admitted_item_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.admitted_item_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: admitted_item_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.admitted_item_id_seq OWNED BY public.admitted_item.id;
+
+
+--
+-- Name: admitted_quarantine; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.admitted_quarantine (
+    source_id text NOT NULL,
+    fetched_at timestamp with time zone,
+    guru text NOT NULL,
+    reason text NOT NULL,
+    kb_path text DEFAULT ''::text NOT NULL,
+    iceberg_id text DEFAULT ''::text NOT NULL,
+    run_id text DEFAULT ''::text NOT NULL,
+    quarantined_at timestamp with time zone DEFAULT now() NOT NULL,
+    resolved_at timestamp with time zone
+);
+
+
+--
+-- Name: TABLE admitted_quarantine; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.admitted_quarantine IS 'Poison inbound docs (#WS.00000019). Extract backfill reopens via cursor overlap.';
+
+
+--
+-- Name: agenda_briefs; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.agenda_briefs (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    timezone text DEFAULT 'UTC'::text NOT NULL,
+    today date NOT NULL,
+    window_start date,
+    window_end date,
+    item_ids text[] DEFAULT '{}'::text[] NOT NULL,
+    items_considered integer DEFAULT 0 NOT NULL,
+    title text NOT NULL,
+    body text NOT NULL,
+    spoken text NOT NULL,
+    model text,
+    tokens_used integer,
+    generation_context jsonb,
+    note_path text
+);
+
+
+--
+-- Name: TABLE agenda_briefs; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.agenda_briefs IS 'Agenda Briefs written by the agenda_brief scheduled class: the gist of today, what from tomorrow and the coming week matters, in the operator timezone — ready for /agenda and the Hermes voice agent. Not an Agenda item. Append-only.';
+
+
+--
+-- Name: COLUMN agenda_briefs.timezone; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.agenda_briefs.timezone IS 'IANA zone the brief speaks in (today/tomorrow/week are calendar days in this zone).';
+
+
+--
+-- Name: COLUMN agenda_briefs.today; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.agenda_briefs.today IS 'The calendar day the brief treated as today.';
+
+
+--
+-- Name: COLUMN agenda_briefs.window_start; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.agenda_briefs.window_start IS 'Earliest calendar day considered (past-but-open reminders).';
+
+
+--
+-- Name: COLUMN agenda_briefs.window_end; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.agenda_briefs.window_end IS 'Latest calendar day considered (today + 7).';
+
+
+--
+-- Name: COLUMN agenda_briefs.item_ids; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.agenda_briefs.item_ids IS 'Agenda item ids (their KB note paths) the brief covered — the index a conversational agent uses for follow-ups.';
+
+
+--
+-- Name: COLUMN agenda_briefs.body; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.agenda_briefs.body IS 'The written Brief (≤ ~1400 chars): today''s gist, what from tomorrow matters, what in the week deserves attention; items referred to by title.';
+
+
+--
+-- Name: COLUMN agenda_briefs.spoken; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.agenda_briefs.spoken IS 'The same for a voice agent: plain speech, no markdown/lists/links (≤ ~800 chars).';
+
+
+--
+-- Name: COLUMN agenda_briefs.generation_context; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.agenda_briefs.generation_context IS 'Prompt/parse provenance: budget, response length, bucket counts.';
+
+
+--
+-- Name: COLUMN agenda_briefs.note_path; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.agenda_briefs.note_path IS 'KB zettel (relative to the KB root) that persisted this brief, prev/next-linked to the previous/next agenda brief note.';
+
+
+--
+-- Name: agenda_entries; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.agenda_entries (
+    id bigint NOT NULL,
+    kind text NOT NULL,
+    title text NOT NULL,
+    body text DEFAULT ''::text NOT NULL,
+    due_at timestamp with time zone,
+    episode_id text NOT NULL,
+    hx_generation_id text,
+    status text DEFAULT 'open'::text NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT agenda_entries_kind_check CHECK ((kind = ANY (ARRAY['brief'::text, 'reminder'::text, 'session'::text]))),
+    CONSTRAINT agenda_entries_status_check CHECK ((status = ANY (ARRAY['open'::text, 'done'::text, 'cancelled'::text])))
+);
+
+
+--
+-- Name: TABLE agenda_entries; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.agenda_entries IS 'Forward agenda (brief/reminder/session) curated from cognition_buffer.';
+
+
+--
+-- Name: agenda_entries_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.agenda_entries_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: agenda_entries_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.agenda_entries_id_seq OWNED BY public.agenda_entries.id;
+
+
+--
 -- Name: agenda_health_summary; Type: VIEW; Schema: public; Owner: -
 --
 
@@ -6800,7 +7435,7 @@ CREATE TABLE public.agent_evaluations (
     eval_type text DEFAULT 'training'::text,
     task_category text,
     task_difficulty double precision,
-    metadata jsonb DEFAULT '{}'::jsonb
+    CONSTRAINT agent_evaluations_eval_type_check CHECK ((eval_type = ANY (ARRAY['training'::text, 'held_out'::text, 'real_world'::text])))
 );
 
 
@@ -7267,6 +7902,47 @@ ALTER TABLE public.bookmark_ordering ALTER COLUMN id ADD GENERATED BY DEFAULT AS
     NO MAXVALUE
     CACHE 1
 );
+
+
+--
+-- Name: buffer_entries; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.buffer_entries (
+    id uuid NOT NULL,
+    buffer text NOT NULL,
+    role text NOT NULL,
+    content text NOT NULL,
+    content_bytes integer NOT NULL,
+    source_url text DEFAULT ''::text NOT NULL,
+    metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
+    writer text DEFAULT ''::text NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    compacted_at timestamp with time zone,
+    compacted_into uuid,
+    CONSTRAINT buffer_entries_buffer_check CHECK ((buffer = ANY (ARRAY['ambient'::text, 'prospects'::text, 'publishing'::text])))
+);
+
+
+--
+-- Name: TABLE buffer_entries; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.buffer_entries IS 'Durable FIFO rows for the ambient / prospects / publishing buffers. Live = compacted_at IS NULL. Written by flows (fmp_roll, ambient_synthesis); the engine reads through.';
+
+
+--
+-- Name: COLUMN buffer_entries.writer; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.buffer_entries.writer IS 'Who appended: flow:<FlowName> or engine';
+
+
+--
+-- Name: COLUMN buffer_entries.compacted_into; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.buffer_entries.compacted_into IS 'The SUMMARY row that replaced this entry in the FIFO';
 
 
 --
@@ -7779,6 +8455,225 @@ ALTER TABLE public.cloud_migration ALTER COLUMN id ADD GENERATED BY DEFAULT AS I
     NO MAXVALUE
     CACHE 1
 );
+
+
+--
+-- Name: clt_activation_tier0; Type: FOREIGN TABLE; Schema: public; Owner: -
+--
+
+CREATE FOREIGN TABLE public.clt_activation_tier0 (
+    epoch_hour integer,
+    ts_ns bigint,
+    text_id bigint,
+    pos integer,
+    layer smallint,
+    feat_idx integer[],
+    feat_val real[],
+    nnz integer,
+    agent text,
+    ref text
+)
+SERVER impala_kudu_srv
+OPTIONS (
+    access 'kudu_scan',
+    database 'signals_dataproducts',
+    kudu_table 'impala::signals_dataproducts.clt_activation_tier0',
+    "table" 'clt_activation_tier0'
+);
+
+
+--
+-- Name: clt_feature; Type: FOREIGN TABLE; Schema: public; Owner: -
+--
+
+CREATE FOREIGN TABLE public.clt_feature (
+    model_id integer,
+    layer smallint,
+    feature_idx integer,
+    top_token_id integer[],
+    top_logit real[],
+    decoder_norm real
+)
+SERVER impala_kudu_srv
+OPTIONS (
+    access 'kudu_scan',
+    database 'signals_dataproducts',
+    kudu_table 'impala::signals_dataproducts.clt_feature',
+    "table" 'clt_feature'
+);
+
+
+--
+-- Name: clt_label; Type: FOREIGN TABLE; Schema: public; Owner: -
+--
+
+CREATE FOREIGN TABLE public.clt_label (
+    model_id integer,
+    layer smallint,
+    feature_idx integer,
+    valid_from_ns bigint,
+    label text,
+    agent text,
+    confidence real,
+    evidence_ref text,
+    supersedes_ns bigint
+)
+SERVER impala_kudu_srv
+OPTIONS (
+    access 'kudu_scan',
+    database 'signals_dataproducts',
+    kudu_table 'impala::signals_dataproducts.clt_label',
+    "table" 'clt_label'
+);
+
+
+--
+-- Name: clt_skos_clock; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.clt_skos_clock (
+    key text NOT NULL,
+    watermark_fetched_at timestamp with time zone,
+    overlap_seconds integer DEFAULT 3600 NOT NULL,
+    last_run_id text DEFAULT ''::text NOT NULL,
+    last_run_at timestamp with time zone,
+    run_count integer DEFAULT 0 NOT NULL
+);
+
+
+--
+-- Name: TABLE clt_skos_clock; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.clt_skos_clock IS 'Admit watermark + label clock. Two task_types; ledger is the join.';
+
+
+--
+-- Name: cognition_briefs; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.cognition_briefs (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    cycle_id uuid,
+    window_start timestamp with time zone,
+    window_end timestamp with time zone,
+    thought_ids uuid[] DEFAULT '{}'::uuid[] NOT NULL,
+    thoughts_considered integer DEFAULT 0 NOT NULL,
+    title text NOT NULL,
+    body text NOT NULL,
+    spoken text NOT NULL,
+    model text,
+    tokens_used integer,
+    generation_context jsonb,
+    note_path text
+);
+
+
+--
+-- Name: TABLE cognition_briefs; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.cognition_briefs IS 'Thoughts Briefs written by the cognition cycle (Agenda-LIKE framing, never an Agenda item): what the cognition has been thinking about, ready for /thoughts and the Hermes voice agent. Append-only.';
+
+
+--
+-- Name: COLUMN cognition_briefs.cycle_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.cognition_briefs.cycle_id IS 'The cognition_cycles row (or task) that produced it; NULL for a brief composed by hand (/thoughts cycle, scripts).';
+
+
+--
+-- Name: COLUMN cognition_briefs.window_start; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.cognition_briefs.window_start IS 'Oldest thought considered.';
+
+
+--
+-- Name: COLUMN cognition_briefs.window_end; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.cognition_briefs.window_end IS 'Newest thought considered (the brief is current as of this).';
+
+
+--
+-- Name: COLUMN cognition_briefs.thought_ids; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.cognition_briefs.thought_ids IS 'cognition_thoughts.id of every thought the brief summarises.';
+
+
+--
+-- Name: COLUMN cognition_briefs.body; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.cognition_briefs.body IS 'The written Brief (≤ ~1200 chars): first person, what is on the mind, the lines of thought and their connections, open questions, what to attend to next.';
+
+
+--
+-- Name: COLUMN cognition_briefs.spoken; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.cognition_briefs.spoken IS 'The same for a voice agent: plain speech, 4–6 sentences, no markdown/lists/links/code (≤ ~700 chars).';
+
+
+--
+-- Name: COLUMN cognition_briefs.generation_context; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.cognition_briefs.generation_context IS 'Prompt/parse provenance: budget, response length, parse notes.';
+
+
+--
+-- Name: COLUMN cognition_briefs.note_path; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.cognition_briefs.note_path IS 'KB zettel (relative to the KB root) that persisted this brief, prev/next-linked to the previous/next brief note.';
+
+
+--
+-- Name: cognition_buffer; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.cognition_buffer (
+    id bigint NOT NULL,
+    episode_id text NOT NULL,
+    kind text NOT NULL,
+    source text NOT NULL,
+    content text NOT NULL,
+    hx_generation_id text,
+    metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT cognition_buffer_kind_check CHECK ((kind = ANY (ARRAY['slice'::text, 'synthesis'::text])))
+);
+
+
+--
+-- Name: TABLE cognition_buffer; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.cognition_buffer IS 'Incremental synthesis of Publishing + Prospects + Ambient; HX holds traces.';
+
+
+--
+-- Name: cognition_buffer_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.cognition_buffer_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: cognition_buffer_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.cognition_buffer_id_seq OWNED BY public.cognition_buffer.id;
 
 
 --
@@ -8826,6 +9721,137 @@ ALTER TABLE public.dimension ALTER COLUMN id ADD GENERATED BY DEFAULT AS IDENTIT
 
 
 --
+-- Name: feature_tape; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.feature_tape (
+    id bigint NOT NULL,
+    event_id text NOT NULL,
+    stream text NOT NULL,
+    source_id text NOT NULL,
+    ts timestamp with time zone NOT NULL,
+    layer integer NOT NULL,
+    feature_idx integer NOT NULL,
+    activation double precision NOT NULL,
+    worker text DEFAULT ''::text NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL
+);
+
+
+--
+-- Name: feed_sources; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.feed_sources (
+    id integer NOT NULL,
+    name text NOT NULL,
+    source_type public.source_type NOT NULL,
+    base_url text NOT NULL,
+    config jsonb DEFAULT '{}'::jsonb,
+    fetch_interval_minutes integer DEFAULT 60,
+    active boolean DEFAULT true,
+    last_fetch_at timestamp with time zone,
+    created_at timestamp with time zone DEFAULT now()
+);
+
+
+--
+-- Name: discover_landing_36h; Type: MATERIALIZED VIEW; Schema: public; Owner: -
+--
+
+CREATE MATERIALIZED VIEW public.discover_landing_36h AS
+ WITH last AS (
+         SELECT max(feature_tape.created_at) AS t
+           FROM public.feature_tape
+        ), win AS (
+         SELECT
+                CASE
+                    WHEN (last.t IS NULL) THEN now()
+                    WHEN ((now() - last.t) <= '00:02:00'::interval) THEN now()
+                    ELSE last.t
+                END AS end_ts,
+            last.t AS last_salience_at
+           FROM last
+        ), bounds AS (
+         SELECT win.end_ts,
+            (win.end_ts - '36:00:00'::interval) AS start_ts,
+            win.last_salience_at
+           FROM win
+        ), docs AS (
+         SELECT c.id,
+            c.title,
+            "left"(COALESCE(c.summary, ''::text), 400) AS body,
+            c.fetched_at,
+            COALESCE(c.url, ''::text) AS url,
+            COALESCE(s.name, ''::text) AS source
+           FROM ((public.content_items c
+             LEFT JOIN public.feed_sources s ON ((s.id = c.source_id)))
+             CROSS JOIN bounds b)
+          WHERE ((NOT COALESCE(c.summary_excluded, false)) AND (EXISTS ( SELECT 1
+                   FROM public.feature_tape t
+                  WHERE ((t.event_id = ('inflow:'::text || (c.id)::text)) AND (t.created_at >= b.start_ts) AND (t.created_at <= b.end_ts)))))
+        ), src AS (
+         SELECT docs.source,
+            (count(*))::integer AS n
+           FROM docs
+          GROUP BY docs.source
+        ), feat AS (
+         SELECT t.layer,
+            t.feature_idx,
+            (count(DISTINCT d.id))::integer AS n,
+            avg(t.activation) AS a
+           FROM (docs d
+             JOIN public.feature_tape t ON ((t.event_id = ('inflow:'::text || (d.id)::text))))
+          GROUP BY t.layer, t.feature_idx
+        ), buck AS (
+         SELECT date_trunc('hour'::text, t.created_at) AS m,
+            (count(DISTINCT t.event_id))::integer AS n,
+            COALESCE(sum(t.activation), (0)::double precision) AS sal
+           FROM (public.feature_tape t
+             CROSS JOIN bounds b)
+          WHERE ((t.created_at >= b.start_ts) AND (t.created_at <= b.end_ts))
+          GROUP BY (date_trunc('hour'::text, t.created_at))
+        )
+ SELECT 'doc'::text AS kind,
+    (d.id)::text AS key,
+    jsonb_build_object('id', d.id, 'title', COALESCE(d.title, ''::text), 'body', COALESCE(d.body, ''::text), 'fetched_at', to_char((d.fetched_at AT TIME ZONE 'UTC'::text), 'YYYY-MM-DD"T"HH24:MI:SS"+00:00"'::text), 'url', d.url, 'source', d.source) AS payload
+   FROM docs d
+UNION ALL
+ SELECT 'src'::text AS kind,
+    COALESCE(s.source, ''::text) AS key,
+    jsonb_build_object('n', s.n) AS payload
+   FROM src s
+UNION ALL
+ SELECT 'feat'::text AS kind,
+    (((f.layer)::text || ':'::text) || (f.feature_idx)::text) AS key,
+    jsonb_build_object('layer', f.layer, 'feature_idx', f.feature_idx, 'n', f.n, 'a', f.a) AS payload
+   FROM feat f
+UNION ALL
+ SELECT 'bucket'::text AS kind,
+    to_char((bk.m AT TIME ZONE 'UTC'::text), 'YYYY-MM-DD"T"HH24:MI:SS"+00:00"'::text) AS key,
+    jsonb_build_object('t', to_char((bk.m AT TIME ZONE 'UTC'::text), 'YYYY-MM-DD"T"HH24:MI:SS"+00:00"'::text), 'n', bk.n, 'sal', bk.sal) AS payload
+   FROM buck bk
+UNION ALL
+ SELECT 'meta'::text AS kind,
+    'snapshot'::text AS key,
+    jsonb_build_object('start_ts', to_char((b.start_ts AT TIME ZONE 'UTC'::text), 'YYYY-MM-DD"T"HH24:MI:SS"+00:00"'::text), 'end_ts', to_char((b.end_ts AT TIME ZONE 'UTC'::text), 'YYYY-MM-DD"T"HH24:MI:SS"+00:00"'::text), 'last_salience_at',
+        CASE
+            WHEN (b.last_salience_at IS NULL) THEN ''::text
+            ELSE to_char((b.last_salience_at AT TIME ZONE 'UTC'::text), 'YYYY-MM-DD"T"HH24:MI:SS"+00:00"'::text)
+        END, 'total', ( SELECT (count(*))::integer AS count
+           FROM docs), 'refreshed_at', to_char((now() AT TIME ZONE 'UTC'::text), 'YYYY-MM-DD"T"HH24:MI:SS"+00:00"'::text), 'interval', 'hour', 'window', '36h') AS payload
+   FROM bounds b
+  WITH NO DATA;
+
+
+--
+-- Name: MATERIALIZED VIEW discover_landing_36h; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON MATERIALIZED VIEW public.discover_landing_36h IS 'Discover default 36h landing. Refresh CONCURRENTLY from engine RPC / Metaflow end.';
+
+
+--
 -- Name: doc_archives; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -8877,23 +9903,6 @@ CREATE SEQUENCE public.doc_archives_id_seq
 --
 
 ALTER SEQUENCE public.doc_archives_id_seq OWNED BY public.doc_archives.id;
-
-
---
--- Name: feed_sources; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public.feed_sources (
-    id integer NOT NULL,
-    name text NOT NULL,
-    source_type public.source_type NOT NULL,
-    base_url text NOT NULL,
-    config jsonb DEFAULT '{}'::jsonb,
-    fetch_interval_minutes integer DEFAULT 60,
-    active boolean DEFAULT true,
-    last_fetch_at timestamp with time zone,
-    created_at timestamp with time zone DEFAULT now()
-);
 
 
 --
@@ -9052,18 +10061,21 @@ CREATE TABLE public.evolution_cycles (
     version_before text,
     version_after text,
     strategy text NOT NULL,
-    trigger_type text DEFAULT 'idle'::text NOT NULL,
+    trigger_type text NOT NULL,
+    success boolean NOT NULL,
+    improvement_percent double precision DEFAULT 0.0,
+    baseline_score double precision,
+    final_score double precision,
+    training_examples_used integer DEFAULT 0,
+    held_out_examples_used integer DEFAULT 0,
+    candidates_evaluated integer DEFAULT 0,
+    training_scores jsonb DEFAULT '{}'::jsonb,
+    held_out_scores jsonb DEFAULT '{}'::jsonb,
     started_at timestamp with time zone DEFAULT now(),
     completed_at timestamp with time zone,
     duration_ms integer,
-    success boolean DEFAULT false NOT NULL,
     preempted boolean DEFAULT false,
-    improvement_percent double precision DEFAULT 0.0,
-    training_scores jsonb DEFAULT '{}'::jsonb,
-    held_out_scores jsonb DEFAULT '{}'::jsonb,
-    curriculum_phase text,
-    gpu_utilization double precision,
-    notes text
+    error text
 );
 
 
@@ -9162,6 +10174,25 @@ CREATE SEQUENCE public.external_routing_metrics_id_seq
 --
 
 ALTER SEQUENCE public.external_routing_metrics_id_seq OWNED BY public.external_routing_metrics.id;
+
+
+--
+-- Name: feature_tape_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.feature_tape_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: feature_tape_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.feature_tape_id_seq OWNED BY public.feature_tape.id;
 
 
 --
@@ -9410,6 +10441,47 @@ ALTER SEQUENCE public.fmea_outcomes_id_seq OWNED BY public.fmea_outcomes.id;
 
 
 --
+-- Name: fsm_transitions; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.fsm_transitions (
+    id bigint NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    scope text NOT NULL,
+    from_position jsonb,
+    to_position jsonb NOT NULL,
+    trigger text,
+    p_prior real
+);
+
+
+--
+-- Name: TABLE fsm_transitions; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.fsm_transitions IS 'Observed Gaius FSM transitions per scope (endpoint:thinking, task:publish_cards, ...). p_prior reserved for the Dirichlet transition model (deferred).';
+
+
+--
+-- Name: fsm_transitions_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.fsm_transitions_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: fsm_transitions_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.fsm_transitions_id_seq OWNED BY public.fsm_transitions.id;
+
+
+--
 -- Name: github_issues; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -9471,140 +10543,67 @@ ALTER SEQUENCE public.github_issues_id_seq OWNED BY public.github_issues.id;
 
 
 --
--- Name: grid_allocations; Type: TABLE; Schema: public; Owner: -
+-- Name: gpu_metrics; Type: FOREIGN TABLE; Schema: public; Owner: -
 --
 
-CREATE TABLE public.grid_allocations (
-    id integer NOT NULL,
-    snapshot_id integer,
-    "values" jsonb DEFAULT '[]'::jsonb NOT NULL
+CREATE FOREIGN TABLE public.gpu_metrics (
+    epoch_hour integer,
+    ts_ns bigint,
+    gpu_index integer,
+    power_w real,
+    util_pct real,
+    mem_used_mb real,
+    temp_c real
+)
+SERVER impala_kudu_srv
+OPTIONS (
+    access 'impala_sql',
+    database 'signals_dataproducts',
+    "table" 'gpu_metrics'
 );
 
 
 --
--- Name: grid_allocations_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+-- Name: gpu_metrics_tier0; Type: FOREIGN TABLE; Schema: public; Owner: -
 --
 
-CREATE SEQUENCE public.grid_allocations_id_seq
-    AS integer
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1;
-
-
---
--- Name: grid_allocations_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
---
-
-ALTER SEQUENCE public.grid_allocations_id_seq OWNED BY public.grid_allocations.id;
-
-
---
--- Name: grid_clusters; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public.grid_clusters (
-    id integer NOT NULL,
-    snapshot_id integer,
-    x integer NOT NULL,
-    y integer NOT NULL,
-    CONSTRAINT grid_clusters_x_check CHECK (((x >= 0) AND (x < 19))),
-    CONSTRAINT grid_clusters_y_check CHECK (((y >= 0) AND (y < 19)))
+CREATE FOREIGN TABLE public.gpu_metrics_tier0 (
+    epoch_hour integer,
+    ts_ns bigint,
+    gpu_index integer,
+    power_w real,
+    util_pct real,
+    mem_used_mb real,
+    temp_c real
+)
+SERVER impala_kudu_srv
+OPTIONS (
+    access 'kudu_scan',
+    database 'signals_dataproducts',
+    kudu_table 'impala::signals_dataproducts.gpu_metrics_tier0',
+    "table" 'gpu_metrics_tier0'
 );
 
 
 --
--- Name: grid_clusters_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+-- Name: gpu_metrics_tier1; Type: FOREIGN TABLE; Schema: public; Owner: -
 --
 
-CREATE SEQUENCE public.grid_clusters_id_seq
-    AS integer
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1;
-
-
---
--- Name: grid_clusters_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
---
-
-ALTER SEQUENCE public.grid_clusters_id_seq OWNED BY public.grid_clusters.id;
-
-
---
--- Name: grid_embeddings; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public.grid_embeddings (
-    id integer NOT NULL,
-    snapshot_id integer,
-    embedding_index integer NOT NULL,
-    vector jsonb NOT NULL,
-    grid_x integer,
-    grid_y integer
+CREATE FOREIGN TABLE public.gpu_metrics_tier1 (
+    epoch_hour integer,
+    ts_ns bigint,
+    gpu_index integer,
+    power_w real,
+    util_pct real,
+    mem_used_mb real,
+    temp_c real
+)
+SERVER impala_kudu_srv
+OPTIONS (
+    access 'impala_sql',
+    database 'signals_dataproducts',
+    "table" 'gpu_metrics_tier1'
 );
-
-
---
--- Name: grid_embeddings_id_seq; Type: SEQUENCE; Schema: public; Owner: -
---
-
-CREATE SEQUENCE public.grid_embeddings_id_seq
-    AS integer
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1;
-
-
---
--- Name: grid_embeddings_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
---
-
-ALTER SEQUENCE public.grid_embeddings_id_seq OWNED BY public.grid_embeddings.id;
-
-
---
--- Name: grid_points; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public.grid_points (
-    id integer NOT NULL,
-    snapshot_id integer,
-    x integer NOT NULL,
-    y integer NOT NULL,
-    doc_path text NOT NULL,
-    doc_title text DEFAULT ''::text,
-    embedding_id text DEFAULT ''::text,
-    cluster_id integer DEFAULT '-1'::integer,
-    CONSTRAINT grid_points_x_check CHECK (((x >= 0) AND (x < 19))),
-    CONSTRAINT grid_points_y_check CHECK (((y >= 0) AND (y < 19)))
-);
-
-
---
--- Name: grid_points_id_seq; Type: SEQUENCE; Schema: public; Owner: -
---
-
-CREATE SEQUENCE public.grid_points_id_seq
-    AS integer
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1;
-
-
---
--- Name: grid_points_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
---
-
-ALTER SEQUENCE public.grid_points_id_seq OWNED BY public.grid_points.id;
 
 
 --
@@ -9613,19 +10612,11 @@ ALTER SEQUENCE public.grid_points_id_seq OWNED BY public.grid_points.id;
 
 CREATE TABLE public.grid_snapshots (
     id integer NOT NULL,
-    created_at timestamp with time zone DEFAULT now(),
     kb_root text NOT NULL,
-    embedding_model text NOT NULL,
-    embedding_type text DEFAULT 'single'::text,
-    projection_method text DEFAULT 'umap'::text,
-    n_documents integer DEFAULT 0,
-    coverage double precision DEFAULT 0.0,
-    h0_count integer DEFAULT 0,
-    h1_count integer DEFAULT 0,
-    h2_count integer DEFAULT 0,
-    entropy double precision DEFAULT 0.0,
-    is_current boolean DEFAULT false,
-    metadata jsonb DEFAULT '{}'::jsonb,
+    snapshot_data jsonb DEFAULT '{}'::jsonb NOT NULL,
+    document_count integer DEFAULT 0,
+    cluster_count integer DEFAULT 0,
+    created_at timestamp with time zone DEFAULT now(),
     generation bigint DEFAULT 0,
     updated_at timestamp with time zone DEFAULT now()
 );
@@ -9649,41 +10640,6 @@ CREATE SEQUENCE public.grid_snapshots_id_seq
 --
 
 ALTER SEQUENCE public.grid_snapshots_id_seq OWNED BY public.grid_snapshots.id;
-
-
---
--- Name: grid_tda_features; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public.grid_tda_features (
-    id integer NOT NULL,
-    snapshot_id integer,
-    h1_cycles jsonb DEFAULT '[]'::jsonb,
-    h2_voids jsonb DEFAULT '[]'::jsonb,
-    components jsonb DEFAULT '[]'::jsonb,
-    risk_scores jsonb DEFAULT '[]'::jsonb,
-    intervals jsonb DEFAULT '[]'::jsonb
-);
-
-
---
--- Name: grid_tda_features_id_seq; Type: SEQUENCE; Schema: public; Owner: -
---
-
-CREATE SEQUENCE public.grid_tda_features_id_seq
-    AS integer
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1;
-
-
---
--- Name: grid_tda_features_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
---
-
-ALTER SEQUENCE public.grid_tda_features_id_seq OWNED BY public.grid_tda_features.id;
 
 
 --
@@ -9826,13 +10782,14 @@ CREATE TABLE public.held_out_queries (
     context text,
     domain text,
     category text,
-    difficulty double precision DEFAULT 0.5,
-    source_type text DEFAULT 'manual'::text NOT NULL,
+    difficulty double precision,
+    source_type text NOT NULL,
     source_id text,
-    excluded_from_training boolean DEFAULT true,
     created_at timestamp with time zone DEFAULT now(),
     last_used_at timestamp with time zone,
-    use_count integer DEFAULT 0
+    use_count integer DEFAULT 0,
+    excluded_from_training boolean DEFAULT true,
+    exclusion_reason text DEFAULT 'held_out_pool'::text
 );
 
 
@@ -10167,6 +11124,35 @@ ALTER TABLE public.label ALTER COLUMN id ADD GENERATED BY DEFAULT AS IDENTITY (
     NO MINVALUE
     NO MAXVALUE
     CACHE 1
+);
+
+
+--
+-- Name: latent_tier0; Type: FOREIGN TABLE; Schema: public; Owner: -
+--
+
+CREATE FOREIGN TABLE public.latent_tier0 (
+    epoch_hour integer,
+    ts_ns bigint,
+    stream_id bigint,
+    seq integer,
+    kind smallint,
+    step integer,
+    layer smallint,
+    norm real,
+    agent text,
+    model text,
+    ref text,
+    vec real[],
+    k_vec real[],
+    v_vec real[]
+)
+SERVER impala_kudu_srv
+OPTIONS (
+    access 'kudu_scan',
+    database 'signals_dataproducts',
+    kudu_table 'impala::signals_dataproducts.latent_tier0',
+    "table" 'latent_tier0'
 );
 
 
@@ -10789,7 +11775,9 @@ CREATE TABLE public.metabot (
     description text,
     entity_id character(21),
     created_at timestamp with time zone DEFAULT now() NOT NULL,
-    updated_at timestamp with time zone DEFAULT now() NOT NULL
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    use_verified_content boolean DEFAULT false,
+    collection_id integer
 );
 
 
@@ -10833,6 +11821,20 @@ COMMENT ON COLUMN public.metabot.created_at IS 'The timestamp of when the metabo
 --
 
 COMMENT ON COLUMN public.metabot.updated_at IS 'The timestamp of when the metabot was updated';
+
+
+--
+-- Name: COLUMN metabot.use_verified_content; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.metabot.use_verified_content IS 'Whether this metabot should only use verified content';
+
+
+--
+-- Name: COLUMN metabot.collection_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.metabot.collection_id IS 'ID of the collection this metabot can access';
 
 
 --
@@ -10888,76 +11890,6 @@ COMMENT ON COLUMN public.metabot_conversation.summary IS 'Auto-generated summary
 --
 
 COMMENT ON COLUMN public.metabot_conversation.state IS 'Metabot conversation state';
-
-
---
--- Name: metabot_entity; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public.metabot_entity (
-    id integer NOT NULL,
-    metabot_id integer NOT NULL,
-    model character varying(32) NOT NULL,
-    model_id integer NOT NULL,
-    entity_id character(21),
-    created_at timestamp with time zone DEFAULT now() NOT NULL
-);
-
-
---
--- Name: TABLE metabot_entity; Type: COMMENT; Schema: public; Owner: -
---
-
-COMMENT ON TABLE public.metabot_entity IS 'Entities associated with a metabot';
-
-
---
--- Name: COLUMN metabot_entity.metabot_id; Type: COMMENT; Schema: public; Owner: -
---
-
-COMMENT ON COLUMN public.metabot_entity.metabot_id IS 'The metabot this entity is associated with';
-
-
---
--- Name: COLUMN metabot_entity.model; Type: COMMENT; Schema: public; Owner: -
---
-
-COMMENT ON COLUMN public.metabot_entity.model IS 'The type of model this entity references';
-
-
---
--- Name: COLUMN metabot_entity.model_id; Type: COMMENT; Schema: public; Owner: -
---
-
-COMMENT ON COLUMN public.metabot_entity.model_id IS 'The ID of the model this entity references';
-
-
---
--- Name: COLUMN metabot_entity.entity_id; Type: COMMENT; Schema: public; Owner: -
---
-
-COMMENT ON COLUMN public.metabot_entity.entity_id IS 'Random NanoID tag for unique identity';
-
-
---
--- Name: COLUMN metabot_entity.created_at; Type: COMMENT; Schema: public; Owner: -
---
-
-COMMENT ON COLUMN public.metabot_entity.created_at IS 'The timestamp of when the entity was created';
-
-
---
--- Name: metabot_entity_id_seq; Type: SEQUENCE; Schema: public; Owner: -
---
-
-ALTER TABLE public.metabot_entity ALTER COLUMN id ADD GENERATED BY DEFAULT AS IDENTITY (
-    SEQUENCE NAME public.metabot_entity_id_seq
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1
-);
 
 
 --
@@ -11073,13 +12005,13 @@ ALTER TABLE public.metabot_message ALTER COLUMN id ADD GENERATED BY DEFAULT AS I
 
 CREATE TABLE public.metabot_prompt (
     id integer NOT NULL,
-    metabot_entity_id integer NOT NULL,
     model character varying(32) NOT NULL,
     card_id integer NOT NULL,
     entity_id character(21),
     prompt text NOT NULL,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
-    updated_at timestamp with time zone DEFAULT now() NOT NULL
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    metabot_id integer NOT NULL
 );
 
 
@@ -11088,13 +12020,6 @@ CREATE TABLE public.metabot_prompt (
 --
 
 COMMENT ON TABLE public.metabot_prompt IS 'Prompts of a metabot entity';
-
-
---
--- Name: COLUMN metabot_prompt.metabot_entity_id; Type: COMMENT; Schema: public; Owner: -
---
-
-COMMENT ON COLUMN public.metabot_prompt.metabot_entity_id IS 'The metabot this entity is associated with';
 
 
 --
@@ -11137,6 +12062,13 @@ COMMENT ON COLUMN public.metabot_prompt.created_at IS 'The timestamp of when the
 --
 
 COMMENT ON COLUMN public.metabot_prompt.updated_at IS 'The timestamp of when the prompt was updated';
+
+
+--
+-- Name: COLUMN metabot_prompt.metabot_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.metabot_prompt.metabot_id IS 'The metabot this prompt is associated with';
 
 
 --
@@ -11479,6 +12411,205 @@ ALTER TABLE public.native_query_snippet ALTER COLUMN id ADD GENERATED BY DEFAULT
     NO MINVALUE
     NO MAXVALUE
     CACHE 1
+);
+
+
+--
+-- Name: nautilus_backlog; Type: FOREIGN TABLE; Schema: public; Owner: -
+--
+
+CREATE FOREIGN TABLE public.nautilus_backlog (
+    epoch_hour integer,
+    ts_ns bigint,
+    project text,
+    workflow text,
+    item_key text,
+    slot smallint,
+    state text,
+    category text,
+    first_miss_ns bigint,
+    horizon_slot smallint,
+    horizon_ns bigint,
+    escalation_level smallint,
+    resolved boolean,
+    evidence text,
+    spec_version text,
+    engine_build text
+)
+SERVER impala_kudu_srv
+OPTIONS (
+    access 'impala_sql',
+    database 'signals_dataproducts',
+    "table" 'nautilus_backlog'
+);
+
+
+--
+-- Name: nautilus_backlog_tier0; Type: FOREIGN TABLE; Schema: public; Owner: -
+--
+
+CREATE FOREIGN TABLE public.nautilus_backlog_tier0 (
+    epoch_hour integer,
+    ts_ns bigint,
+    project text,
+    workflow text,
+    item_key text,
+    slot smallint,
+    state text,
+    category text,
+    first_miss_ns bigint,
+    horizon_slot smallint,
+    horizon_ns bigint,
+    escalation_level smallint,
+    resolved boolean,
+    evidence text,
+    spec_version text,
+    engine_build text
+)
+SERVER impala_kudu_srv
+OPTIONS (
+    access 'kudu_scan',
+    database 'signals_dataproducts',
+    kudu_table 'impala::signals_dataproducts.nautilus_backlog_tier0',
+    "table" 'nautilus_backlog_tier0'
+);
+
+
+--
+-- Name: nautilus_events; Type: FOREIGN TABLE; Schema: public; Owner: -
+--
+
+CREATE FOREIGN TABLE public.nautilus_events (
+    epoch_hour integer,
+    ts_ns bigint,
+    project text,
+    event_id text,
+    kind text,
+    trigger_name text,
+    scope_name text,
+    signature text,
+    observer text,
+    call_site text,
+    proposition text,
+    verdict text,
+    p real,
+    side_effect text,
+    task_class text,
+    task_id bigint,
+    position_json text,
+    directive_id text,
+    forecast_id text,
+    outcome_known boolean,
+    outcome boolean,
+    tier text,
+    detail text,
+    evidence text,
+    spec_version text,
+    engine_build text
+)
+SERVER impala_kudu_srv
+OPTIONS (
+    access 'impala_sql',
+    database 'signals_dataproducts',
+    "table" 'nautilus_events'
+);
+
+
+--
+-- Name: nautilus_events_tier0; Type: FOREIGN TABLE; Schema: public; Owner: -
+--
+
+CREATE FOREIGN TABLE public.nautilus_events_tier0 (
+    epoch_hour integer,
+    ts_ns bigint,
+    project text,
+    event_id text,
+    kind text,
+    trigger_name text,
+    scope_name text,
+    signature text,
+    observer text,
+    call_site text,
+    proposition text,
+    verdict text,
+    p real,
+    side_effect text,
+    task_class text,
+    task_id bigint,
+    position_json text,
+    directive_id text,
+    forecast_id text,
+    outcome_known boolean,
+    outcome boolean,
+    tier text,
+    detail text,
+    evidence text,
+    spec_version text,
+    engine_build text
+)
+SERVER impala_kudu_srv
+OPTIONS (
+    access 'kudu_scan',
+    database 'signals_dataproducts',
+    kudu_table 'impala::signals_dataproducts.nautilus_events_tier0',
+    "table" 'nautilus_events_tier0'
+);
+
+
+--
+-- Name: nautilus_positions; Type: FOREIGN TABLE; Schema: public; Owner: -
+--
+
+CREATE FOREIGN TABLE public.nautilus_positions (
+    epoch_hour integer,
+    ts_ns bigint,
+    project text,
+    process text,
+    kind text,
+    machine text,
+    phase text,
+    run_id text,
+    step text,
+    momentum bigint,
+    source text,
+    health text,
+    silence_s integer,
+    detail text
+)
+SERVER impala_kudu_srv
+OPTIONS (
+    access 'impala_sql',
+    database 'signals_dataproducts',
+    "table" 'nautilus_positions'
+);
+
+
+--
+-- Name: nautilus_positions_tier0; Type: FOREIGN TABLE; Schema: public; Owner: -
+--
+
+CREATE FOREIGN TABLE public.nautilus_positions_tier0 (
+    epoch_hour integer,
+    ts_ns bigint,
+    project text,
+    process text,
+    kind text,
+    machine text,
+    phase text,
+    run_id text,
+    step text,
+    momentum bigint,
+    source text,
+    health text,
+    silence_s integer,
+    detail text
+)
+SERVER impala_kudu_srv
+OPTIONS (
+    access 'kudu_scan',
+    database 'signals_dataproducts',
+    kudu_table 'impala::signals_dataproducts.nautilus_positions_tier0',
+    "table" 'nautilus_positions_tier0'
 );
 
 
@@ -12000,6 +13131,66 @@ ALTER SEQUENCE public.optimization_runs_id_seq OWNED BY public.optimization_runs
 
 
 --
+-- Name: overwatch_events; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.overwatch_events (
+    id bigint NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    trigger_name text NOT NULL,
+    scope text NOT NULL,
+    detail text NOT NULL,
+    snapshot jsonb DEFAULT '{}'::jsonb NOT NULL,
+    judge_invoked boolean DEFAULT false NOT NULL,
+    judge_status text,
+    judge_verdict jsonb,
+    action_taken text DEFAULT 'recorded'::text NOT NULL,
+    forecast_id uuid,
+    source text DEFAULT 'engine.nautilus'::text NOT NULL
+);
+
+
+--
+-- Name: TABLE overwatch_events; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.overwatch_events IS 'Nautilus trigger firings + Overwatch judge consultations (ACP+Grok, agent pinned). Append-only; autonomy v1=monitor.';
+
+
+--
+-- Name: COLUMN overwatch_events.judge_status; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.overwatch_events.judge_status IS 'verdict = contract-gated JSON parsed; judge_unavailable = grok credentials absent (fail-closed, no thinking fallback); judge_error = malformed output, no action taken.';
+
+
+--
+-- Name: COLUMN overwatch_events.source; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.overwatch_events.source IS 'Who rendered the firing: engine.nautilus (in-engine daemon, retiring) or nautilus.rs (the resident supervisor over the Supervise stream).';
+
+
+--
+-- Name: overwatch_events_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.overwatch_events_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: overwatch_events_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.overwatch_events_id_seq OWNED BY public.overwatch_events.id;
+
+
+--
 -- Name: paper_scores; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -12308,6 +13499,182 @@ ALTER TABLE public.persisted_info ALTER COLUMN id ADD GENERATED BY DEFAULT AS ID
     NO MAXVALUE
     CACHE 1
 );
+
+
+--
+-- Name: probe_forecasts; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.probe_forecasts (
+    id bigint NOT NULL,
+    forecast_id uuid DEFAULT gen_random_uuid() NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    observer text NOT NULL,
+    call_site text NOT NULL,
+    observer_kind text NOT NULL,
+    proposition text NOT NULL,
+    verdict text NOT NULL,
+    p real NOT NULL,
+    evidence jsonb DEFAULT '{}'::jsonb NOT NULL,
+    side_effect text,
+    task_class text,
+    task_id bigint,
+    task_lifecycle text,
+    flow_type text,
+    flow_run_id text,
+    flow_step text,
+    endpoint text,
+    endpoint_state text,
+    admission_phase text,
+    momentum integer,
+    engine_rev text NOT NULL,
+    model_id text,
+    config_hash text,
+    elapsed_ms integer,
+    resolves text[],
+    sequence_id uuid,
+    CONSTRAINT probe_forecasts_observer_kind_check CHECK ((observer_kind = ANY (ARRAY['probe'::text, 'timeout'::text, 'heuristic'::text, 'watchdog'::text, 'judge'::text, 'theory'::text, 'objective'::text]))),
+    CONSTRAINT probe_forecasts_p_check CHECK (((p >= (0)::double precision) AND (p <= (1)::double precision))),
+    CONSTRAINT probe_forecasts_verdict_check CHECK ((verdict = ANY (ARRAY['pass'::text, 'fail'::text, 'inconclusive'::text, 'error'::text])))
+);
+
+
+--
+-- Name: TABLE probe_forecasts; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.probe_forecasts IS 'Probe-efficacy ledger: every probe/timeout/heuristic/judge verdict as a forecast, stamped with FSM position + epoch. Append-only (privilege-enforced). Outcomes land in probe_resolutions.';
+
+
+--
+-- Name: COLUMN probe_forecasts.observer; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.probe_forecasts.observer IS 'Namespaced observer id: probe:|timeout:|heuristic:|watchdog:|judge:|theory:|objective: prefix + stable name';
+
+
+--
+-- Name: COLUMN probe_forecasts.call_site; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.probe_forecasts.call_site IS 'The FSM call site (module.function). One probe function, many call sites, one row each — scoring is (observer x call_site x momentum bucket).';
+
+
+--
+-- Name: COLUMN probe_forecasts.verdict; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.probe_forecasts.verdict IS 'inconclusive = explicitly unmeasurable (Synth vacuous) — distinct from measured-negative. A timeout is inconclusive about the world plus a separate theory: row for what it IS evidence of.';
+
+
+--
+-- Name: COLUMN probe_forecasts.p; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.probe_forecasts.p IS 'Implied P(proposition is TRUE). Default mapping VERDICT_P = pass:0.85 fail:0.15 inconclusive:0.50 error:0.50; mature probes pass explicit p.';
+
+
+--
+-- Name: COLUMN probe_forecasts.side_effect; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.probe_forecasts.side_effect IS 'What this verdict triggered: stop_endpoint|watchdog_reset|skip_remediation|spawn_failed|none|... Side-effect-bearing forecasts are the priority scoring targets.';
+
+
+--
+-- Name: COLUMN probe_forecasts.momentum; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.probe_forecasts.momentum IS 'Raw corroboration count in scope at claim time (bucketed only at scoring time: cold 0 / warming 1-2 / rolling 3-9 / deep 10+).';
+
+
+--
+-- Name: COLUMN probe_forecasts.resolves; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.probe_forecasts.resolves IS 'Proposition LIKE-patterns a PASS from this observer retroactively silver-resolves (downstream proof).';
+
+
+--
+-- Name: COLUMN probe_forecasts.sequence_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.probe_forecasts.sequence_id IS 'Optional read-only link to healing_events.sequence_id. The ledger never writes healing_events.';
+
+
+--
+-- Name: probe_forecasts_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.probe_forecasts_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: probe_forecasts_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.probe_forecasts_id_seq OWNED BY public.probe_forecasts.id;
+
+
+--
+-- Name: probe_resolutions; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.probe_resolutions (
+    id bigint NOT NULL,
+    forecast_id uuid NOT NULL,
+    resolved_at timestamp with time zone DEFAULT now() NOT NULL,
+    outcome boolean NOT NULL,
+    tier text NOT NULL,
+    resolver text NOT NULL,
+    note text,
+    CONSTRAINT probe_resolutions_tier_check CHECK ((tier = ANY (ARRAY['gold'::text, 'silver'::text])))
+);
+
+
+--
+-- Name: TABLE probe_resolutions; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.probe_resolutions IS 'Outcome events for probe_forecasts. Corrections are APPENDED rows (latest resolved_at wins at read) — belief revisions are themselves history, never mutations.';
+
+
+--
+-- Name: COLUMN probe_resolutions.tier; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.probe_resolutions.tier IS 'gold = human attestation (CLI /efficacy resolve); silver = downstream objective verification or self-resolution.';
+
+
+--
+-- Name: COLUMN probe_resolutions.resolver; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.probe_resolutions.resolver IS 'Free-text provenance of the ground truth (e.g. self-recovered-noaction, freshness-3way:kv-missing-card_x, human:rch). The most valuable column — keep it descriptive.';
+
+
+--
+-- Name: probe_resolutions_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.probe_resolutions_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: probe_resolutions_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.probe_resolutions_id_seq OWNED BY public.probe_resolutions.id;
 
 
 --
@@ -13827,10 +15194,10 @@ ALTER SEQUENCE public.scoring_rubrics_id_seq OWNED BY public.scoring_rubrics.id;
 
 
 --
--- Name: search_index__9mlhjckt6psr53dm2euxs; Type: TABLE; Schema: public; Owner: -
+-- Name: search_index__gvoy5lcga0f1e9gd8f0if; Type: TABLE; Schema: public; Owner: -
 --
 
-CREATE TABLE public.search_index__9mlhjckt6psr53dm2euxs (
+CREATE TABLE public.search_index__gvoy5lcga0f1e9gd8f0if (
     id bigint NOT NULL,
     search_vector tsvector NOT NULL,
     with_native_query_vector tsvector NOT NULL,
@@ -13863,11 +15230,11 @@ CREATE TABLE public.search_index__9mlhjckt6psr53dm2euxs (
 
 
 --
--- Name: search_index__9mlhjckt6psr53dm2euxs_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+-- Name: search_index__gvoy5lcga0f1e9gd8f0if_id_seq; Type: SEQUENCE; Schema: public; Owner: -
 --
 
-ALTER TABLE public.search_index__9mlhjckt6psr53dm2euxs ALTER COLUMN id ADD GENERATED BY DEFAULT AS IDENTITY (
-    SEQUENCE NAME public.search_index__9mlhjckt6psr53dm2euxs_id_seq
+ALTER TABLE public.search_index__gvoy5lcga0f1e9gd8f0if ALTER COLUMN id ADD GENERATED BY DEFAULT AS IDENTITY (
+    SEQUENCE NAME public.search_index__gvoy5lcga0f1e9gd8f0if_id_seq
     START WITH 1
     INCREMENT BY 1
     NO MINVALUE
@@ -13877,10 +15244,10 @@ ALTER TABLE public.search_index__9mlhjckt6psr53dm2euxs ALTER COLUMN id ADD GENER
 
 
 --
--- Name: search_index__szrsf2xim8g35plmve9qg; Type: TABLE; Schema: public; Owner: -
+-- Name: search_index__zu6ajk4tfwidxdhfsgejv; Type: TABLE; Schema: public; Owner: -
 --
 
-CREATE TABLE public.search_index__szrsf2xim8g35plmve9qg (
+CREATE TABLE public.search_index__zu6ajk4tfwidxdhfsgejv (
     id bigint NOT NULL,
     search_vector tsvector NOT NULL,
     with_native_query_vector tsvector NOT NULL,
@@ -13913,11 +15280,11 @@ CREATE TABLE public.search_index__szrsf2xim8g35plmve9qg (
 
 
 --
--- Name: search_index__szrsf2xim8g35plmve9qg_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+-- Name: search_index__zu6ajk4tfwidxdhfsgejv_id_seq; Type: SEQUENCE; Schema: public; Owner: -
 --
 
-ALTER TABLE public.search_index__szrsf2xim8g35plmve9qg ALTER COLUMN id ADD GENERATED BY DEFAULT AS IDENTITY (
-    SEQUENCE NAME public.search_index__szrsf2xim8g35plmve9qg_id_seq
+ALTER TABLE public.search_index__zu6ajk4tfwidxdhfsgejv ALTER COLUMN id ADD GENERATED BY DEFAULT AS IDENTITY (
+    SEQUENCE NAME public.search_index__zu6ajk4tfwidxdhfsgejv_id_seq
     START WITH 1
     INCREMENT BY 1
     NO MINVALUE
@@ -14079,6 +15446,75 @@ ALTER TABLE public.segment ALTER COLUMN id ADD GENERATED BY DEFAULT AS IDENTITY 
 
 
 --
+-- Name: semantic_search_token_tracking; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.semantic_search_token_tracking (
+    id integer NOT NULL,
+    model_name character varying(256) NOT NULL,
+    request_type character varying(32),
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    total_tokens integer NOT NULL
+);
+
+
+--
+-- Name: TABLE semantic_search_token_tracking; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.semantic_search_token_tracking IS 'Token usage tracking info for semantic search';
+
+
+--
+-- Name: COLUMN semantic_search_token_tracking.id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.semantic_search_token_tracking.id IS 'Unique ID of a request';
+
+
+--
+-- Name: COLUMN semantic_search_token_tracking.model_name; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.semantic_search_token_tracking.model_name IS 'Name of model used for embeddings generation';
+
+
+--
+-- Name: COLUMN semantic_search_token_tracking.request_type; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.semantic_search_token_tracking.request_type IS 'Type of request, possibly index or query';
+
+
+--
+-- Name: COLUMN semantic_search_token_tracking.created_at; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.semantic_search_token_tracking.created_at IS 'Datetime of insertion';
+
+
+--
+-- Name: COLUMN semantic_search_token_tracking.total_tokens; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.semantic_search_token_tracking.total_tokens IS 'Total tokens value as per OpenAI compatible API';
+
+
+--
+-- Name: semantic_search_token_tracking_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+ALTER TABLE public.semantic_search_token_tracking ALTER COLUMN id ADD GENERATED BY DEFAULT AS IDENTITY (
+    SEQUENCE NAME public.semantic_search_token_tracking_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1
+);
+
+
+--
 -- Name: sessions; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -14108,6 +15544,158 @@ CREATE TABLE public.setting (
     key character varying(254) NOT NULL,
     value text NOT NULL
 );
+
+
+--
+-- Name: signal; Type: FOREIGN TABLE; Schema: public; Owner: -
+--
+
+CREATE FOREIGN TABLE public.signal (
+    epoch_hour integer,
+    ts_ns bigint,
+    series_id bigint,
+    src smallint,
+    gpu smallint,
+    inst smallint,
+    val_i bigint,
+    val_d numeric(18,6)
+)
+SERVER impala_kudu_srv
+OPTIONS (
+    access 'impala_sql',
+    database 'signals_dataproducts',
+    "table" 'signal'
+);
+
+
+--
+-- Name: signal_series; Type: FOREIGN TABLE; Schema: public; Owner: -
+--
+
+CREATE FOREIGN TABLE public.signal_series (
+    series_id bigint,
+    name text,
+    vtype smallint,
+    unit text,
+    src smallint,
+    dcgm_field text,
+    description text
+)
+SERVER impala_kudu_srv
+OPTIONS (
+    access 'kudu_scan',
+    database 'signals_dataproducts',
+    kudu_table 'impala::signals_dataproducts.signal_series',
+    "table" 'signal_series'
+);
+
+
+--
+-- Name: signal_tier0; Type: FOREIGN TABLE; Schema: public; Owner: -
+--
+
+CREATE FOREIGN TABLE public.signal_tier0 (
+    epoch_hour integer,
+    ts_ns bigint,
+    series_id bigint,
+    src smallint,
+    gpu smallint,
+    inst smallint,
+    val_i bigint,
+    val_d numeric(18,6)
+)
+SERVER impala_kudu_srv
+OPTIONS (
+    access 'kudu_scan',
+    database 'signals_dataproducts',
+    kudu_table 'impala::signals_dataproducts.signal_tier0',
+    "table" 'signal_tier0'
+);
+
+
+--
+-- Name: signal_tier1; Type: FOREIGN TABLE; Schema: public; Owner: -
+--
+
+CREATE FOREIGN TABLE public.signal_tier1 (
+    epoch_hour integer,
+    ts_ns bigint,
+    series_id bigint,
+    src smallint,
+    gpu smallint,
+    inst smallint,
+    val_i bigint,
+    val_d numeric(18,6)
+)
+SERVER impala_kudu_srv
+OPTIONS (
+    access 'impala_sql',
+    database 'signals_dataproducts',
+    "table" 'signal_tier1'
+);
+
+
+--
+-- Name: skos_alignment; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.skos_alignment (
+    id bigint NOT NULL,
+    clt_uri text NOT NULL,
+    sae_uri text DEFAULT ''::text NOT NULL,
+    sdg_uri text DEFAULT ''::text NOT NULL,
+    match_kind text DEFAULT ''::text NOT NULL,
+    verdict text NOT NULL,
+    reason text DEFAULT ''::text NOT NULL,
+    item_ids bigint[] DEFAULT '{}'::bigint[] NOT NULL,
+    run_id text DEFAULT ''::text NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL
+);
+
+
+--
+-- Name: skos_alignment_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.skos_alignment_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: skos_alignment_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.skos_alignment_id_seq OWNED BY public.skos_alignment.id;
+
+
+--
+-- Name: skos_pref_label; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.skos_pref_label (
+    notation text NOT NULL,
+    pref_label text NOT NULL,
+    clt_uri text NOT NULL,
+    labeler_model text DEFAULT ''::text NOT NULL,
+    labeler_version text DEFAULT ''::text NOT NULL,
+    exemplar_hash text NOT NULL,
+    item_ids bigint[] DEFAULT '{}'::bigint[] NOT NULL,
+    stale boolean DEFAULT false NOT NULL,
+    run_id text DEFAULT ''::text NOT NULL,
+    labeled_at timestamp with time zone DEFAULT now() NOT NULL,
+    stale_at timestamp with time zone
+);
+
+
+--
+-- Name: TABLE skos_pref_label; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.skos_pref_label IS 'Minted feature labels with labeler + exemplar hash. Stale requeues ACP.';
 
 
 --
@@ -14206,6 +15794,78 @@ CREATE SEQUENCE public.summary_lineage_id_seq
 --
 
 ALTER SEQUENCE public.summary_lineage_id_seq OWNED BY public.summary_lineage.id;
+
+
+--
+-- Name: supervision_directives; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.supervision_directives (
+    directive_id uuid NOT NULL,
+    kind text NOT NULL,
+    received_at timestamp with time zone DEFAULT now() NOT NULL,
+    session_id bigint,
+    accepted boolean NOT NULL,
+    applied boolean NOT NULL,
+    forecast_id uuid,
+    result jsonb DEFAULT '{}'::jsonb NOT NULL
+);
+
+
+--
+-- Name: TABLE supervision_directives; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.supervision_directives IS 'Every supervisor directive the engine has answered, keyed by directive_id: the dedup table for at-least-once delivery over EngineSupervision.Supervise. Immutable rows.';
+
+
+--
+-- Name: supervision_sessions; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.supervision_sessions (
+    id bigint NOT NULL,
+    connected_at timestamp with time zone DEFAULT now() NOT NULL,
+    disconnected_at timestamp with time zone,
+    peer text DEFAULT ''::text NOT NULL,
+    supervisor_id text NOT NULL,
+    supervisor_epoch text DEFAULT ''::text NOT NULL,
+    since_unix_ms bigint DEFAULT 0 NOT NULL,
+    replay_rows integer DEFAULT 0 NOT NULL,
+    events_sent bigint DEFAULT 0 NOT NULL,
+    events_dropped bigint DEFAULT 0 NOT NULL,
+    directives_received integer DEFAULT 0 NOT NULL,
+    directives_accepted integer DEFAULT 0 NOT NULL,
+    directives_refused integer DEFAULT 0 NOT NULL,
+    last_heartbeat_at timestamp with time zone,
+    goodbye_reason text
+);
+
+
+--
+-- Name: TABLE supervision_sessions; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.supervision_sessions IS 'EngineSupervision.Supervise sessions (the resident Nautilus dialing this engine). A live session has disconnected_at IS NULL and a fresh last_heartbeat_at.';
+
+
+--
+-- Name: supervision_sessions_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.supervision_sessions_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: supervision_sessions_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.supervision_sessions_id_seq OWNED BY public.supervision_sessions.id;
 
 
 --
@@ -15743,6 +17403,20 @@ CREATE TABLE public.x_oauth_pending (
 
 
 --
+-- Name: TABLE x_oauth_pending; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.x_oauth_pending IS 'Pending OAuth authorization flows (PKCE verifiers)';
+
+
+--
+-- Name: COLUMN x_oauth_pending.verifier; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.x_oauth_pending.verifier IS 'PKCE code_verifier for token exchange';
+
+
+--
 -- Name: x_sync_runs_id_seq; Type: SEQUENCE; Schema: public; Owner: -
 --
 
@@ -15777,115 +17451,10 @@ ALTER TABLE ONLY bases.query_log ALTER COLUMN id SET DEFAULT nextval('bases.quer
 
 
 --
--- Name: Dataset id; Type: DEFAULT; Schema: gaius_hx; Owner: -
+-- Name: content_events event_id; Type: DEFAULT; Schema: collections; Owner: -
 --
 
-ALTER TABLE ONLY gaius_hx."Dataset" ALTER COLUMN id SET DEFAULT ag_catalog._graphid((ag_catalog._label_id('gaius_hx'::name, 'Dataset'::name))::integer, nextval('gaius_hx."Dataset_id_seq"'::regclass));
-
-
---
--- Name: Dataset properties; Type: DEFAULT; Schema: gaius_hx; Owner: -
---
-
-ALTER TABLE ONLY gaius_hx."Dataset" ALTER COLUMN properties SET DEFAULT ag_catalog.agtype_build_map();
-
-
---
--- Name: EXECUTES id; Type: DEFAULT; Schema: gaius_hx; Owner: -
---
-
-ALTER TABLE ONLY gaius_hx."EXECUTES" ALTER COLUMN id SET DEFAULT ag_catalog._graphid((ag_catalog._label_id('gaius_hx'::name, 'EXECUTES'::name))::integer, nextval('gaius_hx."EXECUTES_id_seq"'::regclass));
-
-
---
--- Name: EXECUTES properties; Type: DEFAULT; Schema: gaius_hx; Owner: -
---
-
-ALTER TABLE ONLY gaius_hx."EXECUTES" ALTER COLUMN properties SET DEFAULT ag_catalog.agtype_build_map();
-
-
---
--- Name: INPUT_TO id; Type: DEFAULT; Schema: gaius_hx; Owner: -
---
-
-ALTER TABLE ONLY gaius_hx."INPUT_TO" ALTER COLUMN id SET DEFAULT ag_catalog._graphid((ag_catalog._label_id('gaius_hx'::name, 'INPUT_TO'::name))::integer, nextval('gaius_hx."INPUT_TO_id_seq"'::regclass));
-
-
---
--- Name: INPUT_TO properties; Type: DEFAULT; Schema: gaius_hx; Owner: -
---
-
-ALTER TABLE ONLY gaius_hx."INPUT_TO" ALTER COLUMN properties SET DEFAULT ag_catalog.agtype_build_map();
-
-
---
--- Name: Job id; Type: DEFAULT; Schema: gaius_hx; Owner: -
---
-
-ALTER TABLE ONLY gaius_hx."Job" ALTER COLUMN id SET DEFAULT ag_catalog._graphid((ag_catalog._label_id('gaius_hx'::name, 'Job'::name))::integer, nextval('gaius_hx."Job_id_seq"'::regclass));
-
-
---
--- Name: Job properties; Type: DEFAULT; Schema: gaius_hx; Owner: -
---
-
-ALTER TABLE ONLY gaius_hx."Job" ALTER COLUMN properties SET DEFAULT ag_catalog.agtype_build_map();
-
-
---
--- Name: OUTPUTS id; Type: DEFAULT; Schema: gaius_hx; Owner: -
---
-
-ALTER TABLE ONLY gaius_hx."OUTPUTS" ALTER COLUMN id SET DEFAULT ag_catalog._graphid((ag_catalog._label_id('gaius_hx'::name, 'OUTPUTS'::name))::integer, nextval('gaius_hx."OUTPUTS_id_seq"'::regclass));
-
-
---
--- Name: OUTPUTS properties; Type: DEFAULT; Schema: gaius_hx; Owner: -
---
-
-ALTER TABLE ONLY gaius_hx."OUTPUTS" ALTER COLUMN properties SET DEFAULT ag_catalog.agtype_build_map();
-
-
---
--- Name: PARENT id; Type: DEFAULT; Schema: gaius_hx; Owner: -
---
-
-ALTER TABLE ONLY gaius_hx."PARENT" ALTER COLUMN id SET DEFAULT ag_catalog._graphid((ag_catalog._label_id('gaius_hx'::name, 'PARENT'::name))::integer, nextval('gaius_hx."PARENT_id_seq"'::regclass));
-
-
---
--- Name: PARENT properties; Type: DEFAULT; Schema: gaius_hx; Owner: -
---
-
-ALTER TABLE ONLY gaius_hx."PARENT" ALTER COLUMN properties SET DEFAULT ag_catalog.agtype_build_map();
-
-
---
--- Name: Run id; Type: DEFAULT; Schema: gaius_hx; Owner: -
---
-
-ALTER TABLE ONLY gaius_hx."Run" ALTER COLUMN id SET DEFAULT ag_catalog._graphid((ag_catalog._label_id('gaius_hx'::name, 'Run'::name))::integer, nextval('gaius_hx."Run_id_seq"'::regclass));
-
-
---
--- Name: Run properties; Type: DEFAULT; Schema: gaius_hx; Owner: -
---
-
-ALTER TABLE ONLY gaius_hx."Run" ALTER COLUMN properties SET DEFAULT ag_catalog.agtype_build_map();
-
-
---
--- Name: _ag_label_edge id; Type: DEFAULT; Schema: gaius_hx; Owner: -
---
-
-ALTER TABLE ONLY gaius_hx._ag_label_edge ALTER COLUMN id SET DEFAULT ag_catalog._graphid((ag_catalog._label_id('gaius_hx'::name, '_ag_label_edge'::name))::integer, nextval('gaius_hx._ag_label_edge_id_seq'::regclass));
-
-
---
--- Name: _ag_label_vertex id; Type: DEFAULT; Schema: gaius_hx; Owner: -
---
-
-ALTER TABLE ONLY gaius_hx._ag_label_vertex ALTER COLUMN id SET DEFAULT ag_catalog._graphid((ag_catalog._label_id('gaius_hx'::name, '_ag_label_vertex'::name))::integer, nextval('gaius_hx._ag_label_vertex_id_seq'::regclass));
+ALTER TABLE ONLY collections.content_events ALTER COLUMN event_id SET DEFAULT nextval('collections.content_events_event_id_seq'::regclass);
 
 
 --
@@ -15914,13 +17483,6 @@ ALTER TABLE ONLY meta.data_dependencies ALTER COLUMN id SET DEFAULT nextval('met
 --
 
 ALTER TABLE ONLY meta.document_clusters ALTER COLUMN id SET DEFAULT nextval('meta.document_clusters_id_seq'::regclass);
-
-
---
--- Name: flow_events event_id; Type: DEFAULT; Schema: meta; Owner: -
---
-
-ALTER TABLE ONLY meta.flow_events ALTER COLUMN event_id SET DEFAULT nextval('meta.flow_events_event_id_seq'::regclass);
 
 
 --
@@ -16043,10 +17605,31 @@ ALTER TABLE ONLY meta.topology_drift ALTER COLUMN id SET DEFAULT nextval('meta.t
 
 
 --
+-- Name: activation id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.activation ALTER COLUMN id SET DEFAULT nextval('public.activation_id_seq'::regclass);
+
+
+--
 -- Name: activity_events id; Type: DEFAULT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.activity_events ALTER COLUMN id SET DEFAULT nextval('public.activity_events_id_seq'::regclass);
+
+
+--
+-- Name: admitted_item id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.admitted_item ALTER COLUMN id SET DEFAULT nextval('public.admitted_item_id_seq'::regclass);
+
+
+--
+-- Name: agenda_entries id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.agenda_entries ALTER COLUMN id SET DEFAULT nextval('public.agenda_entries_id_seq'::regclass);
 
 
 --
@@ -16096,6 +17679,13 @@ ALTER TABLE ONLY public.archive_rotations ALTER COLUMN id SET DEFAULT nextval('p
 --
 
 ALTER TABLE ONLY public.calibration_summaries ALTER COLUMN id SET DEFAULT nextval('public.calibration_summaries_id_seq'::regclass);
+
+
+--
+-- Name: cognition_buffer id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.cognition_buffer ALTER COLUMN id SET DEFAULT nextval('public.cognition_buffer_id_seq'::regclass);
 
 
 --
@@ -16183,6 +17773,13 @@ ALTER TABLE ONLY public.external_routing_metrics ALTER COLUMN id SET DEFAULT nex
 
 
 --
+-- Name: feature_tape id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.feature_tape ALTER COLUMN id SET DEFAULT nextval('public.feature_tape_id_seq'::regclass);
+
+
+--
 -- Name: feed_sources id; Type: DEFAULT; Schema: public; Owner: -
 --
 
@@ -16218,6 +17815,13 @@ ALTER TABLE ONLY public.fmea_outcomes ALTER COLUMN id SET DEFAULT nextval('publi
 
 
 --
+-- Name: fsm_transitions id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.fsm_transitions ALTER COLUMN id SET DEFAULT nextval('public.fsm_transitions_id_seq'::regclass);
+
+
+--
 -- Name: github_issues id; Type: DEFAULT; Schema: public; Owner: -
 --
 
@@ -16225,45 +17829,10 @@ ALTER TABLE ONLY public.github_issues ALTER COLUMN id SET DEFAULT nextval('publi
 
 
 --
--- Name: grid_allocations id; Type: DEFAULT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.grid_allocations ALTER COLUMN id SET DEFAULT nextval('public.grid_allocations_id_seq'::regclass);
-
-
---
--- Name: grid_clusters id; Type: DEFAULT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.grid_clusters ALTER COLUMN id SET DEFAULT nextval('public.grid_clusters_id_seq'::regclass);
-
-
---
--- Name: grid_embeddings id; Type: DEFAULT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.grid_embeddings ALTER COLUMN id SET DEFAULT nextval('public.grid_embeddings_id_seq'::regclass);
-
-
---
--- Name: grid_points id; Type: DEFAULT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.grid_points ALTER COLUMN id SET DEFAULT nextval('public.grid_points_id_seq'::regclass);
-
-
---
 -- Name: grid_snapshots id; Type: DEFAULT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.grid_snapshots ALTER COLUMN id SET DEFAULT nextval('public.grid_snapshots_id_seq'::regclass);
-
-
---
--- Name: grid_tda_features id; Type: DEFAULT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.grid_tda_features ALTER COLUMN id SET DEFAULT nextval('public.grid_tda_features_id_seq'::regclass);
 
 
 --
@@ -16337,10 +17906,31 @@ ALTER TABLE ONLY public.optimization_runs ALTER COLUMN id SET DEFAULT nextval('p
 
 
 --
+-- Name: overwatch_events id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.overwatch_events ALTER COLUMN id SET DEFAULT nextval('public.overwatch_events_id_seq'::regclass);
+
+
+--
 -- Name: paper_scores id; Type: DEFAULT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.paper_scores ALTER COLUMN id SET DEFAULT nextval('public.paper_scores_id_seq'::regclass);
+
+
+--
+-- Name: probe_forecasts id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.probe_forecasts ALTER COLUMN id SET DEFAULT nextval('public.probe_forecasts_id_seq'::regclass);
+
+
+--
+-- Name: probe_resolutions id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.probe_resolutions ALTER COLUMN id SET DEFAULT nextval('public.probe_resolutions_id_seq'::regclass);
 
 
 --
@@ -16386,6 +17976,13 @@ ALTER TABLE ONLY public.scoring_rubrics ALTER COLUMN id SET DEFAULT nextval('pub
 
 
 --
+-- Name: skos_alignment id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.skos_alignment ALTER COLUMN id SET DEFAULT nextval('public.skos_alignment_id_seq'::regclass);
+
+
+--
 -- Name: state_changes id; Type: DEFAULT; Schema: public; Owner: -
 --
 
@@ -16397,6 +17994,13 @@ ALTER TABLE ONLY public.state_changes ALTER COLUMN id SET DEFAULT nextval('publi
 --
 
 ALTER TABLE ONLY public.summary_lineage ALTER COLUMN id SET DEFAULT nextval('public.summary_lineage_id_seq'::regclass);
+
+
+--
+-- Name: supervision_sessions id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.supervision_sessions ALTER COLUMN id SET DEFAULT nextval('public.supervision_sessions_id_seq'::regclass);
 
 
 --
@@ -16585,6 +18189,30 @@ ALTER TABLE ONLY collections.articles
 
 
 --
+-- Name: content_events card_events_pkey; Type: CONSTRAINT; Schema: collections; Owner: -
+--
+
+ALTER TABLE ONLY collections.content_events
+    ADD CONSTRAINT card_events_pkey PRIMARY KEY (event_id);
+
+
+--
+-- Name: card_summaries card_summaries_card_id_summary_type_key; Type: CONSTRAINT; Schema: collections; Owner: -
+--
+
+ALTER TABLE ONLY collections.card_summaries
+    ADD CONSTRAINT card_summaries_card_id_summary_type_key UNIQUE (card_id, summary_type);
+
+
+--
+-- Name: card_summaries card_summaries_pkey; Type: CONSTRAINT; Schema: collections; Owner: -
+--
+
+ALTER TABLE ONLY collections.card_summaries
+    ADD CONSTRAINT card_summaries_pkey PRIMARY KEY (summary_id);
+
+
+--
 -- Name: cards cards_collection_id_sequence_key; Type: CONSTRAINT; Schema: collections; Owner: -
 --
 
@@ -16601,6 +18229,22 @@ ALTER TABLE ONLY collections.cards
 
 
 --
+-- Name: collection_summaries collection_summaries_collection_id_summary_type_key; Type: CONSTRAINT; Schema: collections; Owner: -
+--
+
+ALTER TABLE ONLY collections.collection_summaries
+    ADD CONSTRAINT collection_summaries_collection_id_summary_type_key UNIQUE (collection_id, summary_type);
+
+
+--
+-- Name: collection_summaries collection_summaries_pkey; Type: CONSTRAINT; Schema: collections; Owner: -
+--
+
+ALTER TABLE ONLY collections.collection_summaries
+    ADD CONSTRAINT collection_summaries_pkey PRIMARY KEY (summary_id);
+
+
+--
 -- Name: collections collections_pkey; Type: CONSTRAINT; Schema: collections; Owner: -
 --
 
@@ -16614,6 +18258,14 @@ ALTER TABLE ONLY collections.collections
 
 ALTER TABLE ONLY collections.collections
     ADD CONSTRAINT collections_slug_key UNIQUE (slug);
+
+
+--
+-- Name: curation_state curation_state_pkey; Type: CONSTRAINT; Schema: collections; Owner: -
+--
+
+ALTER TABLE ONLY collections.curation_state
+    ADD CONSTRAINT curation_state_pkey PRIMARY KEY (key);
 
 
 --
@@ -16657,22 +18309,6 @@ ALTER TABLE ONLY collections.sources
 
 
 --
--- Name: _ag_label_edge _ag_label_edge_pkey; Type: CONSTRAINT; Schema: gaius_hx; Owner: -
---
-
-ALTER TABLE ONLY gaius_hx._ag_label_edge
-    ADD CONSTRAINT _ag_label_edge_pkey PRIMARY KEY (id);
-
-
---
--- Name: _ag_label_vertex _ag_label_vertex_pkey; Type: CONSTRAINT; Schema: gaius_hx; Owner: -
---
-
-ALTER TABLE ONLY gaius_hx._ag_label_vertex
-    ADD CONSTRAINT _ag_label_vertex_pkey PRIMARY KEY (id);
-
-
---
 -- Name: agent_performance agent_performance_pkey; Type: CONSTRAINT; Schema: meta; Owner: -
 --
 
@@ -16713,6 +18349,14 @@ ALTER TABLE ONLY meta.audit_recommendations
 
 
 --
+-- Name: board_reindex_state board_reindex_state_pkey; Type: CONSTRAINT; Schema: meta; Owner: -
+--
+
+ALTER TABLE ONLY meta.board_reindex_state
+    ADD CONSTRAINT board_reindex_state_pkey PRIMARY KEY (key);
+
+
+--
 -- Name: data_dependencies data_dependencies_pkey; Type: CONSTRAINT; Schema: meta; Owner: -
 --
 
@@ -16742,14 +18386,6 @@ ALTER TABLE ONLY meta.dataset_catalog
 
 ALTER TABLE ONLY meta.document_clusters
     ADD CONSTRAINT document_clusters_pkey PRIMARY KEY (id);
-
-
---
--- Name: flow_events flow_events_pkey; Type: CONSTRAINT; Schema: meta; Owner: -
---
-
-ALTER TABLE ONLY meta.flow_events
-    ADD CONSTRAINT flow_events_pkey PRIMARY KEY (event_id);
 
 
 --
@@ -16969,6 +18605,14 @@ ALTER TABLE ONLY meta.prospect_strategies
 
 
 --
+-- Name: prospects_cron_state prospects_cron_state_pkey; Type: CONSTRAINT; Schema: meta; Owner: -
+--
+
+ALTER TABLE ONLY meta.prospects_cron_state
+    ADD CONSTRAINT prospects_cron_state_pkey PRIMARY KEY (key);
+
+
+--
 -- Name: quality_assessments quality_assessments_pkey; Type: CONSTRAINT; Schema: meta; Owner: -
 --
 
@@ -17057,6 +18701,22 @@ ALTER TABLE ONLY meta.topology_drift
 
 
 --
+-- Name: weekly_signals_summary_state weekly_signals_summary_state_pkey; Type: CONSTRAINT; Schema: meta; Owner: -
+--
+
+ALTER TABLE ONLY meta.weekly_signals_summary_state
+    ADD CONSTRAINT weekly_signals_summary_state_pkey PRIMARY KEY (key);
+
+
+--
+-- Name: supervisor_status supervisor_status_pkey; Type: CONSTRAINT; Schema: nautilus; Owner: -
+--
+
+ALTER TABLE ONLY nautilus.supervisor_status
+    ADD CONSTRAINT supervisor_status_pkey PRIMARY KEY (project);
+
+
+--
 -- Name: action action_entity_id_key; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -17081,11 +18741,67 @@ ALTER TABLE ONLY public.action
 
 
 --
+-- Name: activation activation_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.activation
+    ADD CONSTRAINT activation_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: activity_events activity_events_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.activity_events
     ADD CONSTRAINT activity_events_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: admit_progress admit_progress_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.admit_progress
+    ADD CONSTRAINT admit_progress_pkey PRIMARY KEY (source_id);
+
+
+--
+-- Name: admitted_item admitted_item_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.admitted_item
+    ADD CONSTRAINT admitted_item_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: admitted_item admitted_item_source_id_char_start_char_end_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.admitted_item
+    ADD CONSTRAINT admitted_item_source_id_char_start_char_end_key UNIQUE (source_id, char_start, char_end);
+
+
+--
+-- Name: admitted_quarantine admitted_quarantine_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.admitted_quarantine
+    ADD CONSTRAINT admitted_quarantine_pkey PRIMARY KEY (source_id);
+
+
+--
+-- Name: agenda_briefs agenda_briefs_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.agenda_briefs
+    ADD CONSTRAINT agenda_briefs_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: agenda_entries agenda_entries_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.agenda_entries
+    ADD CONSTRAINT agenda_entries_pkey PRIMARY KEY (id);
 
 
 --
@@ -17225,6 +18941,14 @@ ALTER TABLE ONLY public.bookmark_ordering
 
 
 --
+-- Name: buffer_entries buffer_entries_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.buffer_entries
+    ADD CONSTRAINT buffer_entries_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: cache_config cache_config_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -17294,6 +19018,30 @@ ALTER TABLE ONLY public.channel_template
 
 ALTER TABLE ONLY public.cloud_migration
     ADD CONSTRAINT cloud_migration_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: clt_skos_clock clt_skos_clock_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.clt_skos_clock
+    ADD CONSTRAINT clt_skos_clock_pkey PRIMARY KEY (key);
+
+
+--
+-- Name: cognition_briefs cognition_briefs_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.cognition_briefs
+    ADD CONSTRAINT cognition_briefs_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: cognition_buffer cognition_buffer_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.cognition_buffer
+    ADD CONSTRAINT cognition_buffer_pkey PRIMARY KEY (id);
 
 
 --
@@ -17625,6 +19373,14 @@ ALTER TABLE ONLY public.external_routing_metrics
 
 
 --
+-- Name: feature_tape feature_tape_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.feature_tape
+    ADD CONSTRAINT feature_tape_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: feed_sources feed_sources_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -17689,6 +19445,14 @@ ALTER TABLE ONLY public.fmea_outcomes
 
 
 --
+-- Name: fsm_transitions fsm_transitions_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.fsm_transitions
+    ADD CONSTRAINT fsm_transitions_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: application_permissions_revision general_permissions_revision_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -17713,91 +19477,11 @@ ALTER TABLE ONLY public.github_issues
 
 
 --
--- Name: grid_allocations grid_allocations_pkey; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.grid_allocations
-    ADD CONSTRAINT grid_allocations_pkey PRIMARY KEY (id);
-
-
---
--- Name: grid_allocations grid_allocations_snapshot_id_key; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.grid_allocations
-    ADD CONSTRAINT grid_allocations_snapshot_id_key UNIQUE (snapshot_id);
-
-
---
--- Name: grid_clusters grid_clusters_pkey; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.grid_clusters
-    ADD CONSTRAINT grid_clusters_pkey PRIMARY KEY (id);
-
-
---
--- Name: grid_clusters grid_clusters_snapshot_id_x_y_key; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.grid_clusters
-    ADD CONSTRAINT grid_clusters_snapshot_id_x_y_key UNIQUE (snapshot_id, x, y);
-
-
---
--- Name: grid_embeddings grid_embeddings_pkey; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.grid_embeddings
-    ADD CONSTRAINT grid_embeddings_pkey PRIMARY KEY (id);
-
-
---
--- Name: grid_embeddings grid_embeddings_snapshot_id_embedding_index_key; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.grid_embeddings
-    ADD CONSTRAINT grid_embeddings_snapshot_id_embedding_index_key UNIQUE (snapshot_id, embedding_index);
-
-
---
--- Name: grid_points grid_points_pkey; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.grid_points
-    ADD CONSTRAINT grid_points_pkey PRIMARY KEY (id);
-
-
---
--- Name: grid_points grid_points_snapshot_id_embedding_id_key; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.grid_points
-    ADD CONSTRAINT grid_points_snapshot_id_embedding_id_key UNIQUE (snapshot_id, embedding_id);
-
-
---
 -- Name: grid_snapshots grid_snapshots_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.grid_snapshots
     ADD CONSTRAINT grid_snapshots_pkey PRIMARY KEY (id);
-
-
---
--- Name: grid_tda_features grid_tda_features_pkey; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.grid_tda_features
-    ADD CONSTRAINT grid_tda_features_pkey PRIMARY KEY (id);
-
-
---
--- Name: grid_tda_features grid_tda_features_snapshot_id_key; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.grid_tda_features
-    ADD CONSTRAINT grid_tda_features_snapshot_id_key UNIQUE (snapshot_id);
 
 
 --
@@ -18081,27 +19765,11 @@ ALTER TABLE ONLY public.metabot_conversation
 
 
 --
--- Name: metabot_entity metabot_entity_entity_id_key; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.metabot_entity
-    ADD CONSTRAINT metabot_entity_entity_id_key UNIQUE (entity_id);
-
-
---
 -- Name: metabot metabot_entity_id_key; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.metabot
     ADD CONSTRAINT metabot_entity_id_key UNIQUE (entity_id);
-
-
---
--- Name: metabot_entity metabot_entity_pkey; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.metabot_entity
-    ADD CONSTRAINT metabot_entity_pkey PRIMARY KEY (id);
 
 
 --
@@ -18286,6 +19954,14 @@ ALTER TABLE ONLY public.objective_verifications
 
 ALTER TABLE ONLY public.optimization_runs
     ADD CONSTRAINT optimization_runs_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: overwatch_events overwatch_events_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.overwatch_events
+    ADD CONSTRAINT overwatch_events_pkey PRIMARY KEY (id);
 
 
 --
@@ -18486,6 +20162,30 @@ ALTER TABLE ONLY public.query_action
 
 ALTER TABLE ONLY public.qrtz_paused_trigger_grps
     ADD CONSTRAINT pk_sched_name PRIMARY KEY (sched_name, trigger_group);
+
+
+--
+-- Name: probe_forecasts probe_forecasts_forecast_id_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.probe_forecasts
+    ADD CONSTRAINT probe_forecasts_forecast_id_key UNIQUE (forecast_id);
+
+
+--
+-- Name: probe_forecasts probe_forecasts_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.probe_forecasts
+    ADD CONSTRAINT probe_forecasts_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: probe_resolutions probe_resolutions_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.probe_resolutions
+    ADD CONSTRAINT probe_resolutions_pkey PRIMARY KEY (id);
 
 
 --
@@ -18801,19 +20501,19 @@ ALTER TABLE ONLY public.scoring_rubrics
 
 
 --
--- Name: search_index__9mlhjckt6psr53dm2euxs search_index__9mlhjckt6psr53dm2euxs_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+-- Name: search_index__gvoy5lcga0f1e9gd8f0if search_index__gvoy5lcga0f1e9gd8f0if_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
-ALTER TABLE ONLY public.search_index__9mlhjckt6psr53dm2euxs
-    ADD CONSTRAINT search_index__9mlhjckt6psr53dm2euxs_pkey PRIMARY KEY (id);
+ALTER TABLE ONLY public.search_index__gvoy5lcga0f1e9gd8f0if
+    ADD CONSTRAINT search_index__gvoy5lcga0f1e9gd8f0if_pkey PRIMARY KEY (id);
 
 
 --
--- Name: search_index__szrsf2xim8g35plmve9qg search_index__szrsf2xim8g35plmve9qg_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+-- Name: search_index__zu6ajk4tfwidxdhfsgejv search_index__zu6ajk4tfwidxdhfsgejv_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
-ALTER TABLE ONLY public.search_index__szrsf2xim8g35plmve9qg
-    ADD CONSTRAINT search_index__szrsf2xim8g35plmve9qg_pkey PRIMARY KEY (id);
+ALTER TABLE ONLY public.search_index__zu6ajk4tfwidxdhfsgejv
+    ADD CONSTRAINT search_index__zu6ajk4tfwidxdhfsgejv_pkey PRIMARY KEY (id);
 
 
 --
@@ -18857,6 +20557,14 @@ ALTER TABLE ONLY public.segment
 
 
 --
+-- Name: semantic_search_token_tracking semantic_search_token_tracking_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.semantic_search_token_tracking
+    ADD CONSTRAINT semantic_search_token_tracking_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: sessions sessions_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -18870,6 +20578,22 @@ ALTER TABLE ONLY public.sessions
 
 ALTER TABLE ONLY public.setting
     ADD CONSTRAINT setting_pkey PRIMARY KEY (key);
+
+
+--
+-- Name: skos_alignment skos_alignment_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.skos_alignment
+    ADD CONSTRAINT skos_alignment_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: skos_pref_label skos_pref_label_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.skos_pref_label
+    ADD CONSTRAINT skos_pref_label_pkey PRIMARY KEY (notation);
 
 
 --
@@ -18894,6 +20618,22 @@ ALTER TABLE ONLY public.summary_lineage
 
 ALTER TABLE ONLY public.summary_lineage
     ADD CONSTRAINT summary_lineage_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: supervision_directives supervision_directives_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.supervision_directives
+    ADD CONSTRAINT supervision_directives_pkey PRIMARY KEY (directive_id);
+
+
+--
+-- Name: supervision_sessions supervision_sessions_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.supervision_sessions
+    ADD CONSTRAINT supervision_sessions_pkey PRIMARY KEY (id);
 
 
 --
@@ -19292,6 +21032,13 @@ CREATE INDEX idx_acquired_sources_type ON collections.acquired_sources USING btr
 
 
 --
+-- Name: idx_acquired_sources_url; Type: INDEX; Schema: collections; Owner: -
+--
+
+CREATE INDEX idx_acquired_sources_url ON collections.acquired_sources USING btree (url);
+
+
+--
 -- Name: idx_article_references_article; Type: INDEX; Schema: collections; Owner: -
 --
 
@@ -19324,6 +21071,13 @@ CREATE INDEX idx_articles_kb_path ON collections.articles USING btree (kb_path);
 --
 
 CREATE INDEX idx_articles_status ON collections.articles USING btree (status);
+
+
+--
+-- Name: idx_card_summaries_card; Type: INDEX; Schema: collections; Owner: -
+--
+
+CREATE INDEX idx_card_summaries_card ON collections.card_summaries USING btree (card_id);
 
 
 --
@@ -19369,6 +21123,20 @@ CREATE INDEX idx_cards_status ON collections.cards USING btree (status);
 
 
 --
+-- Name: idx_cards_zettle_slug; Type: INDEX; Schema: collections; Owner: -
+--
+
+CREATE INDEX idx_cards_zettle_slug ON collections.cards USING btree (zettle_slug) WHERE (zettle_slug IS NOT NULL);
+
+
+--
+-- Name: idx_collection_summaries_collection; Type: INDEX; Schema: collections; Owner: -
+--
+
+CREATE INDEX idx_collection_summaries_collection ON collections.collection_summaries USING btree (collection_id);
+
+
+--
 -- Name: idx_collections_featured; Type: INDEX; Schema: collections; Owner: -
 --
 
@@ -19387,6 +21155,27 @@ CREATE UNIQUE INDEX idx_collections_single_featured ON collections.collections U
 --
 
 CREATE INDEX idx_collections_status ON collections.collections USING btree (status);
+
+
+--
+-- Name: idx_content_events_at; Type: INDEX; Schema: collections; Owner: -
+--
+
+CREATE INDEX idx_content_events_at ON collections.content_events USING btree (at DESC);
+
+
+--
+-- Name: idx_content_events_content; Type: INDEX; Schema: collections; Owner: -
+--
+
+CREATE INDEX idx_content_events_content ON collections.content_events USING btree (content_id, at DESC);
+
+
+--
+-- Name: idx_content_events_kind_at; Type: INDEX; Schema: collections; Owner: -
+--
+
+CREATE INDEX idx_content_events_kind_at ON collections.content_events USING btree (content_kind, at DESC);
 
 
 --
@@ -19422,6 +21211,13 @@ CREATE INDEX idx_selection_traces_collection ON collections.selection_traces USI
 --
 
 CREATE INDEX idx_selection_traces_created ON collections.selection_traces USING btree (created_at DESC);
+
+
+--
+-- Name: idx_selection_traces_score; Type: INDEX; Schema: collections; Owner: -
+--
+
+CREATE INDEX idx_selection_traces_score ON collections.selection_traces USING btree (score) WHERE (score IS NOT NULL);
 
 
 --
@@ -19586,34 +21382,6 @@ CREATE INDEX idx_meta_deps_target ON meta.data_dependencies USING btree (target_
 
 
 --
--- Name: idx_meta_flow_events_created_at; Type: INDEX; Schema: meta; Owner: -
---
-
-CREATE INDEX idx_meta_flow_events_created_at ON meta.flow_events USING btree (created_at DESC);
-
-
---
--- Name: idx_meta_flow_events_flow_type; Type: INDEX; Schema: meta; Owner: -
---
-
-CREATE INDEX idx_meta_flow_events_flow_type ON meta.flow_events USING btree (flow_type, created_at DESC);
-
-
---
--- Name: idx_meta_flow_events_run_id; Type: INDEX; Schema: meta; Owner: -
---
-
-CREATE INDEX idx_meta_flow_events_run_id ON meta.flow_events USING btree (run_id);
-
-
---
--- Name: idx_meta_flow_events_status; Type: INDEX; Schema: meta; Owner: -
---
-
-CREATE INDEX idx_meta_flow_events_status ON meta.flow_events USING btree (status);
-
-
---
 -- Name: idx_meta_flow_runs_status; Type: INDEX; Schema: meta; Owner: -
 --
 
@@ -19625,13 +21393,6 @@ CREATE INDEX idx_meta_flow_runs_status ON meta.flow_runs USING btree (status);
 --
 
 CREATE INDEX idx_meta_flow_runs_type ON meta.flow_runs USING btree (flow_type, started_at DESC);
-
-
---
--- Name: idx_meta_flow_runs_updated_at; Type: INDEX; Schema: meta; Owner: -
---
-
-CREATE INDEX idx_meta_flow_runs_updated_at ON meta.flow_runs USING btree (updated_at DESC);
 
 
 --
@@ -19887,6 +21648,132 @@ CREATE INDEX idx_topology_drift_time ON meta.topology_drift USING btree (compute
 
 
 --
+-- Name: activation_clt_feat; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX activation_clt_feat ON public.activation USING btree (model, layer, feature_idx);
+
+
+--
+-- Name: activation_feat; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX activation_feat ON public.activation USING btree (model, layer, feature_idx);
+
+
+--
+-- Name: activation_item; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX activation_item ON public.activation USING btree (item_id);
+
+
+--
+-- Name: admit_progress_fetched; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX admit_progress_fetched ON public.admit_progress USING btree (fetched_at);
+
+
+--
+-- Name: admitted_item_admitted; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX admitted_item_admitted ON public.admitted_item USING btree (admitted_at DESC);
+
+
+--
+-- Name: admitted_item_source; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX admitted_item_source ON public.admitted_item USING btree (source_id);
+
+
+--
+-- Name: admitted_quarantine_open; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX admitted_quarantine_open ON public.admitted_quarantine USING btree (resolved_at) WHERE (resolved_at IS NULL);
+
+
+--
+-- Name: agenda_entries_episode_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX agenda_entries_episode_idx ON public.agenda_entries USING btree (episode_id);
+
+
+--
+-- Name: agenda_entries_open_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX agenda_entries_open_idx ON public.agenda_entries USING btree (status, created_at DESC);
+
+
+--
+-- Name: buffer_entries_created_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX buffer_entries_created_idx ON public.buffer_entries USING btree (buffer, created_at);
+
+
+--
+-- Name: buffer_entries_live_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX buffer_entries_live_idx ON public.buffer_entries USING btree (buffer, created_at) WHERE (compacted_at IS NULL);
+
+
+--
+-- Name: cognition_buffer_created_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX cognition_buffer_created_idx ON public.cognition_buffer USING btree (created_at DESC);
+
+
+--
+-- Name: cognition_buffer_episode_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX cognition_buffer_episode_idx ON public.cognition_buffer USING btree (episode_id);
+
+
+--
+-- Name: discover_landing_36h_kind_key; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX discover_landing_36h_kind_key ON public.discover_landing_36h USING btree (kind, key);
+
+
+--
+-- Name: feature_tape_created_at; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX feature_tape_created_at ON public.feature_tape USING btree (created_at DESC);
+
+
+--
+-- Name: feature_tape_event_feat; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX feature_tape_event_feat ON public.feature_tape USING btree (event_id, layer, feature_idx);
+
+
+--
+-- Name: feature_tape_feat; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX feature_tape_feat ON public.feature_tape USING btree (layer, feature_idx);
+
+
+--
+-- Name: feature_tape_ts; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX feature_tape_ts ON public.feature_tape USING btree (ts DESC);
+
+
+--
 -- Name: idx_action_creator_id; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -19940,6 +21827,13 @@ CREATE INDEX idx_activity_events_profile ON public.activity_events USING btree (
 --
 
 CREATE INDEX idx_activity_events_type ON public.activity_events USING btree (event_type);
+
+
+--
+-- Name: idx_agenda_briefs_created; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_agenda_briefs_created ON public.agenda_briefs USING btree (created_at DESC);
 
 
 --
@@ -20323,6 +22217,13 @@ CREATE INDEX idx_cardfavorite_card_id ON public.report_cardfavorite USING btree 
 --
 
 CREATE INDEX idx_cardfavorite_owner_id ON public.report_cardfavorite USING btree (owner_id);
+
+
+--
+-- Name: idx_cognition_briefs_created; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_cognition_briefs_created ON public.cognition_briefs USING btree (created_at DESC);
 
 
 --
@@ -20725,41 +22626,6 @@ CREATE INDEX idx_engine_obs_thought ON public.engine_observations USING btree (r
 
 
 --
--- Name: idx_eval_type; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX idx_eval_type ON public.agent_evaluations USING btree (eval_type);
-
-
---
--- Name: idx_evo_agent; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX idx_evo_agent ON public.evolution_cycles USING btree (agent_id);
-
-
---
--- Name: idx_evo_started; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX idx_evo_started ON public.evolution_cycles USING btree (started_at);
-
-
---
--- Name: idx_evo_success; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX idx_evo_success ON public.evolution_cycles USING btree (success);
-
-
---
--- Name: idx_evo_trigger; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX idx_evo_trigger ON public.evolution_cycles USING btree (trigger_type);
-
-
---
 -- Name: idx_evolution_cycles_agent; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -20893,6 +22759,13 @@ CREATE INDEX idx_fmea_outcomes_success ON public.fmea_outcomes USING btree (succ
 
 
 --
+-- Name: idx_fsm_transitions_scope; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_fsm_transitions_scope ON public.fsm_transitions USING btree (scope, created_at DESC);
+
+
+--
 -- Name: idx_github_issues_fingerprint; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -20921,24 +22794,17 @@ CREATE INDEX idx_github_issues_status ON public.github_issues USING btree (statu
 
 
 --
--- Name: idx_grid_points_position; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX idx_grid_points_position ON public.grid_points USING btree (snapshot_id, x, y);
-
-
---
--- Name: idx_grid_snapshots_current; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX idx_grid_snapshots_current ON public.grid_snapshots USING btree (kb_root, is_current) WHERE (is_current = true);
-
-
---
 -- Name: idx_grid_snapshots_generation; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_grid_snapshots_generation ON public.grid_snapshots USING btree (kb_root, generation DESC);
+
+
+--
+-- Name: idx_grid_snapshots_kb_root; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_grid_snapshots_kb_root ON public.grid_snapshots USING btree (kb_root);
 
 
 --
@@ -21016,20 +22882,6 @@ CREATE INDEX idx_held_out_created ON public.held_out_queries USING btree (create
 --
 
 CREATE INDEX idx_held_out_domain ON public.held_out_queries USING btree (domain);
-
-
---
--- Name: idx_held_out_excluded; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX idx_held_out_excluded ON public.held_out_queries USING btree (excluded_from_training);
-
-
---
--- Name: idx_held_out_last_used; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX idx_held_out_last_used ON public.held_out_queries USING btree (last_used_at);
 
 
 --
@@ -21145,13 +22997,6 @@ CREATE INDEX idx_metabot_conversation_user_id ON public.metabot_conversation USI
 
 
 --
--- Name: idx_metabot_entity_metabot_id; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX idx_metabot_entity_metabot_id ON public.metabot_entity USING btree (metabot_id);
-
-
---
 -- Name: idx_metabot_message_conversation_id; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -21166,10 +23011,10 @@ CREATE INDEX idx_metabot_prompt_card_id ON public.metabot_prompt USING btree (ca
 
 
 --
--- Name: idx_metabot_prompt_metabot_entity_id; Type: INDEX; Schema: public; Owner: -
+-- Name: idx_metabot_prompt_metabot_id; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE INDEX idx_metabot_prompt_metabot_entity_id ON public.metabot_prompt USING btree (metabot_entity_id);
+CREATE INDEX idx_metabot_prompt_metabot_id ON public.metabot_prompt USING btree (metabot_id);
 
 
 --
@@ -21355,6 +23200,20 @@ CREATE INDEX idx_optimization_runs_status ON public.optimization_runs USING btre
 
 
 --
+-- Name: idx_overwatch_events_created; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_overwatch_events_created ON public.overwatch_events USING btree (created_at DESC);
+
+
+--
+-- Name: idx_overwatch_events_trigger; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_overwatch_events_trigger ON public.overwatch_events USING btree (trigger_name, created_at DESC);
+
+
+--
 -- Name: idx_paper_scores_arxiv; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -21478,6 +23337,48 @@ CREATE INDEX idx_persisted_info_creator_id ON public.persisted_info USING btree 
 --
 
 CREATE INDEX idx_persisted_info_database_id ON public.persisted_info USING btree (database_id);
+
+
+--
+-- Name: idx_probe_forecasts_created; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_probe_forecasts_created ON public.probe_forecasts USING btree (created_at DESC);
+
+
+--
+-- Name: idx_probe_forecasts_observer; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_probe_forecasts_observer ON public.probe_forecasts USING btree (observer, created_at DESC);
+
+
+--
+-- Name: idx_probe_forecasts_proposition; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_probe_forecasts_proposition ON public.probe_forecasts USING btree (proposition text_pattern_ops);
+
+
+--
+-- Name: idx_probe_forecasts_sequence; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_probe_forecasts_sequence ON public.probe_forecasts USING btree (sequence_id) WHERE (sequence_id IS NOT NULL);
+
+
+--
+-- Name: idx_probe_forecasts_side_effect; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_probe_forecasts_side_effect ON public.probe_forecasts USING btree (created_at DESC) WHERE (side_effect IS NOT NULL);
+
+
+--
+-- Name: idx_probe_resolutions_forecast; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_probe_resolutions_forecast ON public.probe_resolutions USING btree (forecast_id, resolved_at DESC);
 
 
 --
@@ -21873,6 +23774,13 @@ CREATE INDEX idx_report_card_table_id ON public.report_card USING btree (table_i
 
 
 --
+-- Name: idx_report_card_type; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_report_card_type ON public.report_card USING btree (type);
+
+
+--
 -- Name: idx_report_dashboard_made_public_by_id; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -22066,6 +23974,13 @@ CREATE INDEX idx_segment_show_in_getting_started ON public.segment USING btree (
 --
 
 CREATE INDEX idx_segment_table_id ON public.segment USING btree (table_id);
+
+
+--
+-- Name: idx_semantic_search_token_tracking_created_at; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_semantic_search_token_tracking_created_at ON public.semantic_search_token_tracking USING btree (created_at);
 
 
 --
@@ -22580,73 +24495,122 @@ CREATE INDEX idx_x_sync_runs_user ON public.x_sync_runs USING btree (user_id, st
 
 
 --
--- Name: search_index__9mlhjckt6psr53dm2euxs_archived_idx; Type: INDEX; Schema: public; Owner: -
+-- Name: overwatch_events_source_idx; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE INDEX search_index__9mlhjckt6psr53dm2euxs_archived_idx ON public.search_index__9mlhjckt6psr53dm2euxs USING btree (archived);
-
-
---
--- Name: search_index__9mlhjckt6psr53dm2euxs_identity_idx; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE UNIQUE INDEX search_index__9mlhjckt6psr53dm2euxs_identity_idx ON public.search_index__9mlhjckt6psr53dm2euxs USING btree (model, model_id);
+CREATE INDEX overwatch_events_source_idx ON public.overwatch_events USING btree (source, created_at DESC);
 
 
 --
--- Name: search_index__9mlhjckt6psr53dm2euxs_model_archived_idx; Type: INDEX; Schema: public; Owner: -
+-- Name: scheduled_tasks_inflight_hb_idx; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE INDEX search_index__9mlhjckt6psr53dm2euxs_model_archived_idx ON public.search_index__9mlhjckt6psr53dm2euxs USING btree (model, archived);
-
-
---
--- Name: search_index__9mlhjckt6psr53dm2euxs_native_tsvector_idx; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX search_index__9mlhjckt6psr53dm2euxs_native_tsvector_idx ON public.search_index__9mlhjckt6psr53dm2euxs USING gin (with_native_query_vector);
+CREATE INDEX scheduled_tasks_inflight_hb_idx ON public.scheduled_tasks USING btree (picked_up_at, heartbeat_at) WHERE (completed_at IS NULL);
 
 
 --
--- Name: search_index__9mlhjckt6psr53dm2euxs_tsvector_idx; Type: INDEX; Schema: public; Owner: -
+-- Name: search_index__gvoy5lcga0f1e9gd8f0if_archived_idx; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE INDEX search_index__9mlhjckt6psr53dm2euxs_tsvector_idx ON public.search_index__9mlhjckt6psr53dm2euxs USING gin (search_vector);
-
-
---
--- Name: search_index__szrsf2xim8g35plmve9qg_archived_idx; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX search_index__szrsf2xim8g35plmve9qg_archived_idx ON public.search_index__szrsf2xim8g35plmve9qg USING btree (archived);
+CREATE INDEX search_index__gvoy5lcga0f1e9gd8f0if_archived_idx ON public.search_index__gvoy5lcga0f1e9gd8f0if USING btree (archived);
 
 
 --
--- Name: search_index__szrsf2xim8g35plmve9qg_identity_idx; Type: INDEX; Schema: public; Owner: -
+-- Name: search_index__gvoy5lcga0f1e9gd8f0if_identity_idx; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE UNIQUE INDEX search_index__szrsf2xim8g35plmve9qg_identity_idx ON public.search_index__szrsf2xim8g35plmve9qg USING btree (model, model_id);
-
-
---
--- Name: search_index__szrsf2xim8g35plmve9qg_model_archived_idx; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX search_index__szrsf2xim8g35plmve9qg_model_archived_idx ON public.search_index__szrsf2xim8g35plmve9qg USING btree (model, archived);
+CREATE UNIQUE INDEX search_index__gvoy5lcga0f1e9gd8f0if_identity_idx ON public.search_index__gvoy5lcga0f1e9gd8f0if USING btree (model, model_id);
 
 
 --
--- Name: search_index__szrsf2xim8g35plmve9qg_native_tsvector_idx; Type: INDEX; Schema: public; Owner: -
+-- Name: search_index__gvoy5lcga0f1e9gd8f0if_model_archived_idx; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE INDEX search_index__szrsf2xim8g35plmve9qg_native_tsvector_idx ON public.search_index__szrsf2xim8g35plmve9qg USING gin (with_native_query_vector);
+CREATE INDEX search_index__gvoy5lcga0f1e9gd8f0if_model_archived_idx ON public.search_index__gvoy5lcga0f1e9gd8f0if USING btree (model, archived);
 
 
 --
--- Name: search_index__szrsf2xim8g35plmve9qg_tsvector_idx; Type: INDEX; Schema: public; Owner: -
+-- Name: search_index__gvoy5lcga0f1e9gd8f0if_native_tsvector_idx; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE INDEX search_index__szrsf2xim8g35plmve9qg_tsvector_idx ON public.search_index__szrsf2xim8g35plmve9qg USING gin (search_vector);
+CREATE INDEX search_index__gvoy5lcga0f1e9gd8f0if_native_tsvector_idx ON public.search_index__gvoy5lcga0f1e9gd8f0if USING gin (with_native_query_vector);
+
+
+--
+-- Name: search_index__gvoy5lcga0f1e9gd8f0if_tsvector_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX search_index__gvoy5lcga0f1e9gd8f0if_tsvector_idx ON public.search_index__gvoy5lcga0f1e9gd8f0if USING gin (search_vector);
+
+
+--
+-- Name: search_index__zu6ajk4tfwidxdhfsgejv_archived_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX search_index__zu6ajk4tfwidxdhfsgejv_archived_idx ON public.search_index__zu6ajk4tfwidxdhfsgejv USING btree (archived);
+
+
+--
+-- Name: search_index__zu6ajk4tfwidxdhfsgejv_identity_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX search_index__zu6ajk4tfwidxdhfsgejv_identity_idx ON public.search_index__zu6ajk4tfwidxdhfsgejv USING btree (model, model_id);
+
+
+--
+-- Name: search_index__zu6ajk4tfwidxdhfsgejv_model_archived_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX search_index__zu6ajk4tfwidxdhfsgejv_model_archived_idx ON public.search_index__zu6ajk4tfwidxdhfsgejv USING btree (model, archived);
+
+
+--
+-- Name: search_index__zu6ajk4tfwidxdhfsgejv_native_tsvector_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX search_index__zu6ajk4tfwidxdhfsgejv_native_tsvector_idx ON public.search_index__zu6ajk4tfwidxdhfsgejv USING gin (with_native_query_vector);
+
+
+--
+-- Name: search_index__zu6ajk4tfwidxdhfsgejv_tsvector_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX search_index__zu6ajk4tfwidxdhfsgejv_tsvector_idx ON public.search_index__zu6ajk4tfwidxdhfsgejv USING gin (search_vector);
+
+
+--
+-- Name: skos_alignment_clt; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX skos_alignment_clt ON public.skos_alignment USING btree (clt_uri);
+
+
+--
+-- Name: skos_alignment_verdict; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX skos_alignment_verdict ON public.skos_alignment USING btree (verdict);
+
+
+--
+-- Name: skos_pref_label_stale; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX skos_pref_label_stale ON public.skos_pref_label USING btree (stale) WHERE stale;
+
+
+--
+-- Name: supervision_directives_recv_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX supervision_directives_recv_idx ON public.supervision_directives USING btree (received_at DESC);
+
+
+--
+-- Name: supervision_sessions_live_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX supervision_sessions_live_idx ON public.supervision_sessions USING btree (connected_at DESC) WHERE (disconnected_at IS NULL);
 
 
 --
@@ -22679,6 +24643,20 @@ CREATE OR REPLACE VIEW public.v_source_status AS
      LEFT JOIN public.profiles p ON ((p.id = ps.profile_id)))
   GROUP BY fs.id
   ORDER BY fs.name;
+
+
+--
+-- Name: articles articles_content_events; Type: TRIGGER; Schema: collections; Owner: -
+--
+
+CREATE TRIGGER articles_content_events AFTER INSERT OR UPDATE OF status ON collections.articles FOR EACH ROW EXECUTE FUNCTION collections.record_content_event('article');
+
+
+--
+-- Name: cards cards_content_events; Type: TRIGGER; Schema: collections; Owner: -
+--
+
+CREATE TRIGGER cards_content_events AFTER INSERT OR UPDATE OF status ON collections.cards FOR EACH ROW EXECUTE FUNCTION collections.record_content_event('card');
 
 
 --
@@ -22724,27 +24702,6 @@ COMMENT ON TRIGGER article_curation_progress_notify ON meta.article_curation_pro
 
 
 --
--- Name: flow_runs meta_flow_runs_notify; Type: TRIGGER; Schema: meta; Owner: -
---
-
-CREATE TRIGGER meta_flow_runs_notify AFTER UPDATE ON meta.flow_runs FOR EACH ROW EXECUTE FUNCTION meta.notify_flow_event();
-
-
---
--- Name: TRIGGER meta_flow_runs_notify ON flow_runs; Type: COMMENT; Schema: meta; Owner: -
---
-
-COMMENT ON TRIGGER meta_flow_runs_notify ON meta.flow_runs IS 'Fires pg_notify when flow status changes to completed/failed';
-
-
---
--- Name: flow_runs meta_flow_runs_update_timestamp; Type: TRIGGER; Schema: meta; Owner: -
---
-
-CREATE TRIGGER meta_flow_runs_update_timestamp BEFORE UPDATE ON meta.flow_runs FOR EACH ROW EXECUTE FUNCTION meta.update_flow_runs_timestamp();
-
-
---
 -- Name: research_progress research_progress_notify; Type: TRIGGER; Schema: meta; Owner: -
 --
 
@@ -22777,6 +24734,21 @@ CREATE TRIGGER health_observer_state_updated BEFORE UPDATE ON public.health_obse
 --
 
 CREATE TRIGGER profiles_updated_at BEFORE UPDATE ON public.profiles FOR EACH ROW EXECUTE FUNCTION public.update_updated_at();
+
+
+--
+-- Name: scheduled_tasks scheduled_task_notify_trigger; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER scheduled_task_notify_trigger AFTER INSERT ON public.scheduled_tasks FOR EACH ROW EXECUTE FUNCTION public.notify_scheduled_task();
+
+
+--
+-- Name: TRIGGER scheduled_task_notify_trigger ON scheduled_tasks; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TRIGGER scheduled_task_notify_trigger ON public.scheduled_tasks IS 'Fires NOTIFY for real-time task processing by engine.
+Falls back to polling if engine is down during INSERT.';
 
 
 --
@@ -22867,6 +24839,14 @@ ALTER TABLE ONLY collections.articles
 
 
 --
+-- Name: card_summaries card_summaries_card_id_fkey; Type: FK CONSTRAINT; Schema: collections; Owner: -
+--
+
+ALTER TABLE ONLY collections.card_summaries
+    ADD CONSTRAINT card_summaries_card_id_fkey FOREIGN KEY (card_id) REFERENCES collections.cards(card_id) ON DELETE CASCADE;
+
+
+--
 -- Name: cards cards_article_id_fkey; Type: FK CONSTRAINT; Schema: collections; Owner: -
 --
 
@@ -22903,6 +24883,14 @@ ALTER TABLE ONLY collections.cards
 
 ALTER TABLE ONLY collections.cards
     ADD CONSTRAINT cards_prev_card_id_fkey FOREIGN KEY (prev_card_id) REFERENCES collections.cards(card_id);
+
+
+--
+-- Name: collection_summaries collection_summaries_collection_id_fkey; Type: FK CONSTRAINT; Schema: collections; Owner: -
+--
+
+ALTER TABLE ONLY collections.collection_summaries
+    ADD CONSTRAINT collection_summaries_collection_id_fkey FOREIGN KEY (collection_id) REFERENCES collections.collections(collection_id) ON DELETE CASCADE;
 
 
 --
@@ -22970,14 +24958,6 @@ ALTER TABLE ONLY meta.document_clusters
 
 
 --
--- Name: flow_events fk_flow_events_run_id; Type: FK CONSTRAINT; Schema: meta; Owner: -
---
-
-ALTER TABLE ONLY meta.flow_events
-    ADD CONSTRAINT fk_flow_events_run_id FOREIGN KEY (run_id) REFERENCES meta.flow_runs(run_id) ON DELETE CASCADE;
-
-
---
 -- Name: fmea_rpn_timeseries fmea_rpn_timeseries_failure_mode_id_fkey; Type: FK CONSTRAINT; Schema: meta; Owner: -
 --
 
@@ -23015,6 +24995,14 @@ ALTER TABLE ONLY meta.semantic_attractors
 
 ALTER TABLE ONLY meta.swarm_agent_positions
     ADD CONSTRAINT swarm_agent_positions_snapshot_id_fkey FOREIGN KEY (snapshot_id) REFERENCES meta.swarm_snapshots(snapshot_id) ON DELETE CASCADE;
+
+
+--
+-- Name: activation activation_item_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.activation
+    ADD CONSTRAINT activation_item_id_fkey FOREIGN KEY (item_id) REFERENCES public.admitted_item(id) ON DELETE CASCADE;
 
 
 --
@@ -23119,6 +25107,22 @@ ALTER TABLE ONLY public.engine_observations
 
 ALTER TABLE ONLY public.evolution_calibrations
     ADD CONSTRAINT evolution_calibrations_version_id_fkey FOREIGN KEY (version_id) REFERENCES public.agent_versions(version_id);
+
+
+--
+-- Name: evolution_cycles evolution_cycles_version_after_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.evolution_cycles
+    ADD CONSTRAINT evolution_cycles_version_after_fkey FOREIGN KEY (version_after) REFERENCES public.agent_versions(version_id);
+
+
+--
+-- Name: evolution_cycles evolution_cycles_version_before_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.evolution_cycles
+    ADD CONSTRAINT evolution_cycles_version_before_fkey FOREIGN KEY (version_before) REFERENCES public.agent_versions(version_id);
 
 
 --
@@ -23602,14 +25606,6 @@ ALTER TABLE ONLY public.metabot_conversation
 
 
 --
--- Name: metabot_entity fk_metabot_entity_metabot_id; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.metabot_entity
-    ADD CONSTRAINT fk_metabot_entity_metabot_id FOREIGN KEY (metabot_id) REFERENCES public.metabot(id) ON DELETE CASCADE;
-
-
---
 -- Name: metabot_message fk_metabot_message_conversation_id; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -23626,11 +25622,11 @@ ALTER TABLE ONLY public.metabot_prompt
 
 
 --
--- Name: metabot_prompt fk_metabot_prompt_metabot_entity_id; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: metabot_prompt fk_metabot_prompt_metabot_id; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.metabot_prompt
-    ADD CONSTRAINT fk_metabot_prompt_metabot_entity_id FOREIGN KEY (metabot_entity_id) REFERENCES public.metabot_entity(id) ON DELETE CASCADE;
+    ADD CONSTRAINT fk_metabot_prompt_metabot_id FOREIGN KEY (metabot_id) REFERENCES public.metabot(id) ON DELETE CASCADE;
 
 
 --
@@ -24218,46 +26214,6 @@ ALTER TABLE ONLY public.fmea_outcomes
 
 
 --
--- Name: grid_allocations grid_allocations_snapshot_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.grid_allocations
-    ADD CONSTRAINT grid_allocations_snapshot_id_fkey FOREIGN KEY (snapshot_id) REFERENCES public.grid_snapshots(id) ON DELETE CASCADE;
-
-
---
--- Name: grid_clusters grid_clusters_snapshot_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.grid_clusters
-    ADD CONSTRAINT grid_clusters_snapshot_id_fkey FOREIGN KEY (snapshot_id) REFERENCES public.grid_snapshots(id) ON DELETE CASCADE;
-
-
---
--- Name: grid_embeddings grid_embeddings_snapshot_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.grid_embeddings
-    ADD CONSTRAINT grid_embeddings_snapshot_id_fkey FOREIGN KEY (snapshot_id) REFERENCES public.grid_snapshots(id) ON DELETE CASCADE;
-
-
---
--- Name: grid_points grid_points_snapshot_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.grid_points
-    ADD CONSTRAINT grid_points_snapshot_id_fkey FOREIGN KEY (snapshot_id) REFERENCES public.grid_snapshots(id) ON DELETE CASCADE;
-
-
---
--- Name: grid_tda_features grid_tda_features_snapshot_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.grid_tda_features
-    ADD CONSTRAINT grid_tda_features_snapshot_id_fkey FOREIGN KEY (snapshot_id) REFERENCES public.grid_snapshots(id) ON DELETE CASCADE;
-
-
---
 -- Name: healing_events healing_events_aiops_event_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -24319,6 +26275,14 @@ ALTER TABLE ONLY public.optimization_runs
 
 ALTER TABLE ONLY public.paper_scores
     ADD CONSTRAINT paper_scores_rubric_id_fkey FOREIGN KEY (rubric_id) REFERENCES public.scoring_rubrics(id);
+
+
+--
+-- Name: probe_resolutions probe_resolutions_forecast_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.probe_resolutions
+    ADD CONSTRAINT probe_resolutions_forecast_id_fkey FOREIGN KEY (forecast_id) REFERENCES public.probe_forecasts(forecast_id);
 
 
 --
@@ -24477,7 +26441,7 @@ ALTER TABLE ONLY public.x_sync_runs
 -- PostgreSQL database dump complete
 --
 
-\unrestrict EkR3l6PfIHFSPOxDGOLf2i2NrEJNUNN9Xjb8qktk52bDptNmb1CnmrpUXdASvfF
+\unrestrict GhEDvJIPzQv6ekkxTNvm2XfMesFB0PCcHpcIYQ0LNBanTJfVrzLAN7HdUADk2jS
 
 
 --
@@ -24502,6 +26466,7 @@ INSERT INTO public.schema_migrations (version) VALUES
     ('20251210000001'),
     ('20251212000001'),
     ('20251212001000'),
+    ('20251212001000_fix_grid_points_constraint'),
     ('20251214000001'),
     ('20251214000002'),
     ('20251214000003'),
@@ -24533,7 +26498,6 @@ INSERT INTO public.schema_migrations (version) VALUES
     ('20260114000001'),
     ('20260114000002'),
     ('20260114000003'),
-    ('20260114000004'),
     ('20260115000001'),
     ('20260118000001'),
     ('20260119000001'),
@@ -24541,6 +26505,52 @@ INSERT INTO public.schema_migrations (version) VALUES
     ('20260122000001'),
     ('20260201000001'),
     ('20260201000002'),
+    ('20260201000002_cards_source_date'),
     ('20260202000001'),
     ('20260202000002'),
-    ('20260202100000');
+    ('20260202100000'),
+    ('20260202200000'),
+    ('20260203100000'),
+    ('20260222000001'),
+    ('20260223000001'),
+    ('20260223000002'),
+    ('20260223000003'),
+    ('20260304000001'),
+    ('20260315000001'),
+    ('20260815000001'),
+    ('20260816000001'),
+    ('20260817000001'),
+    ('20260818000001'),
+    ('20260818000002'),
+    ('20260818000003'),
+    ('20260819000001'),
+    ('20260820000001'),
+    ('20260822000001'),
+    ('20260822000002'),
+    ('20260824000001'),
+    ('20260825000001'),
+    ('20260828000001'),
+    ('20260828000002'),
+    ('20260830000001'),
+    ('20260830000002'),
+    ('20260831000001'),
+    ('20260901000001'),
+    ('20260901000002'),
+    ('20260901000003'),
+    ('20260901000004'),
+    ('20260901000005'),
+    ('20260903000001'),
+    ('20260904000001'),
+    ('20260904000002'),
+    ('20260904000003'),
+    ('20260904000004'),
+    ('20260904000005'),
+    ('20260904000006'),
+    ('20260906000001'),
+    ('20260906000002'),
+    ('20260907000001'),
+    ('20260907000002'),
+    ('20260909000001'),
+    ('20260911000001'),
+    ('20260912000001'),
+    ('20260913000001');

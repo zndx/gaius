@@ -18,7 +18,7 @@ MIGRATIONS = ROOT / "db" / "migrations"
 # cron.schedule('<name>', '<cron>', <body>) — body is $$…$$ or '…' quoted.
 _SCHEDULE = re.compile(
     r"cron\.schedule\(\s*'(?P<name>[^']+)'\s*,\s*'(?P<cron>[^']+)'\s*,\s*"
-    r"(?:\$\$(?P<body_dq>.*?)\$\$|'(?P<body_sq>(?:[^']|'')*)')",
+    r"(?:\$(?P<tag>\w*)\$(?P<body_dq>.*?)\$\w*\$|'(?P<body_sq>(?:[^']|'')*)')",
     re.S,
 )
 # INSERT INTO scheduled_tasks (...) VALUES|SELECT 'task_type', 'payload'
@@ -106,6 +106,12 @@ def test_catalogue_cron_matches_pg_cron(migration_jobs):
     # the retired-to-Airflow entry whose DAG schedule differs from its old job
     assert migration_jobs["agenda-brief"]["cron"] == "13 1,5,9,13,17,21 * * *"  # the inactive 4 h job
     assert by_job["agenda-brief"].cron == "5 0 * * *"  # the DAG's day rollover
+    # Airflow clock is Friday 06:00 America/Denver; pg_cron twin is UTC 12/13 + Denver hour gate
+    assert migration_jobs["weekly-signals-summary"]["cron"] == "0 12,13 * * 5"
+    assert by_job["weekly-signals-summary"].cron == "0 6 * * 5"
+    assert wc.timezone_for(by_job["weekly-signals-summary"]) == "America/Denver"
+    assert wc.entry_for("weekly_signals_summary").payload == {"previous": False}
+    assert migration_jobs["weekly-signals-summary"]["payload"] == {"previous": False}
 
 
 def test_kinds_and_ids_are_unique_and_entry_for_resolves_both():

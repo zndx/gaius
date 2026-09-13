@@ -29,6 +29,8 @@ def test_classify_cadence_buckets() -> None:
     assert classify_cadence("0 9 * * *") == "daily"
     assert classify_cadence("0 6,18 * * *") == "daily"
     assert classify_cadence("0 15 * * 1") == "weekly"
+    assert classify_cadence("0 6 * * 5") == "weekly"
+    assert classify_cadence("0 12,13 * * 5") == "weekly"
     assert classify_cadence("0 3 * * 0") == "weekly"
     assert classify_cadence("0 5 * * 1,4") == "extended"
     assert classify_cadence("0 5 1 1,4,7,10 *") == "extended"
