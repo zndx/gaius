@@ -220,9 +220,14 @@ async def gather_slices(
     db_pool: Any | None = None,
 ) -> list[dict[str, str]]:
     """Admitted Aperture windows (offsets into full FIFO entries)."""
-    from gaius.engine.services.axis_admit import AdmitStats, admitted_spans
+    from gaius.engine.services.axis_admit import (
+        AdmitStats,
+        admitted_spans,
+        remainder_spans,
+    )
 
     slices: list[dict[str, str]] = []
+    leftovers: list[dict] = []
     stats = AdmitStats()
     axes: list[tuple[str, Any]] = []
     if ambient_buffer is not None:
@@ -246,14 +251,31 @@ async def gather_slices(
                 rows: list[tuple[str, str]],
                 ax: str,
                 st: AdmitStats,
-            ) -> list[dict[str, str]]:
+            ) -> tuple[list[dict[str, str]], list[dict]]:
                 out: list[dict[str, str]] = []
+                remainder: list[dict] = []
+                from gaius.engine.services.axis_admit import (
+                    _scan_entry,
+                    unique_maxsim,
+                )
+                from gaius.engine.services.sdg_aperture import SdgAperture
+
+                aperture = SdgAperture.load()
+                ms = lambda chunk: unique_maxsim(chunk, aperture=aperture)
                 for eid, content in rows:
+                    windows = _scan_entry(
+                        content,
+                        aperture=aperture,
+                        maxsim=ms,
+                        stats=st,
+                        encode_offsets=None,
+                    )
                     for span in admitted_spans(
                         content,
                         entry_id=eid,
                         axis=ax,
-                        stats=st,
+                        aperture=aperture,
+                        windows=windows,
                     ):
                         out.append(
                             {
@@ -266,9 +288,19 @@ async def gather_slices(
                                 ),
                             }
                         )
-                return out
+                    remainder.extend(
+                        remainder_spans(
+                            content,
+                            entry_id=eid,
+                            axis=ax,
+                            windows=windows,
+                        )
+                    )
+                return out, remainder
 
-            slices.extend(await asyncio.to_thread(_scan, packed, axis, stats))
+            admitted, leftover = await asyncio.to_thread(_scan, packed, axis, stats)
+            slices.extend(admitted)
+            leftovers.extend(leftover)
     except YkAdmitError:
         raise
     except Exception as e:
@@ -287,6 +319,18 @@ async def gather_slices(
             stats.scanned,
             stats.none,
             stats.ambiguous,
+        )
+    if leftovers and db_pool is not None:
+        from gaius.engine.services.sdg_aperture import SdgAperture
+        from gaius.engine.services.theta_scratch import record_remainder_fail_open
+
+        ap = SdgAperture.load()
+        await record_remainder_fail_open(
+            db_pool,
+            leftovers,
+            aperture=ap.collection,
+            c_epoch=getattr(ap, "strategy_id", "") or ap.collection,
+            tau=float(ap.tau),
         )
     return slices
 

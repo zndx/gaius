@@ -83,27 +83,28 @@ def admit_unique_windows(
 ) -> list[TokenWindow]:
     stats = stats or AdmitStats()
 
-    def _as_pair(chunk: str) -> tuple[str, float]:
+    def _as_pair(chunk: str) -> tuple[str, float, str]:
         if maxsim is None:
-            return "", 0.0
+            return "", 0.0, ""
         code, score, reason = maxsim(chunk)
         stats.scanned += 1
         if reason == "admitted":
             stats.admitted += 1
-            return code, score
+            return code, score, reason
         if reason == "ambiguous":
             stats.ambiguous += 1
         else:
             stats.none += 1
-        return "", score
+        return "", score, reason
 
-    kept = admit_via_scan(
+    scan = scan_windows(
         text,
-        aperture=aperture,
-        pair_maxsim=_as_pair if maxsim is not None else None,
+        size=aperture.colbert_token_limit,
+        maxsim=_as_pair if maxsim is not None else None,
+        tau=aperture.tau,
         encode_offsets=encode_offsets,
     )
-    return kept
+    return [w for w in scan.windows if w.admitted]
 
 
 def admit_via_scan(
@@ -113,14 +114,54 @@ def admit_via_scan(
     pair_maxsim: Callable[[str], tuple[str, float]] | None,
     encode_offsets: OffsetFn | None = None,
 ) -> list[TokenWindow]:
+    """Admitted unique-topic windows only (Current)."""
+
+    def _ms(chunk: str) -> tuple[str, float, str]:
+        if pair_maxsim is None:
+            return "", 0.0, ""
+        code, score = pair_maxsim(chunk)
+        return code, score, ("admitted" if code else "none")
+
+    return admit_unique_windows(
+        text,
+        aperture=aperture,
+        maxsim=_ms if pair_maxsim is not None else None,
+        encode_offsets=encode_offsets,
+    )
+
+
+def remainder_windows(
+    text: str,
+    *,
+    aperture: SdgAperture,
+    maxsim: Callable[[str], tuple[str, float, str]] | None,
+    encode_offsets: OffsetFn | None = None,
+    stats: AdmitStats | None = None,
+) -> list[TokenWindow]:
+    """none/ambiguous ≤512 windows — Scratch, not Current."""
+    stats = stats or AdmitStats()
+
+    def _as_triple(chunk: str) -> tuple[str, float, str]:
+        if maxsim is None:
+            return "", 0.0, ""
+        code, score, reason = maxsim(chunk)
+        stats.scanned += 1
+        if reason == "admitted":
+            stats.admitted += 1
+        elif reason == "ambiguous":
+            stats.ambiguous += 1
+        else:
+            stats.none += 1
+        return code, score, reason
+
     scan = scan_windows(
         text,
         size=aperture.colbert_token_limit,
-        maxsim=pair_maxsim,
+        maxsim=_as_triple if maxsim is not None else None,
         tau=aperture.tau,
         encode_offsets=encode_offsets,
     )
-    return [w for w in scan.windows if w.admitted]
+    return [w for w in scan.windows if w.reason in ("none", "ambiguous")]
 
 
 def prepare_axis_item(
@@ -157,6 +198,39 @@ def prepare_axis_item(
     }
 
 
+def _scan_entry(
+    content: str,
+    *,
+    aperture: SdgAperture,
+    maxsim: Callable[[str], tuple[str, float, str]] | None,
+    stats: AdmitStats | None,
+    encode_offsets: OffsetFn | None,
+) -> list[TokenWindow]:
+    stats = stats or AdmitStats()
+
+    def _as_triple(chunk: str) -> tuple[str, float, str]:
+        if maxsim is None:
+            return "", 0.0, ""
+        code, score, reason = maxsim(chunk)
+        stats.scanned += 1
+        if reason == "admitted":
+            stats.admitted += 1
+        elif reason == "ambiguous":
+            stats.ambiguous += 1
+        else:
+            stats.none += 1
+        return code, score, reason
+
+    scan = scan_windows(
+        content,
+        size=aperture.colbert_token_limit,
+        maxsim=_as_triple if maxsim is not None else None,
+        tau=aperture.tau,
+        encode_offsets=encode_offsets,
+    )
+    return scan.windows
+
+
 def admitted_spans(
     content: str,
     *,
@@ -166,19 +240,23 @@ def admitted_spans(
     maxsim: Callable[[str], tuple[str, float, str]] | None = None,
     stats: AdmitStats | None = None,
     encode_offsets: OffsetFn | None = None,
+    windows: list[TokenWindow] | None = None,
 ) -> list[dict[str, Any]]:
     """Sliding windows over one buffer entry. Offsets into that entry's text."""
-    aperture = aperture or SdgAperture.load()
-    ms = maxsim or (lambda chunk: unique_maxsim(chunk, aperture=aperture))
-    windows = admit_unique_windows(
-        content,
-        aperture=aperture,
-        maxsim=ms,
-        encode_offsets=encode_offsets,
-        stats=stats,
-    )
+    if windows is None:
+        aperture = aperture or SdgAperture.load()
+        ms = maxsim or (lambda chunk: unique_maxsim(chunk, aperture=aperture))
+        windows = _scan_entry(
+            content,
+            aperture=aperture,
+            maxsim=ms,
+            stats=stats,
+            encode_offsets=encode_offsets,
+        )
     out: list[dict[str, Any]] = []
     for w in windows:
+        if not w.admitted:
+            continue
         out.append(
             {
                 "axis": axis,
@@ -187,6 +265,48 @@ def admitted_spans(
                 "end": w.end,
                 "topic": w.code,
                 "margin": w.margin,
+                "reason": w.reason or "admitted",
+                "content": content[w.start : w.end],
+            }
+        )
+    return out
+
+
+def remainder_spans(
+    content: str,
+    *,
+    entry_id: str = "",
+    axis: str = "",
+    aperture: SdgAperture | None = None,
+    maxsim: Callable[[str], tuple[str, float, str]] | None = None,
+    stats: AdmitStats | None = None,
+    encode_offsets: OffsetFn | None = None,
+    windows: list[TokenWindow] | None = None,
+) -> list[dict[str, Any]]:
+    """none/ambiguous windows for Scratch (not overlap drops)."""
+    if windows is None:
+        aperture = aperture or SdgAperture.load()
+        ms = maxsim or (lambda chunk: unique_maxsim(chunk, aperture=aperture))
+        windows = _scan_entry(
+            content,
+            aperture=aperture,
+            maxsim=ms,
+            stats=stats,
+            encode_offsets=encode_offsets,
+        )
+    out: list[dict[str, Any]] = []
+    for w in windows:
+        if w.reason not in ("none", "ambiguous"):
+            continue
+        out.append(
+            {
+                "axis": axis,
+                "entry_id": entry_id,
+                "start": w.start,
+                "end": w.end,
+                "topic": w.code,
+                "margin": w.margin,
+                "reason": w.reason,
                 "content": content[w.start : w.end],
             }
         )

@@ -14,3 +14,8 @@ ICEBERG` — MultiMetaProvider phantom-table incident).
 
 HX `llm.generations` / `hx.cot_reasoning` and CLT admit/label clocks are
 unchanged; Theta reads them.
+
+Polar Iceberg `theta_scratch_*_tier1` registered 2026-09-14 (hour identity
+partition). Kudu `schema-apply` still needs a Signals devenv with impyla.
+Remainder windows (`none`/`ambiguous`) INSERT `theta_scratch_vertex_tier0`
+fail-open from `gather_slices`.

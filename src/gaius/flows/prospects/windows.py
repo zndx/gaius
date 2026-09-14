@@ -27,6 +27,7 @@ class TokenWindow:
     admitted: bool = True
     code: str = ""
     margin: float = 0.0
+    reason: str = ""
 
 
 @dataclass
@@ -93,10 +94,17 @@ def scan_windows(
         admitted = True
         code = ""
         margin = 0.0
+        reason = ""
         if maxsim is not None:
             result.aperture_used = True
-            code, margin = maxsim(chunk)
-            admitted = bool(code) and margin >= tau
+            got = maxsim(chunk)
+            if len(got) == 3:
+                code, margin, reason = got
+                admitted = reason == "admitted"
+            else:
+                code, margin = got
+                admitted = bool(code) and margin >= tau
+                reason = "admitted" if admitted else "none"
         result.windows.append(
             TokenWindow(
                 start=start,
@@ -105,6 +113,7 @@ def scan_windows(
                 admitted=admitted,
                 code=code,
                 margin=margin,
+                reason=reason,
             )
         )
     if maxsim is not None:
@@ -115,6 +124,7 @@ def scan_windows(
         ):
             if any(not (w.end <= k.start or w.start >= k.end) for k in kept):
                 w.admitted = False
+                w.reason = "overlap"
                 continue
             kept.append(w)
     return result
