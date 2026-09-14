@@ -17,5 +17,9 @@ unchanged; Theta reads them.
 
 Polar Iceberg `theta_scratch_*_tier1` registered 2026-09-14 (hour identity
 partition). Kudu `schema-apply` still needs a Signals devenv with impyla.
-Remainder windows (`none`/`ambiguous`) INSERT `theta_scratch_vertex_tier0`
+Remainder windows (`none`/`ambiguous`) INSERT `theta_cycle_vertex_tier0`
 fail-open from `gather_slices`.
+
+`ThetaCycleFlow` (`gaius.flows.theta.cycle`) is the Airflow-orchestrated
+Metaflow (`gaius_theta_cycle`, hourly :25): settle analog → DROP RANGE →
+Iceberg partition expire + orphan GC. No pg_cron twin.

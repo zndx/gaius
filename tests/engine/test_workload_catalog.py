@@ -132,6 +132,7 @@ AIRFLOW_ENABLED = {
     "agenda_brief",
     # GPU Metaflow that pg_cron was still launching while the DAGs sat paused
     "ambient_synthesis", "fmp_roll",
+    "theta_cycle",
 }
 
 
@@ -152,7 +153,7 @@ def test_enabled_entries_are_curate_the_agenda_producers_and_the_brief():
     assert wc.entry_for("prospects_check").runner == wc.RUNNER_TASK
     assert wc.entry_for("cognition_cycle").runner == wc.RUNNER_TASK
     assert {e.kind for e in wc.enabled_entries() if e.runner == wc.RUNNER_METAFLOW} == {
-        "article_curate", "ambient_synthesis", "fmp_roll",
+        "article_curate", "ambient_synthesis", "fmp_roll", "theta_cycle",
     }
     # every other class: catalogued, pg_cron-sourced, Signals assigns the DAG id
     for other in wc.entries():

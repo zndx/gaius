@@ -155,7 +155,14 @@ TaskHandler = Callable[[ScheduledTask], Awaitable[dict[str, Any]]]
 # 15m reset of publish_cards while LuxCore was still rendering left
 # the listen loop blocked and duplicate restore rows unclaimed.
 SINGLETON_TASK_TYPES = frozenset(
-    {"publish_cards", "article_curate", "tier_settle", "fmp_roll", "ambient_synthesis"}
+    {
+        "publish_cards",
+        "article_curate",
+        "tier_settle",
+        "fmp_roll",
+        "ambient_synthesis",
+        "theta_cycle",
+    }
 )
 
 
