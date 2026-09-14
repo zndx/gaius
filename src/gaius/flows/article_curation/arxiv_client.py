@@ -135,7 +135,25 @@ async def arxiv_get(url: str, *, timeout: float = 30.0) -> Any:
                 await asyncio.sleep(MIN_INTERVAL_S * (2 ** attempt))
                 continue
             if response.status_code == 429:
+                raw = ""
+                try:
+                    raw = (response.headers.get("Retry-After") or "").strip()
+                except Exception:
+                    raw = ""
+                # Fastly "Rate exceeded." has no Retry-After. Extra GETs
+                # deepen the ban (2026-09-13 curate; 2026-09-14 verify).
+                if not raw:
+                    raise RuntimeError(
+                        "arXiv API returned 429 with no Retry-After; not retrying.\n"
+                        "  Guru Meditation: #ACF.00000007.NOSOURCES\n"
+                        "  Probe once later; do not loop."
+                    )
                 delay = _retry_after_s(response, attempt)
+                if delay > 120:
+                    raise RuntimeError(
+                        f"arXiv API returned 429 Retry-After {delay:.0f}s; not waiting.\n"
+                        "  Guru Meditation: #ACF.00000007.NOSOURCES"
+                    )
                 logger.warning("arXiv 429; backoff %.1fs (attempt %s)", delay, attempt + 1)
                 await asyncio.sleep(delay)
                 last_exc = RuntimeError(f"arXiv API returned status 429 (attempt {attempt + 1})")

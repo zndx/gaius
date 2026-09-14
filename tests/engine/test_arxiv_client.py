@@ -33,7 +33,7 @@ class _Resp:
         self.text = text
 
 
-def test_arxiv_get_retries_429_then_succeeds(monkeypatch):
+def test_arxiv_get_retries_429_with_retry_after_then_succeeds(monkeypatch):
     calls: list[str] = []
 
     class _Client:
@@ -48,14 +48,14 @@ def test_arxiv_get_retries_429_then_succeeds(monkeypatch):
 
         async def get(self, url):
             calls.append(url)
-            if len(calls) < 3:
-                return _Resp(429, {"Retry-After": "0"})
+            if len(calls) < 2:
+                return _Resp(429, {"Retry-After": "1"})
             return _Resp(200)
 
     monkeypatch.setattr(
         "gaius.flows.article_curation.arxiv_client.httpx.AsyncClient",
         _Client,
-    )  # module-level httpx
+    )
     monkeypatch.setattr(
         "gaius.flows.article_curation.arxiv_client.robots_allows_api",
         lambda: True,
@@ -68,5 +68,41 @@ def test_arxiv_get_retries_429_then_succeeds(monkeypatch):
     url = query_url({"search_query": "all:test", "max_results": 5})
     resp = asyncio.run(arxiv_get(url))
     assert resp.status_code == 200
-    assert len(calls) == 3
+    assert len(calls) == 2
     assert calls[0].startswith("https://export.arxiv.org/api/query?")
+
+
+def test_arxiv_get_does_not_retry_429_without_retry_after(monkeypatch):
+    calls: list[str] = []
+
+    class _Client:
+        def __init__(self, *a, **k):
+            self.headers = k.get("headers") or {}
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return None
+
+        async def get(self, url):
+            calls.append(url)
+            return _Resp(429, {})
+
+    monkeypatch.setattr(
+        "gaius.flows.article_curation.arxiv_client.httpx.AsyncClient",
+        _Client,
+    )
+    monkeypatch.setattr(
+        "gaius.flows.article_curation.arxiv_client.robots_allows_api",
+        lambda: True,
+    )
+    monkeypatch.setattr(
+        "gaius.flows.article_curation.arxiv_client.MIN_INTERVAL_S",
+        0.0,
+    )
+
+    url = query_url({"search_query": "all:test", "max_results": 5})
+    with pytest.raises(RuntimeError, match="no Retry-After"):
+        asyncio.run(arxiv_get(url))
+    assert len(calls) == 1

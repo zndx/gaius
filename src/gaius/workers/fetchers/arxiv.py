@@ -8,7 +8,6 @@ arXiv API docs: https://info.arxiv.org/help/api/index.html
 
 import re
 from datetime import datetime
-from urllib.parse import urlencode
 
 import feedparser
 
@@ -35,9 +34,11 @@ class ArxivFetcher(BaseFetcher):
             sort_by: str - Sort field (default: "submittedDate")
             sort_order: str - Sort order (default: "descending")
         """
+        from gaius.flows.article_curation.arxiv_client import cap_max_results
+
         config = source.config
         categories = config.get("categories", ["cs.DC"])
-        max_results = config.get("max_results", 100)
+        max_results = cap_max_results(config.get("max_results", 25))
         sort_by = config.get("sort_by", "submittedDate")
         sort_order = config.get("sort_order", "descending")
 
@@ -76,18 +77,21 @@ class ArxivFetcher(BaseFetcher):
         # Format: cat:cs.DC OR cat:cs.DB
         cat_query = " OR ".join(f"cat:{cat}" for cat in categories)
 
-        params = {
-            "search_query": cat_query,
-            "start": 0,
-            "max_results": max_results,
-            "sortBy": sort_by,
-            "sortOrder": sort_order,
-        }
+        from gaius.flows.article_curation.arxiv_client import arxiv_get, query_url
 
-        url = f"{self.API_URL}?{urlencode(params)}"
+        url = query_url(
+            {
+                "search_query": cat_query,
+                "start": 0,
+                "max_results": max_results,
+                "sortBy": sort_by,
+                "sortOrder": sort_order,
+            }
+        )
 
-        # Fetch the feed
-        response = await self.fetch_url(url)
+        # Serialized GET + 429 fail-fast. Do not use the shared httpx
+        # client: that path has no interval and no Retry-After policy.
+        response = await arxiv_get(url)
         content = response.text
 
         # Parse with feedparser
