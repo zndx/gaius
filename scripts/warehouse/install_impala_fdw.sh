@@ -49,6 +49,19 @@ sed \
 psql -h "$PGHOST" -p "$PGPORT" -d "$PGDATABASE" -v ON_ERROR_STOP=1 \
   -f "$ROOT/scripts/warehouse/nautilus-fdw.sql"
 
+# gaius.theta.cycle over scratch THS (vertex/edge/incidence). DDL SoR is
+# Signals config/platform/theta-scratch-kudu.sql; FDW twins live beside it.
+THETA_FDW="$SIGNALS_ROOT/config/platform/theta-scratch-fdw.sql"
+if [[ -f "$THETA_FDW" ]]; then
+  psql -h "$PGHOST" -p "$PGPORT" -d "$PGDATABASE" -v ON_ERROR_STOP=1 -f "$THETA_FDW"
+  psql -h "$PGHOST" -p "$PGPORT" -d "$PGDATABASE" -v ON_ERROR_STOP=1 \
+    -c "GRANT SELECT, INSERT ON theta_scratch_vertex_tier0, theta_scratch_edge_tier0, theta_scratch_incidence_tier0 TO gaius;" \
+    -c "GRANT SELECT ON theta_scratch_vertex, theta_scratch_edge, theta_scratch_incidence TO gaius;" \
+    2>/dev/null || true
+else
+  echo "theta-scratch-fdw.sql missing under SIGNALS_ROOT=$SIGNALS_ROOT (scratch FTs skipped)"
+fi
+
 # Warehouse-side settle function, invoked by Gaius pg_cron → engine, not Signals cron.
 if [[ -f "$SIGNALS_ROOT/config/platform/gpu-metrics-settle.sql" ]]; then
   grep -v 'cron.schedule\|cron.unschedule' \
