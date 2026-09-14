@@ -529,10 +529,16 @@ def arxiv_published_date(arxiv_id: str, timeout_s: float = 10.0) -> Optional[dat
     from datetime import datetime as _dt
     from xml.etree import ElementTree as _ET
 
-    url = f"https://export.arxiv.org/api/query?id_list={arxiv_id}"
     try:
-        from gaius.flows.article_curation.arxiv_client import arxiv_get_sync
+        from gaius.flows.article_curation.arxiv_client import (
+            circuit_blocked,
+            id_list_url,
+            arxiv_get_sync,
+        )
 
+        if circuit_blocked():
+            return None
+        url = id_list_url([arxiv_id])
         root = _ET.fromstring(arxiv_get_sync(url, timeout=timeout_s))
     except Exception:  # noqa: BLE001 — unreachable API = no real date, said by the None
         return None

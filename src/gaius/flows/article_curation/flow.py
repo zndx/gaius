@@ -872,21 +872,12 @@ Respond with JSON:
             )
 
     async def _fetch_arxiv(self, query: str, hints: dict) -> list[AcquiredSource]:
-        """Fetch from arXiv API.
+        """Acquire arXiv papers without exceeding API norms.
 
-        Args:
-            query: Search query (article title)
-            hints: Research hints including arxiv_categories
-
-        Returns:
-            List of AcquiredSource objects
-
-        Raises:
-            RuntimeError: If arXiv API fails or returns no results (fail-fast)
+        RSS-first (one GET per category, 6h cache). Keywords rank locally.
+        Search API only if RSS is empty and the 429 circuit is closed.
         """
-        import httpx
-        import feedparser
-        import re
+        from gaius.flows.article_curation.arxiv_client import CircuitOpen, discover_papers
 
         categories = hints.get("arxiv_categories")
         if not categories:
@@ -903,86 +894,42 @@ Respond with JSON:
                 "  Add keywords: [keyword1, keyword2, ...] to article.md frontmatter"
             )
 
-        # Build arXiv query from keywords or title words
-        # arXiv API has issues with multi-word terms, so we split them
-        all_terms: list[str] = []
-        if keywords:
-            # Split multi-word keywords into individual words
-            for kw in keywords[:5]:
-                all_terms.extend(kw.split())
-        else:
-            # Extract words from title (remove special chars)
-            title_words = re.sub(r"[^a-zA-Z\s]", " ", query).split()
-            all_terms = title_words
-
-        # Filter to valid search terms (single words, 4+ chars, not stop words)
-        # Allow alphanumeric and hyphens (e.g., "multi-agent")
-        stop_words = {"the", "a", "an", "and", "or", "for", "to", "in", "of", "with", "from"}
-        search_terms = [
-            w for w in all_terms
-            if len(w) >= 4 and w.lower() not in stop_words and re.match(r"^[\w-]+$", w)
-        ][:8]
-
-        # Deduplicate while preserving order
-        seen = set()
-        unique_terms = []
-        for term in search_terms:
-            if term.lower() not in seen:
-                seen.add(term.lower())
-                unique_terms.append(term)
-
-        # Build category filter
-        cat_query = " OR ".join([f"cat:{c}" for c in categories[:3]])
-
-        # Build search query using OR for broader recall
-        # (AND would be too restrictive for rare topic combinations)
-        term_query = " OR ".join([f"all:{term}" for term in unique_terms])
-        search_query = f"({term_query}) AND ({cat_query})"
-
-        params = {
-            "search_query": search_query,
-            "start": 0,
-            "max_results": self.max_sources,
-            "sortBy": "submittedDate",
-            "sortOrder": "descending",
-        }
-
-        from gaius.flows.article_curation.arxiv_client import arxiv_get, query_url
-
-        url = query_url(params)
-        logger.debug(f"arXiv query: {search_query}")
-
         try:
-            response = await arxiv_get(url)
-            feed = feedparser.parse(response.text)
-            sources = []
-
-            for entry in feed.entries:
-                sources.append(AcquiredSource.from_fetcher_result(
-                    source_type="arxiv",
-                    url=entry.get("link", ""),
-                    title=entry.get("title", "").replace("\n", " ").strip(),
-                    summary=entry.get("summary", "").strip()[:500],
-                    metadata={
-                        "authors": [a.get("name", "") for a in entry.get("authors", [])],
-                        "categories": [t.get("term", "") for t in entry.get("tags", [])],
-                        # Publication date rides to the source file and on to
-                        # the card's source_date — the content_currency intent
-                        # objective was blind to curated cards without it
-                        # (2026-09-03: 374 cards, every curation batch, NULL).
-                        "published": entry.get("published", ""),
-                        "updated": entry.get("updated", ""),
-                    },
-                ))
-
-            return sources[:int(self.max_sources)]
-
-        except httpx.RequestError as e:
+            papers = await discover_papers(
+                categories,
+                keywords=list(keywords),
+                max_results=int(self.max_sources),
+            )
+        except CircuitOpen as e:
             raise RuntimeError(
-                f"arXiv API request failed: {e}\n"
+                f"{e}\n"
                 "  Guru Meditation: #ACF.00000007.NOSOURCES\n"
-                "  Check network connectivity"
+                "  arXiv circuit open — wait 15m, do not loop the search API"
             ) from e
+
+        sources = []
+        for paper in papers:
+            sources.append(
+                AcquiredSource.from_fetcher_result(
+                    source_type="arxiv",
+                    url=paper.url,
+                    title=paper.title,
+                    summary=paper.summary[:500],
+                    metadata={
+                        "authors": paper.authors,
+                        "categories": paper.categories,
+                        "published": paper.published,
+                        "arxiv_id": paper.arxiv_id,
+                        "via": paper.via,
+                    },
+                )
+            )
+        if not sources:
+            raise RuntimeError(
+                "No arXiv sources from RSS (or search fallback).\n"
+                "  Guru Meditation: #ACF.00000007.NOSOURCES"
+            )
+        return sources
 
     async def _fetch_biorxiv(self, query: str, hints: dict) -> list[AcquiredSource]:
         """Fetch from bioRxiv/medRxiv API.
