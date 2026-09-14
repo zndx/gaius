@@ -94,7 +94,7 @@ async def record_remainder(
         )
     await conn.executemany(
         """
-        INSERT INTO theta_scratch_vertex_tier0 (
+        INSERT INTO theta_cycle_vertex_tier0 (
             epoch_hour, ts_ns, vertex_id, kind, text_id, layer, feature_idx,
             window_start, window_end, reason, tau, margin, c_epoch, aperture,
             hx_generation_id

@@ -101,7 +101,7 @@ async def test_record_remainder_inserts_vertex_rows() -> None:
         tau=0.1,
     )
     assert n == 1
-    assert "theta_scratch_vertex_tier0" in conn.sql[-1]
+    assert "theta_cycle_vertex_tier0" in conn.sql[-1]
     assert conn.rows[0][3] == "window"
     assert conn.rows[0][9] == "none"
 
