@@ -55,6 +55,11 @@ class FMPEndpoint:
     HISTORICAL_EOD = "historical-price-eod"
     SEARCH_NAME = "search-name"
     EMPLOYEE_COUNT = "employee-count"
+    INCOME = "income-statement"
+    BALANCE = "balance-sheet"
+    CASHFLOW = "cash-flow"
+    KEY_METRICS = "key-metrics"
+    RATIOS = "ratios"
     UNKNOWN = "unknown"
 
     @classmethod

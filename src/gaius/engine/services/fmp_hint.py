@@ -5,14 +5,11 @@ honest (no key, rate limit, no matches). CPU only; no thinking GPU.
 """
 from __future__ import annotations
 
-import logging
 from typing import Any
 
-from gaius.engine.services.fmp_client import FMPClientError, get_fmp_client
+from gaius.engine.services.fmp_tools import BY_NAME, call_tool
 
-log = logging.getLogger("gaius.engine.services.fmp_hint")
-
-FMP_STREAMS = frozenset({"search", "news", "quote"})
+FMP_STREAMS = frozenset(BY_NAME)
 _MAX = 8
 
 
@@ -87,83 +84,39 @@ async def collect_fmp(
     if kind == "quote" and not q:
         empty["note"] = "symbol required"
         return empty
-    try:
-        client = await get_fmp_client()
-    except Exception as e:
-        empty["note"] = str(e)[:200]
-        return empty
+    args: dict[str, Any] = {"query": q, "symbol": q, "limit": n}
+    raw = await call_tool(kind, args)
+    note = str(raw.get("error") or raw.get("note") or "")
     hits: list[dict[str, str]] = []
-    note = ""
-    try:
-        if kind == "search":
-            rows = await client.search_ticker(q, limit=n)
-            for row in rows:
-                hits.append(
-                    _hit(
-                        symbol=str(row.get("symbol") or ""),
-                        title=str(row.get("name") or ""),
-                        exchange=str(row.get("exchange") or ""),
-                        source="search",
+    for row in raw.get("items") or []:
+        if not isinstance(row, dict):
+            continue
+        hits.append(
+            _hit(
+                symbol=str(row.get("symbol") or q),
+                title=str(row.get("title") or row.get("name") or row.get("form") or ""),
+                snippet=str(
+                    row.get("snippet")
+                    or " · ".join(
+                        p
+                        for p in (
+                            str(row.get("sector") or ""),
+                            str(row.get("industry") or ""),
+                        )
+                        if p
                     )
-                )
-        elif kind == "news":
-            rows = await client.get_latest_stock_news(limit=max(n, 15))
-            want = q.upper()
-            for row in rows:
-                if not isinstance(row, dict):
-                    continue
-                sym = str(row.get("symbol") or "").upper()
-                title = str(row.get("title") or row.get("text") or "")
-                if want and want != sym and want not in title.upper():
-                    continue
-                hits.append(
-                    _hit(
-                        symbol=sym,
-                        title=str(row.get("title") or row.get("text") or ""),
-                        snippet=str(row.get("text") or row.get("snippet") or ""),
-                        url=str(row.get("url") or ""),
-                        as_of=str(row.get("publishedDate") or row.get("date") or ""),
-                        source="news",
-                    )
-                )
-                if len(hits) >= n:
-                    break
-        else:
-            profile = await client.get_company_profile(q)
-            if profile is None:
-                note = "no profile"
-            else:
-                cap = getattr(profile, "market_cap", 0) or 0
-                snippet = " · ".join(
-                    p
-                    for p in (
-                        getattr(profile, "sector", "") or "",
-                        getattr(profile, "industry", "") or "",
-                        f"cap {cap:,}" if cap else "",
-                    )
-                    if p
-                )
-                desc = getattr(profile, "description", "") or ""
-                hits.append(
-                    _hit(
-                        symbol=getattr(profile, "symbol", "") or q,
-                        title=getattr(profile, "company_name", "") or q,
-                        snippet=snippet or _clip(desc, 200),
-                        url=getattr(profile, "website", "") or "",
-                        exchange=getattr(profile, "exchange", "") or "",
-                        source="quote",
-                    )
-                )
-    except FMPClientError as e:
-        note = str(e)[:200]
-    except Exception as e:
-        log.warning("fmp collect failed: %s", e)
-        note = str(e)[:200]
-    finally:
-        try:
-            await client.__aexit__(None, None, None)
-        except Exception:
-            pass
+                    or row.get("description")
+                    or row.get("filed")
+                    or ""
+                ),
+                url=str(row.get("url") or row.get("website") or ""),
+                exchange=str(row.get("exchange") or ""),
+                as_of=str(row.get("as_of") or row.get("filed") or row.get("date") or ""),
+                source=str(row.get("source") or kind),
+            )
+        )
+        if len(hits) >= n:
+            break
     spoken = _spoken(hits, kind)
     if not hits and not note:
         note = "no matches"

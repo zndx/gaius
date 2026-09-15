@@ -5907,6 +5907,40 @@ class GaiusServicer(GaiusServiceServicer):
         finally:
             await client.__aexit__(None, None, None)
 
+    async def FmpListTools(
+        self,
+        request: object,
+        context: aio.ServicerContext,
+    ) -> object:
+        from ...generated import FmpListToolsResponse
+        from ...services.fmp_tools import list_tools
+
+        try:
+            return FmpListToolsResponse(tools_json=json.dumps(list_tools()))
+        except Exception as e:
+            logger.exception("FmpListTools failed")
+            return FmpListToolsResponse(error=str(e))
+
+    async def FmpCall(
+        self,
+        request: object,
+        context: aio.ServicerContext,
+    ) -> object:
+        from ...generated import FmpCallResponse
+        from ...services.fmp_tools import call_tool
+
+        name = (getattr(request, "name", None) or "").strip()
+        raw = getattr(request, "arguments_json", None) or "{}"
+        try:
+            args = json.loads(raw) if raw else {}
+            if not isinstance(args, dict):
+                return FmpCallResponse(error="arguments_json must be an object")
+        except json.JSONDecodeError as e:
+            return FmpCallResponse(error=f"arguments_json: {e}")
+        result = await call_tool(name, args)
+        err = str(result.get("error") or "")
+        return FmpCallResponse(result_json=json.dumps(result), error=err)
+
     def _summary_note(self, note: object) -> ProtoSummaryNote:
         return ProtoSummaryNote(
             id=getattr(note, "id", ""),

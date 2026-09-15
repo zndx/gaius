@@ -6,7 +6,7 @@ import warnings
 from . import gaius_service_pb2 as gaius__service__pb2
 from google.protobuf import empty_pb2 as google_dot_protobuf_dot_empty__pb2
 
-GRPC_GENERATED_VERSION = '1.76.0'
+GRPC_GENERATED_VERSION = '1.81.1'
 GRPC_VERSION = grpc.__version__
 _version_not_supported = False
 
@@ -26,7 +26,7 @@ if _version_not_supported:
     )
 
 
-class GaiusServiceStub(object):
+class GaiusServiceStub:
     """Missing associated documentation comment in .proto file."""
 
     def __init__(self, channel):
@@ -450,6 +450,16 @@ class GaiusServiceStub(object):
                 request_serializer=gaius__service__pb2.FmpEmployeesRequest.SerializeToString,
                 response_deserializer=gaius__service__pb2.FmpEmployeesResponse.FromString,
                 _registered_method=True)
+        self.FmpCall = channel.unary_unary(
+                '/gaius.engine.GaiusService/FmpCall',
+                request_serializer=gaius__service__pb2.FmpCallRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.FmpCallResponse.FromString,
+                _registered_method=True)
+        self.FmpListTools = channel.unary_unary(
+                '/gaius.engine.GaiusService/FmpListTools',
+                request_serializer=gaius__service__pb2.FmpListToolsRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.FmpListToolsResponse.FromString,
+                _registered_method=True)
         self.SummaryIndex = channel.unary_unary(
                 '/gaius.engine.GaiusService/SummaryIndex',
                 request_serializer=gaius__service__pb2.SummaryIndexRequest.SerializeToString,
@@ -872,7 +882,7 @@ class GaiusServiceStub(object):
                 _registered_method=True)
 
 
-class GaiusServiceServicer(object):
+class GaiusServiceServicer:
     """Missing associated documentation comment in .proto file."""
 
     def OrchestratorStatus(self, request, context):
@@ -1433,6 +1443,18 @@ class GaiusServiceServicer(object):
         raise NotImplementedError('Method not implemented!')
 
     def FmpEmployees(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def FmpCall(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def FmpListTools(self, request, context):
         """Missing associated documentation comment in .proto file."""
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -2457,6 +2479,16 @@ def add_GaiusServiceServicer_to_server(servicer, server):
                     request_deserializer=gaius__service__pb2.FmpEmployeesRequest.FromString,
                     response_serializer=gaius__service__pb2.FmpEmployeesResponse.SerializeToString,
             ),
+            'FmpCall': grpc.unary_unary_rpc_method_handler(
+                    servicer.FmpCall,
+                    request_deserializer=gaius__service__pb2.FmpCallRequest.FromString,
+                    response_serializer=gaius__service__pb2.FmpCallResponse.SerializeToString,
+            ),
+            'FmpListTools': grpc.unary_unary_rpc_method_handler(
+                    servicer.FmpListTools,
+                    request_deserializer=gaius__service__pb2.FmpListToolsRequest.FromString,
+                    response_serializer=gaius__service__pb2.FmpListToolsResponse.SerializeToString,
+            ),
             'SummaryIndex': grpc.unary_unary_rpc_method_handler(
                     servicer.SummaryIndex,
                     request_deserializer=gaius__service__pb2.SummaryIndexRequest.FromString,
@@ -2885,7 +2917,7 @@ def add_GaiusServiceServicer_to_server(servicer, server):
 
 
  # This class is part of an EXPERIMENTAL API.
-class GaiusService(object):
+class GaiusService:
     """Missing associated documentation comment in .proto file."""
 
     @staticmethod
@@ -5119,6 +5151,60 @@ class GaiusService(object):
             '/gaius.engine.GaiusService/FmpEmployees',
             gaius__service__pb2.FmpEmployeesRequest.SerializeToString,
             gaius__service__pb2.FmpEmployeesResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def FmpCall(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/gaius.engine.GaiusService/FmpCall',
+            gaius__service__pb2.FmpCallRequest.SerializeToString,
+            gaius__service__pb2.FmpCallResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def FmpListTools(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/gaius.engine.GaiusService/FmpListTools',
+            gaius__service__pb2.FmpListToolsRequest.SerializeToString,
+            gaius__service__pb2.FmpListToolsResponse.FromString,
             options,
             channel_credentials,
             insecure,
@@ -7396,7 +7482,3 @@ class GaiusService(object):
             timeout,
             metadata,
             _registered_method=True)
-
-# Async stub alias - same class works with grpc.aio.Channel
-# Type hints in .pyi declare this as a subclass for type checking
-GaiusServiceAsyncStub = GaiusServiceStub

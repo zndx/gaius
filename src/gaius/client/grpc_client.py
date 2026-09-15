@@ -969,6 +969,8 @@ class GrpcEngineClient:
             return await self._call_datasets(action, params, timeout)
         elif service == "Models":
             return await self._call_models(action, params, timeout)
+        elif service == "Fmp":
+            return await self._call_fmp_catalog(action, params, timeout)
         elif service == "Prospects":
             return await self._call_prospects(action, params, timeout)
         elif service == "ResearchFlow":
@@ -3837,6 +3839,44 @@ class GrpcEngineClient:
 
         else:
             raise ValueError(f"Unknown Models action: {action}")
+
+    async def _call_fmp_catalog(
+        self, action: str, params: dict[str, Any], timeout: float
+    ) -> dict[str, Any]:
+        """FmpListTools / FmpCall — MCP and CLI share this catalog on the engine."""
+        from ..engine.generated import FmpCallRequest, FmpListToolsRequest
+        import json as _json
+
+        act = (action or "").strip().lower()
+        if act in ("list", "list_tools", "fmplisttools"):
+            response = await self._stub.FmpListTools(FmpListToolsRequest(), timeout=timeout)
+            if response.error:
+                return {"error": response.error}
+            try:
+                tools = _json.loads(response.tools_json or "[]")
+            except _json.JSONDecodeError:
+                tools = []
+            return {"tools": tools}
+        if act in ("call", "invoke", "fmpcall"):
+            args = params.get("arguments") or params.get("args") or {}
+            if isinstance(args, str):
+                args_json = args
+            else:
+                args_json = _json.dumps(args)
+            response = await self._stub.FmpCall(
+                FmpCallRequest(
+                    name=str(params.get("name") or params.get("tool") or ""),
+                    arguments_json=args_json,
+                ),
+                timeout=timeout,
+            )
+            if response.error and not response.result_json:
+                return {"error": response.error}
+            try:
+                return _json.loads(response.result_json or "{}")
+            except _json.JSONDecodeError:
+                return {"error": "bad result_json", "raw": response.result_json}
+        return {"error": f"unknown Fmp action {action!r} (list|call)"}
 
     async def _call_prospects(self, action: str, params: dict, timeout: float) -> dict:
         """Handle Prospects/Stewardship service calls via gRPC.

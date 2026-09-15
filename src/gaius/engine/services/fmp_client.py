@@ -705,6 +705,78 @@ class FMPClient:
         out.sort(key=lambda r: str(r.get("period") or ""), reverse=True)
         return out[: max(1, min(int(limit), 40))]
 
+    async def get_annual_statement(
+        self,
+        symbol: str,
+        kind: str = "income",
+        *,
+        limit: int = 5,
+        source_context: dict | None = None,
+    ) -> list[dict[str, Any]]:
+        """Annual statements. Starter covers annual US; quarterly is Premium."""
+        sym = (symbol or "").strip().upper()
+        if not sym:
+            return []
+        kind = (kind or "income").strip().lower()
+        path_by = {
+            "income": ("/stable/income-statement", FMPEndpoint.INCOME),
+            "balance": ("/stable/balance-sheet-statement", FMPEndpoint.BALANCE),
+            "cash": ("/stable/cash-flow-statement", FMPEndpoint.CASHFLOW),
+            "cashflow": ("/stable/cash-flow-statement", FMPEndpoint.CASHFLOW),
+        }
+        if kind not in path_by:
+            raise FMPClientError(
+                f"statement kind must be income|balance|cash, got {kind!r}",
+                guru_code="#FMP.00000008.BADKIND",
+            )
+        path, endpoint = path_by[kind]
+        data = await self._request(
+            endpoint=endpoint,
+            path=path,
+            symbol=sym,
+            params={"symbol": sym, "period": "annual", "limit": str(max(1, min(int(limit), 10)))},
+            source_context=source_context or {"source": "fmp_statement"},
+        )
+        return [r for r in (data if isinstance(data, list) else []) if isinstance(r, dict)]
+
+    async def get_key_metrics(
+        self,
+        symbol: str,
+        *,
+        limit: int = 5,
+        source_context: dict | None = None,
+    ) -> list[dict[str, Any]]:
+        sym = (symbol or "").strip().upper()
+        if not sym:
+            return []
+        data = await self._request(
+            endpoint=FMPEndpoint.KEY_METRICS,
+            path="/stable/key-metrics",
+            symbol=sym,
+            params={"symbol": sym, "period": "annual", "limit": str(max(1, min(int(limit), 10)))},
+            source_context=source_context or {"source": "fmp_metrics"},
+        )
+        return [r for r in (data if isinstance(data, list) else []) if isinstance(r, dict)]
+
+    async def get_ratios(
+        self,
+        symbol: str,
+        *,
+        limit: int = 5,
+        source_context: dict | None = None,
+    ) -> list[dict[str, Any]]:
+        sym = (symbol or "").strip().upper()
+        if not sym:
+            return []
+        data = await self._request(
+            endpoint=FMPEndpoint.RATIOS,
+            path="/stable/ratios",
+            symbol=sym,
+            params={"symbol": sym, "period": "annual", "limit": str(max(1, min(int(limit), 10)))},
+            source_context=source_context or {"source": "fmp_ratios"},
+        )
+        return [r for r in (data if isinstance(data, list) else []) if isinstance(r, dict)]
+
     async def get_historical_eod(
         self,
         symbol: str,

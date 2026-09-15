@@ -325,6 +325,8 @@ class GaiusCLI:
                 # Prospects - FMP-based prospect intelligence
                 elif command == "prospects" or command == "pro":
                     result["data"] = self._run_async(self._cmd_prospects(args))
+                elif command == "fmp":
+                    result["data"] = self._run_async(self._cmd_fmp(args))
                 # Metabase - Read-only Metabase API passthrough
                 elif command == "metabase" or command == "mb":
                     result["data"] = self._run_async(self._cmd_metabase(args))
@@ -13746,6 +13748,49 @@ Examples:
             "error": f"Unknown models subcommand: {subcmd}",
             "usage": "/models [kb|list|add|info] ...",
         }
+
+    async def _cmd_fmp(self, args: str) -> dict:
+        """FMP proxy on the Gaius engine (Starter Annual). Same catalog as MCP.
+
+        Usage:
+            /fmp                         - list tools
+            /fmp list
+            /fmp search Schlumberger
+            /fmp quote AAPL
+            /fmp news [AAPL]
+            /fmp filings AAPL [--form 10-K]
+            /fmp statement AAPL [income|balance|cash]
+            /fmp metrics AAPL [metrics|ratios]
+            /fmp calendar [AAPL]
+            /fmp employees AAPL
+            /fmp 8k [AAPL]
+            /fmp insider [AAPL]
+        """
+        from .client.grpc_client import get_grpc_client
+
+        parts = args.split() if args else []
+        sub = parts[0].lower() if parts else "list"
+        client = await get_grpc_client()
+        if sub in ("", "list", "help", "tools"):
+            result = await client.call("Fmp", "list", {})
+            return {"command": "fmp", "action": "list", **result}
+
+        rest = parts[1:]
+        arguments: dict = {}
+        if rest:
+            arguments["query"] = rest[0]
+            arguments["symbol"] = rest[0]
+        if len(rest) > 1 and not rest[1].startswith("-"):
+            arguments["kind"] = rest[1]
+            arguments["form"] = rest[1]
+        if "--form" in rest:
+            i = rest.index("--form")
+            if i + 1 < len(rest):
+                arguments["form"] = rest[i + 1]
+        result = await client.call(
+            "Fmp", "call", {"name": sub, "arguments": arguments}
+        )
+        return {"command": "fmp", "action": "call", "tool": sub, **result}
 
     async def _cmd_prospects(self, args: str) -> dict:
         """Prospects/Stewardship - FMP-based prospect intelligence via Engine gRPC.

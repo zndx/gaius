@@ -2043,6 +2043,25 @@ message FmpEmployeesResponse {
   string error = 2;
 }
 
+// Generic FMP proxy: one catalog in engine/services/fmp_tools.py.
+// MCP and CLI call these; AgentRTC uses ServerQuery FMP (same handlers).
+message FmpCallRequest {
+  string name = 1;                 // search | quote | news | filings | ...
+  string arguments_json = 2;
+}
+
+message FmpCallResponse {
+  string result_json = 1;
+  string error = 2;
+}
+
+message FmpListToolsRequest {}
+
+message FmpListToolsResponse {
+  string tools_json = 1;
+  string error = 2;
+}
+
 // Summary lineup — FedWiki trail over a temporal slice of the KB.
 // SECTION = ontology | heuristic. LENS = articles | projects | thoughts.
 // Default visit: this ISO week's Signals Summary, then hop [[wiki]] / fork.
@@ -3704,6 +3723,8 @@ service GaiusService {
   rpc FmpNews(FmpNewsRequest) returns (FmpNewsResponse);
   rpc FmpSearch(FmpSearchRequest) returns (FmpSearchResponse);
   rpc FmpEmployees(FmpEmployeesRequest) returns (FmpEmployeesResponse);
+  rpc FmpCall(FmpCallRequest) returns (FmpCallResponse);
+  rpc FmpListTools(FmpListToolsRequest) returns (FmpListToolsResponse);
   rpc SummaryIndex(SummaryIndexRequest) returns (SummaryIndexResponse);
   rpc SummaryGet(SummaryGetRequest) returns (SummaryGetResponse);
   rpc SummaryHop(SummaryHopRequest) returns (SummaryHopResponse);

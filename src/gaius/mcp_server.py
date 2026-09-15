@@ -5979,6 +5979,42 @@ Domain: {domain or 'general'}
         except Exception as e:
             return json.dumps({"error": str(e)}, indent=2)
 
+    # --- FMP proxy (engine catalog; Starter Annual, key stays on Gaius) ---
+
+    @server.tool()
+    async def fmp_list_tools() -> str:
+        """List FMP proxy tools hosted by the Gaius engine (MCP face)."""
+        try:
+            from .client.grpc_client import get_grpc_client
+            client = await get_grpc_client()
+            result = await client.call("Fmp", "list", {})
+            return json.dumps(result, indent=2, default=str)
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    @server.tool()
+    async def fmp(name: str, arguments_json: str = "{}") -> str:
+        """Call an FMP proxy tool on the Gaius engine.
+
+        The engine holds the API key. Use fmp_list_tools for names
+        (search, quote, news, filings, statement, metrics, calendar,
+        employees, eight_k, insider). Starter Annual: no 13F/transcripts.
+        """
+        try:
+            from .client.grpc_client import get_grpc_client
+            import json as _json
+            client = await get_grpc_client()
+            try:
+                args = _json.loads(arguments_json or "{}")
+            except _json.JSONDecodeError:
+                return _json.dumps({"error": "arguments_json must be a JSON object"})
+            result = await client.call(
+                "Fmp", "call", {"name": name, "arguments": args}
+            )
+            return json.dumps(result, indent=2, default=str)
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
     # --- X Bookmarks Tools ---
     # Sync X (Twitter) bookmarks to Gaius KB via the engine
 

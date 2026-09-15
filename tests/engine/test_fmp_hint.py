@@ -44,7 +44,7 @@ async def test_search_stream_returns_tickers(monkeypatch):
     async def _client():
         return _Client()
 
-    monkeypatch.setattr("gaius.engine.services.fmp_hint.get_fmp_client", _client)
+    monkeypatch.setattr("gaius.engine.services.fmp_tools.get_fmp_client", _client)
     d = await collect_fmp("schlumberger", stream="search")
     assert d["hits"][0]["symbol"] == "SLB"
     assert "FMP tickers" in d["spoken"]
@@ -64,7 +64,7 @@ async def test_quote_stream(monkeypatch):
     async def _client():
         return _Client()
 
-    monkeypatch.setattr("gaius.engine.services.fmp_hint.get_fmp_client", _client)
+    monkeypatch.setattr("gaius.engine.services.fmp_tools.get_fmp_client", _client)
     d = await collect_fmp("SLB", stream="quote")
     assert d["hits"][0]["source"] == "quote"
     assert "Energy" in d["hits"][0]["snippet"]
