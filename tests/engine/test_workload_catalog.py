@@ -204,6 +204,10 @@ def test_claims_follow_declared_intents_and_resource_classes():
     # ambient synthesis: the shared embedding claim on light (declared phase intent)
     ambient = {c["leaf"]: c["gpu"] for c in wc.claims_for("ambient_synthesis")}
     assert ambient.get("root.internal.inference.light") == 1
+    # weekly Theta: one GPU on the light leaf (not a new queue)
+    assert wc.claims_for("theta_cycle") == [
+        {"leaf": "root.internal.inference.light", "gpu": 1}
+    ]
     # zero-GPU classes carry no claims
     assert wc.claims_for("engine_audit") == []
     assert wc.claims_for("fmp_roll") == []

@@ -148,6 +148,8 @@ processes { id: "task.fmp_roll" kind: PROCESS_KIND_SCHEDULED_TASK parent: "daemo
 processes { id: "flow.FmpMarketBufferFlow" kind: PROCESS_KIND_METAFLOW_FLOW parent: "task.fmp_roll" restart: RESTART_STRATEGY_NONE observation { source: SOURCE_KIND_METAFLOW_STORE locator: "FmpMarketBufferFlow" poll_seconds: 60 via: "peer.signals-engine" } reports_positions: true cadence { cron: "7,37 * * * *" net_seconds: 1800 } expectation { category: EXPECTATION_CATEGORY_TICK horizon_slot: 3 channel: CHANNEL_AGENDA_EVENT rationale: "sub-hour cadence: a deferral inside the admission window is the arbiter working; no completed run at slots 1 and 2 opens the item; Agenda Event at slot 3 (2 h)" } }
 processes { id: "task.ambient_synthesis" kind: PROCESS_KIND_SCHEDULED_TASK parent: "daemon.scheduled_task_processor" restart: RESTART_STRATEGY_NONE observation { source: SOURCE_KIND_TASK_QUEUE locator: "ambient_synthesis" } cadence { cron: "*/20 * * * *" net_seconds: 3600 } expectation { category: EXPECTATION_CATEGORY_TICK horizon_slot: 3 channel: CHANNEL_AGENDA_EVENT rationale: "sub-hour cadence: a deferral inside the admission window is the arbiter working; no completed run at slots 1 and 2 opens the item; Agenda Event at slot 3 (2 h)" } }
 processes { id: "flow.AmbientSynthesisFlow" kind: PROCESS_KIND_METAFLOW_FLOW parent: "task.ambient_synthesis" restart: RESTART_STRATEGY_NONE observation { source: SOURCE_KIND_METAFLOW_STORE locator: "AmbientSynthesisFlow" poll_seconds: 60 via: "peer.signals-engine" } reports_positions: true cadence { cron: "*/20 * * * *" net_seconds: 3600 } expectation { category: EXPECTATION_CATEGORY_TICK horizon_slot: 3 channel: CHANNEL_AGENDA_EVENT rationale: "sub-hour cadence: a deferral inside the admission window is the arbiter working; no completed run at slots 1 and 2 opens the item; Agenda Event at slot 3 (2 h)" } }
+processes { id: "task.theta_cycle" kind: PROCESS_KIND_SCHEDULED_TASK parent: "daemon.scheduled_task_processor" restart: RESTART_STRATEGY_NONE observation { source: SOURCE_KIND_TASK_QUEUE locator: "theta_cycle" } cadence { cron: "0 6 * * 1" net_seconds: 18000 } attrs { key: "singleton" value: "true" } expectation { category: EXPECTATION_CATEGORY_SLOT horizon_slot: 7 channel: CHANNEL_BRIEFING run_net_slot: 5 rationale: "Monday 06:00 weekly consolidation; a miss is briefing by the next day, not a 2 h alarm" } }
+processes { id: "flow.ThetaCycleFlow" kind: PROCESS_KIND_METAFLOW_FLOW parent: "task.theta_cycle" restart: RESTART_STRATEGY_NONE observation { source: SOURCE_KIND_METAFLOW_STORE locator: "ThetaCycleFlow" poll_seconds: 60 via: "peer.signals-engine" } reports_positions: true cadence { cron: "0 6 * * 1" net_seconds: 18000 } expectation { category: EXPECTATION_CATEGORY_SLOT horizon_slot: 7 channel: CHANNEL_BRIEFING run_net_slot: 5 rationale: "Monday 06:00 weekly consolidation; a miss is briefing by the next day, not a 2 h alarm" } }
 
 # ── Machines: phases, gates, horizons ──────────────────────────────────────────
 # The motivating case: ProspectsUpdateFlow. Four phases, each closed by a gate that
@@ -273,6 +275,61 @@ machines {
                 rationale: "the flow's own token backs its in-process ColBERT-Zero MaxSim — it makes no shared embedding claim (2026-09-04: declaring embedding here too was a third token on a two-token leaf; 28 consecutive deferrals)" }
     resources { leaf: "root.internal.inference.light" workload: "clt-probe" occupancy: 1 floor: 0 priority: 20
                 rationale: "positional CLT extraction runs on the CLT worker's token (gaius-clt): reused when resident, placed at the run's priority when not — the admit phase's true demand is exactly the light leaf" }
+  }
+}
+
+# Weekly Theta consolidation: one GPU on the light leaf (ColBERT-Zero encode
+# + TBox MaxSim in the child). Standing light guaranteed is 0 so leftover
+# tokens stay with extract/medium. The Monday Airflow Activity asserts
+# floor 1 on this leaf (queue-share); YK preemption then fires for a
+# starving light queue against floor-0 holders (clt-probe). Same shape as
+# agent-rtc, but a standing scheduled procedure, not an interactive session.
+# Do not declare a shared embedding claim — the run's LIGHT token backs ColBERT
+# (own_gpu_application). Do not invent a theta leaf.
+machines {
+  id: "theta_cycle"
+  process: "flow.ThetaCycleFlow"
+  surfaced_result: "theta_consolidation_runs row for the previous ISO week with named guru or augmentations"
+  default_horizon { window_seconds: 18000 resolve_within_phase_only: true }
+  phases {
+    id: "queue" order: 1
+    steps: "start" steps: "prepare"
+    gate { name: "slice_prepared" kind: GATE_KIND_FLOW_REACHED_STEP tier: TIER_SILVER
+           params { key: "step" value: "encode" }
+           rationale: "previous-week thoughts loaded; YK LIGHT token placed" }
+    horizon { window_seconds: 900 resolve_within_phase_only: true }
+    resources { leaf: "root.internal.inference.light" workload: "theta-cycle" occupancy: 1 floor: 0 priority: 35
+                rationale: "token held as the run's identity; CUDA not yet required" }
+  }
+  phases {
+    id: "encode" order: 2
+    steps: "encode"
+    gate { name: "centroid_encoded" kind: GATE_KIND_FLOW_REACHED_STEP tier: TIER_SILVER
+           params { key: "step" value: "infer" }
+           rationale: "ColBERT-Zero centroid of the week's thoughts" }
+    horizon { window_seconds: 1800 resolve_within_phase_only: true }
+    resources { leaf: "root.internal.inference.light" workload: "theta-cycle" occupancy: 1 floor: 1 priority: 50
+                rationale: "in-process ColBERT-Zero; floor 1 so YK can preempt floor-0 light (clt-probe) after the Activity asserts the guarantee — weekly product run, above admit (20) and probe (10), yields to a prospects embedding phase (60)" }
+  }
+  phases {
+    id: "infer" order: 3
+    steps: "infer"
+    gate { name: "pairs_scored" kind: GATE_KIND_FLOW_REACHED_STEP tier: TIER_SILVER
+           params { key: "step" value: "complete" }
+           rationale: "CLT incidence MaxSim-grounded; BERTSubs Intra on the TBox" }
+    horizon { window_seconds: 7200 resolve_within_phase_only: true }
+    resources { leaf: "root.internal.inference.light" workload: "theta-cycle" occupancy: 1 floor: 1 priority: 50
+                rationale: "TBox MaxSim uses the same ColBERT as encode; still the run's light token" }
+  }
+  phases {
+    id: "complete" order: 4
+    steps: "complete" steps: "end"
+    gate { name: "queue_written" kind: GATE_KIND_FLOW_REACHED_STEP tier: TIER_SILVER
+           params { key: "step" value: "end" }
+           rationale: "theta_consolidation_runs row written; sentinel released" }
+    horizon { window_seconds: 18000 resolve_within_phase_only: false }
+    resources { leaf: "root.internal.inference.light" workload: "theta-cycle" occupancy: 1 floor: 0 priority: 30
+                rationale: "queue write; CUDA done; token preemptible until the process exits" }
   }
 }
 

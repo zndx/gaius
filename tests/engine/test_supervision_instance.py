@@ -42,6 +42,19 @@ def test_expectations_are_well_formed(spec) -> None:
             assert e.backfill_depth >= 1, p.id
 
 
+def test_theta_cycle_declares_light_floor_for_encode(spec) -> None:
+    from gaius.engine.supervision_spec import intent_for
+
+    it = intent_for("theta-cycle", "theta-cycle")
+    assert it is not None
+    assert it.leaf == "root.internal.inference.light"
+    assert it.floor == 1 and it.occupancy == 1
+    hit = spec.phase_for_step("theta-cycle", "encode")
+    assert hit is not None and hit[1].id == "encode"
+    hit_inf = spec.phase_for_step("theta-cycle", "infer")
+    assert hit_inf is not None and hit_inf[1].id == "infer"
+
+
 def test_case_a_class_is_a_tick_with_agenda_horizon(spec) -> None:
     from gaius.engine.generated.zndx.supervision.v1 import supervision_pb2 as sv
 
