@@ -1,0 +1,61 @@
+// metabase native engine surface.
+//
+// The shared federation face is zndx.engine.v1.Engine, vendored at
+// components/signals-protocol — serve() registers BOTH on one port
+// (:50451 per the engine lattice).
+//
+// Federation capability name is "dashboard" (not "metabase") so peers
+// depend on an ability, not an implementation.
+//
+// Change ritual (house standard): edit → `just proto` → implement the
+// servicer → commit src/mbengine/engine/generated/.
+syntax = "proto3";
+
+package metabase.engine;
+
+service MetabaseEngine {
+  // Liveness/capability report; mirrors the synth/aegir EngineStatus shape.
+  rpc EngineStatus(EngineStatusRequest) returns (EngineStatusReply);
+  // Resolve the live dashboard instance for local tooling / ops UI.
+  // Non-secret discovery only — passwords and API keys never appear here.
+  rpc GetDashboardInstance(GetDashboardInstanceRequest)
+      returns (GetDashboardInstanceReply);
+  // After Gaius lands warehouse tables: sync schema and project Atlas/scratch
+  // IRIs onto Metabase fields. Completion hook, not a timeout.
+  rpc ProjectWarehouse(ProjectWarehouseRequest)
+      returns (ProjectWarehouseReply);
+}
+
+message EngineStatusRequest {}
+
+message EngineStatusReply {
+  string project = 1;               // always "metabase"
+  string version = 2;
+  repeated string capabilities = 3; // includes "dashboard" when a probe is healthy
+}
+
+message GetDashboardInstanceRequest {}
+
+message GetDashboardInstanceReply {
+  bool healthy = 1;
+  string base_url = 2;    // e.g. http://127.0.0.1:3100
+  string site_url = 3;    // if known; empty otherwise
+  string app_db_host = 4;
+  int32 app_db_port = 5;
+  string app_db_name = 6;
+  string app_db_user = 7; // role name only; never a password
+  string detail = 8;      // human-legible probe note
+}
+
+message ProjectWarehouseRequest {
+  string tables_json = 1;     // ["gaius.fmp.profile", ...]
+  string bindings_json = 2;   // {table: {column: iri}}
+  string namespace = 3;       // gaius.fmp
+}
+
+message ProjectWarehouseReply {
+  bool ok = 1;
+  string guru = 2;
+  string detail = 3;
+  int32 fields_projected = 4;
+}

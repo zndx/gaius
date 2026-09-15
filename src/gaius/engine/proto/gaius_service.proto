@@ -2062,6 +2062,17 @@ message FmpListToolsResponse {
   string error = 2;
 }
 
+message PrepareFmpWarehouseRequest {
+  string symbols = 1;              // comma-separated tickers
+  string tools = 2;                // quote,filings,calendar
+  string source = 3;               // metabase | cli | mcp
+}
+
+message PrepareFmpWarehouseResponse {
+  int32 task_id = 1;
+  string error = 2;
+}
+
 // Summary lineup — FedWiki trail over a temporal slice of the KB.
 // SECTION = ontology | heuristic. LENS = articles | projects | thoughts.
 // Default visit: this ISO week's Signals Summary, then hop [[wiki]] / fork.
@@ -3725,6 +3736,7 @@ service GaiusService {
   rpc FmpEmployees(FmpEmployeesRequest) returns (FmpEmployeesResponse);
   rpc FmpCall(FmpCallRequest) returns (FmpCallResponse);
   rpc FmpListTools(FmpListToolsRequest) returns (FmpListToolsResponse);
+  rpc PrepareFmpWarehouse(PrepareFmpWarehouseRequest) returns (PrepareFmpWarehouseResponse);
   rpc SummaryIndex(SummaryIndexRequest) returns (SummaryIndexResponse);
   rpc SummaryGet(SummaryGetRequest) returns (SummaryGetResponse);
   rpc SummaryHop(SummaryHopRequest) returns (SummaryHopResponse);

@@ -460,6 +460,11 @@ class GaiusServiceStub:
                 request_serializer=gaius__service__pb2.FmpListToolsRequest.SerializeToString,
                 response_deserializer=gaius__service__pb2.FmpListToolsResponse.FromString,
                 _registered_method=True)
+        self.PrepareFmpWarehouse = channel.unary_unary(
+                '/gaius.engine.GaiusService/PrepareFmpWarehouse',
+                request_serializer=gaius__service__pb2.PrepareFmpWarehouseRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.PrepareFmpWarehouseResponse.FromString,
+                _registered_method=True)
         self.SummaryIndex = channel.unary_unary(
                 '/gaius.engine.GaiusService/SummaryIndex',
                 request_serializer=gaius__service__pb2.SummaryIndexRequest.SerializeToString,
@@ -1455,6 +1460,12 @@ class GaiusServiceServicer:
         raise NotImplementedError('Method not implemented!')
 
     def FmpListTools(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def PrepareFmpWarehouse(self, request, context):
         """Missing associated documentation comment in .proto file."""
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -2488,6 +2499,11 @@ def add_GaiusServiceServicer_to_server(servicer, server):
                     servicer.FmpListTools,
                     request_deserializer=gaius__service__pb2.FmpListToolsRequest.FromString,
                     response_serializer=gaius__service__pb2.FmpListToolsResponse.SerializeToString,
+            ),
+            'PrepareFmpWarehouse': grpc.unary_unary_rpc_method_handler(
+                    servicer.PrepareFmpWarehouse,
+                    request_deserializer=gaius__service__pb2.PrepareFmpWarehouseRequest.FromString,
+                    response_serializer=gaius__service__pb2.PrepareFmpWarehouseResponse.SerializeToString,
             ),
             'SummaryIndex': grpc.unary_unary_rpc_method_handler(
                     servicer.SummaryIndex,
@@ -5205,6 +5221,33 @@ class GaiusService:
             '/gaius.engine.GaiusService/FmpListTools',
             gaius__service__pb2.FmpListToolsRequest.SerializeToString,
             gaius__service__pb2.FmpListToolsResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def PrepareFmpWarehouse(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/gaius.engine.GaiusService/PrepareFmpWarehouse',
+            gaius__service__pb2.PrepareFmpWarehouseRequest.SerializeToString,
+            gaius__service__pb2.PrepareFmpWarehouseResponse.FromString,
             options,
             channel_credentials,
             insecure,

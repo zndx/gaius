@@ -1316,9 +1316,46 @@ class ScheduledTaskProcessor(BaseDaemon):
                 metaflow_mode="platform",
             )
 
+        async def handle_fmp_warehouse(task: ScheduledTask) -> dict[str, Any]:
+            payload = task.payload or {}
+            symbols = payload.get("symbols") or []
+            if isinstance(symbols, str):
+                symbols_csv = symbols
+            else:
+                symbols_csv = ",".join(str(s) for s in symbols)
+            tools = payload.get("tools") or ["quote", "filings", "calendar"]
+            if isinstance(tools, list):
+                tools_csv = ",".join(str(t) for t in tools)
+            else:
+                tools_csv = str(tools)
+            argv = [
+                "uv",
+                "run",
+                "--no-sync",
+                "python",
+                "-m",
+                "gaius.flows.fmp.warehouse",
+                "run",
+                "--scheduled-task-id",
+                str(task.id),
+                "--symbols",
+                symbols_csv,
+                "--tools",
+                tools_csv,
+            ]
+            return await self._run_spawned_metaflow(
+                kind="fmp-warehouse",
+                task=task,
+                argv=argv,
+                log_prefix="FmpWarehouse",
+                idle_timeout=1800,
+                metaflow_mode="platform",
+            )
+
         self.register_handler("fmp_roll", handle_fmp_roll)
         self.register_handler("ambient_synthesis", handle_ambient_synthesis)
         self.register_handler("theta_cycle", handle_theta_cycle)
+        self.register_handler("fmp_warehouse", handle_fmp_warehouse)
 
         # gpu_metrics settle retired 2026-08-28: superseded by the product-generic
         # tier_settle (signal_tier0 carries the DCGM families now). gpu_metrics_tier1

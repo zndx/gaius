@@ -37,6 +37,10 @@ def _register_builtin_flows():
         from gaius.flows.prospects import ProspectsCheckFlow, ProspectsUpdateFlow  # noqa: F401
     except ImportError:
         pass  # prospects dependencies may not be installed
+    try:
+        from gaius.flows.fmp.warehouse import FmpWarehouseFlow  # noqa: F401
+    except ImportError:
+        pass
 
     try:
         from gaius.flows.search import SearchFlow  # noqa: F401

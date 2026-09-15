@@ -370,6 +370,9 @@ _KIND_CLASS: dict[str, ResourceClass] = {
     # process ends. COMPUTE + in-process CUDA is an unadmitted GPU.
     "theta-cycle": LIGHT,
     "theta_cycle": LIGHT,
+    # FMP warehouse land: CPU Metaflow; Complete/FmpCall on the engine.
+    "fmp-warehouse": COMPUTE,
+    "fmp_warehouse": COMPUTE,
 }
 
 
@@ -473,6 +476,8 @@ _KIND_PHASE: dict[str, str] = {
     "clt_skos_label": "label",
     "theta-cycle": "theta",
     "theta_cycle": "theta",
+    "fmp-warehouse": "warehouse",
+    "fmp_warehouse": "warehouse",
     "knowledge-summary": "summary",
     "knowledge_summary": "summary",
     "article-curation": "extract",

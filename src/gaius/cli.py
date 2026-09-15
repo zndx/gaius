@@ -13774,8 +13774,15 @@ Examples:
         if sub in ("", "list", "help", "tools"):
             result = await client.call("Fmp", "list", {})
             return {"command": "fmp", "action": "list", **result}
-
         rest = parts[1:]
+        if sub == "warehouse":
+            symbols = ",".join(p for p in rest if not p.startswith("-"))
+            result = await client.call(
+                "Fmp",
+                "prepare_warehouse",
+                {"symbols": symbols, "source": "cli"},
+            )
+            return {"command": "fmp", "action": "warehouse", **result}
         arguments: dict = {}
         if rest:
             arguments["query"] = rest[0]

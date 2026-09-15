@@ -6015,6 +6015,24 @@ Domain: {domain or 'general'}
         except Exception as e:
             return json.dumps({"error": str(e)}, indent=2)
 
+    @server.tool()
+    async def fmp_prepare_warehouse(symbols: str, tools: str = "quote,filings,calendar") -> str:
+        """Ask Gaius to land typed FMP tables (Iceberg gaius.fmp.*) then hook Metabase.
+
+        Returns a scheduled_tasks id. Unbounded gather; Metabase is notified on completion.
+        """
+        try:
+            from .client.grpc_client import get_grpc_client
+            client = await get_grpc_client()
+            result = await client.call(
+                "Fmp",
+                "prepare_warehouse",
+                {"symbols": symbols, "tools": tools, "source": "mcp"},
+            )
+            return json.dumps(result, indent=2, default=str)
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
     # --- X Bookmarks Tools ---
     # Sync X (Twitter) bookmarks to Gaius KB via the engine
 

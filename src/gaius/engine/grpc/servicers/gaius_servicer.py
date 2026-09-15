@@ -5941,6 +5941,38 @@ class GaiusServicer(GaiusServiceServicer):
         err = str(result.get("error") or "")
         return FmpCallResponse(result_json=json.dumps(result), error=err)
 
+    async def PrepareFmpWarehouse(
+        self,
+        request: object,
+        context: aio.ServicerContext,
+    ) -> object:
+        from ...generated import PrepareFmpWarehouseResponse
+        from ...services.fmp_warehouse import enqueue_prepare
+
+        symbols = [
+            s.strip().upper()
+            for s in str(getattr(request, "symbols", "") or "").split(",")
+            if s.strip()
+        ]
+        tools = [
+            t.strip()
+            for t in str(getattr(request, "tools", "") or "").split(",")
+            if t.strip()
+        ]
+        source = str(getattr(request, "source", "") or "engine")
+        pool = getattr(self._services, "db_pool", None)
+        if pool is None:
+            return PrepareFmpWarehouseResponse(
+                error="#FMP.00000010.WAREHOUSE engine db pool unavailable"
+            )
+        try:
+            tid = await enqueue_prepare(
+                pool, symbols=symbols, tools=tools or None, source=source
+            )
+        except Exception as e:
+            return PrepareFmpWarehouseResponse(error=str(e))
+        return PrepareFmpWarehouseResponse(task_id=tid)
+
     def _summary_note(self, note: object) -> ProtoSummaryNote:
         return ProtoSummaryNote(
             id=getattr(note, "id", ""),

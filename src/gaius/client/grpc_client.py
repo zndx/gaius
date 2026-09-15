@@ -3876,7 +3876,21 @@ class GrpcEngineClient:
                 return _json.loads(response.result_json or "{}")
             except _json.JSONDecodeError:
                 return {"error": "bad result_json", "raw": response.result_json}
-        return {"error": f"unknown Fmp action {action!r} (list|call)"}
+        if act in ("prepare_warehouse", "prepare", "warehouse"):
+            from ..engine.generated import PrepareFmpWarehouseRequest
+
+            response = await self._stub.PrepareFmpWarehouse(
+                PrepareFmpWarehouseRequest(
+                    symbols=str(params.get("symbols") or ""),
+                    tools=str(params.get("tools") or ""),
+                    source=str(params.get("source") or "engine"),
+                ),
+                timeout=timeout,
+            )
+            if response.error:
+                return {"error": response.error}
+            return {"task_id": response.task_id}
+        return {"error": f"unknown Fmp action {action!r} (list|call|prepare_warehouse)"}
 
     async def _call_prospects(self, action: str, params: dict, timeout: float) -> dict:
         """Handle Prospects/Stewardship service calls via gRPC.
