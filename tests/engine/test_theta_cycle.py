@@ -104,6 +104,11 @@ def test_flow_is_platform_vessel() -> None:
     assert hasattr(ThetaCycleFlow, "end")
     assert not hasattr(ThetaCycleFlow, "maintain")
     assert not hasattr(ThetaCycleFlow, "settle")
+    # GaiusFlow.kb_root is a Path property; assigning it in start() raises.
+    from gaius.flows.base import GaiusFlow
+
+    assert "kb_root" not in vars(ThetaCycleFlow)
+    assert isinstance(vars(GaiusFlow)["kb_root"], property)
 
 
 def test_pairs_from_thoughts_skip_title_first_word() -> None:

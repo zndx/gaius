@@ -36,7 +36,6 @@ class ThetaCycleFlow(GaiusFlow):
 
         apply_metaflow_config()
         require_signals_metaflow()
-        self.kb_root = os.environ.get("GAIUS_KB_ROOT") or "build/dev"
         self.dsn = os.environ.get("DATABASE_URL") or get_database_url()
         self.week = str(self.slice_id or get_previous_week_slice_id())
         self.run_id = str(getattr(current, "run_id", None) or "")
