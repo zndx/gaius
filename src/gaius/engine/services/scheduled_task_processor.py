@@ -1292,8 +1292,13 @@ class ScheduledTaskProcessor(BaseDaemon):
             )
 
         async def handle_theta_cycle(task: ScheduledTask) -> dict[str, Any]:
-            """In-engine drain of the current ISO-week consolidation slice."""
+            """Orchestrate in-engine; BERTSubs/JVM run in theta_worker (light leaf)."""
             from gaius.agents.theta.consolidation import get_week_slice_id
+            from gaius.engine.flow_processes import workload_id_for
+            from gaius.engine.sentinel_claim import (
+                apply_and_admit_async,
+                delete_flow_sentinel_async,
+            )
             from gaius.engine.services.theta_cycle import consume_pending
 
             theta = self._theta
@@ -1303,14 +1308,19 @@ class ScheduledTaskProcessor(BaseDaemon):
                     "  Try: restart engine"
                 )
             slice_id = str(task.payload.get("slice_id") or get_week_slice_id())
+            wid = workload_id_for("theta-cycle", task.id)
+            await apply_and_admit_async(wid, "theta-cycle")
 
             async def consolidator(sid: str) -> dict[str, Any]:
                 return await theta.run_consolidation(temporal_slice=sid)
 
-            async with self._pool.acquire() as conn:
-                jobs = await consume_pending(
-                    conn, consolidator=consolidator, current_slice=slice_id
-                )
+            try:
+                async with self._pool.acquire() as conn:
+                    jobs = await consume_pending(
+                        conn, consolidator=consolidator, current_slice=slice_id
+                    )
+            finally:
+                await delete_flow_sentinel_async(wid)
             failed = [
                 j for j in jobs
                 if j.get("job_id") and not j.get("success") and not j.get("skipped")

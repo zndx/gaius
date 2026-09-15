@@ -55,6 +55,23 @@ class DeepOntoNotAvailableError(Exception):
         super().__init__(msg)
 
 
+class ThincAbiError(Exception):
+    """spaCy/thinc wheel compiled against a different numpy ABI.
+
+    Guru Meditation: #THETA.00000012.THINCABI
+    """
+
+    def __init__(self, original_error: Exception | None = None):
+        self.original_error = original_error
+        super().__init__(
+            "DeepOnto/spaCy thinc was built against numpy 1; this venv has numpy 2.\n"
+            "  Guru Meditation: #THETA.00000012.THINCABI\n"
+            "  Fix: pin spacy>=3.8,<3.10 and thinc>=8.3,<8.4; uv lock && uv sync "
+            "(maintenance window — live engine venv).\n"
+            f"  Original: {original_error}"
+        )
+
+
 class OntologyValidationError(Exception):
     """Raised when generated ontology fails validation.
 
@@ -680,9 +697,11 @@ def validate_ontology(ontology_path: Path) -> OntologyValidationResult:
         import xml.etree.ElementTree as ET
         tree = ET.parse(str(ontology_path))
         root = tree.getroot()
-        # Check for RDF namespace
-        if not any("rdf" in ns.lower() for ns in root.attrib.values()):
-            issues.append("Missing RDF namespace in root element")
+        # ElementTree puts xmlns into the Clark notation on the tag and
+        # strips declarations from attrib — do not look at attrib values.
+        tag = root.tag or ""
+        if "rdf-syntax-ns" not in tag and not tag.endswith("}RDF") and not tag.endswith("}Ontology"):
+            issues.append("Missing RDF namespace in root tag")
     except ET.ParseError as e:
         issues.append(f"XML parse error: {e}")
         raise OntologyValidationError(
@@ -737,6 +756,9 @@ def validate_ontology(ontology_path: Path) -> OntologyValidationResult:
         logger.warning("DeepOnto validation skipped - not installed")
     except Exception as e:
         issues.append(f"DeepOnto load failed: {e}")
+        msg = f"{type(e).__module__}.{type(e).__name__}: {e}".lower()
+        if "thinc" in msg or "numpy" in msg or "_array_api" in msg or "multiarray" in msg:
+            raise ThincAbiError(original_error=e) from e
         raise OntologyValidationError(
             ontology_path=ontology_path,
             validation_stage="deeponto_load",

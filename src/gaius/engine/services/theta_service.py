@@ -23,12 +23,17 @@ Guru Meditation Codes:
 - #THETA.00000002.STARTFAIL - ThetaService failed to start
 - #THETA.00000003.INITFAIL - ThetaAgent initialization failed
 - #THETA.00000004.SITREPFAIL - SITREP generation failed
-- #THETA.00000005.CONSFAIL - Consolidation cycle failed
+- #THETA.00000005.ONTOLOGY_INVALID - OWL failed validation
+- #THETA.00000012.THINCABI - thinc/numpy ABI mismatch
+- #THETA.00000013.CONSFAIL - Consolidation cycle failed
 """
 
 import asyncio
+import json
 import logging
 import os
+import subprocess
+import sys
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -120,8 +125,10 @@ class ThetaService(BaseDaemon):
         self._running = False
         self._started_at: Optional[datetime] = None
 
-        # ThetaAgent is lazily initialized
+        # ThetaAgent is lazily initialized (sitrep). Consolidation runs in
+        # theta_worker (light-leaf GPU + JVM), not on the engine event loop.
         self._agent: Optional[Any] = None  # Type: ThetaAgent
+        self._worker: subprocess.Popen | None = None
 
         # Statistics
         self._sitrep_count = 0
@@ -295,7 +302,6 @@ class ThetaService(BaseDaemon):
         from gaius.agents.theta.consolidation import get_week_slice_id
         from gaius.engine.services.theta_cycle import NOTHOUGHTS, NOENCODE
 
-        agent = self._get_agent()
         slice_id = temporal_slice or get_week_slice_id()
 
         try:
@@ -307,43 +313,34 @@ class ThetaService(BaseDaemon):
                     "error": f"{NOTHOUGHTS} no cognition_thoughts in {slice_id}",
                     "guru_code": NOTHOUGHTS,
                 }
-            try:
-                centroid = await self._encode_centroid(thoughts)
-            except Exception as e:
-                logger.exception("%s encode %s", NOENCODE, slice_id)
-                return {
-                    "success": False,
+            payload = {
+                "method": "consolidate",
+                "params": {
                     "slice_id": slice_id,
-                    "error": f"{NOENCODE} {e}",
-                    "guru_code": NOENCODE,
-                }
-            result = await agent.run_consolidation(
-                temporal_slice=slice_id,
-                max_candidates=max_candidates or self.config.default_max_candidates,
-                centroid=centroid,
-                documents=thoughts,
-            )
-
+                    "thoughts": thoughts,
+                    "max_candidates": max_candidates or self.config.default_max_candidates,
+                },
+            }
+            raw = await asyncio.to_thread(self._worker_rpc, payload)
+            if raw.get("error"):
+                err = raw["error"]
+                msg = err.get("message") if isinstance(err, dict) else str(err)
+                raise RuntimeError(msg)
+            result = raw.get("result") or {}
             self._consolidation_count += 1
             self._last_consolidation_at = datetime.now()
-
-            return {
-                "success": result.error is None,
-                "slice_id": result.slice_id,
-                "signal": result.signal.to_dict() if result.signal else None,
-                "candidates_evaluated": result.candidates_evaluated,
-                "candidates_selected": result.candidates_selected,
-                "documents_augmented": result.documents_augmented,
-                "effectiveness": result.effectiveness,
-                "error": result.error,
-            }
+            if result.get("error") and str(result["error"]).startswith("#THETA.00000010"):
+                result["guru_code"] = NOENCODE
+            return result
         except Exception as e:
             error_msg = str(e)
-            guru_code = "#THETA.00000005.CONSFAIL"
-
-            # Check for specific DeepOnto error
-            if "DEEPONTO_UNAVAILABLE" in error_msg or "DeepOntoNotAvailableError" in type(e).__name__:
+            guru_code = "#THETA.00000013.CONSFAIL"
+            if "THINCABI" in error_msg or type(e).__name__ == "ThincAbiError":
+                guru_code = "#THETA.00000012.THINCABI"
+            elif "DEEPONTO_UNAVAILABLE" in error_msg or "DeepOntoNotAvailableError" in type(e).__name__:
                 guru_code = "#THETA.00000001.DEEPONTO"
+            elif "ONTOLOGY_INVALID" in error_msg:
+                guru_code = "#THETA.00000005.ONTOLOGY_INVALID"
 
             logger.exception(f"[{guru_code}] Consolidation failed: {e}")
             return {
@@ -369,6 +366,42 @@ class ThetaService(BaseDaemon):
                 slice_id,
             )
         return [dict(r) for r in rows]
+
+    def _ensure_worker(self) -> None:
+        if self._worker is not None and self._worker.poll() is None:
+            return
+        env = os.environ.copy()
+        env.setdefault("CUDA_VISIBLE_DEVICES", "4")
+        env.setdefault("HF_HOME", os.environ.get("HF_HOME", "/raid/cache/huggingface"))
+        env.pop("HF_HUB_CACHE", None)
+        self._worker = subprocess.Popen(
+            [sys.executable, "-m", "gaius.engine.services.theta_worker"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=env,
+            text=True,
+            bufsize=1,
+        )
+        logger.info("theta_worker pid=%s gpu=%s", self._worker.pid, env.get("CUDA_VISIBLE_DEVICES"))
+
+    def _worker_rpc(self, cmd: dict[str, Any], timeout: float = 1800.0) -> dict[str, Any]:
+        self._ensure_worker()
+        assert self._worker is not None
+        assert self._worker.stdin is not None
+        assert self._worker.stdout is not None
+        self._worker.stdin.write(json.dumps(cmd, default=str) + "\n")
+        self._worker.stdin.flush()
+        import select
+
+        r, _, _ = select.select([self._worker.stdout], [], [], timeout)
+        if not r:
+            raise TimeoutError("theta_worker RPC timed out")
+        line = self._worker.stdout.readline()
+        if not line:
+            err = (self._worker.stderr.read() if self._worker.stderr else "") or "worker died"
+            raise RuntimeError(err[:2000])
+        return json.loads(line)
 
     async def _encode_centroid(self, thoughts: list[dict[str, Any]]) -> Any:
         """Mean embedding of thought title+content. Fail closed (no zero vector)."""

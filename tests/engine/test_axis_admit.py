@@ -43,21 +43,6 @@ def test_buffer_search_finds_full_text() -> None:
     asyncio.run(_run())
 
 
-def test_remainder_spans_none_and_ambiguous_not_overlap() -> None:
-    from gaius.engine.services.axis_admit import remainder_spans
-    from gaius.flows.prospects.windows import TokenWindow
-
-    windows = [
-        TokenWindow(0, 10, "a", admitted=True, reason="admitted", margin=0.9),
-        TokenWindow(10, 20, "b", admitted=False, reason="none", margin=0.01),
-        TokenWindow(20, 30, "c", admitted=False, reason="ambiguous", margin=0.4),
-        TokenWindow(30, 40, "d", admitted=False, reason="overlap", margin=0.8),
-    ]
-    spans = remainder_spans("abcdefghij" * 5, entry_id="e1", axis="ambient", windows=windows)
-    assert {s["reason"] for s in spans} == {"none", "ambiguous"}
-    assert all(s["axis"] == "ambient" for s in spans)
-
-
 def test_unique_topic_ambiguous_two_above() -> None:
     tau = SdgAperture.load().tau
     code, _, reason = unique_topic(

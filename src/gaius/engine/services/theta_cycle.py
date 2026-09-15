@@ -20,7 +20,7 @@ from gaius.agents.theta.consolidation import get_week_slice_id
 
 logger = logging.getLogger(__name__)
 
-GURU = "#THETA.00000005.CONSFAIL"
+GURU = "#THETA.00000013.CONSFAIL"
 STALE = "#THETA.00000008.STALESLICE"
 NOTHOUGHTS = "#THETA.00000009.NOTHOUGHTS"
 NOENCODE = "#THETA.00000010.NOENCODE"
@@ -40,7 +40,7 @@ async def supersede_stale(conn: Any, current_slice: str) -> int:
             """
             WITH u AS (
                 UPDATE theta_consolidation_runs
-                   SET status = 'failed',
+                   SET status = 'superseded',
                        completed_at = NOW(),
                        error = $2
                  WHERE status = 'scheduled'

@@ -11,7 +11,11 @@ requires-python = "~=3.12.0"  # Pin to 3.12.x (giotto-tda not available for 3.13
 dependencies = [
     "asyncpg>=0.31.0",
     "behave>=1.3.3",
-    "deeponto>=0.9.0", # Ontology verbalization (fastembed replaces colnomic, no peft conflict)
+    "deeponto>=0.9.0,<1", # Ontology verbalization (fastembed replaces colnomic, no peft conflict)
+    # DeepOnto pulls spaCy; 3.7.5 pins thinc<8.3 which is a numpy-1 wheel.
+    # Lock 08-31 drifted to numpy 2.2.6 → #THETA.00000012.THINCABI.
+    "spacy>=3.8,<3.10",
+    "thinc>=8.3,<8.4",
     "docling>=2.63.0",
     "einops>=0.8.1",
     "h5py>=3.11",  # HDF5 Iceberg tier1 writer/probe (hdf5_iceberg.signal_layout); required for the tier settle
@@ -153,7 +157,9 @@ optimization = [
 ]
 # Ontology processing (DeepOnto)
 ontology = [
-    "deeponto>=0.9.0",
+    "deeponto>=0.9.0,<1",
+    "spacy>=3.8,<3.10",
+    "thinc>=8.3,<8.4",
 ]
 # Evaluation (frontier model judging)
 eval = [

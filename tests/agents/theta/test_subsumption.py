@@ -113,6 +113,24 @@ class TestOntologyValidationResult:
         assert result.concept_count == 42
         assert "file_existence" in result.stages_passed
 
+    def test_rdf_namespace_on_clark_tag_not_attrib(self, tmp_path):
+        from gaius.agents.theta.subsumption import validate_ontology, OntologyValidationError
+
+        owl = tmp_path / "t.owl"
+        owl.write_text(
+            '<?xml version="1.0"?>\n'
+            '<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#" '
+            'xmlns:owl="http://www.w3.org/2002/07/owl#">'
+            "<owl:Ontology rdf:about=\"http://example.org/t\"/>"
+            "</rdf:RDF>\n",
+            encoding="utf-8",
+        )
+        try:
+            validate_ontology(owl)
+        except OntologyValidationError as e:
+            assert e.validation_stage != "xml_syntax"
+            assert not any("Missing RDF namespace" in i for i in e.issues)
+
     def test_result_to_dict(self):
         """Test serialization."""
         result = OntologyValidationResult(

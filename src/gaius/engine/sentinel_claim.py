@@ -365,6 +365,8 @@ _KIND_CLASS: dict[str, ResourceClass] = {
     # for ~1 h on 2026-09-04 — every admit failed at start; reverted.
     "clt-skos-admit": LIGHT,
     "clt_skos_admit": LIGHT,
+    "theta-cycle": LIGHT,
+    "theta_cycle": LIGHT,
 }
 
 
@@ -466,6 +468,8 @@ _KIND_PHASE: dict[str, str] = {
     "clt_skos_eval": "eval",
     "clt-skos-label": "label",
     "clt_skos_label": "label",
+    "theta-cycle": "theta",
+    "theta_cycle": "theta",
     "knowledge-summary": "summary",
     "knowledge_summary": "summary",
     "article-curation": "extract",

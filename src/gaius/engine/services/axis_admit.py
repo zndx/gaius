@@ -130,40 +130,6 @@ def admit_via_scan(
     )
 
 
-def remainder_windows(
-    text: str,
-    *,
-    aperture: SdgAperture,
-    maxsim: Callable[[str], tuple[str, float, str]] | None,
-    encode_offsets: OffsetFn | None = None,
-    stats: AdmitStats | None = None,
-) -> list[TokenWindow]:
-    """none/ambiguous ≤512 windows — Scratch, not Current."""
-    stats = stats or AdmitStats()
-
-    def _as_triple(chunk: str) -> tuple[str, float, str]:
-        if maxsim is None:
-            return "", 0.0, ""
-        code, score, reason = maxsim(chunk)
-        stats.scanned += 1
-        if reason == "admitted":
-            stats.admitted += 1
-        elif reason == "ambiguous":
-            stats.ambiguous += 1
-        else:
-            stats.none += 1
-        return code, score, reason
-
-    scan = scan_windows(
-        text,
-        size=aperture.colbert_token_limit,
-        maxsim=_as_triple if maxsim is not None else None,
-        tau=aperture.tau,
-        encode_offsets=encode_offsets,
-    )
-    return [w for w in scan.windows if w.reason in ("none", "ambiguous")]
-
-
 def prepare_axis_item(
     text: str,
     *,
@@ -266,47 +232,6 @@ def admitted_spans(
                 "topic": w.code,
                 "margin": w.margin,
                 "reason": w.reason or "admitted",
-                "content": content[w.start : w.end],
-            }
-        )
-    return out
-
-
-def remainder_spans(
-    content: str,
-    *,
-    entry_id: str = "",
-    axis: str = "",
-    aperture: SdgAperture | None = None,
-    maxsim: Callable[[str], tuple[str, float, str]] | None = None,
-    stats: AdmitStats | None = None,
-    encode_offsets: OffsetFn | None = None,
-    windows: list[TokenWindow] | None = None,
-) -> list[dict[str, Any]]:
-    """none/ambiguous windows for Scratch (not overlap drops)."""
-    if windows is None:
-        aperture = aperture or SdgAperture.load()
-        ms = maxsim or (lambda chunk: unique_maxsim(chunk, aperture=aperture))
-        windows = _scan_entry(
-            content,
-            aperture=aperture,
-            maxsim=ms,
-            stats=stats,
-            encode_offsets=encode_offsets,
-        )
-    out: list[dict[str, Any]] = []
-    for w in windows:
-        if w.reason not in ("none", "ambiguous"):
-            continue
-        out.append(
-            {
-                "axis": axis,
-                "entry_id": entry_id,
-                "start": w.start,
-                "end": w.end,
-                "topic": w.code,
-                "margin": w.margin,
-                "reason": w.reason,
                 "content": content[w.start : w.end],
             }
         )

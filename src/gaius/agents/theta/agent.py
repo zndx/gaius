@@ -60,6 +60,61 @@ from .kg_policy import KnowledgeGradientPolicy, BeliefState
 
 # Action link pattern for detecting in thoughts
 ACTION_LINK_PATTERN = re.compile(r'\[action:\w+\s*"[^"]+"\]')
+WIKILINK = re.compile(r"\[\[([^\]]+)\]\]")
+# SDG / SKOS local names (sdg_7, C_ENERGY, skos:Concept, …)
+CODE_TOKEN = re.compile(
+    r"\b(?:sdg[_-]?\d{1,2}|C_[A-Z][A-Z0-9_]+|skos:[A-Za-z]+|[A-Z]{3,}(?:_[A-Z0-9]+)*)\b"
+)
+
+
+def _pairs_from_thoughts(
+    documents: list[dict[str, Any]], *, limit: int
+) -> list[tuple[str, str]]:
+    """Concepts from domains, path stems, wikilinks, and aperture/SKOS codes.
+
+    Never the first word of a title — that injected (In, Can) into the KB.
+    """
+    from gaius.engine.services.sdg_aperture import SdgAperture
+
+    try:
+        anchors = SdgAperture.load().anchors
+    except Exception:
+        anchors = ()
+    hay: list[str] = []
+    concepts: set[str] = set()
+    for doc in documents:
+        for d in doc.get("domains") or []:
+            tok = str(d).strip()
+            if tok:
+                concepts.add(tok)
+        for path in doc.get("kb_paths") or []:
+            stem = Path(str(path)).stem
+            if stem and not stem.startswith("_") and len(stem) > 3:
+                concepts.add(stem)
+        content = str(doc.get("content") or "")
+        title = str(doc.get("title") or "")
+        blob = f"{title}\n{content}"
+        hay.append(blob.lower())
+        for link in WIKILINK.findall(content):
+            name = link.split("|")[0].strip()
+            if name:
+                concepts.add(name)
+        for code in CODE_TOKEN.findall(blob):
+            concepts.add(code)
+    blob_l = "\n".join(hay)
+    for a in anchors:
+        for key in (a.local_name, a.label):
+            k = (key or "").strip()
+            if len(k) >= 3 and k.lower() in blob_l:
+                concepts.add(a.local_name or k)
+    concepts = {c for c in concepts if len(c) > 2}
+    concept_list = sorted(concepts, key=len)
+    pairs: list[tuple[str, str]] = []
+    for i, subclass in enumerate(concept_list[: limit // 2]):
+        for superclass in concept_list[i + 1 : i + 4]:
+            if subclass != superclass:
+                pairs.append((subclass, superclass))
+    return pairs[:limit]
 
 import logging
 
@@ -778,8 +833,6 @@ class ThetaAgent:
                 logger.warning(result.error)
                 return result
 
-            result.candidates_evaluated = len(concept_pairs)
-
             # Step 4: Infer subsumptions using BERTSubs
             # The consolidation signal mediates depth (how many we evaluate)
             candidates = await self.subsumption.infer_subsumptions(
@@ -788,6 +841,7 @@ class ThetaAgent:
                 source_slice=slice_id,
                 target_slice=slice_id,
             )
+            result.candidates_evaluated = len(candidates)
 
             # Step 5: Apply KG policy to select candidates
             selected = self.kg_policy.select_candidates(
@@ -891,26 +945,7 @@ class ThetaAgent:
         """
         pairs = []
         if documents:
-            concepts: set[str] = set()
-            for doc in documents:
-                title = str(doc.get("title") or "")
-                if title:
-                    concepts.add(title.split()[0] if title.split() else title)
-                for d in doc.get("domains") or []:
-                    if d:
-                        concepts.add(str(d))
-                for path in doc.get("kb_paths") or []:
-                    stem = Path(str(path)).stem
-                    if stem and not stem.startswith("_"):
-                        concepts.add(stem)
-                content = str(doc.get("content") or "")
-                concepts.update(re.findall(r"\[\[([^\]]+)\]\]", content))
-            concept_list = sorted(concepts, key=len)
-            for i, subclass in enumerate(concept_list[: limit // 2]):
-                for superclass in concept_list[i + 1 : i + 4]:
-                    if subclass != superclass:
-                        pairs.append((subclass, superclass))
-            return pairs[:limit]
+            return _pairs_from_thoughts(documents, limit=limit)
 
         try:
             from ..mcp_client import call_mcp_tool

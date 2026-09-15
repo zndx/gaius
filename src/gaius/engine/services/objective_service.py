@@ -483,30 +483,35 @@ class ObjectiveService:
             return gates
         err = str(row["error"] or "")
         completed = row["status"] == "completed"
-        within = bool(row["completed_at"])  # horizon checked by cadence of verify
-        encode_ok = completed or not err.startswith("#THETA.00000009") and not err.startswith("#THETA.00000010")
-        if err.startswith("#THETA.00000009") or err.startswith("#THETA.00000010"):
-            encode_ok = False
-        elif completed:
-            encode_ok = True
+        from datetime import datetime, timezone, timedelta
+
+        finished = row["completed_at"]
+        within = False
+        if finished is not None:
+            now = datetime.now(timezone.utc)
+            ts = finished if finished.tzinfo else finished.replace(tzinfo=timezone.utc)
+            within = (now - ts) <= timedelta(hours=hours)
+        encode_fail = err.startswith("#THETA.00000009") or err.startswith("#THETA.00000010")
+        bertsubs_fail = (
+            "ONTOLOGY_INVALID" in err
+            or "THINCABI" in err
+            or "DEEPONTO" in err
+            or "deeponto" in err.lower()
+        )
         gate(
             "encode",
-            encode_ok and (completed or not err.startswith("#THETA.00000008")),
-            err or f"status={row['status']} slice={slice_id} horizon={hours}h",
+            (completed or not encode_fail) and within if completed else not encode_fail,
+            err or f"status={row['status']} slice={slice_id} within_horizon={within}",
         )
-        gate(
-            "nvar",
-            row["urgency"] is not None or completed,
-            f"urgency={row['urgency']}",
-        )
+        gate("nvar", row["urgency"] is not None or completed, f"urgency={row['urgency']}")
         gate(
             "subsumption",
-            int(row["candidates_evaluated"] or 0) > 0,
-            f"candidates_evaluated={row['candidates_evaluated']}",
+            completed and int(row["candidates_evaluated"] or 0) > 0 and not bertsubs_fail,
+            f"candidates_evaluated={row['candidates_evaluated']} bertsubs_fail={bertsubs_fail}",
         )
         gate(
             "kg",
-            completed and int(row["candidates_evaluated"] or 0) > 0,
+            completed and int(row["candidates_selected"] or 0) >= 0 and not bertsubs_fail,
             f"candidates_selected={row['candidates_selected']}",
         )
         gate(
@@ -514,8 +519,16 @@ class ObjectiveService:
             int(row["documents_augmented"] or 0) > 0,
             f"documents_augmented={row['documents_augmented']}",
         )
-        # Intent: Overwatch judges a non-null effectiveness delta.
-        delta = None
+        if int(row["documents_augmented"] or 0) <= 0:
+            gates.append(
+                {
+                    "gate": "effectiveness",
+                    "verdict": "fail",
+                    "authority": "overwatch-grok",
+                    "evidence": "no augmented documents; Overwatch not consulted",
+                }
+            )
+            return gates
         try:
             from gaius.engine.services.overwatch_judge import get_judge
 

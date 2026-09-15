@@ -89,6 +89,26 @@ def test_catalog_theta_cycle_is_monday_airflow_task() -> None:
     assert not e.pg_cron_active
 
 
+def test_pairs_from_thoughts_skip_title_first_word() -> None:
+    from gaius.agents.theta.agent import _pairs_from_thoughts
+
+    docs = [
+        {
+            "title": "In Search of Long Data",
+            "content": "See [[energy-systems]] and sdg_7 in the note.",
+            "domains": ["ENERGY"],
+            "kb_paths": ["current/topics/kudu-spill.md"],
+        }
+    ]
+    pairs = _pairs_from_thoughts(docs, limit=20)
+    flat = {a for p in pairs for a in p}
+    assert "In" not in flat
+    assert "Can" not in flat
+    assert "ENERGY" in flat
+    assert "energy-systems" in flat or "kudu-spill" in flat
+    assert any("sdg_7" in (a, b) for a, b in pairs) or "sdg_7" in flat
+
+
 def test_theta_cycle_objective_is_declared() -> None:
     from gaius.engine.services.objective_service import OBJECTIVES
 
