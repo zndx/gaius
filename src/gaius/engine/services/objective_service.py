@@ -234,9 +234,11 @@ OBJECTIVES: dict[str, ObjectiveSpec] = {
         dag=("theta_cycle",),
         cadence=timedelta(hours=5),
         description=(
-            "Mechanics: the current ISO-week consolidation row completed "
-            "within the 5 h horizon. Intent: documents augmented with a "
-            "non-null effectiveness delta, judged by Overwatch."
+            "Mechanics: previous ISO-week cognition_thoughts encoded; "
+            "CLT incidence yields SKOS-grounded OWL class pairs; "
+            "BERTSubs Intra scores ⊑ on the HermiT-certified TBox. "
+            "Intent: documents augmented with a non-null effectiveness "
+            "delta, judged by Overwatch."
         ),
         verifier="verify_theta_cycle",
         params={"horizon_hours": 5},

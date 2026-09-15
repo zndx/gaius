@@ -1,7 +1,8 @@
-"""ThetaCycleFlow — NVAR → BERTSubs → KG on Kubernetes (platform Metaflow).
+"""ThetaCycleFlow — encode thoughts, CLT incidence, BERTSubs Intra on the TBox.
 
 Airflow DAG ``gaius_theta_cycle`` (Monday 06:00). The engine owns the queue
-and EmbedTexts; this child never constructs ThetaService.
+and EmbedTexts; this child never constructs ThetaService. The TBox is the
+HermiT-certified SDG OWL. SKOS names it. CLT links the corpus.
 
     uv run python -m gaius.flows.theta.cycle run
 """
@@ -124,12 +125,19 @@ class ThetaCycleFlow(GaiusFlow):
 
         if getattr(self, "centroid", None) is not None:
             try:
+                from gaius.agents.theta.clt_incidence import load_owl_pairs_for_slice
+
+                owl_pairs = asyncio.run(
+                    load_owl_pairs_for_slice(self.dsn, self.week)
+                )
+                print(f"theta.cycle.infer clt_pairs={len(owl_pairs)}")
                 agent = ThetaAgent(kb_root=self.kb_root)
                 result = asyncio.run(
                     agent.run_consolidation(
                         temporal_slice=self.week,
                         centroid=self.centroid,
                         documents=self.thoughts,
+                        owl_pairs=owl_pairs,
                     )
                 )
                 err = result.error

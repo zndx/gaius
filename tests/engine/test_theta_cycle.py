@@ -111,44 +111,39 @@ def test_flow_is_platform_vessel() -> None:
     assert isinstance(vars(GaiusFlow)["kb_root"], property)
 
 
-def test_pairs_from_thoughts_skip_title_first_word() -> None:
-    from gaius.agents.theta.agent import _pairs_from_thoughts
+def test_clt_incidence_pairs_are_owl_iris_not_thought_tokens() -> None:
+    from gaius.agents.theta.clt_incidence import owl_pairs_from_feature_codes
 
-    docs = [
-        {
-            "title": "In Search of Long Data",
-            "content": "See [[energy-systems]] and sdg_7 in the note.",
-            "domains": ["ENERGY"],
-            "kb_paths": ["current/topics/kudu-spill.md"],
-        }
+    iris = {
+        "C_ENERGY": "https://signals.zndx.org/sdg#Energy",
+        "sdg_7": "https://signals.zndx.org/sdg#AffordableAndCleanEnergy",
+    }
+
+    def resolve(code: str) -> str | None:
+        return iris.get(code)
+
+    pairs = owl_pairs_from_feature_codes(
+        {(3, 12): {"C_ENERGY", "sdg_7", "not-grounded"}},
+        resolve,
+        limit=10,
+    )
+    assert pairs == [
+        (
+            "https://signals.zndx.org/sdg#AffordableAndCleanEnergy",
+            "https://signals.zndx.org/sdg#Energy",
+        )
     ]
-    pairs = _pairs_from_thoughts(docs, limit=20)
     flat = {a for p in pairs for a in p}
     assert "In" not in flat
-    assert "Can" not in flat
-    assert "ENERGY" in flat
-    assert "energy-systems" in flat or "kudu-spill" in flat
-    assert any("sdg_7" in (a, b) for a, b in pairs) or "sdg_7" in flat
+    assert "not-grounded" not in flat
 
 
-def test_ontology_from_thought_concepts_skips_kb_markdown(tmp_path) -> None:
-    from gaius.agents.theta.subsumption import generate_ontology_from_kb
+def test_certified_tbox_is_sdg_ontology() -> None:
+    from gaius.agents.theta.tbox import CERTIFIED_OWL, certified_ontology_path
 
-    kb = tmp_path / "kb"
-    (kb / "current").mkdir(parents=True)
-    (kb / "current" / "dump.md").write_text("# ShouldNotAppear\n")
-    out = tmp_path / "onto.owl"
-    generate_ontology_from_kb(
-        kb_root=kb,
-        output_path=out,
-        slice_id="2026-W37",
-        validate=False,
-        concepts={"ENERGY", "sdg_7"},
-    )
-    text = out.read_text()
-    assert "ENERGY" in text
-    assert "sdg_7" in text or "sdg7" in text or "C_sdg_7" in text
-    assert "ShouldNotAppear" not in text
+    assert CERTIFIED_OWL.name == "sdg-ontology.owl"
+    if CERTIFIED_OWL.is_file():
+        assert certified_ontology_path() == CERTIFIED_OWL
 
 
 def test_theta_cycle_objective_is_declared() -> None:
@@ -158,3 +153,7 @@ def test_theta_cycle_objective_is_declared() -> None:
     assert spec.verifier == "verify_theta_cycle"
     assert spec.dag == ("theta_cycle",)
     assert spec.params["horizon_hours"] == 5
+    blob = spec.description.lower()
+    assert "hermit" in blob
+    assert "clt" in blob
+    assert "skos" in blob

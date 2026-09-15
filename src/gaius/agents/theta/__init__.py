@@ -37,7 +37,6 @@ from .subsumption import (
     DeepOntoNotAvailableError,
     OntologyValidationError,
     OntologyValidationResult,
-    generate_ontology_from_kb,
     validate_ontology,
 )
 from .augmentation import (
@@ -82,7 +81,6 @@ __all__ = [
     "DeepOntoNotAvailableError",
     "OntologyValidationError",
     "OntologyValidationResult",
-    "generate_ontology_from_kb",
     "validate_ontology",
     "inject_wikilinks",
     "inject_action_links",

@@ -9,7 +9,8 @@ situational awareness. It synthesizes:
 
 Phase 2 adds NVAR-mediated consolidation:
 - ThetaDynamics for temporal embedding centroids
-- BERTSubs for subsumption inference
+- CLT incidence → SKOS-grounded OWL pairs
+- BERTSubs Intra on the HermiT-certified TBox
 - KB augmentation with wikilinks and action links
 - SHAP effectiveness measurement
 - Knowledge Gradient policy for economic justification
@@ -48,77 +49,13 @@ from .subsumption import (
     SubsumptionInferencer,
     SubsumptionCandidate,
     DeepOntoNotAvailableError,
-    OntologyValidationError,
-    OntologyValidationResult,
-    generate_ontology_from_kb,
-    validate_ontology,
 )
 from .augmentation import inject_mixed, AugmentationResult, has_augmentation
 from .effectiveness import EffectivenessTracker, compute_augmentation_contribution
 from .kg_policy import KnowledgeGradientPolicy, BeliefState
 
 
-# Action link pattern for detecting in thoughts
 ACTION_LINK_PATTERN = re.compile(r'\[action:\w+\s*"[^"]+"\]')
-WIKILINK = re.compile(r"\[\[([^\]]+)\]\]")
-# SDG / SKOS local names (sdg_7, C_ENERGY, skos:Concept, …)
-CODE_TOKEN = re.compile(
-    r"\b(?:sdg[_-]?\d{1,2}|C_[A-Z][A-Z0-9_]+|skos:[A-Za-z]+|[A-Z]{3,}(?:_[A-Z0-9]+)*)\b"
-)
-
-
-def _concepts_from_thoughts(documents: list[dict[str, Any]]) -> set[str]:
-    """Concepts from domains, path stems, wikilinks, and aperture/SKOS codes.
-
-    Never the first word of a title — that injected (In, Can) into the KB.
-    """
-    from gaius.engine.services.sdg_aperture import SdgAperture
-
-    try:
-        anchors = SdgAperture.load().anchors
-    except Exception:
-        anchors = ()
-    hay: list[str] = []
-    concepts: set[str] = set()
-    for doc in documents:
-        for d in doc.get("domains") or []:
-            tok = str(d).strip()
-            if tok:
-                concepts.add(tok)
-        for path in doc.get("kb_paths") or []:
-            stem = Path(str(path)).stem
-            if stem and not stem.startswith("_") and len(stem) > 3:
-                concepts.add(stem)
-        content = str(doc.get("content") or "")
-        title = str(doc.get("title") or "")
-        blob = f"{title}\n{content}"
-        hay.append(blob.lower())
-        for link in WIKILINK.findall(content):
-            name = link.split("|")[0].strip()
-            if name:
-                concepts.add(name)
-        for code in CODE_TOKEN.findall(blob):
-            concepts.add(code)
-    blob_l = "\n".join(hay)
-    for a in anchors:
-        for key in (a.local_name, a.label):
-            k = (key or "").strip()
-            if len(k) >= 3 and k.lower() in blob_l:
-                concepts.add(a.local_name or k)
-    return {c for c in concepts if len(c) > 2}
-
-
-def _pairs_from_thoughts(
-    documents: list[dict[str, Any]], *, limit: int
-) -> list[tuple[str, str]]:
-    """Concept pairs from cognition_thoughts — not a KB markdown dump."""
-    concept_list = sorted(_concepts_from_thoughts(documents), key=len)
-    pairs: list[tuple[str, str]] = []
-    for i, subclass in enumerate(concept_list[: limit // 2]):
-        for superclass in concept_list[i + 1 : i + 4]:
-            if subclass != superclass:
-                pairs.append((subclass, superclass))
-    return pairs[:limit]
 
 import logging
 
@@ -196,16 +133,7 @@ class ThetaAgent:
 
         # Phase 2: Consolidation components
         self.dynamics = ThetaDynamics(k=4, polynomial_order=2, drift_scale=1.0)
-
-        # Generate domain ontology from KB for BERTSubs
-        # Ontology is cached in .cache/ontology/ and regenerated per temporal slice
-        self._ontology_cache_dir = self.kb_root / ".cache" / "ontology"
-        self._ontology_cache_dir.mkdir(parents=True, exist_ok=True)
-        self._current_ontology_path: Path | None = None
-
-        # SubsumptionInferencer is initialized lazily when ontology is generated
         self._subsumption: SubsumptionInferencer | None = None
-        self._last_validation: OntologyValidationResult | None = None
         self.confidence_threshold = 0.8
 
         self.kg_policy = KnowledgeGradientPolicy(
@@ -217,70 +145,12 @@ class ThetaAgent:
         # Register action handlers
         self._register_action_handlers()
 
-    def get_subsumption_inferencer(
-        self,
-        slice_id: str | None = None,
-        documents: list[dict[str, Any]] | None = None,
-    ) -> SubsumptionInferencer:
-        """Get SubsumptionInferencer, generating ontology if needed.
-
-        Consolidation passes ``cognition_thoughts`` as ``documents`` — the OWL
-        classes are those labels, not a walk of ``current/`` + ``scratch/``.
-        Sitrep without thoughts still falls back to the markdown walk.
-
-        Args:
-            slice_id: Temporal slice to generate ontology from (e.g., "2026-W37")
-            documents: Thought rows for the slice (Theta diet).
-
-        Returns:
-            SubsumptionInferencer initialized with domain ontology
-
-        Raises:
-            DeepOntoNotAvailableError: If DeepOnto/owlready2 not available
-            OntologyValidationError: If generated ontology fails validation
-        """
-        ontology_filename = f"kb_{slice_id or 'current'}.owl"
-        ontology_path = self._ontology_cache_dir / ontology_filename
-        thought_concepts = (
-            _concepts_from_thoughts(documents) if documents is not None else None
-        )
-
-        # Thoughts are the diet: never reuse a cached KB-dump OWL for them.
-        if (
-            thought_concepts is not None
-            or not ontology_path.exists()
-            or self._current_ontology_path != ontology_path
-        ):
-            logger.info(f"Generating ontology for slice: {slice_id or 'current'}")
-
-            path, validation_result = generate_ontology_from_kb(
-                kb_root=self.kb_root,
-                output_path=ontology_path,
-                slice_id=slice_id,
-                validate=True,
-                concepts=thought_concepts,
-            )
-
-            if validation_result:
-                logger.info(
-                    f"Ontology validated: {validation_result.concept_count} classes, "
-                    f"DeepOnto loaded: {validation_result.deeponto_loaded}, "
-                    f"stages: {validation_result.stages_passed}"
-                )
-                self._last_validation = validation_result
-            else:
-                logger.warning("Ontology generated without validation")
-
-            self._current_ontology_path = ontology_path
-            # Reinitialize inferencer with new ontology
-            self._subsumption = None
-
+    def get_subsumption_inferencer(self) -> SubsumptionInferencer:
+        """BERTSubs Intra on the HermiT-certified TBox. Never a minted OWL."""
         if self._subsumption is None:
             self._subsumption = SubsumptionInferencer(
-                ontology_path=ontology_path,
                 confidence_threshold=self.confidence_threshold,
             )
-
         return self._subsumption
 
     @property
@@ -774,6 +644,7 @@ class ThetaAgent:
         holdout_queries: list[str] | None = None,
         centroid: "np.ndarray | None" = None,
         documents: list[dict[str, Any]] | None = None,
+        owl_pairs: list[tuple[str, str]] | None = None,
     ) -> ConsolidationResult:
         """Run a consolidation cycle for a temporal slice.
 
@@ -833,22 +704,17 @@ class ThetaAgent:
                 urgency = signal.urgency
                 logger.info(f"Consolidation signal: urgency={urgency:.3f}, drift={signal.drift:.3f}")
 
-            # Step 3: Extract concept pairs from slice documents
-            concept_pairs = await self._extract_concept_pairs(
-                slice_id, limit=max_candidates * 2, documents=documents
-            )
+            concept_pairs = list(owl_pairs or ())
             if not concept_pairs:
+                from gaius.engine.services.theta_cycle import NOPAIRS
+
                 result.error = (
-                    f"#THETA.00000011.NOPAIRS no concept pairs in {slice_id}"
+                    f"{NOPAIRS} no CLT incidence with SKOS-grounded OWL terms in {slice_id}"
                 )
                 logger.warning(result.error)
                 return result
 
-            # Step 4: Infer subsumptions using BERTSubs
-            # The consolidation signal mediates depth (how many we evaluate)
-            candidates = await self.get_subsumption_inferencer(
-                slice_id, documents=documents
-            ).infer_subsumptions(
+            candidates = await self.get_subsumption_inferencer().infer_subsumptions(
                 candidates=concept_pairs,
                 consolidation_signal=urgency,
                 source_slice=slice_id,
@@ -935,74 +801,6 @@ class ThetaAgent:
             return len(thoughts)
         except Exception:
             return 0
-
-    async def _extract_concept_pairs(
-        self,
-        slice_id: str,
-        limit: int = 20,
-        documents: list[dict[str, Any]] | None = None,
-    ) -> list[tuple[str, str]]:
-        """Extract concept pairs from slice documents for subsumption inference.
-
-        Concept pairs are extracted from:
-        - KB document frontmatter (tags, categories)
-        - Wikilinks in document content
-        - Named entities extracted by NLP
-
-        Args:
-            slice_id: Temporal slice ID.
-            limit: Maximum pairs to extract.
-
-        Returns:
-            List of (subclass, superclass) candidate pairs.
-        """
-        pairs = []
-        if documents:
-            return _pairs_from_thoughts(documents, limit=limit)
-
-        try:
-            from ..mcp_client import call_mcp_tool
-
-            # Search KB for documents in this slice
-            result = await call_mcp_tool(
-                "search_kb",
-                {"query": f"slice:{slice_id}", "max_results": limit * 2},
-            )
-
-            if not isinstance(result, dict):
-                return pairs
-
-            entries = result.get("entries", [])
-
-            # Extract concepts from document paths and content
-            concepts = set()
-            for entry in entries:
-                path = entry.get("path", "")
-                content = entry.get("content", "")
-
-                # Extract from path (e.g., "current/topics/kudu.md" -> "kudu")
-                if "/" in path:
-                    topic = Path(path).stem
-                    if topic and not topic.startswith("_"):
-                        concepts.add(topic)
-
-                # Extract wikilinks [[concept]]
-                wikilinks = re.findall(r"\[\[([^\]]+)\]\]", content)
-                concepts.update(wikilinks)
-
-            # Generate candidate pairs (smaller concept -> larger concept by name length heuristic)
-            concept_list = sorted(concepts, key=len)
-            for i, subclass in enumerate(concept_list[: limit // 2]):
-                for superclass in concept_list[i + 1: i + 4]:  # Pair with 3 longer concepts
-                    if subclass != superclass:
-                        pairs.append((subclass, superclass))
-
-            logger.debug(f"Extracted {len(pairs)} concept pairs from slice {slice_id}")
-
-        except Exception as e:
-            logger.warning(f"Failed to extract concept pairs: {e}")
-
-        return pairs[:limit]
 
     async def _augment_documents(
         self,

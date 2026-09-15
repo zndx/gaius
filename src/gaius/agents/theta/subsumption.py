@@ -1,23 +1,11 @@
-"""BERTSubs integration for subsumption inference with DeepOnto.
+"""BERTSubs Intra on the HermiT-certified OWL TBox.
 
-Uses DeepOnto's BERTSubsIntraPipeline to infer subsumption relationships
-between concepts within an OWL ontology. For cross-temporal linking,
-we dynamically build a lightweight ontology from KB concepts.
+Candidate pairs are OWL class IRIs from CLT incidence (SKOS-grounded).
+This module does not mint owl:Class from thoughts or markdown.
 
 ACADEMIC IMPLEMENTATION (Chen et al. 2023 - BERTSubs):
-BERTSubs reformulates subsumption (A ⊑ B) as an NLI problem:
-- Premise: Verbalization of concept A
-- Hypothesis: Subsumption claim "A is a type of B"
-- Entailment score → subsumption confidence
-
-The pipeline requires:
-1. An OWL Ontology object (can be minimal/dynamic)
-2. A YACS config specifying model and parameters
-3. Pre-trained BERT classifier for NLI-style classification
-
-References:
-- Chen et al. 2023 - BERTSubs: Ontology Subsumption Prediction
-- DeepOnto: https://github.com/KRR-Oxford/DeepOnto
+BERTSubs reformulates subsumption (A ⊑ B) as an NLI problem.
+The pipeline requires the certified TBox, not a generated sibling list.
 """
 
 import os
@@ -73,7 +61,7 @@ class ThincAbiError(Exception):
 
 
 class OntologyValidationError(Exception):
-    """Raised when generated ontology fails validation.
+    """Raised when the certified TBox fails validation.
 
     Guru Meditation: #THETA.00000005.ONTOLOGY_INVALID
     """
@@ -101,10 +89,8 @@ class OntologyValidationError(Exception):
         if original_error:
             msg += f"  Original error: {original_error}\n"
         msg += (
-            f"  Remediation:\n"
-            f"    1. Check KB content for malformed markdown\n"
-            f"    2. Verify concept names don't contain reserved XML characters\n"
-            f"    3. Regenerate with: /consolidate --regenerate-ontology\n"
+            "  Remediation: load the HermiT-certified sdg-ontology.owl. "
+            "Do not mint owl:Class from thoughts or markdown.\n"
         )
         super().__init__(msg)
 
@@ -352,21 +338,10 @@ def _patch_transformers_training_args() -> None:
 
 
 class SubsumptionInferencer:
-    """BERTSubs-based subsumption inference using DeepOnto.
-
-    ACADEMIC IMPLEMENTATION (Chen et al. 2023):
-    Uses DeepOnto's BERTSubsIntraPipeline with a domain ontology to predict
-    subsumption relationships. The pipeline:
-    1. Loads an OWL ontology defining the concept hierarchy
-    2. Uses BERT-based NLI to score subsumption hypotheses
-    3. Returns confidence scores for concept pairs
-
-    This is NOT a simplified NLI wrapper - it requires a real OWL ontology
-    and uses DeepOnto's full BERTSubs pipeline for academically rigorous
-    subsumption inference.
+    """BERTSubs Intra on the HermiT-certified TBox.
 
     Args:
-        ontology_path: Path to OWL ontology file (required)
+        ontology_path: OWL file. Default is certified_ontology_path().
         confidence_threshold: Minimum confidence for accepting subsumption
         bert_checkpoint: HuggingFace checkpoint for BERT classifier
         max_length: Maximum sequence length for BERT
@@ -374,12 +349,16 @@ class SubsumptionInferencer:
 
     def __init__(
         self,
-        ontology_path: str | Path,
+        ontology_path: str | Path | None = None,
         confidence_threshold: float = 0.8,
         bert_checkpoint: str = "bert-base-uncased",
         max_length: int = 128,
     ):
-        self.ontology_path = Path(ontology_path)
+        from gaius.agents.theta.tbox import certified_ontology_path
+
+        self.ontology_path = (
+            Path(ontology_path) if ontology_path is not None else certified_ontology_path()
+        )
         self.confidence_threshold = confidence_threshold
         self.bert_checkpoint = bert_checkpoint
         self.max_length = max_length
@@ -525,14 +504,11 @@ class SubsumptionInferencer:
                 self._pipeline = BERTSubsIntraPipeline(ontology, config)
                 logger.info(f"Initialized BERTSubsIntraPipeline with {self.bert_checkpoint}")
             except ZeroDivisionError as e:
-                # Intra pipeline extracts train subsumptions from the OWL.
-                # A thought-label OWL is a flat Thing-list — 0 axioms, 0/0.
                 raise OntologyValidationError(
                     ontology_path=self.ontology_path,
                     validation_stage="bertsubs_intra",
                     issues=[
-                        "BERTSubsIntraPipeline needs subsumption axioms; "
-                        "thought labels are a flat Thing-list"
+                        "BERTSubsIntraPipeline found no subsumption axioms in the TBox"
                     ],
                     original_error=e,
                 ) from e
@@ -574,19 +550,12 @@ class SubsumptionInferencer:
         subsumption_pair = [[subclass, superclass]]
 
         try:
-            # Use score() for single prediction
             scores = pipeline.score(subsumption_pair)
             confidence = float(scores[0]) if scores else 0.0
         except Exception as e:
-            logger.warning(f"BERTSubs.score failed: {e}")
-            # Try predict() as fallback
-            try:
-                predictions = pipeline.predict(subsumption_pair)
-                confidence = float(predictions[0]) if predictions else 0.0
-            except Exception as e2:
-                raise DeepOntoNotAvailableError(
-                    f"BERTSubs.score/predict({subclass}, {superclass})", e2
-                )
+            raise DeepOntoNotAvailableError(
+                f"BERTSubs.score({subclass}, {superclass})", e
+            ) from e
 
         # Create verbalization
         verbalization = f"{subclass} is a type of {superclass}"
@@ -676,8 +645,8 @@ def validate_ontology(ontology_path: Path) -> OntologyValidationResult:
     4. DeepOnto loading (full reasoning capability)
     5. Class extraction verification
 
-    This is the "logical feedback loop" ensuring generated ontologies
-    are syntactically correct and loadable by DeepOnto for BERTSubs.
+    Ensures the certified TBox is syntactically correct and loadable
+    by DeepOnto for BERTSubs Intra.
 
     Args:
         ontology_path: Path to OWL file to validate
@@ -763,13 +732,7 @@ def validate_ontology(ontology_path: Path) -> OntologyValidationResult:
         )
         result.deeponto_loaded = True
     except ImportError as e:
-        import importlib.util
-
-        # Package present but a dep is missing (typer hole) is not "not installed".
-        if importlib.util.find_spec("deeponto") is not None:
-            raise DeepOntoNotAvailableError("Ontology", e) from e
-        issues.append(f"DeepOnto not available for validation: {e}")
-        logger.warning("DeepOnto validation skipped - not installed")
+        raise DeepOntoNotAvailableError("Ontology", e) from e
     except Exception as e:
         issues.append(f"DeepOnto load failed: {e}")
         msg = f"{type(e).__module__}.{type(e).__name__}: {e}".lower()
@@ -797,11 +760,8 @@ def validate_ontology(ontology_path: Path) -> OntologyValidationResult:
         issues.append(f"Class IRI verification failed: {e}")
     result.stages_passed.append("class_verification")
 
-    # Final verdict
     result.issues = issues
-    result.valid = len(issues) == 0 or (
-        len(issues) == 1 and "DeepOnto not available" in issues[0]
-    )
+    result.valid = len(issues) == 0
 
     if result.valid:
         logger.info(
@@ -814,162 +774,4 @@ def validate_ontology(ontology_path: Path) -> OntologyValidationResult:
     return result
 
 
-def generate_ontology_from_kb(
-    kb_root: Path,
-    output_path: Path,
-    slice_id: str | None = None,
-    namespace: str = "http://gaius.local/ontology#",
-    validate: bool = True,
-    concepts: set[str] | None = None,
-) -> tuple[Path, OntologyValidationResult | None]:
-    """Generate OWL ontology from thought labels or KB markdown.
 
-    ``concepts`` is the Theta diet (cognition_thoughts). The markdown walk of
-    ``scratch/{slice}`` or ``current/`` + ``scratch/`` is sitrep fallback only.
-
-    Args:
-        kb_root: Root of KB directory
-        output_path: Where to write the OWL file
-        slice_id: Optional temporal slice to extract from (e.g., "2026-W37")
-        namespace: OWL namespace for generated concepts
-        validate: Whether to run validation after generation (default: True)
-        concepts: Pre-extracted labels. When not None, skip the markdown walk.
-
-    Returns:
-        Tuple of (path to generated ontology, validation result or None)
-
-    Raises:
-        DeepOntoNotAvailableError: If owlready2 is not available
-        OntologyValidationError: If validation fails and validate=True
-    """
-    try:
-        from owlready2 import get_ontology, Thing, default_world
-    except ImportError as e:
-        raise DeepOntoNotAvailableError("owlready2", e)
-
-    # Clear any cached ontology with same namespace
-    default_world.ontologies.clear()
-
-    # Create new ontology
-    onto = get_ontology(namespace)
-
-    if concepts is None:
-        concepts = set()
-        if slice_id:
-            slice_dir = kb_root / "scratch" / slice_id
-            if slice_dir.exists():
-                for md_file in slice_dir.glob("**/*.md"):
-                    concepts.update(_extract_concepts_from_markdown(md_file))
-        else:
-            current_dir = kb_root / "current"
-            if current_dir.exists():
-                for md_file in current_dir.glob("**/*.md"):
-                    concepts.update(_extract_concepts_from_markdown(md_file))
-            scratch_dir = kb_root / "scratch"
-            if scratch_dir.exists():
-                for md_file in scratch_dir.glob("**/*.md"):
-                    concepts.update(_extract_concepts_from_markdown(md_file))
-    else:
-        concepts = {c for c in concepts if c and str(c).strip()}
-
-    if not concepts:
-        logger.warning(f"No concepts extracted from KB at {kb_root}")
-
-    # Create OWL classes for each concept
-    created_classes = []
-    with onto:
-        for concept in concepts:
-            # Create class with sanitized name
-            class_name = _sanitize_owl_name(concept)
-            if class_name:
-                try:
-                    # Create new class dynamically
-                    new_class = type(class_name, (Thing,), {})
-                    # Add label annotation (owlready2 Thing expects 'label' property)
-                    setattr(new_class, "label", [concept])
-                    created_classes.append(class_name)
-                except Exception as e:
-                    logger.warning(f"Failed to create class '{class_name}': {e}")
-
-    # Save ontology
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    onto.save(file=str(output_path), format="rdfxml")
-
-    logger.info(
-        f"Generated ontology with {len(created_classes)} classes "
-        f"from {len(concepts)} concepts: {output_path}"
-    )
-
-    # Validation feedback loop
-    validation_result = None
-    if validate:
-        validation_result = validate_ontology(output_path)
-        if not validation_result.valid:
-            raise OntologyValidationError(
-                ontology_path=output_path,
-                validation_stage="post_generation",
-                issues=validation_result.issues,
-            )
-        logger.info(
-            f"Ontology validated: {validation_result.concept_count} classes, "
-            f"DeepOnto loaded: {validation_result.deeponto_loaded}"
-        )
-
-    return output_path, validation_result
-
-
-def _extract_concepts_from_markdown(file_path: Path) -> set[str]:
-    """Extract concept names from markdown file.
-
-    Looks for:
-    - Headings (# Concept Name)
-    - Bold terms (**concept**)
-    - Wikilinks ([[concept]])
-    - Code identifiers (`ClassName`)
-
-    Returns:
-        Set of concept strings
-    """
-    import re
-
-    concepts = set()
-    try:
-        content = file_path.read_text()
-
-        # Extract headings
-        headings = re.findall(r"^#+\s+(.+)$", content, re.MULTILINE)
-        concepts.update(h.strip() for h in headings)
-
-        # Extract bold terms
-        bold = re.findall(r"\*\*([^*]+)\*\*", content)
-        concepts.update(b.strip() for b in bold if len(b.strip()) > 2)
-
-        # Extract wikilinks
-        wikilinks = re.findall(r"\[\[([^\]]+)\]\]", content)
-        concepts.update(w.strip() for w in wikilinks)
-
-        # Extract code identifiers (CamelCase or snake_case)
-        code_ids = re.findall(r"`([A-Z][a-zA-Z0-9_]+)`", content)
-        concepts.update(c.strip() for c in code_ids)
-
-    except Exception as e:
-        logger.warning(f"Failed to extract concepts from {file_path}: {e}")
-
-    return concepts
-
-
-def _sanitize_owl_name(name: str) -> str:
-    """Sanitize string for use as OWL class name.
-
-    OWL class names must be valid NCNames (no spaces, starts with letter, etc.)
-    """
-    import re
-
-    # Replace spaces with underscores
-    name = name.replace(" ", "_")
-    # Remove non-alphanumeric except underscore
-    name = re.sub(r"[^a-zA-Z0-9_]", "", name)
-    # Ensure starts with letter
-    if name and not name[0].isalpha():
-        name = "C_" + name
-    return name

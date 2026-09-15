@@ -190,41 +190,39 @@ During initial development, `research_mode=True` bypasses the cost threshold to:
 
 ## BERTSubs Subsumption Inference
 
-ThetaAgent uses DeepOnto's BERTSubs for ontology-aware subsumption inference.
+Theta consolidation scores ⊑ on the **HermiT-certified OWL TBox**
+(`external/sdg-corpora/ontology/sdg-ontology.owl`). SKOS is terminology
+grounded to that TBox. CLT is a discrete graph over admitted content —
+co-activation yields candidate OWL class pairs. Thoughts are the encode
+diet. Do not mint `owl:Class` from thought tokens or KB markdown.
 
 ### Pipeline
 
-1. **Generate OWL Ontology** - Extract concepts from KB frontmatter, wikilinks, entities
-2. **Load into DeepOnto** - Validate with owlready2 and deeponto loaders
-3. **Infer Subsumptions** - BERTSubs predicts `SubClass ⊑ SuperClass` relationships
-4. **Filter by Confidence** - Default threshold 0.8
-
-### Ontology Generation
-
-```python
-path, validation = generate_ontology_from_kb(
-    kb_root=Path("build/dev"),
-    output_path=Path(".cache/ontology/kb_current.owl"),
-    slice_id="2025-W52",  # Optional temporal filter
-    validate=True,        # Enforce validation feedback loop
-)
-```
+1. **Encode** previous-week `cognition_thoughts` (engine EmbedTexts / ColBERT-Zero)
+2. **NVAR** on the slice centroid
+3. **CLT incidence** → SKOS codes → OWL IRIs (`clt_incidence.py`)
+4. **BERTSubs Intra** on the certified TBox
+5. **KG policy** selects; KB documents are augmented
 
 ### Usage
 
 ```python
-inferencer = agent.get_subsumption_inferencer(slice_id="2025-W52")
+from gaius.agents.theta.tbox import certified_ontology_path
+from gaius.agents.theta.clt_incidence import load_owl_pairs_for_slice
+
+pairs = await load_owl_pairs_for_slice(dsn, "2026-W37")
+inferencer = SubsumptionInferencer()  # certified TBox
 candidates = await inferencer.infer_subsumptions(
-    candidates=[("kudu", "database"), ("flink", "streaming")],
+    candidates=pairs,
     consolidation_signal=0.7,
-    source_slice="2025-W52",
-    target_slice="2025-W52",
+    source_slice="2026-W37",
+    target_slice="2026-W37",
 )
 ```
 
 ### DeepOnto Availability
 
-BERTSubs requires DeepOnto with a functional JVM. If unavailable, consolidation fails fast with `#THETA.00000001.DEEPONTO`.
+BERTSubs requires DeepOnto with a functional JVM. If unavailable, consolidation fails fast with `#THETA.00000001.DEEPONTO`. Empty CLT incidence is `#THETA.00000011.NOPAIRS`.
 
 ## SHAP Effectiveness Measurement
 

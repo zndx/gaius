@@ -308,12 +308,19 @@ class ThetaService(BaseDaemon):
                     "guru_code": NOTHOUGHTS,
                 }
             centroid = await self._encode_centroid(thoughts)
+            from gaius.agents.theta.clt_incidence import owl_pairs_from_conn
+
+            owl_pairs: list[tuple[str, str]] = []
+            if self._db_pool is not None:
+                async with self._db_pool.acquire() as conn:
+                    owl_pairs = await owl_pairs_from_conn(conn, slice_id)
             agent = self._get_agent()
             result = await agent.run_consolidation(
                 temporal_slice=slice_id,
                 max_candidates=max_candidates or self.config.default_max_candidates,
                 centroid=centroid,
                 documents=thoughts,
+                owl_pairs=owl_pairs,
             )
             self._consolidation_count += 1
             self._last_consolidation_at = datetime.now()

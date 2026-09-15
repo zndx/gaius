@@ -232,7 +232,8 @@ class TestOntologyValidationError:
         assert "Invalid XML" in msg
         assert "Missing namespace" in msg
         assert "/tmp/bad.owl" in msg
-        assert "/consolidate --regenerate-ontology" in msg
+        assert "HermiT-certified" in msg
+        assert "mint" in msg.lower()
 
 
 class TestDeepOntoIntegration:
@@ -241,29 +242,18 @@ class TestDeepOntoIntegration:
     DeepOnto with JVM is a HARD REQUIREMENT provided by devenv.
     These tests must pass - no fallbacks, no skips.
 
-    Note: BERTSubsIntraPipeline requires an ontology with enough classes
-    and subsumption relationships to extract training data from.
-    The internal Gaius domain ontology (58 classes) provides this.
+    Note: BERTSubsIntraPipeline requires a TBox with subsumption axioms.
+    Production uses the HermiT-certified SDG OWL.
     """
 
     @pytest.fixture
     def gaius_ontology(self):
-        """Return path to internal Gaius domain ontology.
+        """HermiT-certified SDG OWL — the consolidation TBox."""
+        from gaius.agents.theta.tbox import CERTIFIED_OWL
 
-        This ontology has 58 classes with rdfs:label annotations,
-        sufficient for BERTSubsIntraPipeline training data extraction.
-        """
-        import gaius
-        # gaius.__file__ can theoretically be None for namespace packages, but
-        # our package always has an __init__.py so this is safe
-        assert gaius.__file__ is not None
-        gaius_root = Path(gaius.__file__).parent
-        ontology_path = gaius_root / "data" / "ontologies" / "gaius_domain.owl"
-
-        if not ontology_path.exists():
-            pytest.skip(f"Gaius domain ontology not found at {ontology_path}")
-
-        return ontology_path
+        if not CERTIFIED_OWL.is_file():
+            pytest.skip(f"certified TBox not at {CERTIFIED_OWL}")
+        return CERTIFIED_OWL
 
     @pytest.fixture
     def minimal_ontology(self, tmp_path):
