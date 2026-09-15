@@ -126,10 +126,14 @@ class TestOntologyValidationResult:
             encoding="utf-8",
         )
         try:
-            validate_ontology(owl)
+            result = validate_ontology(owl)
         except OntologyValidationError as e:
             assert e.validation_stage != "xml_syntax"
             assert not any("Missing RDF namespace" in i for i in e.issues)
+        except DeepOntoNotAvailableError:
+            pass  # past xml_syntax; a missing deeponto dep is not this check
+        else:
+            assert not any("Missing RDF namespace" in i for i in result.issues)
 
     def test_result_to_dict(self):
         """Test serialization."""

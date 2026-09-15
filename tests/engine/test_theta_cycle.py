@@ -94,7 +94,10 @@ def test_flow_is_platform_vessel() -> None:
     from gaius.flows.theta.cycle import ThetaCycleFlow
 
     assert "theta-cycle" in FLOW_REGISTRY
-    assert ThetaCycleFlow.gpu_tokens == 1
+    assert ThetaCycleFlow.gpu_tokens == 0
+    from gaius.engine.sentinel_claim import COMPUTE, resource_class_for
+
+    assert resource_class_for("theta-cycle") is COMPUTE
     assert hasattr(ThetaCycleFlow, "encode")
     assert hasattr(ThetaCycleFlow, "infer")
     assert hasattr(ThetaCycleFlow, "complete")
@@ -120,6 +123,26 @@ def test_pairs_from_thoughts_skip_title_first_word() -> None:
     assert "ENERGY" in flat
     assert "energy-systems" in flat or "kudu-spill" in flat
     assert any("sdg_7" in (a, b) for a, b in pairs) or "sdg_7" in flat
+
+
+def test_ontology_from_thought_concepts_skips_kb_markdown(tmp_path) -> None:
+    from gaius.agents.theta.subsumption import generate_ontology_from_kb
+
+    kb = tmp_path / "kb"
+    (kb / "current").mkdir(parents=True)
+    (kb / "current" / "dump.md").write_text("# ShouldNotAppear\n")
+    out = tmp_path / "onto.owl"
+    generate_ontology_from_kb(
+        kb_root=kb,
+        output_path=out,
+        slice_id="2026-W37",
+        validate=False,
+        concepts={"ENERGY", "sdg_7"},
+    )
+    text = out.read_text()
+    assert "ENERGY" in text
+    assert "sdg_7" in text or "sdg7" in text or "C_sdg_7" in text
+    assert "ShouldNotAppear" not in text
 
 
 def test_theta_cycle_objective_is_declared() -> None:

@@ -751,7 +751,11 @@ def validate_ontology(ontology_path: Path) -> OntologyValidationResult:
         )
         result.deeponto_loaded = True
     except ImportError as e:
-        # DeepOnto not installed - note but don't fail
+        import importlib.util
+
+        # Package present but a dep is missing (typer hole) is not "not installed".
+        if importlib.util.find_spec("deeponto") is not None:
+            raise DeepOntoNotAvailableError("Ontology", e) from e
         issues.append(f"DeepOnto not available for validation: {e}")
         logger.warning("DeepOnto validation skipped - not installed")
     except Exception as e:
@@ -804,19 +808,20 @@ def generate_ontology_from_kb(
     slice_id: str | None = None,
     namespace: str = "http://gaius.local/ontology#",
     validate: bool = True,
+    concepts: set[str] | None = None,
 ) -> tuple[Path, OntologyValidationResult | None]:
-    """Generate OWL ontology from KB content with validation.
+    """Generate OWL ontology from thought labels or KB markdown.
 
-    Extracts concepts from KB documents and creates a minimal OWL ontology
-    for use with BERTSubsIntraPipeline. Includes validation feedback loop
-    to ensure the generated ontology loads correctly with DeepOnto.
+    ``concepts`` is the Theta diet (cognition_thoughts). The markdown walk of
+    ``scratch/{slice}`` or ``current/`` + ``scratch/`` is sitrep fallback only.
 
     Args:
         kb_root: Root of KB directory
         output_path: Where to write the OWL file
-        slice_id: Optional temporal slice to extract from (e.g., "2025-W52")
+        slice_id: Optional temporal slice to extract from (e.g., "2026-W37")
         namespace: OWL namespace for generated concepts
         validate: Whether to run validation after generation (default: True)
+        concepts: Pre-extracted labels. When not None, skip the markdown walk.
 
     Returns:
         Tuple of (path to generated ontology, validation result or None)
@@ -836,28 +841,24 @@ def generate_ontology_from_kb(
     # Create new ontology
     onto = get_ontology(namespace)
 
-    # Collect concepts from KB
-    concepts = set()
-
-    if slice_id:
-        # Extract from specific temporal slice
-        slice_dir = kb_root / "scratch" / slice_id
-        if slice_dir.exists():
-            for md_file in slice_dir.glob("**/*.md"):
-                concepts.update(_extract_concepts_from_markdown(md_file))
+    if concepts is None:
+        concepts = set()
+        if slice_id:
+            slice_dir = kb_root / "scratch" / slice_id
+            if slice_dir.exists():
+                for md_file in slice_dir.glob("**/*.md"):
+                    concepts.update(_extract_concepts_from_markdown(md_file))
+        else:
+            current_dir = kb_root / "current"
+            if current_dir.exists():
+                for md_file in current_dir.glob("**/*.md"):
+                    concepts.update(_extract_concepts_from_markdown(md_file))
+            scratch_dir = kb_root / "scratch"
+            if scratch_dir.exists():
+                for md_file in scratch_dir.glob("**/*.md"):
+                    concepts.update(_extract_concepts_from_markdown(md_file))
     else:
-        # Extract from current content
-        current_dir = kb_root / "current"
-        if current_dir.exists():
-            for md_file in current_dir.glob("**/*.md"):
-                concepts.update(_extract_concepts_from_markdown(md_file))
-
-    # Also include scratch if no slice_id (for comprehensive coverage)
-    if not slice_id:
-        scratch_dir = kb_root / "scratch"
-        if scratch_dir.exists():
-            for md_file in scratch_dir.glob("**/*.md"):
-                concepts.update(_extract_concepts_from_markdown(md_file))
+        concepts = {c for c in concepts if c and str(c).strip()}
 
     if not concepts:
         logger.warning(f"No concepts extracted from KB at {kb_root}")

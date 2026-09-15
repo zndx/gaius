@@ -67,9 +67,7 @@ CODE_TOKEN = re.compile(
 )
 
 
-def _pairs_from_thoughts(
-    documents: list[dict[str, Any]], *, limit: int
-) -> list[tuple[str, str]]:
+def _concepts_from_thoughts(documents: list[dict[str, Any]]) -> set[str]:
     """Concepts from domains, path stems, wikilinks, and aperture/SKOS codes.
 
     Never the first word of a title — that injected (In, Can) into the KB.
@@ -107,8 +105,14 @@ def _pairs_from_thoughts(
             k = (key or "").strip()
             if len(k) >= 3 and k.lower() in blob_l:
                 concepts.add(a.local_name or k)
-    concepts = {c for c in concepts if len(c) > 2}
-    concept_list = sorted(concepts, key=len)
+    return {c for c in concepts if len(c) > 2}
+
+
+def _pairs_from_thoughts(
+    documents: list[dict[str, Any]], *, limit: int
+) -> list[tuple[str, str]]:
+    """Concept pairs from cognition_thoughts — not a KB markdown dump."""
+    concept_list = sorted(_concepts_from_thoughts(documents), key=len)
     pairs: list[tuple[str, str]] = []
     for i, subclass in enumerate(concept_list[: limit // 2]):
         for superclass in concept_list[i + 1 : i + 4]:
@@ -213,19 +217,20 @@ class ThetaAgent:
         # Register action handlers
         self._register_action_handlers()
 
-    def get_subsumption_inferencer(self, slice_id: str | None = None) -> SubsumptionInferencer:
+    def get_subsumption_inferencer(
+        self,
+        slice_id: str | None = None,
+        documents: list[dict[str, Any]] | None = None,
+    ) -> SubsumptionInferencer:
         """Get SubsumptionInferencer, generating ontology if needed.
 
-        Creates an OWL ontology from KB content for the specified temporal slice
-        (or current content if no slice specified). Ontologies are cached by slice_id.
-
-        The ontology generation includes a validation feedback loop that ensures:
-        1. Generated OWL is syntactically valid XML/RDF
-        2. owlready2 can load the ontology
-        3. DeepOnto can load the ontology (critical for BERTSubs)
+        Consolidation passes ``cognition_thoughts`` as ``documents`` — the OWL
+        classes are those labels, not a walk of ``current/`` + ``scratch/``.
+        Sitrep without thoughts still falls back to the markdown walk.
 
         Args:
-            slice_id: Temporal slice to generate ontology from (e.g., "2025-W52")
+            slice_id: Temporal slice to generate ontology from (e.g., "2026-W37")
+            documents: Thought rows for the slice (Theta diet).
 
         Returns:
             SubsumptionInferencer initialized with domain ontology
@@ -234,20 +239,26 @@ class ThetaAgent:
             DeepOntoNotAvailableError: If DeepOnto/owlready2 not available
             OntologyValidationError: If generated ontology fails validation
         """
-        # Determine ontology path based on slice
         ontology_filename = f"kb_{slice_id or 'current'}.owl"
         ontology_path = self._ontology_cache_dir / ontology_filename
+        thought_concepts = (
+            _concepts_from_thoughts(documents) if documents is not None else None
+        )
 
-        # Generate ontology if it doesn't exist or slice changed
-        if not ontology_path.exists() or self._current_ontology_path != ontology_path:
+        # Thoughts are the diet: never reuse a cached KB-dump OWL for them.
+        if (
+            thought_concepts is not None
+            or not ontology_path.exists()
+            or self._current_ontology_path != ontology_path
+        ):
             logger.info(f"Generating ontology for slice: {slice_id or 'current'}")
 
-            # Generate with validation enabled (fail-fast on invalid ontology)
             path, validation_result = generate_ontology_from_kb(
                 kb_root=self.kb_root,
                 output_path=ontology_path,
                 slice_id=slice_id,
-                validate=True,  # Enforce validation feedback loop
+                validate=True,
+                concepts=thought_concepts,
             )
 
             if validation_result:
@@ -835,7 +846,9 @@ class ThetaAgent:
 
             # Step 4: Infer subsumptions using BERTSubs
             # The consolidation signal mediates depth (how many we evaluate)
-            candidates = await self.subsumption.infer_subsumptions(
+            candidates = await self.get_subsumption_inferencer(
+                slice_id, documents=documents
+            ).infer_subsumptions(
                 candidates=concept_pairs,
                 consolidation_signal=urgency,
                 source_slice=slice_id,
