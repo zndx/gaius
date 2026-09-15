@@ -5,7 +5,7 @@ The visualization pipeline generates procedural card images using LuxCore path t
 ## Pipeline
 
 ```
-Nomic Embeddings (768-dim)
+ColBERT-Zero embeddings (128-dim `agg` vectors)
     |
     ├──> GeometryComputer (Ollivier-Ricci curvature, gradient fields)
     └──> TDAComputer (persistent homology via ripser)
@@ -89,7 +89,7 @@ LuxCore's unbiased path tracer via the pyluxcore Python API. The from-source bui
 
 ## gRPC Integration
 
-Rendering is triggered via the `/render` CLI command, which invokes the `RenderCards` streaming RPC. The render workload sets `allow_baseline_eviction=True` to temporarily free a GPU from vLLM inference. After rendering completes, `clear_embeddings()` releases the Nomic model (~3GB) from GPU memory.
+Rendering is triggered via the `/render` CLI command, which invokes the `RenderCards` streaming RPC. The render workload sets `allow_baseline_eviction=True` to temporarily free a GPU from vLLM inference. After rendering completes, `clear_embeddings()` releases the embedding model from GPU memory (ColBERT-Zero; the Nomic-era loader on this path is migration debt).
 
 ## Components
 

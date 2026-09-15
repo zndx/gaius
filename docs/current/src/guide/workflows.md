@@ -20,7 +20,7 @@ The choice depends on the task. Health monitoring is best scripted via CLI. Rese
 
 ### [Research Workflow](./workflow-research.md)
 
-End-to-end knowledge synthesis: define a topic, curate articles from the web (via Brave search), create cards with enriched metadata and topology features, render LuxCore visualizations, and publish a collection. Each run produces ~20 cards in under 2 minutes. The pipeline flows through NiFi ingestion → Metaflow processing → Nomic embedding → Qdrant indexing → PostgreSQL storage → R2 rendering.
+End-to-end knowledge synthesis: define a topic, curate articles from the web (via Brave search), create cards with enriched metadata and topology features, render LuxCore visualizations, and publish a collection. Each run produces ~20 cards in under 2 minutes. The pipeline flows through NiFi ingestion → Metaflow processing → ColBERT-Zero embedding → Qdrant indexing → PostgreSQL storage → R2 rendering.
 
 ### [Health Workflow](./workflow-health.md)
 

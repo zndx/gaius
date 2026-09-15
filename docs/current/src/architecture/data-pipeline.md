@@ -14,7 +14,7 @@ NiFi Ingestion ──> Raw Content (HX / Iceberg)
 Metaflow Pipelines ──> Article Drafts, Card Creation
     |
     v
-Qdrant Indexing ──> 768-dim Nomic Embeddings
+Qdrant Indexing ──> ColBERT-Zero multi-vector embeddings (128-dim per token)
     |
     v
 PostgreSQL (zndx_gaius:5444) ──> Cards, Collections, Metadata
@@ -31,7 +31,7 @@ R2 Storage ──> Rendered Visualizations (viz.gaius.zndx.org)
 
 **Article Curation.** The [Article Curation](./article-curation.md) flow orchestrates the full lifecycle from article selection through card creation and publication. Each run produces approximately 20 cards in under 2 minutes.
 
-**Indexing.** Processed content is embedded using Nomic (768-dimensional vectors) and indexed in Qdrant for semantic search. The same embeddings drive the TUI's 19x19 grid layout and the [visualization pipeline](./visualization.md).
+**Indexing.** Processed content is embedded with ColBERT-Zero (`lightonai/ColBERT-Zero` via pylate: 128-dim per-token vectors for MaxSim, plus a mean `agg` vector) and indexed in Qdrant (`gaius_kb_colbert_zero`) for semantic search. The same embeddings drive the TUI's 19x19 grid layout and the [visualization pipeline](./visualization.md).
 
 **Storage.** Cards, collections, and metadata live in PostgreSQL (`zndx_gaius` on port 5444). Rendered card images are uploaded to Cloudflare R2 and served from `viz.gaius.zndx.org`. See [Viz Storage](./viz-storage.md) for the object key convention.
 

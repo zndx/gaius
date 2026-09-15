@@ -27,7 +27,7 @@ On startup, the controller scans for stale vLLM processes from previous runs. Or
 |----------|------|-----------------|---------|
 | reasoning | 0, 1 | 2 | Large model inference (24B-70B) |
 | coding | 2, 3 | 2 | Code generation |
-| embedding | 4 | 1 | Nomic 768-dim single-vector |
+| embedding | 4 | 1 | ColBERT-Zero via pylate, loaded on demand — not served by vLLM |
 | available | 5 | — | Rendering, evolution, overflow |
 
 Allocation is managed by the `OrchestratorService`, not the controller directly. The orchestrator calls `VLLMController.start()` with specific GPU IDs and ports. GPU 5 is deliberately kept available for transient workloads — LuxCore rendering requires GPU eviction of a running endpoint, and evolution cycles benefit from a dedicated GPU during idle periods.

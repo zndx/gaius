@@ -56,5 +56,5 @@ The viz pipeline temporarily evicts a low-priority endpoint to use a GPU for Lux
 
 1. Orchestrator evicts endpoint from target GPU
 2. LuxCore renders using PATHOCL engine with CUDA
-3. `clear_embeddings()` releases Nomic model (~3GB)
+3. `clear_embeddings()` releases the embedding model (ColBERT-Zero)
 4. Orchestrator restores evicted endpoint

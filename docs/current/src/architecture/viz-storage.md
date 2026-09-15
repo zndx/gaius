@@ -71,4 +71,4 @@ uv run gaius-cli --cmd "/render collection-id"
 
 ## GPU Eviction
 
-Rendering requires GPU access, but vLLM typically occupies all GPUs. The render workload requests GPU eviction via `allow_baseline_eviction=True` in the gRPC workload metadata. After rendering completes, `clear_embeddings()` releases the Nomic embedding model (~3GB) from GPU memory. See [Visualization](./visualization.md) for the full pipeline context.
+Rendering requires GPU access, but vLLM typically occupies all GPUs. The render workload requests GPU eviction via `allow_baseline_eviction=True` in the gRPC workload metadata. After rendering completes, `clear_embeddings()` releases the embedding model (ColBERT-Zero) from GPU memory. See [Visualization](./visualization.md) for the full pipeline context.

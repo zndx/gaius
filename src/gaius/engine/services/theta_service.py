@@ -363,21 +363,18 @@ class ThetaService(BaseDaemon):
         return [dict(r) for r in rows]
 
     async def _encode_centroid(self, thoughts: list[dict[str, Any]]) -> Any:
-        """Mean embedding of thought title+content. Fail closed (no zero vector)."""
+        """Mean of per-document ColBERT-Zero agg vectors (128-d)."""
         import numpy as np
-        from gaius.models.embeddings import embed_text
+        from gaius.engine.embeddings.colbert import agg_vectors_for_texts
 
-        vecs = []
-        for t in thoughts:
-            text = f"{t.get('title') or ''}\n{t.get('content') or ''}".strip()
-            if not text:
-                continue
-            vec = await embed_text(text)
-            if vec is None or getattr(vec, "size", 0) == 0:
-                raise RuntimeError("empty embedding")
-            vecs.append(np.asarray(vec, dtype=float))
-        if not vecs:
+        texts = [
+            f"{t.get('title') or ''}\n{t.get('content') or ''}".strip()
+            for t in thoughts
+        ]
+        texts = [t for t in texts if t]
+        if not texts:
             raise RuntimeError("no thought text to encode")
+        vecs = await asyncio.to_thread(agg_vectors_for_texts, texts)
         return np.mean(np.stack(vecs), axis=0)
 
     def agenda(self, action: str = "list", horizon: str = "day") -> dict[str, Any]:

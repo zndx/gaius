@@ -44,7 +44,7 @@ The orchestrator maintains a *baseline configuration* — the steady-state GPU a
 |----------|------|----|---------|
 | reasoning | 0, 1 | 2 | Large model inference (24B-70B) |
 | coding | 2, 3 | 2 | Code generation |
-| embedding | 4 | 1 | Nomic 768-dim vectors |
+| embedding | 4 | 1 | ColBERT-Zero (pylate, on demand; not vLLM) |
 | (available) | 5 | — | Rendering, evolution, overflow |
 
 ## Clean Start

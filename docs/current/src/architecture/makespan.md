@@ -62,7 +62,7 @@ makespan.execute("render_cards")
 │       ├── process_spawn
 │       └── health_check
 ├── execute_workload           # Path-trace 20 cards (PATHOCL, 20s/128spp each)
-├── clear_embeddings           # Release Nomic model (~3GB) from GPU
+├── clear_embeddings           # Release the ColBERT-Zero embedder from GPU
 └── restore_baseline           # Restart coding endpoint to set point
     └── agenda_tracker.complete(operation_id)
 ```

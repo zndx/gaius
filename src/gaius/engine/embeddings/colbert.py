@@ -22,9 +22,11 @@ logger = logging.getLogger(__name__)
 
 GURU_NOVISION = "#EM.00000001.NOVISION"
 GURU_NOPYLATE = "#EM.00000002.NOPYLATE"
+GURU_RETIRED = "#EM.00000003.RETIRED"
 
 DEFAULT_MODEL = "lightonai/ColBERT-Zero"
 EMBEDDING_DIM = 128
+_RETIRED_NEEDLES = ("nomic", "colnomic", "colpali", "colqwen", "vidore")
 
 
 class AggregationMethod(str, Enum):
@@ -40,6 +42,36 @@ class ColBERTVisionError(RuntimeError):
             "It does not embed images or PDFs. "
             "Use Qwen3.8-27B vision (thinking) for multimodal, then index text."
         )
+
+
+def refuse_retired_embedding_model(model_name: str | None) -> None:
+    """ColPali / ColNomic / ColQwen names are retired. Empty = ColBERT-Zero."""
+    n = (model_name or "").strip().lower()
+    if not n:
+        return
+    if n in {DEFAULT_MODEL.lower(), "colbert-zero", "colbert"}:
+        return
+    if any(needle in n for needle in _RETIRED_NEEDLES):
+        raise RuntimeError(
+            f"{GURU_RETIRED} {model_name} is retired. "
+            f"Use {DEFAULT_MODEL} (ColBERT-Zero via pylate)."
+        )
+
+
+def agg_vectors_for_texts(
+    texts: list[str],
+    *,
+    prompt_name: str = "document",
+) -> list[np.ndarray]:
+    """One 128-d mean-agg vector per text (document prompt unless query)."""
+    refuse_retired_embedding_model(None)
+    embedder = get_colbert_embedder()
+    prefix = "search_query: " if prompt_name == "query" else "search_document: "
+    out: list[np.ndarray] = []
+    for text in texts:
+        _multi, agg = embedder.encode_text(text, prefix=prefix)
+        out.append(np.asarray(agg, dtype=np.float32))
+    return out
 
 
 def _ensure_pylate() -> None:

@@ -6,7 +6,7 @@ The grammar engine implements a CFDG-inspired recursive expansion system that ge
 
 The grammar's inputs are not aesthetic parameters — they are computed from the intrinsic geometry and topology of the collection's embedding manifold:
 
-- **Ollivier-Ricci curvature** (κ) on the k-NN graph over 768-dim Nomic embeddings: `κ(x,y) = 1 - W₁(μₓ, μᵧ) / d(x,y)`, where W₁ is the 1-Wasserstein distance between neighborhood distributions (GraphRicciCurvature, k=15, alpha=0.5)
+- **Ollivier-Ricci curvature** (κ) on the k-NN graph over ColBERT-Zero `agg` embeddings (128-dim): `κ(x,y) = 1 - W₁(μₓ, μᵧ) / d(x,y)`, where W₁ is the 1-Wasserstein distance between neighborhood distributions (GraphRicciCurvature, k=15, alpha=0.5)
 - **Persistent homology** via Vietoris-Rips filtration (ripser, cosine distance): Betti numbers b₀, b₁, b₂ and persistence diagrams
 - **Complexity**: mean cosine distance to k-nearest neighbors, normalized across the collection
 - **Gradient fields**: ∇κ on the embedding manifold, projected to 2D via PCA — positions the key light along the direction of steepest semantic change

@@ -35,7 +35,7 @@ MCP (stdio)     ─┘                         │
                                Services  Backends  Storage
                                     │      │      │
                               Scheduler  vLLM    PostgreSQL
-                              Health    Nomic    Qdrant
+                              Health    ColBERT-Zero Qdrant
                               Evolution optillm  R2/MinIO
                               Cognition ColPali  Filesystem
 ```

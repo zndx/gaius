@@ -22,7 +22,7 @@ Execution is parallel (`asyncio.gather` over `parallel_inference()`) but not age
 
 ## Latent Swarm (LatentMAS)
 
-Reduces inter-agent token transfer by sharing embeddings instead of text via Qdrant (Guo et al., 2024). Each agent stores its output as a 768-dim Nomic embedding in the `gaius_latent_memory` collection. Subsequent agents retrieve relevant context via semantic search rather than receiving full text.
+Reduces inter-agent token transfer by sharing embeddings instead of text via Qdrant (Guo et al., 2024). Each agent stores its output as a ColBERT-Zero `agg` embedding (128-dim) in the `gaius_latent_memory` collection. Subsequent agents retrieve relevant context via semantic search rather than receiving full text.
 
 Token reduction: 70–90% compared to text-based coordination. The collection schema includes domain, agent_id, session_id, and timestamp — enabling both cross-agent retrieval within a session and longitudinal analysis across sessions.
 

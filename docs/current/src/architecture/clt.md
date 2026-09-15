@@ -1,19 +1,19 @@
 # CLT Memory
 
-Cross-Layer Transcoder (CLT) memory provides interpretable, sparse representations of agent state. Where standard latent memory uses dense 768-dim Nomic embeddings, CLT memory uses sparse feature vectors in a 20,480-dimensional feature space — typically ~115 active features per layer. This enables both efficient inter-agent communication and mechanistic interpretability of what agents attend to.
+Cross-Layer Transcoder (CLT) memory provides interpretable, sparse representations of agent state. Where standard latent memory uses dense ColBERT-Zero `agg` embeddings (128-dim), CLT memory uses sparse feature vectors in a 20,480-dimensional feature space — typically ~115 active features per layer. This enables both efficient inter-agent communication and mechanistic interpretability of what agents attend to.
 
 ## Two Collaboration Modes
 
 | Mode | Embedding | Storage | Token Reduction | Interpretability |
 |------|-----------|---------|-----------------|-----------------|
-| Standard (LatentMAS) | Nomic 768-dim dense | `gaius_latent_memory` | 70-90% vs text | Opaque |
+| Standard (LatentMAS) | ColBERT-Zero `agg` 128-dim dense | `gaius_latent_memory` | 70-90% vs text | Opaque |
 | CLT-Enhanced | CLT 20,480-dim sparse | `gaius_clt_memory` | 70-90% vs text | Sparse feature indices are interpretable |
 
 Both modes store embeddings in Qdrant and retrieve via semantic search. The key difference: CLT sparse features can be intersected across agents to find **feature consensus** — which specific features multiple agents independently activate on.
 
 ## Standard Latent Memory (LatentMAS)
 
-Each agent stores its output as a 768-dim Nomic embedding in Qdrant. Subsequent agents retrieve relevant context via semantic search rather than receiving full text (Guo et al., 2024).
+Each agent stores its output as a ColBERT-Zero `agg` embedding (128-dim) in Qdrant. Subsequent agents retrieve relevant context via semantic search rather than receiving full text (Guo et al., 2024).
 
 ```
 Agent 1 → thinks → store embedding in Qdrant
@@ -40,10 +40,10 @@ thought = await clt_memory.store_from_content(
 
 ## CLT Projection Bridge
 
-The `CLTProjectionBridge` maps sparse CLT features to the same coordinate space as dense Nomic embeddings, enabling unified visualization on the 19x19 grid:
+The `CLTProjectionBridge` maps sparse CLT features to the same coordinate space as dense ColBERT-Zero `agg` embeddings, enabling unified visualization on the 19x19 grid:
 
 ```
-CLT sparse features (20,480-dim) → learned projection → ColNomic (768-dim) → UMAP → grid position
+CLT sparse features (20,480-dim) → learned projection → ColBERT-Zero `agg` space (128-dim) → UMAP → grid position
 ```
 
 This bridge also enables:

@@ -168,7 +168,7 @@ async def complete_job(dsn: str, job_id: int, result: dict[str, Any]) -> None:
 
 
 def embed_texts(texts: list[str]) -> list[list[float]]:
-    """Engine EmbedTexts RPC. Raises on empty/transport failure."""
+    """Engine EmbedTexts RPC (ColBERT-Zero 128-d agg). Raises on empty/transport failure."""
     import grpc
 
     from gaius.engine.generated import EmbedTextsRequest

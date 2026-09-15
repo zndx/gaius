@@ -24,7 +24,7 @@ Named after Gaius Plinius Secundus (Pliny the Elder), whose *Naturalis Historia*
 
 The following pipeline is implemented end-to-end:
 
-1. **Embed** — Documents are encoded as multi-vector embeddings (ColNomic, GPU-accelerated) and indexed.
+1. **Embed** — Documents are encoded as multi-vector embeddings (ColBERT-Zero, GPU-accelerated) and indexed.
 2. **Project** — UMAP maps the embedding space to 2D; coordinates are rounded to the 19×19 integer lattice.
 3. **Filtration** — Vietoris–Rips filtration over the cosine distance matrix of original embeddings; Ripser computes persistence barcodes for H₀, H₁, H₂. Significant intervals (persistence > 0.1) produce topological overlays.
 4. **Curvature** — Ollivier–Ricci curvature on the k-NN graph (k=15, α=0.5, OTD); curvature, gradient, and divergence fields are interpolated onto the 9×9 Iso mini-grid via IDW.

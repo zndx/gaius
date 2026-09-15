@@ -66,7 +66,7 @@ The scheduler sits between clients and the backend layer:
 CLI/TUI/MCP → gRPC → SchedulerService → BackendRouter
                                             ├── VLLMController (local GPU)
                                             ├── OptillmController (reasoning techniques)
-                                            ├── EmbeddingController (Nomic 768-dim)
+                                            ├── ColBERT-Zero embedder (pylate, 128-dim per token, loaded on demand — not a vLLM endpoint)
                                             ├── ColPaliController (multi-vector)
                                             └── ExternalInferenceRouter
                                                  ├── xAI (Grok 4.1 Fast)

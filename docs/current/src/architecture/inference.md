@@ -12,7 +12,7 @@ The `BackendRouter` (`inference/router.py`) selects backends based on capability
 | optillm | Reasoning enhancement (CoT, BoN, MoA) | Proxies to vLLM |
 | xAI (Grok) | External API inference | Cloud |
 | Cerebras | External API inference | Cloud |
-| Nomic | Text embeddings (768-dim) | 1 GPU |
+| ColBERT-Zero | Text embeddings (128-dim per token, pylate, on demand) | 1 GPU (light) |
 
 ## Scheduler
 

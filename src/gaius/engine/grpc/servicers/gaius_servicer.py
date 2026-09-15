@@ -1255,76 +1255,44 @@ class GaiusServicer(GaiusServiceServicer):
         request: EmbedTextsRequest,
         context: aio.ServicerContext,
     ) -> EmbedTextsResponse:
-        """Generate embeddings for texts using vLLM embedding endpoint.
-
-        Routes embedding requests through the vLLM endpoint running with
-        --task embed, using the OpenAI-compatible embeddings API.
-        """
-        import time
-        import httpx
+        """ColBERT-Zero mean-agg vectors (128-d). No vLLM embedding endpoint."""
+        from gaius.engine.embeddings.colbert import (
+            DEFAULT_MODEL,
+            EMBEDDING_DIM,
+            agg_vectors_for_texts,
+            refuse_retired_embedding_model,
+        )
 
         texts = list(request.texts)
         start_time = time.time()
-
         try:
-            # Get embedding endpoint from vLLM controller
-            orchestrator = self._services.orchestrator_service
-            if not orchestrator:
-                context.set_code(grpc.StatusCode.UNAVAILABLE)
-                context.set_details("OrchestratorService not initialized")
-                return EmbedTextsResponse()
-
-            proc = orchestrator._vllm.get_process("embedding")
-
-            if not proc:
-                context.set_code(grpc.StatusCode.UNAVAILABLE)
-                context.set_details("Embedding endpoint not running. Start it with: /gpu start embedding")
-                return EmbedTextsResponse()
-
-            if proc.status.value != "healthy":
-                context.set_code(grpc.StatusCode.UNAVAILABLE)
-                context.set_details(f"Embedding endpoint not healthy: {proc.status.value}")
-                return EmbedTextsResponse()
-
-            # Call vLLM OpenAI-compatible embedding API
-            base_url = f"http://localhost:{proc.port}/v1"
-            async with httpx.AsyncClient(timeout=60.0) as client:
-                response = await client.post(
-                    f"{base_url}/embeddings",
-                    json={
-                        "input": texts,
-                        "model": proc.model,
-                    },
-                )
-                response.raise_for_status()
-                data = response.json()
-
-            # Extract embeddings from OpenAI format
-            embeddings = []
-            for item in data.get("data", []):
-                embeddings.append(item.get("embedding", []))
-
-            latency_ms = int((time.time() - start_time) * 1000)
-
+            refuse_retired_embedding_model(request.model or None)
+            vecs = await asyncio.to_thread(agg_vectors_for_texts, texts)
             grpc_response = EmbedTextsResponse(
-                model_used=proc.model,
-                latency_ms=latency_ms,
+                model_used=DEFAULT_MODEL,
+                latency_ms=int((time.time() - start_time) * 1000),
             )
-
-            for embedding in embeddings:
-                grpc_response.embeddings.append(
-                    EmbeddingVector(values=embedding)
-                )
-
+            for v in vecs:
+                values = [float(x) for x in list(v.reshape(-1))]
+                if len(values) != EMBEDDING_DIM:
+                    raise RuntimeError(
+                        f"ColBERT-Zero agg dim {len(values)} != {EMBEDDING_DIM}"
+                    )
+                grpc_response.embeddings.append(EmbeddingVector(values=values))
             return grpc_response
-
-        except httpx.HTTPStatusError as e:
-            logger.error(f"EmbedTexts HTTP error: {e}")
-            context.set_code(grpc.StatusCode.INTERNAL)
-            context.set_details(f"Embedding API error: {e.response.text}")
+        except RuntimeError as e:
+            msg = str(e)
+            code = (
+                grpc.StatusCode.INVALID_ARGUMENT
+                if "RETIRED" in msg
+                else grpc.StatusCode.INTERNAL
+            )
+            logger.error("EmbedTexts failed: %s", e)
+            context.set_code(code)
+            context.set_details(msg)
             return EmbedTextsResponse()
         except Exception as e:
-            logger.error(f"EmbedTexts failed: {e}")
+            logger.error("EmbedTexts failed: %s", e)
             context.set_code(grpc.StatusCode.INTERNAL)
             context.set_details(str(e))
             return EmbedTextsResponse()
