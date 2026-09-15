@@ -8,7 +8,7 @@ Key architectural decisions that shaped the system.
 
 **Decision**: Centralize all business logic in the gRPC engine. TUI, CLI, and MCP become thin clients.
 
-**Consequences**: Single source of truth for all operations. Engine manages GPU resources centrally. All interfaces get consistent behavior automatically.
+**Consequences**: Single source of truth for all operations. Engine manages GPU resources centrally. All interfaces get consistent behavior automatically. Execution of substantive workflows is delegated to platform Metaflow on Kubernetes under YuniKorn, orchestrated by the Signals Airflow; flows are engine clients over gRPC (see [Engine-First and workload execution](../architecture/engine-first.md#engine-first-and-workload-execution)).
 
 ## ADR-002: Just Over devenv-tasks
 

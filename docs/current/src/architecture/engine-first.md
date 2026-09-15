@@ -71,9 +71,20 @@ async def health_observer_status():
 
 - **Single source of truth**: One implementation, three interfaces. A new feature requires only an engine service + gRPC method — all clients get it automatically.
 - **GPU management**: Engine controls all GPU allocation through the Orchestrator. No client can directly access CUDA devices.
-- **Background services**: Evolution, cognition, health monitoring, and scheduled tasks run in the engine daemon with zero coordination overhead.
+- **Background coordination**: Evolution, cognition, health monitoring and the scheduled-task queue run in the engine daemon. Substantive workloads are not executed in the engine process; the engine delegates them to platform Metaflow (see [Engine-First and workload execution](#engine-first-and-workload-execution)).
 - **Consistent observability**: OTel instrumentation happens once in the engine, tagged with the originating service (`gaius-tui`, `gaius-cli`, `gaius-mcp`, `gaius-engine`, `gaius-worker`).
 - **Testing**: CLI validates the same code path as TUI and MCP. Testing via CLI *is* testing the product.
+
+## Engine-First and workload execution
+
+Engine-First governs where logic lives and how it is reached. It does not mean the engine process executes every workload. In production the engine **yields execution**:
+
+- **Substantive workflows are Metaflow flows** (`GaiusFlow`), executed on the shared Kubernetes cluster under YuniKorn admission, and orchestrated by the Signals Airflow across the federated workspace. See [Metaflow Integration](./metaflow.md).
+- **Schedules are declared locally as pg_cron jobs** (see [pg_cron](./pgcron.md)) and mirrored in the workload catalogue. When Airflow is available the catalogue syncs to Signals, which materialises one DAG per enabled class, so every project's runs align and execute smoothly on one clock.
+- **Flows are engine clients.** A flow reaches thinking, embeddings and other capabilities over gRPC (`Engine/Complete`, `EmbedTexts`) exactly as the CLI does; it never loads a second engine, a model, or an inference shortcut. That is what keeps platform execution Engine-First.
+- **The engine keeps the coordination-shaped work**: the catalogue and its sync, the scheduled-task queue and its handlers that spawn or attach runs, YuniKorn claims, objectives and verification, health and remediation.
+
+This division is not a compromise of the principle; it is the principle applied to a federated deployment. Heavy compute inside the engine process (a JVM, a BERT model, a long CPU stage on the event loop) starves the engine's own health probes, and a workload that only the engine process can run cannot be ordered or admitted alongside the other projects' runs. Do not cite Engine-First as a reason to move a workflow out of Metaflow and into an engine handler.
 
 ## Exceptions
 

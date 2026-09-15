@@ -1292,43 +1292,29 @@ class ScheduledTaskProcessor(BaseDaemon):
             )
 
         async def handle_theta_cycle(task: ScheduledTask) -> dict[str, Any]:
-            """Orchestrate in-engine; BERTSubs/JVM run in theta_worker (light leaf)."""
-            from gaius.agents.theta.consolidation import get_week_slice_id
-            from gaius.engine.flow_processes import workload_id_for
-            from gaius.engine.sentinel_claim import (
-                apply_and_admit_async,
-                delete_flow_sentinel_async,
-            )
-            from gaius.engine.services.theta_cycle import consume_pending
-
-            theta = self._theta
-            if theta is None:
-                raise RuntimeError(
-                    "#THETA.00000007.NOSVC ThetaService not bound on STP.\n"
-                    "  Try: restart engine"
-                )
-            slice_id = str(task.payload.get("slice_id") or get_week_slice_id())
-            wid = workload_id_for("theta-cycle", task.id)
-            await apply_and_admit_async(wid, "theta-cycle")
-
-            async def consolidator(sid: str) -> dict[str, Any]:
-                return await theta.run_consolidation(temporal_slice=sid)
-
-            try:
-                async with self._pool.acquire() as conn:
-                    jobs = await consume_pending(
-                        conn, consolidator=consolidator, current_slice=slice_id
-                    )
-            finally:
-                await delete_flow_sentinel_async(wid)
-            failed = [
-                j for j in jobs
-                if j.get("job_id") and not j.get("success") and not j.get("skipped")
+            """ThetaCycleFlow in platform mode (YK claim on the spawn)."""
+            argv = [
+                "uv",
+                "run",
+                "--no-sync",
+                "python",
+                "-m",
+                "gaius.flows.theta.cycle",
+                "run",
+                "--scheduled-task-id",
+                str(task.id),
             ]
-            out = {"status": "failed" if failed else "completed", "jobs": jobs}
-            if failed:
-                out["error"] = failed[0].get("error") or failed[0].get("guru_code")
-            return out
+            slice_id = str(task.payload.get("slice_id") or "")
+            if slice_id:
+                argv.extend(["--slice-id", slice_id])
+            return await self._run_spawned_metaflow(
+                kind="theta-cycle",
+                task=task,
+                argv=argv,
+                log_prefix="ThetaCycle",
+                idle_timeout=1800,
+                metaflow_mode="platform",
+            )
 
         self.register_handler("fmp_roll", handle_fmp_roll)
         self.register_handler("ambient_synthesis", handle_ambient_synthesis)

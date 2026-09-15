@@ -78,15 +78,28 @@ async def test_consume_pending_records_stage_named_failure() -> None:
     assert job["error"].startswith("#THETA.00000009")
 
 
-def test_catalog_theta_cycle_is_monday_airflow_task() -> None:
+def test_catalog_theta_cycle_is_monday_airflow_metaflow() -> None:
     from gaius.engine.services import workload_catalog as wc
 
     e = wc.entry_for("theta_cycle")
-    assert e.enabled and e.runner == wc.RUNNER_TASK
+    assert e.enabled and e.runner == wc.RUNNER_METAFLOW
     assert e.source == "airflow"
     assert wc.airflow_dag_id(e) == "gaius_theta_cycle"
     assert e.cron == "0 6 * * 1"
     assert not e.pg_cron_active
+
+
+def test_flow_is_platform_vessel() -> None:
+    from gaius.flows import FLOW_REGISTRY
+    from gaius.flows.theta.cycle import ThetaCycleFlow
+
+    assert "theta-cycle" in FLOW_REGISTRY
+    assert ThetaCycleFlow.gpu_tokens == 1
+    assert hasattr(ThetaCycleFlow, "encode")
+    assert hasattr(ThetaCycleFlow, "infer")
+    assert hasattr(ThetaCycleFlow, "complete")
+    assert not hasattr(ThetaCycleFlow, "maintain")
+    assert not hasattr(ThetaCycleFlow, "settle")
 
 
 def test_pairs_from_thoughts_skip_title_first_word() -> None:
