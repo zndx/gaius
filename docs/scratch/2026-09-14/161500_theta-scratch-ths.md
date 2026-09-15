@@ -20,6 +20,8 @@ partition). Kudu `schema-apply` still needs a Signals devenv with impyla.
 Remainder windows (`none`/`ambiguous`) INSERT `theta_cycle_vertex_tier0`
 fail-open from `gather_slices`.
 
-`ThetaCycleFlow` (`gaius.flows.theta.cycle`) is the Airflow-orchestrated
-Metaflow (`gaius_theta_cycle`, hourly :25): settle analog → DROP RANGE →
-Iceberg partition expire + orphan GC. No pg_cron twin.
+2026-09-15: ThetaCycleFlow is the **consolidation consumer** (NVAR → BERTSubs
+→ KG) for `theta_consolidation_runs`. It does **not** DROP Kudu ranges or
+expire Iceberg. pg_cron still only INSERTs `scheduled` rows; Airflow
+`gaius_theta_cycle` Monday 06:00 drains them. Remainder vertices are no
+longer written from gather_slices.

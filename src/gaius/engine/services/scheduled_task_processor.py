@@ -1286,8 +1286,28 @@ class ScheduledTaskProcessor(BaseDaemon):
                 metaflow_mode="platform",
             )
 
+        async def handle_theta_cycle(task: ScheduledTask) -> dict[str, Any]:
+            """ThetaCycleFlow: drain pending NVAR/BERTSubs consolidations."""
+            return await self._run_spawned_metaflow(
+                kind="theta-cycle",
+                task=task,
+                argv=[
+                    "uv",
+                    "run",
+                    "--no-sync",
+                    "python",
+                    "-m",
+                    "gaius.flows.theta.cycle",
+                    "run",
+                ],
+                log_prefix="ThetaCycle",
+                idle_timeout=1800,
+                metaflow_mode="platform",
+            )
+
         self.register_handler("fmp_roll", handle_fmp_roll)
         self.register_handler("ambient_synthesis", handle_ambient_synthesis)
+        self.register_handler("theta_cycle", handle_theta_cycle)
 
         # gpu_metrics settle retired 2026-08-28: superseded by the product-generic
         # tier_settle (signal_tier0 carries the DCGM families now). gpu_metrics_tier1

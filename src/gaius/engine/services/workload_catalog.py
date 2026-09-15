@@ -167,11 +167,11 @@ WORKLOAD_CATALOG: tuple[WorkloadEntry, ...] = (
         pg_cron_job="tier-settle-signal",
     ),
     WorkloadEntry(
-        kind="theta_cycle", task_type="theta_cycle", payload={}, cron="25 * * * *",
-        singleton=True, runner=RUNNER_METAFLOW, horizon_s=H1,
-        description="gaius.theta.cycle — analog closed scratch hours to Iceberg, DROP RANGE, expire+orphan GC",
-        enabled=True, airflow_dag_id="gaius_theta_cycle", pg_cron_job="",
-        pg_cron_active=False,
+        kind="theta_cycle", task_type="theta_cycle", payload={}, cron="0 6 * * 1",
+        singleton=True, runner=RUNNER_METAFLOW, horizon_s=H5,
+        description="Theta consolidation cycle (NVAR → BERTSubs → KG); consumes theta_consolidation_runs",
+        enabled=True, airflow_dag_id="gaius_theta_cycle",
+        pg_cron_job="theta-weekly-consolidation", pg_cron_active=False,
     ),
     WorkloadEntry(
         kind="engine_audit", task_type="engine_audit", payload={}, cron="30 * * * *", horizon_s=H1,
