@@ -192,15 +192,19 @@ During initial development, `research_mode=True` bypasses the cost threshold to:
 
 Theta consolidation scores ⊑ on the **HermiT-certified OWL TBox**
 (`external/sdg-corpora/ontology/sdg-ontology.owl`). SKOS is terminology
-grounded to that TBox. CLT is a discrete graph over admitted content —
-co-activation yields candidate OWL class pairs. Thoughts are the encode
-diet. Do not mint `owl:Class` from thought tokens or KB markdown.
+grounded to that TBox. CLT is a discrete graph over admitted content.
+Admitted item text is MaxSim-grounded to the **full class set** (collection
+``sdg_tbox``), not the 33 aiming anchors. Candidate pairs are classes on
+distinct items that share a CLT feature, **excluding** asserted or entailed
+⊑ either way. BERTSubs scores both remaining directions, ranked by
+co-activation × MaxSim. Thoughts are the encode diet. Do not mint
+`owl:Class` from thought tokens or KB markdown.
 
 ### Pipeline
 
 1. **Encode** previous-week `cognition_thoughts` (engine EmbedTexts / ColBERT-Zero)
 2. **NVAR** on the slice centroid
-3. **CLT incidence** → SKOS codes → OWL IRIs (`clt_incidence.py`)
+3. **CLT incidence** + TBox MaxSim → novel class pairs (`clt_incidence.py`)
 4. **BERTSubs Intra** on the certified TBox
 5. **KG policy** selects; KB documents are augmented
 

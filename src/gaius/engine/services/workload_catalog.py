@@ -169,7 +169,7 @@ WORKLOAD_CATALOG: tuple[WorkloadEntry, ...] = (
     WorkloadEntry(
         kind="theta_cycle", task_type="theta_cycle", payload={}, cron="0 6 * * 1",
         singleton=True, runner=RUNNER_METAFLOW, horizon_s=H5,
-        description="Previous-week consolidation: encode thoughts, CLT incidence → SKOS → HermiT OWL, BERTSubs Intra, KG",
+        description="Previous-week consolidation: encode thoughts, CLT+MaxSim novel TBox pairs, BERTSubs Intra, KG",
         enabled=True, airflow_dag_id="gaius_theta_cycle",
         pg_cron_job="theta-weekly-consolidation", pg_cron_active=False,
     ),

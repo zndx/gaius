@@ -111,31 +111,73 @@ def test_flow_is_platform_vessel() -> None:
     assert isinstance(vars(GaiusFlow)["kb_root"], property)
 
 
-def test_clt_incidence_pairs_are_owl_iris_not_thought_tokens() -> None:
-    from gaius.agents.theta.clt_incidence import owl_pairs_from_feature_codes
+def test_novel_pairs_drop_entailed_and_score_both_directions() -> None:
+    from gaius.agents.theta.clt_incidence import GroundedItem, novel_directed_pairs
 
-    iris = {
-        "C_ENERGY": "https://signals.zndx.org/sdg#Energy",
-        "sdg_7": "https://signals.zndx.org/sdg#AffordableAndCleanEnergy",
-    }
-
-    def resolve(code: str) -> str | None:
-        return iris.get(code)
-
-    pairs = owl_pairs_from_feature_codes(
-        {(3, 12): {"C_ENERGY", "sdg_7", "not-grounded"}},
-        resolve,
-        limit=10,
-    )
-    assert pairs == [
-        (
-            "https://signals.zndx.org/sdg#AffordableAndCleanEnergy",
-            "https://signals.zndx.org/sdg#Energy",
-        )
+    a = "https://signals.zndx.org/sdg#A"
+    b = "https://signals.zndx.org/sdg#B"
+    d = "https://signals.zndx.org/sdg#D"
+    entailed = frozenset({(a, b)})
+    linked = [
+        GroundedItem(1, ((a, 0.9),), 1.0),
+        GroundedItem(2, ((b, 0.8), (d, 0.7)), 1.0),
     ]
-    flat = {a for p in pairs for a in p}
-    assert "In" not in flat
-    assert "not-grounded" not in flat
+    pairs = novel_directed_pairs({(0, 1): linked}, entailed, ranked_limit=10)
+    assert (a, b) not in pairs
+    assert (b, a) not in pairs
+    assert (a, d) in pairs and (d, a) in pairs
+    # B and D sit on the same item — not a cross-item CLT link.
+
+
+def test_novel_pairs_rank_by_weight_not_lexicographic_iri() -> None:
+    from gaius.agents.theta.clt_incidence import GroundedItem, novel_directed_pairs
+
+    z = "https://signals.zndx.org/sdg#Zzz"
+    a = "https://signals.zndx.org/sdg#Aaa"
+    items = [
+        GroundedItem(1, ((z, 1.0),), 10.0),
+        GroundedItem(2, ((a, 1.0),), 10.0),
+    ]
+    pairs = novel_directed_pairs({(1, 1): items}, frozenset(), ranked_limit=2)
+    assert pairs[0] in {(z, a), (a, z)}
+    assert set(pairs) == {(z, a), (a, z)}
+
+
+def test_tbox_closure_marks_ancestors_entailed(tmp_path) -> None:
+    from gaius.agents.theta.tbox import tbox_relations
+
+    owl = tmp_path / "t.owl"
+    owl.write_text(
+        """<?xml version="1.0"?>
+<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
+         xmlns:owl="http://www.w3.org/2002/07/owl#"
+         xmlns:rdfs="http://www.w3.org/2000/01/rdf-schema#">
+  <owl:Ontology rdf:about="http://example.org/t"/>
+  <owl:Class rdf:about="http://example.org/t#C">
+    <rdfs:label>C</rdfs:label>
+  </owl:Class>
+  <owl:Class rdf:about="http://example.org/t#B">
+    <rdfs:label>B</rdfs:label>
+    <rdfs:subClassOf rdf:resource="http://example.org/t#C"/>
+  </owl:Class>
+  <owl:Class rdf:about="http://example.org/t#A">
+    <rdfs:label>A</rdfs:label>
+    <rdfs:subClassOf rdf:resource="http://example.org/t#B"/>
+  </owl:Class>
+</rdf:RDF>
+""",
+        encoding="utf-8",
+    )
+    records, entailed = tbox_relations(str(owl))
+    iris = {r.iri for r in records}
+    assert iris == {
+        "http://example.org/t#A",
+        "http://example.org/t#B",
+        "http://example.org/t#C",
+    }
+    assert ("http://example.org/t#A", "http://example.org/t#B") in entailed
+    assert ("http://example.org/t#A", "http://example.org/t#C") in entailed
+    assert ("http://example.org/t#B", "http://example.org/t#A") not in entailed
 
 
 def test_certified_tbox_is_sdg_ontology() -> None:
@@ -154,6 +196,6 @@ def test_theta_cycle_objective_is_declared() -> None:
     assert spec.dag == ("theta_cycle",)
     assert spec.params["horizon_hours"] == 5
     blob = spec.description.lower()
-    assert "hermit" in blob
+    assert "tbox" in blob
     assert "clt" in blob
-    assert "skos" in blob
+    assert "novel" in blob or "entail" in blob

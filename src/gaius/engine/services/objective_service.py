@@ -235,8 +235,8 @@ OBJECTIVES: dict[str, ObjectiveSpec] = {
         cadence=timedelta(hours=5),
         description=(
             "Mechanics: previous ISO-week cognition_thoughts encoded; "
-            "CLT incidence yields SKOS-grounded OWL class pairs; "
-            "BERTSubs Intra scores ⊑ on the HermiT-certified TBox. "
+            "CLT links admitted items MaxSim-grounded to the full TBox; "
+            "BERTSubs Intra scores novel (not TBox-entailed) ⊑ both ways. "
             "Intent: documents augmented with a non-null effectiveness "
             "delta, judged by Overwatch."
         ),

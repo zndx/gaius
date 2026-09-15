@@ -709,7 +709,7 @@ class ThetaAgent:
                 from gaius.engine.services.theta_cycle import NOPAIRS
 
                 result.error = (
-                    f"{NOPAIRS} no CLT incidence with SKOS-grounded OWL terms in {slice_id}"
+                    f"{NOPAIRS} no novel (non-entailed) CLT-grounded OWL pairs in {slice_id}"
                 )
                 logger.warning(result.error)
                 return result
