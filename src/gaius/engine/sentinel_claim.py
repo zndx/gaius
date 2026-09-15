@@ -365,8 +365,10 @@ _KIND_CLASS: dict[str, ResourceClass] = {
     # for ~1 h on 2026-09-04 — every admit failed at start; reverted.
     "clt-skos-admit": LIGHT,
     "clt_skos_admit": LIGHT,
-    "theta-cycle": LIGHT,
-    "theta_cycle": LIGHT,
+    # Encode is EmbedTexts on the engine (gaius-embedding already holds light).
+    # Claiming LIGHT here is a second token for the same ColBERT — envelope cap 2.
+    "theta-cycle": COMPUTE,
+    "theta_cycle": COMPUTE,
 }
 
 

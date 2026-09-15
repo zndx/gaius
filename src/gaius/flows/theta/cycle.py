@@ -23,7 +23,7 @@ from gaius.hx.lineage.events import Dataset
 class ThetaCycleFlow(GaiusFlow):
     """Consolidation vessel. Heavy stages run in this process under YuniKorn."""
 
-    gpu_tokens = 1
+    gpu_tokens = 0
     scheduled_task_id = Parameter("scheduled-task-id", default=0, type=int)
     slice_id = Parameter("slice-id", default="", type=str)
 
