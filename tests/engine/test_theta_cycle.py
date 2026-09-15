@@ -57,10 +57,11 @@ def test_flow_is_platform_vessel() -> None:
     from gaius.flows.theta.cycle import ThetaCycleFlow
 
     assert "theta-cycle" in FLOW_REGISTRY
-    assert ThetaCycleFlow.gpu_tokens == 0
-    from gaius.engine.sentinel_claim import COMPUTE, resource_class_for
+    assert ThetaCycleFlow.gpu_tokens == 1
+    assert ThetaCycleFlow.model == "lightonai/ColBERT-Zero"
+    from gaius.engine.sentinel_claim import LIGHT, resource_class_for
 
-    assert resource_class_for("theta-cycle") is COMPUTE
+    assert resource_class_for("theta-cycle") is LIGHT
     assert hasattr(ThetaCycleFlow, "encode")
     assert hasattr(ThetaCycleFlow, "infer")
     assert hasattr(ThetaCycleFlow, "complete")

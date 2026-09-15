@@ -1,8 +1,9 @@
 """ThetaCycleFlow — encode thoughts, CLT incidence, BERTSubs Intra on the TBox.
 
-Airflow DAG ``gaius_theta_cycle`` (Monday 06:00). The engine owns the queue
-and EmbedTexts; this child never constructs ThetaService. The TBox is the
-HermiT-certified SDG OWL. SKOS names it. CLT links the corpus.
+Airflow DAG ``gaius_theta_cycle`` (Monday 06:00). This child admits LIGHT
+for ColBERT-Zero (encode + TBox MaxSim) and releases the sentinel on
+exit. The engine owns the queue, not the CUDA. Never constructs
+ThetaService.
 
     uv run python -m gaius.flows.theta.cycle run
 """
@@ -24,7 +25,8 @@ from gaius.hx.lineage.events import Dataset
 class ThetaCycleFlow(GaiusFlow):
     """Consolidation vessel. Heavy stages run in this process under YuniKorn."""
 
-    gpu_tokens = 0
+    gpu_tokens = 1
+    model = "lightonai/ColBERT-Zero"
     scheduled_task_id = Parameter("scheduled-task-id", default=0, type=int)
     slice_id = Parameter("slice-id", default="", type=str)
 
@@ -92,8 +94,9 @@ class ThetaCycleFlow(GaiusFlow):
 
     @step
     def encode(self):
-        """Centroid via the engine EmbedTexts RPC — not a local model."""
-        from gaius.engine.services.theta_cycle import NOENCODE, embed_texts
+        """Centroid from this process's admitted ColBERT-Zero (LIGHT token)."""
+        from gaius.engine.embeddings.colbert import agg_vectors_for_texts
+        from gaius.engine.services.theta_cycle import NOENCODE
 
         if self.thoughts and not (getattr(self, "result", None) or {}).get("guru_code"):
             texts = [
@@ -102,9 +105,9 @@ class ThetaCycleFlow(GaiusFlow):
             ]
             texts = [t for t in texts if t]
             try:
-                vecs = embed_texts(texts)
+                vecs = agg_vectors_for_texts(texts)
                 if not vecs:
-                    raise RuntimeError("empty EmbedTexts response")
+                    raise RuntimeError("empty ColBERT encode")
                 self.centroid = np.mean(np.asarray(vecs, dtype=float), axis=0)
                 self.stage = "encode"
                 print(f"theta.cycle.encode n={len(vecs)} dim={self.centroid.shape}")

@@ -1,7 +1,7 @@
 """Queue helpers for ThetaCycleFlow (Metaflow). The engine owns the table.
 
 Stale ``scheduled`` rows are superseded. Live input is ``cognition_thoughts``.
-Encoding is EmbedTexts on the engine; BERTSubs runs in the flow process.
+The Metaflow child owns ColBERT-Zero (LIGHT) and BERTSubs; the engine owns the queue.
 
 Guru:
 - #THETA.00000008.STALESLICE
@@ -141,26 +141,4 @@ async def complete_job(dsn: str, job_id: int, result: dict[str, Any]) -> None:
             )
     finally:
         await pool.close()
-
-
-def embed_texts(texts: list[str]) -> list[list[float]]:
-    """Engine EmbedTexts RPC (ColBERT-Zero 128-d agg). Raises on empty/transport failure."""
-    import grpc
-
-    from gaius.engine.generated import EmbedTextsRequest
-    from gaius.engine.generated.gaius_service_pb2_grpc import GaiusServiceStub
-    from gaius.flows.lattice import engine_target
-
-    if not texts:
-        return []
-    channel = grpc.insecure_channel(engine_target())
-    try:
-        stub = GaiusServiceStub(channel)
-        resp = stub.EmbedTexts(EmbedTextsRequest(texts=texts), timeout=180.0)
-    finally:
-        channel.close()
-    vecs = [list(v.values) for v in resp.embeddings]
-    if not vecs:
-        raise RuntimeError("#THETA.00000010.NOENCODE empty EmbedTexts")
-    return vecs
 

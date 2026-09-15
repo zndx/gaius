@@ -22,8 +22,7 @@ Airflow Monday 06:00 ─┐
 /theta consolidate  ─┼─→ scheduled_tasks.theta_cycle → STP → ThetaCycleFlow
 MCP theta_consolidate┘         (YK COMPUTE)              │
                                                          ▼
-                                              engine EmbedTexts (encode)
-                                              child: NVAR, CLT+MaxSim, BERTSubs
+                                              child LIGHT: ColBERT encode + TBox MaxSim, BERTSubs
 ```
 
 ThetaConsolidate INSERT-only. It does not construct ThetaAgent, start a JVM, or run incidence in the engine.
@@ -177,7 +176,7 @@ co-activation × MaxSim. Thoughts are the encode diet. Do not mint
 
 ### Pipeline
 
-1. **Encode** previous-week `cognition_thoughts` (engine EmbedTexts / ColBERT-Zero)
+1. **Encode** previous-week `cognition_thoughts` (ColBERT-Zero in the LIGHT child)
 2. **NVAR** on the slice centroid
 3. **CLT incidence** + TBox MaxSim → novel class pairs (`clt_incidence.py`)
 4. **BERTSubs Intra** on the certified TBox

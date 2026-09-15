@@ -24,6 +24,8 @@ GURU_NOMAXSIM = (
 
 
 def _zero(device: str | None = None):
+    """ColBERT in THIS process. Callers must hold a LIGHT YK token
+    (``own_gpu_application``); do not load from a COMPUTE child."""
     from gaius.engine.embeddings.colbert import get_colbert_embedder
 
     return get_colbert_embedder(device=device)

@@ -365,10 +365,11 @@ _KIND_CLASS: dict[str, ResourceClass] = {
     # for ~1 h on 2026-09-04 — every admit failed at start; reverted.
     "clt-skos-admit": LIGHT,
     "clt_skos_admit": LIGHT,
-    # Encode is EmbedTexts on the engine (gaius-embedding already holds light).
-    # Claiming LIGHT here is a second token for the same ColBERT — envelope cap 2.
-    "theta-cycle": COMPUTE,
-    "theta_cycle": COMPUTE,
+    # ThetaCycleFlow loads ColBERT-Zero in the child (encode + TBox MaxSim).
+    # The LIGHT token is the run's; STP deletes the sentinel when the
+    # process ends. COMPUTE + in-process CUDA is an unadmitted GPU.
+    "theta-cycle": LIGHT,
+    "theta_cycle": LIGHT,
 }
 
 
