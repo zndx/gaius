@@ -20,7 +20,8 @@ semantic layer. Metabot then sees the tables.
 | Semantics | `apply_semantics` name heuristics | Not Atlas IRIs. Designed projector is **K17** (`ScientificProjectMetabase`) — not shipped |
 | Atlas | Gaius POSTs OpenLineage to Signals `:21010` | Entities for FMP tables not defined |
 
-## Intended control flow (not built)
+## Intended control flow (Kudu + FDW + ProjectWarehouse built 2026-09-15;
+Iceberg tier1 settle still PENDING)
 
 ```
 MetabaseEngine  --zndx.engine.v1-->  GaiusEngine

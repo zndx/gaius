@@ -6017,7 +6017,7 @@ Domain: {domain or 'general'}
 
     @server.tool()
     async def fmp_prepare_warehouse(symbols: str, tools: str = "quote,filings,calendar") -> str:
-        """Ask Gaius to land typed FMP tables (Iceberg gaius.fmp.*) then hook Metabase.
+        """Ask Gaius to land typed FMP tables (Kudu fmp_*_tier0, warehouse.v_fmp_*) then hook Metabase.
 
         Returns a scheduled_tasks id. Unbounded gather; Metabase is notified on completion.
         """

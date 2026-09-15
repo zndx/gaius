@@ -1,8 +1,9 @@
-"""FmpWarehouseFlow — typed Iceberg land from the FMP tool catalog.
+"""FmpWarehouseFlow — typed THS land from the FMP tool catalog.
 
 Metabase (or CLI) asks Gaius to prepare warehouse tables. This flow is the
-vessel: FmpCall → flatten → Polarisfork append → ProjectWarehouse hook.
+vessel: FmpCall → flatten → Kudu fmp_*_tier0 (impala_fdw) → ProjectWarehouse.
 Thinking writes a narrative only; IRIs are the declared scratch map.
+Polarisfork Iceberg is a copy; Metabase reads warehouse.v_fmp_*.
 """
 from __future__ import annotations
 
@@ -84,12 +85,9 @@ class FmpWarehouseFlow(GaiusFlow):
     def notify(self):
         from gaius.engine.services.fmp_warehouse import notify_metabase
 
-        target = (os.environ.get("METABASE_ENGINE_TARGET") or "127.0.0.1:50451").strip()
-        try:
-            self.notify_result = notify_metabase(tables=self.landed, engine_target=target)
-        except Exception as e:
-            print(f"WARN ProjectWarehouse: {e}")
-            self.notify_result = {"ok": False, "error": str(e)[:300]}
+        # FederationSurfaces project=metabase; env is an override, not a default.
+        target = (os.environ.get("METABASE_ENGINE_TARGET") or "").strip()
+        self.notify_result = notify_metabase(tables=self.landed, engine_target=target)
         print(f"fmp.warehouse.notify {self.notify_result}")
         self.next(self.end)
 

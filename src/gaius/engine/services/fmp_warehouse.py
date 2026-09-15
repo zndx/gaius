@@ -2,12 +2,14 @@
 
 Engine-first: RPC/CLI/MCP enqueue a Metaflow. The flow Completes thinking
 only for a model narrative; column IRIs are the declared scratch map in
-``hx.fmp_warehouse``. After land, gRPC ProjectWarehouse on the Metabase peer.
+``hx.fmp_warehouse``. After Kudu land, gRPC ProjectWarehouse on the
+Metabase peer from FederationSurfaces (project=metabase / :3200).
 """
 from __future__ import annotations
 
 import json
 import logging
+import os
 from typing import Any
 
 log = logging.getLogger("gaius.engine.services.fmp_warehouse")
@@ -52,15 +54,73 @@ def metabase_peer(surfaces: list[dict[str, Any]]) -> dict[str, Any] | None:
     return None
 
 
+def federation_surfaces(*, engine_target: str = "", timeout_s: float = 10.0) -> list[dict[str, Any]]:
+    """Ask local Gaius FederationSurfaces. Fail-closed on RPC error."""
+    import grpc
+
+    from gaius.engine.generated import FederationSurfacesRequest
+    from gaius.engine.generated import gaius_service_pb2_grpc as pb_grpc
+
+    addr = (
+        engine_target
+        or os.environ.get("GAIUS_ENGINE_TARGET")
+        or "127.0.0.1:50051"
+    ).strip()
+    channel = grpc.insecure_channel(addr)
+    try:
+        stub = pb_grpc.GaiusServiceStub(channel)
+        resp = stub.FederationSurfaces(FederationSurfacesRequest(), timeout=timeout_s)
+    except grpc.RpcError as e:
+        raise RuntimeError(
+            f"{GURU_MB} FederationSurfaces at {addr} failed: "
+            f"{e.code().name} {e.details()}"
+        ) from e
+    finally:
+        channel.close()
+    if resp.error:
+        raise RuntimeError(f"{GURU_MB} FederationSurfaces: {resp.error}")
+    return [
+        {
+            "project": it.project,
+            "engine_target": it.engine_target,
+            "primary_ui": it.primary_ui,
+        }
+        for it in resp.items
+    ]
+
+
+def resolve_metabase_target(
+    *,
+    engine_target: str = "",
+    surfaces: list[dict[str, Any]] | None = None,
+) -> str:
+    """Metabase engine from explicit target, env, or FederationSurfaces."""
+    explicit = (engine_target or os.environ.get("METABASE_ENGINE_TARGET") or "").strip()
+    if explicit:
+        return explicit
+    rows = surfaces if surfaces is not None else federation_surfaces()
+    peer = metabase_peer(rows)
+    if peer is None or not str(peer.get("engine_target") or "").strip():
+        raise RuntimeError(
+            f"{GURU_MB} FederationSurfaces has no metabase peer "
+            "(project=metabase or primary_ui :3200)."
+        )
+    return str(peer["engine_target"]).strip()
+
+
 def notify_metabase(
     *,
     tables: list[dict[str, Any]],
-    engine_target: str,
+    engine_target: str = "",
     timeout_s: float = 30.0,
+    surfaces: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """gRPC ProjectWarehouse on the Metabase engine. Fail-closed if unreachable."""
     import grpc
 
+    engine_target = resolve_metabase_target(
+        engine_target=engine_target, surfaces=surfaces
+    )
     if not engine_target:
         raise RuntimeError(
             f"{GURU_MB} FederationSurfaces has no metabase peer "
@@ -79,11 +139,16 @@ def notify_metabase(
     bindings = {}
     names = []
     for t in tables:
-        name = str(t.get("table") or "").split(".")[-1]
-        names.append(str(t.get("table") or name))
+        full = str(t.get("table") or "")
+        name = full.split(".")[-1]
+        names.append(full or name)
         iris = t.get("iris") or {}
         if isinstance(iris, dict):
             bindings[name] = iris
+            if name.startswith("v_fmp_"):
+                bindings[name[6:]] = iris
+            if name.startswith("fmp_"):
+                bindings[name[4:].removesuffix("_tier0")] = iris
     req = pb.ProjectWarehouseRequest(
         tables_json=json.dumps(names),
         bindings_json=json.dumps(bindings),

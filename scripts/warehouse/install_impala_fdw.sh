@@ -49,6 +49,12 @@ sed \
 psql -h "$PGHOST" -p "$PGPORT" -d "$PGDATABASE" -v ON_ERROR_STOP=1 \
   -f "$ROOT/scripts/warehouse/nautilus-fdw.sql"
 
+# FMP warehouse (Starter Annual): Kudu tier0 + warehouse.v_fmp_* for Metabase.
+# Kudu tables come from signals `python -m signals.ops schema-apply`
+# (config/platform/fmp-kudu.sql).
+psql -h "$PGHOST" -p "$PGPORT" -d "$PGDATABASE" -v ON_ERROR_STOP=1 \
+  -f "$ROOT/scripts/warehouse/fmp-fdw.sql"
+
 # Warehouse-side settle function, invoked by Gaius pg_cron → engine, not Signals cron.
 if [[ -f "$SIGNALS_ROOT/config/platform/gpu-metrics-settle.sql" ]]; then
   grep -v 'cron.schedule\|cron.unschedule' \

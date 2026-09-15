@@ -13765,6 +13765,7 @@ Examples:
             /fmp employees AAPL
             /fmp 8k [AAPL]
             /fmp insider [AAPL]
+            /fmp warehouse AAPL[,MSFT]  - land Kudu fmp_*_tier0 + hook Metabase
         """
         from .client.grpc_client import get_grpc_client
 
