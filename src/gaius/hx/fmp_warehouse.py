@@ -305,9 +305,10 @@ async def _ensure_day_partitions(conn: Any, hour: int) -> None:
                 if "already" not in msg and "overlap" not in msg:
                     raise RuntimeError(
                         f"{GURU} ADD RANGE PARTITION {tbl} failed: {e}\n"
-                        "  Apply signals `python -m signals.ops schema-apply` "
-                        "(config/platform/fmp-kudu.sql) then "
-                        "gaius scripts/warehouse/fmp-fdw.sql."
+                        "  Create via signals_kudu_create (libkudu_client), "
+                        "register catalog_tables, then "
+                        "gaius scripts/warehouse/fmp-fdw.sql. "
+                        "Do not Python-impyla HS2 CREATE."
                     ) from e
 
 
@@ -335,8 +336,8 @@ async def land_kudu_async(name: str, rows: list[dict[str, Any]], *, conn: Any | 
     except Exception as e:
         raise RuntimeError(
             f"{GURU} INSERT {KUDU_TABLES[name]} failed: {e}\n"
-            "  Need signals schema-apply (fmp-kudu.sql) and "
-            "scripts/warehouse/fmp-fdw.sql on :5444."
+            "  Need signals_kudu_create + catalog_tables + "
+            "scripts/warehouse/fmp-fdw.sql on :5444 (impala_fdw kudu_scan)."
         ) from e
     finally:
         if own and conn is not None:

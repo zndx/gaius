@@ -17,13 +17,18 @@ PrepareFmpWarehouse → STP FmpWarehouseFlow (gpu_tokens=0)
 Polarisfork `gaius.fmp.*` remains a best-effort copy. Iceberg settle
 (`fmp_*_tier1`) is still PENDING, same as nautilus.
 
-## Apply
+## Apply (no Python impyla)
 
-1. Signals: `python -m signals.ops schema-apply` (HS2 CREATE … STORED AS KUDU;
-   plain scalars, not `signals_kudu_create.cc`).
-2. Gaius: `scripts/warehouse/install_impala_fdw.sh` now also applies
-   `scripts/warehouse/fmp-fdw.sql` (`warehouse.v_fmp_profile|filings|earnings`).
-3. Recycle Gaius + Metabase engines so PrepareFmpWarehouse / ProjectWarehouse
-   load. Then `/fmp warehouse AAPL` (or MCP `fmp_prepare_warehouse`).
+THS runtime is Postgres `impala_fdw` `kudu_scan` (libkudu_client in the
+FDW). Table create is `signals_kudu_create` (same client). Catalog rows
+are SQL on `:5455` `signals_catalog`. Impyla is not on this path.
+
+1. Signals: `devenv shell -- scripts/build-kudu-tools.sh signals_kudu_create`
+   then `signals_kudu_create fmp_profile_tier0` (and filings/earnings).
+2. `psql :5455/signals_catalog` apply the `fmp_*_tier0` rows from
+   `config/platform/signal-registry.sql`.
+3. Gaius: `scripts/warehouse/fmp-fdw.sql` — views read `fmp_*_tier0`
+   (`kudu_scan`), not `impala_sql`.
+4. Recycle Gaius + Metabase engines. Then `/fmp warehouse AAPL`.
 
 Do not route warehouse models through Gaius `:3100` / `meta.*`.

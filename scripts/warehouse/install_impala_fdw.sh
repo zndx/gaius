@@ -50,8 +50,7 @@ psql -h "$PGHOST" -p "$PGPORT" -d "$PGDATABASE" -v ON_ERROR_STOP=1 \
   -f "$ROOT/scripts/warehouse/nautilus-fdw.sql"
 
 # FMP warehouse (Starter Annual): Kudu tier0 + warehouse.v_fmp_* for Metabase.
-# Kudu tables come from signals `python -m signals.ops schema-apply`
-# (config/platform/fmp-kudu.sql).
+# Kudu tables come from signals_kudu_create + catalog_tables (not impyla).
 psql -h "$PGHOST" -p "$PGPORT" -d "$PGDATABASE" -v ON_ERROR_STOP=1 \
   -f "$ROOT/scripts/warehouse/fmp-fdw.sql"
 

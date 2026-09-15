@@ -83,6 +83,8 @@ CREATE FOREIGN TABLE fmp_earnings (
 
 CREATE SCHEMA IF NOT EXISTS warehouse;
 
+-- Metabase reads these. Source is kudu_scan tier0 (direct libkudu_client),
+-- not impala_sql — no Python impyla, no HS2 on the query path.
 CREATE OR REPLACE VIEW warehouse.v_fmp_profile AS
 SELECT
   symbol,
@@ -94,7 +96,7 @@ SELECT
   website,
   description,
   to_timestamp(ts_ns / 1e9) AT TIME ZONE 'UTC' AS as_of
-FROM fmp_profile;
+FROM fmp_profile_tier0;
 
 CREATE OR REPLACE VIEW warehouse.v_fmp_filings AS
 SELECT
@@ -103,7 +105,7 @@ SELECT
   filed,
   url,
   to_timestamp(ts_ns / 1e9) AT TIME ZONE 'UTC' AS as_of
-FROM fmp_filings;
+FROM fmp_filings_tier0;
 
 CREATE OR REPLACE VIEW warehouse.v_fmp_earnings AS
 SELECT
@@ -112,4 +114,4 @@ SELECT
   eps,
   eps_estimated,
   to_timestamp(ts_ns / 1e9) AT TIME ZONE 'UTC' AS as_of
-FROM fmp_earnings;
+FROM fmp_earnings_tier0;
