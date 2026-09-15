@@ -101,6 +101,7 @@ def test_flow_is_platform_vessel() -> None:
     assert hasattr(ThetaCycleFlow, "encode")
     assert hasattr(ThetaCycleFlow, "infer")
     assert hasattr(ThetaCycleFlow, "complete")
+    assert hasattr(ThetaCycleFlow, "end")
     assert not hasattr(ThetaCycleFlow, "maintain")
     assert not hasattr(ThetaCycleFlow, "settle")
 

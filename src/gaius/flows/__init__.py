@@ -72,10 +72,9 @@ def _register_builtin_flows():
     except ImportError:
         pass
 
-    try:
-        from gaius.flows.theta import ThetaCycleFlow  # noqa: F401
-    except ImportError:
-        pass
+    # ThetaCycleFlow is registered when `python -m gaius.flows.theta.cycle`
+    # loads the module. Importing it here would put the module in sys.modules
+    # before runpy executes it as __main__, which Metaflow warns on.
 
 
 

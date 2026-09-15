@@ -88,79 +88,78 @@ class ThetaCycleFlow(GaiusFlow):
                 "guru_code": NOTHOUGHTS,
                 "stage": "encode",
             }
-            self.next(self.complete)
-        else:
-            self.next(self.encode)
+        self.next(self.encode)
 
     @step
     def encode(self):
         """Centroid via the engine EmbedTexts RPC — not a local model."""
         from gaius.engine.services.theta_cycle import NOENCODE, embed_texts
 
-        texts = [
-            f"{t.get('title') or ''}\n{t.get('content') or ''}".strip()
-            for t in self.thoughts
-        ]
-        texts = [t for t in texts if t]
-        try:
-            vecs = embed_texts(texts)
-            if not vecs:
-                raise RuntimeError("empty EmbedTexts response")
-            self.centroid = np.mean(np.asarray(vecs, dtype=float), axis=0)
-            self.stage = "encode"
-            print(f"theta.cycle.encode n={len(vecs)} dim={self.centroid.shape}")
-            self.next(self.infer)
-        except Exception as e:
-            self.result = {
-                "success": False,
-                "slice_id": self.week,
-                "error": f"{NOENCODE} {e}",
-                "guru_code": NOENCODE,
-                "stage": "encode",
-            }
-            self.next(self.complete)
+        if self.thoughts and not (getattr(self, "result", None) or {}).get("guru_code"):
+            texts = [
+                f"{t.get('title') or ''}\n{t.get('content') or ''}".strip()
+                for t in self.thoughts
+            ]
+            texts = [t for t in texts if t]
+            try:
+                vecs = embed_texts(texts)
+                if not vecs:
+                    raise RuntimeError("empty EmbedTexts response")
+                self.centroid = np.mean(np.asarray(vecs, dtype=float), axis=0)
+                self.stage = "encode"
+                print(f"theta.cycle.encode n={len(vecs)} dim={self.centroid.shape}")
+            except Exception as e:
+                self.result = {
+                    "success": False,
+                    "slice_id": self.week,
+                    "error": f"{NOENCODE} {e}",
+                    "guru_code": NOENCODE,
+                    "stage": "encode",
+                }
+        self.next(self.infer)
 
     @step
     def infer(self):
         """NVAR + BERTSubs + KG + augmentation in this process (not the engine)."""
         from gaius.agents.theta.agent import ThetaAgent
 
-        agent = ThetaAgent(kb_root=self.kb_root)
-        result = asyncio.run(
-            agent.run_consolidation(
-                temporal_slice=self.week,
-                centroid=self.centroid,
-                documents=self.thoughts,
+        if getattr(self, "centroid", None) is not None:
+            agent = ThetaAgent(kb_root=self.kb_root)
+            result = asyncio.run(
+                agent.run_consolidation(
+                    temporal_slice=self.week,
+                    centroid=self.centroid,
+                    documents=self.thoughts,
+                )
             )
-        )
-        guru = ""
-        err = result.error
-        if err:
-            if "THINCABI" in err:
-                guru = "#THETA.00000012.THINCABI"
-            elif "ONTOLOGY_INVALID" in err:
-                guru = "#THETA.00000005.ONTOLOGY_INVALID"
-            elif "DEEPONTO" in err:
-                guru = "#THETA.00000001.DEEPONTO"
-            elif err.startswith("#THETA"):
-                guru = err.split()[0]
-        self.stage = "augment" if result.error is None else (guru or "infer")
-        self.result = {
-            "success": result.error is None,
-            "slice_id": result.slice_id,
-            "signal": result.signal.to_dict() if result.signal else None,
-            "candidates_evaluated": result.candidates_evaluated,
-            "candidates_selected": result.candidates_selected,
-            "documents_augmented": result.documents_augmented,
-            "effectiveness": result.effectiveness,
-            "error": result.error,
-            "guru_code": guru,
-            "stage": self.stage,
-        }
-        print(
-            f"theta.cycle.infer success={self.result['success']} "
-            f"eval={result.candidates_evaluated} aug={result.documents_augmented}"
-        )
+            guru = ""
+            err = result.error
+            if err:
+                if "THINCABI" in err:
+                    guru = "#THETA.00000012.THINCABI"
+                elif "ONTOLOGY_INVALID" in err:
+                    guru = "#THETA.00000005.ONTOLOGY_INVALID"
+                elif "DEEPONTO" in err:
+                    guru = "#THETA.00000001.DEEPONTO"
+                elif err.startswith("#THETA"):
+                    guru = err.split()[0]
+            self.stage = "augment" if result.error is None else (guru or "infer")
+            self.result = {
+                "success": result.error is None,
+                "slice_id": result.slice_id,
+                "signal": result.signal.to_dict() if result.signal else None,
+                "candidates_evaluated": result.candidates_evaluated,
+                "candidates_selected": result.candidates_selected,
+                "documents_augmented": result.documents_augmented,
+                "effectiveness": result.effectiveness,
+                "error": result.error,
+                "guru_code": guru,
+                "stage": self.stage,
+            }
+            print(
+                f"theta.cycle.infer success={self.result['success']} "
+                f"eval={result.candidates_evaluated} aug={result.documents_augmented}"
+            )
         self.next(self.complete)
 
     @step
@@ -176,6 +175,12 @@ class ThetaCycleFlow(GaiusFlow):
         self.emit_lineage_complete(
             outputs=[Dataset.from_source("postgres", "theta_consolidation_runs")]
         )
+        self.next(self.end)
+
+    @step
+    def end(self):
+        result = getattr(self, "result", {}) or {}
+        print(f"theta.cycle.end job={getattr(self, 'job_id', None)}")
         if not result.get("success"):
             raise RuntimeError(
                 result.get("error")
