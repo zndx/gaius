@@ -9,49 +9,24 @@ ThetaAgent serves two complementary functions:
 | Function | Command | Description |
 |----------|---------|-------------|
 | **SITREP** | `/sitrep [day\|week\|quarter\|open]` | Synthesize objectives, thoughts, agenda, health, evolution |
-| **Consolidation** | `/theta consolidate` | NVAR-mediated KB augmentation with wikilinks and action links |
+| **Consolidation** | `/theta consolidate` | Enqueue ThetaCycleFlow (Metaflow). Engine does not run BERTSubs. |
 
 The core insight: the brain consolidates memories during theta oscillations (4-8Hz). ThetaAgent uses NVAR dynamics to detect "semantic drift" in the KB embedding space, triggering consolidation when predicted and actual temporal centroids diverge.
 
 ## Architecture
 
-ThetaAgent follows the Engine-First pattern where gRPC is the primary transport:
+Sitrep stays on ThetaService. Consolidation is Metaflow:
 
 ```
-┌─────────────────────────────────────────────────────────────────────────┐
-│                           MCP Tools                                      │
-│                                                                          │
-│     theta_sitrep          theta_consolidate      theta_consolidation_stats│
-│           │                      │                        │              │
-└───────────┼──────────────────────┼────────────────────────┼──────────────┘
-            │                      │                        │
-            ▼                      ▼                        ▼
-┌─────────────────────────────────────────────────────────────────────────┐
-│                        GaiusServicer (gRPC)                              │
-│                                                                          │
-│   ThetaSitrep()        ThetaConsolidate()      ThetaConsolidationStats() │
-│         │                      │                        │                │
-│         └──────────────────────┼────────────────────────┘                │
-│                                ▼                                         │
-│                  ┌────────────────────────┐                              │
-│                  │     ThetaService       │ ← BaseDaemon protocol        │
-│                  │   (Engine-First)       │                              │
-│                  └───────────┬────────────┘                              │
-│                              │                                           │
-│                              ▼                                           │
-│                  ┌────────────────────────┐                              │
-│                  │     ThetaAgent         │ ← Implementation             │
-│                  │  (Lazy-initialized)    │                              │
-│                  └───────────┬────────────┘                              │
-│                              │                                           │
-│         ┌────────────────────┼────────────────────┐                     │
-│         ▼                    ▼                    ▼                     │
-│  ┌─────────────┐    ┌─────────────────┐   ┌──────────────┐             │
-│  │ThetaDynamics│    │SubsumptionInfer │   │KnowledgeGrad │             │
-│  │   (NVAR)    │    │   (BERTSubs)    │   │   Policy     │             │
-│  └─────────────┘    └─────────────────┘   └──────────────┘             │
-└─────────────────────────────────────────────────────────────────────────┘
+Airflow Monday 06:00 ─┐
+/theta consolidate  ─┼─→ scheduled_tasks.theta_cycle → STP → ThetaCycleFlow
+MCP theta_consolidate┘         (YK COMPUTE)              │
+                                                         ▼
+                                              engine EmbedTexts (encode)
+                                              child: NVAR, CLT+MaxSim, BERTSubs
 ```
+
+ThetaConsolidate INSERT-only. It does not construct ThetaAgent, start a JVM, or run incidence in the engine.
 
 ## gRPC Service Definition
 

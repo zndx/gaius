@@ -284,16 +284,10 @@ app.py:action_swarm_analysis()
                   └─→ engine.backends.vllm_controller
                       └─→ vLLM
 
-# ThetaAgent Consolidation Path
-mcp_server.py:theta_consolidate()
-  └─→ ThetaAgent.run_consolidation()
-      ├─→ theta.consolidation.ThetaDynamics.detect_drift()
-      │     └─→ engine.services.ngrc.NGRCPredictor
-      ├─→ theta.subsumption.SubsumptionInferencer.infer()
-      │     └─→ deeponto.onto.Ontology (JVM via JPype)
-      ├─→ theta.kg_policy.KnowledgeGradientPolicy.select()
-      └─→ theta.augmentation.AugmentationWriter.inject()
-            └─→ storage.kb_ops.update_document()
+# Theta consolidation
+mcp_server.py:theta_consolidate() / CLI /theta consolidate / Airflow
+  └─→ ThetaConsolidate RPC → INSERT scheduled_tasks.theta_cycle
+        └─→ STP → ThetaCycleFlow (Metaflow; BERTSubs in the child, not the engine)
 
 # Evolution Daemon Path
 engine.server.py:start()
@@ -394,7 +388,7 @@ qdrant_collections: [gaius_latent_memory, gaius_clt_memory]
 external_deps: [deeponto, jpype, qdrant_client]
 call_paths:
   swarm: app.action_swarm_analysis→get_swarm_manager→SwarmManager.analyze→roles.get_roles→inference.parallel_inference
-  theta: mcp.theta_consolidate→ThetaAgent.run_consolidation→ThetaDynamics→SubsumptionInferencer→KGPolicy→AugmentationWriter
+  theta: mcp.theta_consolidate→ThetaConsolidate→enqueue theta_cycle→ThetaCycleFlow
   evolution: engine.EvolutionService→EvolutionDaemon.run→optimize_agent→evaluate→save_version
   cognition: engine.CognitionService→CognitionAgent.generate_thoughts→storage.create_kb
 test_cmds:

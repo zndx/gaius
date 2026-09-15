@@ -1617,11 +1617,11 @@ message LineageEdge {
 // ThetaAgent Messages (Neuromorphic Consolidation)
 // ═══════════════════════════════════════════════════════════════════════════
 
-// Consolidation request - NVAR-mediated cross-temporal linking
+// Enqueue ThetaCycleFlow (Metaflow). Engine does not run BERTSubs.
 message ThetaConsolidateRequest {
-  string temporal_slice = 1;      // Slice ID (e.g., "2025-W52"). Empty = current week
-  int32 max_candidates = 2;       // Max subsumption candidates to evaluate (default: 10)
-  bool research_mode = 3;         // Bypass KG cost threshold (default: true)
+  string temporal_slice = 1;      // Slice ID (e.g., "2026-W37"). Empty = previous ISO week
+  int32 max_candidates = 2;       // Ignored (flow bound)
+  bool research_mode = 3;         // Ignored
 }
 
 // Consolidation response

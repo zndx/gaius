@@ -1,81 +1,44 @@
 import pytest
 
-from gaius.engine.services.theta_cycle import STALE, consume_pending, supersede_stale
+from gaius.engine.services.theta_cycle import enqueue_theta_cycle
 
 
-class _Conn:
-    def __init__(self) -> None:
-        self.pending: list[dict] = [
-            {"job_id": 1, "slice_id": "2026-W26"},
-            {"job_id": 2, "slice_id": "2026-W38"},
-        ]
-        self.started: list[int] = []
-        self.completed: list[tuple] = []
-        self.supersede_slice: str | None = None
-        self.scheduled: str | None = None
-
-    async def fetch(self, sql: str, *args: object) -> list[dict]:
-        if "get_pending_theta_consolidations" in sql:
-            return [r for r in self.pending if r["slice_id"] == "2026-W38"]
-        return []
+class _EnqueueConn:
+    def __init__(self, pending_id: int | None = None) -> None:
+        self.pending_id = pending_id
+        self.inserted: list[tuple] = []
 
     async def fetchval(self, sql: str, *args: object):
-        if "WITH u AS" in sql or "slice_id <>" in sql:
-            self.supersede_slice = args[0]
-            return 12
-        if "schedule_theta_consolidation" in sql:
-            self.scheduled = args[0] if args else None
-            return None
-        if "start_theta_consolidation" in sql:
-            self.started.append(int(args[0]))
-            return True
-        if "complete_theta_consolidation" in sql:
-            self.completed.append(args)
-            return True
-        return 0
+        if "completed_at IS NULL" in sql:
+            return self.pending_id
+        if "INSERT INTO scheduled_tasks" in sql:
+            self.inserted.append(args)
+            return 99
+        return None
 
 
 @pytest.mark.asyncio
-async def test_consume_pending_only_current_slice() -> None:
-    conn = _Conn()
-
-    async def consolidator(slice_id: str) -> dict:
-        assert slice_id == "2026-W38"
-        return {
-            "success": True,
-            "signal": {"urgency": 0.4, "drift": 0.1},
-            "candidates_evaluated": 3,
-            "candidates_selected": 1,
-            "documents_augmented": 1,
-        }
-
-    out = await consume_pending(
-        conn, consolidator=consolidator, current_slice="2026-W38"
-    )
-    assert conn.supersede_slice == "2026-W38"
-    slices = [j["slice_id"] for j in out if j.get("job_id")]
-    assert slices == ["2026-W38"]
-    assert conn.started == [2]
+async def test_enqueue_theta_cycle_inserts_metaflow_task() -> None:
+    conn = _EnqueueConn()
+    tid, fresh = await enqueue_theta_cycle(conn, slice_id="2026-W37", source="operator")
+    assert fresh is True and tid == 99
+    assert conn.inserted[0][1] == "operator"
+    assert "2026-W37" in str(conn.inserted[0][0])
 
 
 @pytest.mark.asyncio
-async def test_consume_pending_records_stage_named_failure() -> None:
-    conn = _Conn()
-    conn.pending = [{"job_id": 9, "slice_id": "2026-W38"}]
+async def test_enqueue_theta_cycle_reuses_pending() -> None:
+    conn = _EnqueueConn(pending_id=7)
+    tid, fresh = await enqueue_theta_cycle(conn, source="operator")
+    assert tid == 7 and fresh is False
+    assert conn.inserted == []
 
-    async def consolidator(slice_id: str) -> dict:
-        return {
-            "success": False,
-            "error": "#THETA.00000009.NOTHOUGHTS none",
-            "guru_code": "#THETA.00000009.NOTHOUGHTS",
-        }
 
-    out = await consume_pending(
-        conn, consolidator=consolidator, current_slice="2026-W38"
-    )
-    job = next(j for j in out if j.get("job_id"))
-    assert job["success"] is False
-    assert job["error"].startswith("#THETA.00000009")
+def test_theta_service_has_no_in_engine_consolidator() -> None:
+    from gaius.engine.services.theta_service import ThetaService
+
+    assert not hasattr(ThetaService, "run_consolidation")
+    assert hasattr(ThetaService, "enqueue_consolidation")
 
 
 def test_catalog_theta_cycle_is_monday_airflow_metaflow() -> None:

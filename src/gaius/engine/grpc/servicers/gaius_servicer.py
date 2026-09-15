@@ -5382,7 +5382,7 @@ class GaiusServicer(GaiusServiceServicer):
         request: ThetaConsolidateRequest,
         context: grpc.aio.ServicerContext,
     ) -> ThetaConsolidateResponse:
-        """Run NVAR-mediated consolidation via ThetaService only."""
+        """Enqueue ThetaCycleFlow. Does not run BERTSubs in the engine."""
         theta_service = getattr(self._services, "theta_service", None)
         if theta_service is None:
             await context.abort(
@@ -5394,35 +5394,22 @@ class GaiusServicer(GaiusServiceServicer):
 
         try:
             temporal_slice = request.temporal_slice or None
-            max_candidates = request.max_candidates or 10
-            result = await theta_service.run_consolidation(
+            result = await theta_service.enqueue_consolidation(
                 temporal_slice=temporal_slice,
-                max_candidates=max_candidates,
+                source="operator",
             )
-
-            signal = result.get("signal", {}) or {}
             return ThetaConsolidateResponse(
                 success=result.get("success", False),
                 slice_id=result.get("slice_id", ""),
-                urgency=signal.get("urgency", 0.0),
-                drift=signal.get("drift", 0.0),
-                candidates_evaluated=result.get("candidates_evaluated", 0),
-                candidates_selected=result.get("candidates_selected", 0),
-                documents_augmented=result.get("documents_augmented", 0),
                 error=result.get("error", ""),
                 guru_meditation=result.get("guru_code", ""),
             )
         except Exception as e:
-            error_msg = str(e)
-            guru = ""
-            if "DEEPONTO_UNAVAILABLE" in error_msg:
-                guru = "#THETA.00000001.DEEPONTO"
-
-            logger.exception(f"ThetaConsolidate failed: {e}")
+            logger.exception(f"ThetaConsolidate enqueue failed: {e}")
             return ThetaConsolidateResponse(
                 success=False,
-                error=error_msg,
-                guru_meditation=guru,
+                error=str(e),
+                guru_meditation="#THETA.00000013.CONSFAIL",
             )
 
     async def ThetaConsolidationStats(

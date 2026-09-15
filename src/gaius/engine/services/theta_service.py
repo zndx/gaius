@@ -6,13 +6,14 @@ awareness grounded in Attention Schema Theory (AST).
 
 Phase 1 Services (gRPC):
 - sitrep(): Generate situational awareness report
-- run_consolidation(): NVAR-mediated temporal consolidation
+- enqueue_consolidation(): INSERT theta_cycle for ThetaCycleFlow (not in-engine)
 - get_consolidation_stats(): Consolidation statistics
 
 Architecture:
-    MCP Tool → gRPC Servicer → ThetaService → ThetaAgent
+    MCP / CLI → gRPC ThetaConsolidate → enqueue scheduled_tasks
                      ↓
-              GaiusEngine._theta_service
+              STP → ThetaCycleFlow (Metaflow vessel)
+    Sitrep stays on ThetaService → ThetaAgent.
 
 The ThetaAgent is lazily initialized to avoid startup overhead when
 theta operations aren't used. NORMAL criticality - engine continues
@@ -28,7 +29,6 @@ Guru Meditation Codes:
 - #THETA.00000013.CONSFAIL - Consolidation cycle failed
 """
 
-import asyncio
 import logging
 import os
 from dataclasses import dataclass, field
@@ -276,113 +276,54 @@ class ThetaService(BaseDaemon):
                 "guru_code": "#THETA.00000004.SITREPFAIL",
             }
 
-    async def run_consolidation(
+    async def enqueue_consolidation(
         self,
         temporal_slice: Optional[str] = None,
-        max_candidates: int = 10,
+        *,
+        source: str = "operator",
     ) -> dict[str, Any]:
-        """Run NVAR-mediated consolidation cycle.
-
-        Args:
-            temporal_slice: Slice ID (e.g., "2025-W52"). None = current week.
-            max_candidates: Maximum candidates to evaluate per cycle.
-
-        Returns:
-            Consolidation result dict
-
-        Raises:
-            Exception: If consolidation fails
-        """
+        """Queue ThetaCycleFlow. The engine does not run BERTSubs or incidence."""
         from gaius.agents.theta.consolidation import get_previous_week_slice_id
-        from gaius.engine.services.theta_cycle import NOTHOUGHTS, NOENCODE
+        from gaius.engine.services.theta_cycle import enqueue_theta_cycle
 
-        slice_id = temporal_slice or get_previous_week_slice_id()
-
-        try:
-            thoughts = await self._thoughts_for_slice(slice_id)
-            if not thoughts:
-                return {
-                    "success": False,
-                    "slice_id": slice_id,
-                    "error": f"{NOTHOUGHTS} no cognition_thoughts in {slice_id}",
-                    "guru_code": NOTHOUGHTS,
-                }
-            centroid = await self._encode_centroid(thoughts)
-            from gaius.agents.theta.clt_incidence import owl_pairs_from_conn
-
-            owl_pairs: list[tuple[str, str]] = []
-            if self._db_pool is not None:
-                async with self._db_pool.acquire() as conn:
-                    owl_pairs = await owl_pairs_from_conn(conn, slice_id)
-            agent = self._get_agent()
-            result = await agent.run_consolidation(
-                temporal_slice=slice_id,
-                max_candidates=max_candidates or self.config.default_max_candidates,
-                centroid=centroid,
-                documents=thoughts,
-                owl_pairs=owl_pairs,
-            )
-            self._consolidation_count += 1
-            self._last_consolidation_at = datetime.now()
-            return {
-                "success": result.error is None,
-                "slice_id": result.slice_id,
-                "signal": result.signal.to_dict() if result.signal else None,
-                "candidates_evaluated": result.candidates_evaluated,
-                "candidates_selected": result.candidates_selected,
-                "documents_augmented": result.documents_augmented,
-                "effectiveness": result.effectiveness,
-                "error": result.error,
-            }
-        except Exception as e:
-            error_msg = str(e)
-            guru_code = "#THETA.00000013.CONSFAIL"
-            if "THINCABI" in error_msg or type(e).__name__ == "ThincAbiError":
-                guru_code = "#THETA.00000012.THINCABI"
-            elif "DEEPONTO_UNAVAILABLE" in error_msg or "DeepOntoNotAvailableError" in type(e).__name__:
-                guru_code = "#THETA.00000001.DEEPONTO"
-            elif "ONTOLOGY_INVALID" in error_msg:
-                guru_code = "#THETA.00000005.ONTOLOGY_INVALID"
-
-            logger.exception(f"[{guru_code}] Consolidation failed: {e}")
+        slice_id = (temporal_slice or "").strip() or get_previous_week_slice_id()
+        if self._db_pool is None:
             return {
                 "success": False,
                 "slice_id": slice_id,
-                "error": error_msg,
-                "guru_code": guru_code,
+                "error": "ThetaService has no database pool; cannot enqueue ThetaCycleFlow.",
+                "guru_code": "#THETA.00000013.CONSFAIL",
             }
-
-    async def _thoughts_for_slice(self, slice_id: str) -> list[dict[str, Any]]:
-        """ISO-week thoughts from Postgres — the live consolidation input."""
-        if self._db_pool is None:
-            return []
-        async with self._db_pool.acquire() as conn:
-            rows = await conn.fetch(
-                """
-                SELECT id::text AS id, title, content, domains, kb_paths
-                  FROM cognition_thoughts
-                 WHERE to_char(created_at AT TIME ZONE 'UTC', 'IYYY')
-                       || '-W' || to_char(created_at AT TIME ZONE 'UTC', 'IW')
-                       = $1
-                """,
-                slice_id,
-            )
-        return [dict(r) for r in rows]
-
-    async def _encode_centroid(self, thoughts: list[dict[str, Any]]) -> Any:
-        """Mean of per-document ColBERT-Zero agg vectors (128-d)."""
-        import numpy as np
-        from gaius.engine.embeddings.colbert import agg_vectors_for_texts
-
-        texts = [
-            f"{t.get('title') or ''}\n{t.get('content') or ''}".strip()
-            for t in thoughts
-        ]
-        texts = [t for t in texts if t]
-        if not texts:
-            raise RuntimeError("no thought text to encode")
-        vecs = await asyncio.to_thread(agg_vectors_for_texts, texts)
-        return np.mean(np.stack(vecs), axis=0)
+        try:
+            async with self._db_pool.acquire() as conn:
+                tid, fresh = await enqueue_theta_cycle(
+                    conn,
+                    slice_id=(temporal_slice or "").strip(),
+                    source=source,
+                )
+        except Exception as e:
+            logger.exception("enqueue theta_cycle failed")
+            return {
+                "success": False,
+                "slice_id": slice_id,
+                "error": str(e),
+                "guru_code": "#THETA.00000013.CONSFAIL",
+            }
+        self._consolidation_count += 1
+        self._last_consolidation_at = datetime.now()
+        verb = "queued" if fresh else "already-pending"
+        return {
+            "success": True,
+            "slice_id": slice_id,
+            "queued": True,
+            "scheduled_task_id": tid,
+            "fresh": fresh,
+            "error": (
+                f"{verb}: ThetaCycleFlow scheduled_tasks.id={tid} "
+                f"(Metaflow vessel; engine does not run BERTSubs)"
+            ),
+            "guru_code": "",
+        }
 
     def agenda(self, action: str = "list", horizon: str = "day") -> dict[str, Any]:
         """List or init the KB day agenda.

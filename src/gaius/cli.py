@@ -11628,39 +11628,22 @@ Generated: {now.isoformat()}
                 {
                     "temporal_slice": temporal_slice or "",
                     "max_candidates": max_candidates,
-                    "research_mode": True,  # Bypass KG cost threshold during research
+                    "research_mode": True,
                 },
-                timeout=120.0,  # Consolidation can take time
+                timeout=30.0,
             )
 
-            # Add formatted summary for text output
             if self.format != "json":
                 slice_id = result.get("slice_id", "unknown")
+                note = result.get("error") or result.get("guru_meditation") or ""
                 lines = [
-                    f"Consolidation Cycle: {slice_id}",
-                    f"─" * 40,
+                    f"Consolidation queued: {slice_id}",
+                    "─" * 40,
+                    "  Vessel: ThetaCycleFlow (Metaflow / YuniKorn)",
+                    "  Engine: enqueue only — BERTSubs does not run here",
                 ]
-
-                urgency = result.get("urgency")
-                drift = result.get("drift")
-                if urgency is not None and drift is not None:
-                    lines.extend([
-                        f"  Urgency: {urgency:.3f}",
-                        f"  Drift:   {drift:.3f}",
-                    ])
-                else:
-                    lines.append("  Signal:  Insufficient history (need k+1 slices)")
-
-                lines.extend([
-                    f"  Candidates evaluated: {result.get('candidates_evaluated', 0)}",
-                    f"  Candidates selected:  {result.get('candidates_selected', 0)}",
-                    f"  Documents augmented:  {result.get('documents_augmented', 0)}",
-                ])
-
-                error = result.get("error")
-                if error:
-                    lines.append(f"  Error: {error}")
-
+                if note:
+                    lines.append(f"  {note}")
                 result["formatted"] = "\n".join(lines)
 
             return result

@@ -103,11 +103,9 @@ flowchart TD
 
 ```mermaid
 flowchart TD
-    A["/sitrep or theta_consolidate"] --> B[ThetaAgent.consolidate]
-    B --> C[NVARDynamics.detect_drift]
-    C --> D[SubsumptionInferencer.infer]
-    D --> E[KnowledgeGradientPolicy.select]
-    E --> F[AugmentationWriter.inject_wikilinks]
+    A["/theta consolidate or Airflow"] --> Q[scheduled_tasks.theta_cycle]
+    Q --> F[ThetaCycleFlow]
+    S["/sitrep"] --> T[ThetaService.sitrep]
 ```
 
 ## Module Index

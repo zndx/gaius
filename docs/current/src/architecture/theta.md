@@ -39,9 +39,18 @@ Given slice centroids **c**_1,...,**c**_t in R^128 (ColBERT-Zero `agg` centroids
 
 High urgency indicates rapid semantic drift — the knowledge base is changing faster than consolidation is linking it.
 
-### Stage 3: BERTSubs Inference
+### Stage 3: Subsumption Inference
 
-Subsumption relationships (A is-a B) between concepts are inferred using BERTSubs (Chen et al., 2023) from DeepOnto. The inferencer classifies candidate concept pairs via fine-tuned BERT on `rdfs:subClassOf` axioms from an OWL domain ontology. Requires JVM (via JPype) and sufficient class count (~50+ classes).
+Candidate `A ⊑ B` hypotheses are scored by BERTSubs Intra (Chen et al., 2023, via DeepOnto) against one TBox. The layers are fixed and none is minted at run time:
+
+| Layer | Role |
+|-------|------|
+| **OWL** | `external/sdg-corpora/ontology/sdg-ontology.owl` — the HermiT-certified TBox (`ontology/HERMIT_CERTIFICATE.md`), the only ontology the pipeline may load |
+| **SKOS** | aperture codes resolve to those OWL IRIs (`SdgAperture.resolve`) |
+| **CLT** | discrete co-activation over `admitted_item × activation` for the slice; items sharing a feature link their codes; distinct grounded IRIs on one feature form a candidate pair (`agents/theta/clt_incidence.py`) |
+| **Thoughts** | `cognition_thoughts` feed the encode step and the NVAR signal only; no classes are derived from thought text |
+
+The generated `kb_current.owl` and `gaius_domain.owl` of the 2025 pipeline are retired: minting `owl:Class` from markdown or thought tokens was a category error. Requires the JVM (JPype) that DeepOnto starts.
 
 ### Stage 4: Knowledge Gradient Selection
 
@@ -67,7 +76,7 @@ The `EffectivenessTracker` measures augmentation impact by recording whether use
 # Situational report
 uv run gaius-cli --cmd "/sitrep" --format json
 
-# Run consolidation
+# Enqueue ThetaCycleFlow (same vessel as Airflow Monday 06:00)
 uv run gaius-cli --cmd "/theta consolidate" --format json
 
 # View consolidation stats

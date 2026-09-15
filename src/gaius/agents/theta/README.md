@@ -280,16 +280,9 @@ mcp_server.py:theta_sitrep()
       └─→ SituationReport.to_markdown()
 
 # Consolidation Path
-mcp_server.py:theta_consolidate()
-  └─→ agents.theta.ThetaAgent.consolidate()
-      ├─→ ThetaDynamics.compute_consolidation_signal(slices)
-      │   └─→ nvar_predict() → drift_magnitude
-      ├─→ SubsumptionInferencer.find_candidates()
-      │   └─→ deeponto.BERTSubs.classify()
-      └─→ KnowledgeGradientPolicy.evaluate(candidates)
-          └─→ [for selected candidates]
-              ├─→ inject_wikilinks() or inject_action_links()
-              └─→ storage.kb_ops.update_kb()
+mcp_server.py:theta_consolidate() / CLI /theta consolidate
+  └─→ ThetaConsolidate RPC → enqueue scheduled_tasks.theta_cycle
+        └─→ STP → ThetaCycleFlow (BERTSubs in the Metaflow child)
 
 # Effectiveness Tracking Path
 theta.effectiveness.EffectivenessTracker.record()
@@ -374,7 +367,7 @@ references:
   - "Powell & Ryzhov (2012) Optimal Learning"
 call_paths:
   sitrep: mcp.theta_sitrep→ThetaAgent.generate_sitrep→HorizonView→AttentionSchema→SituationReport
-  consolidate: mcp.theta_consolidate→ThetaAgent.consolidate→ThetaDynamics→SubsumptionInferencer→KGPolicy→inject
+  consolidate: mcp.theta_consolidate→ThetaConsolidate→enqueue theta_cycle→ThetaCycleFlow
   effectiveness: EffectivenessTracker.record→compute_contribution→SHAPAnalyzer
 test_cmds:
   sitrep: 'uv run gaius-cli --cmd "/sitrep"'

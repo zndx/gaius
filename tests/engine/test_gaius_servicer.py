@@ -740,6 +740,33 @@ class TestThetaEngineFirst:
         assert "#THETA.00000007.NOSVC" in context.abort.await_args.args[1]
 
     @pytest.mark.asyncio
+    async def test_consolidate_enqueues_and_does_not_run_agent(self, context):
+        from gaius.engine.generated import ThetaConsolidateRequest
+
+        services = MockServiceRegistry()
+        theta = MagicMock()
+        theta.enqueue_consolidation = AsyncMock(
+            return_value={
+                "success": True,
+                "slice_id": "2026-W37",
+                "error": "queued: ThetaCycleFlow scheduled_tasks.id=99",
+                "guru_code": "",
+            }
+        )
+        theta.run_consolidation = AsyncMock()
+        services.theta_service = theta
+        servicer = GaiusServicer(services.as_registry())
+        resp = await servicer.ThetaConsolidate(
+            ThetaConsolidateRequest(temporal_slice="2026-W37"), context
+        )
+        theta.enqueue_consolidation.assert_awaited_once()
+        theta.run_consolidation.assert_not_called()
+        assert resp.success is True
+        assert resp.slice_id == "2026-W37"
+        assert "ThetaCycleFlow" in resp.error
+        context.abort.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_stats_aborts_without_theta_service(self, servicer, context):
         from gaius.engine.generated import ThetaConsolidationStatsRequest
 

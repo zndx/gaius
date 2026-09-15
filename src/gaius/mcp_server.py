@@ -3981,19 +3981,14 @@ Domain: {domain or 'general'}
         temporal_slice: str = "",
         max_candidates: int = 10,
     ) -> str:
-        """Run a consolidation cycle for cross-temporal linking.
+        """Enqueue ThetaCycleFlow (same vessel as the Monday Airflow tick).
 
-        Uses NVAR-mediated theta dynamics to detect drift between temporal
-        slices, then applies BERTSubs subsumption inference to discover
-        relationships. Selected candidates (via Knowledge Gradient policy)
-        are reified as wikilinks and action:search links in KB documents.
-
-        Requires DeepOnto with functional JVM for BERTSubs inference.
-        Will fail-fast if DeepOnto is unavailable.
+        Does not run BERTSubs, the JVM, or the CLT incidence query in the
+        engine. STP spawns Metaflow under YuniKorn.
 
         Args:
-            temporal_slice: Slice ID (e.g., "2025-W52"). If empty, uses current week.
-            max_candidates: Maximum candidates to evaluate per cycle.
+            temporal_slice: Slice ID (e.g., "2026-W37"). Empty = previous ISO week.
+            max_candidates: Ignored (flow bound). Kept so existing callers do not break.
         """
         try:
             client = await _get_engine_client()
