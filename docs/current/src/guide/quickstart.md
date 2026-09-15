@@ -24,7 +24,7 @@ This starts the platform services (PostgreSQL, Qdrant, gRPC engine, NiFi) and la
 
 ## What You See
 
-The initial screen shows a 19x19 grid with a cursor (`✛`) at the center position (K10). Star points (hoshi) mark the standard Go board reference positions. If knowledge base content has been indexed, entity positions appear as stones projected from the 768-dimensional Nomic embedding space via UMAP.
+The initial screen shows a 19x19 grid with a cursor (`✛`) at the center position (K10). Star points (hoshi) mark the standard Go board reference positions. If knowledge base content has been indexed, entity positions appear as stones projected from the 128-d ColBERT-Zero `agg` embedding space via UMAP.
 
 Try these first interactions:
 

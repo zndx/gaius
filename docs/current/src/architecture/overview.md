@@ -47,7 +47,7 @@ All three interfaces communicate with the engine via gRPC:
 
 The core layer (L1) provides the mathematical primitives that other layers consume:
 
-**Grid projection**: UMAP maps embedding vectors from ℝ⁷⁶⁸ to continuous 2D coordinates (cosine metric, k=15, min_dist=0.1). Coordinates are quantized to the 19x19 integer lattice by rounding and clipping to [0, 18]. Grid positions follow Go board conventions (A1–T19, omitting I).
+**Grid projection**: UMAP maps embedding vectors from the 128-d ColBERT-Zero `agg` space to continuous 2D coordinates (cosine metric, k=15, min_dist=0.1). Coordinates are quantized to the 19x19 integer lattice by rounding and clipping to [0, 18]. Grid positions follow Go board conventions (A1–T19, omitting I).
 
 **Persistent homology**: Ripser computes a Vietoris-Rips filtration over the cosine distance matrix of the original high-dimensional embeddings (not the projected coordinates). Persistence barcodes for H0 (components), H1 (loops), and H2 (voids) are computed. Intervals with persistence > 0.1 are marked significant.
 

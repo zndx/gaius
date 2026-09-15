@@ -10,7 +10,7 @@ Gaius runs on a local development infrastructure managed by devenv (Nix-based), 
 | process-compose | Service orchestration | — | `devenv processes up/down` |
 | Just | Task runner (recipes) | — | `just <recipe>` |
 | PostgreSQL | Primary database (zndx_gaius) | 5444 | devenv process |
-| Qdrant | Vector store (768-dim embeddings) | 6333/6334 | devenv process |
+| Qdrant | Vector store (ColBERT-Zero multi-vectors + 128-d `agg`) | 6333/6334 | devenv process |
 | Aeron | IPC transport (engine ↔ worker) | — | devenv process |
 | NiFi | Data ingestion (Brave, arXiv, RSS) | 8443 | devenv process |
 | Metabase | Analytics dashboards | 3000 | devenv process |

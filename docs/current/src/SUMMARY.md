@@ -6,6 +6,7 @@
 
 - [Vision & Philosophy](./vision.md)
 - [Core Concepts](./concepts.md)
+  - [Origins: Pliny, the Go Board, and the Swarm](./concepts/origins.md)
   - [The Grid Metaphor](./concepts/grid.md)
   - [Embeddings & Point Clouds](./concepts/embeddings.md)
   - [Persistent Homology](./concepts/homology.md)

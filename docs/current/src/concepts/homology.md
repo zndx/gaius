@@ -59,7 +59,7 @@ Points far from the diagonal represent persistent features.
 
 ## Gaius Implementation
 
-The `TDAComputer` (`core/tda.py`) computes persistent homology via ripser on the cosine distance matrix of Nomic 768-dimensional embeddings:
+The `TDAComputer` (`core/tda.py`) computes persistent homology via ripser on the cosine distance matrix of ColBERT-Zero `agg` embeddings (128-dimensional):
 
 ```python
 computer = TDAComputer(max_dimension=2, method="rips")
@@ -67,7 +67,7 @@ features = computer.compute(embeddings, grid_coords)
 ```
 
 **Key parameters:**
-- Distance metric: cosine (on the original 768-dim embeddings, not projected coordinates)
+- Distance metric: cosine (on the original 128-dim ColBERT-Zero `agg` embeddings, not projected coordinates)
 - Max dimension: 2 (H0, H1, H2)
 - Significance threshold: persistence > 0.1 (a heuristic separating signal from noise)
 - Subsampling: random sample when point count exceeds `config.tda.max_points` (ripser is O(n³) worst case)

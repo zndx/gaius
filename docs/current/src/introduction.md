@@ -1,58 +1,55 @@
 # Gaius
 
-**Gaius** is a terminal interface for navigating high-dimensional embedding spaces. It computes persistent homology and Ollivier–Ricci curvature on the original embeddings, projects the results onto a discrete 19×19 lattice via UMAP, and renders topological and geometric features as interactive overlays.
+Gaius is the **cognition peer** of the [Signals](./operations/peer-unit.md) lattice. It runs a local thinking lane, keeps a markdown knowledge base, publishes an article surface, and consolidates what it has been thinking about. It attaches to the hub over one wire (`zndx.engine.v1.Engine` on `:50051`, peer id `gaius`), takes its clock from the Signals Airflow, runs its substantive workflows as Metaflow flows under YuniKorn, and settles its data products into the Signals warehouse.
 
-Named after Gaius Plinius Secundus (Pliny the Elder), whose *Naturalis Historia* cataloged the natural world across 37 books.
+This book is the operator and architecture reference for that peer. Every sentence in `docs/current` describes what runs today; retired paths are named retired in the same paragraph or are gone. The founding framing (Pliny, the 19×19 board, the swarm) lives on [Origins](./concepts/origins.md).
 
-## Capabilities
+## What runs
 
-1. **Lattice Projection**: UMAP (cosine metric, k=15 neighbors, min_dist=0.1) maps embedding vectors to continuous 2D coordinates. These are quantized to a 19×19 integer lattice by rounding and clipping to [0, 18]. The main lattice is accompanied by two 9×9 orthographic mini-grids centered on the cursor: an **Embed** view showing the local cosine-similarity neighborhood, and an **Iso** view rendering scalar fields (curvature, total persistence, complexity) as elevation maps via inverse-distance-weighted interpolation (power=2). Complexity is the mean cosine distance to k-nearest neighbors, normalized across the collection — a proxy for local topological isolation.
+| Surface | Current sentence |
+|---------|------------------|
+| **Engine** | One daemon on `:50051` (`gaius.engine`) hosts the services; TUI, CLI and MCP are thin gRPC clients ([Engine-First](./architecture/engine-first.md)). The native `GaiusService` sits beside the shared `zndx.engine.v1.Engine`. |
+| **Inference** | One local thinking lane: Qwen3.8-27B under vLLM, reached only through `Engine/Complete` with optillm methods as first-class capabilities; `instruct` is an operating profile of the same model. No client dials a model or optillm directly ([Inference](./architecture/inference.md)). |
+| **Embeddings** | ColBERT-Zero (`lightonai/ColBERT-Zero` via pylate): 128-d per-token vectors scored by MaxSim, a mean `agg` vector per document, Qdrant collection `gaius_kb_colbert_zero`, served to every client by the `EmbedTexts` RPC. There is no vLLM embedding process. Nomic, ColNomic, ColPali and ColQwen are retired (`#EM.00000003.RETIRED`) ([Embeddings](./concepts/embeddings.md)). |
+| **Cognition** | The cognition cycle writes `cognition_thoughts`; ambient synthesis (every 20 min) admits buffer windows through the SDG aperture (ColBERT-Zero MaxSim, unique topic) and synthesises on the thinking lane; `/thoughts` answers "what have you been thinking about" from the persisted thoughts; the Agenda brief lands after every producer run and at the day rollover ([Cognition](./architecture/cognition.md)). |
+| **Article surface** | Daily curation (Brave, arXiv category RSS) → research → cards → four publish slots a day → `gaius.zndx.org`, with LuxCore-rendered card imagery. Objectives `site_freshness` and `surface_integrity` judge the public page, not the pipeline ([Article Curation](./architecture/article-curation.md)). |
+| **Prospects** | A daily check orders the `ProspectsUpdateFlow`: FMP and SEC filings in, per-symbol theses and an Agenda card out; objective `prospects_intelligence` ([Data Pipeline](./architecture/data-pipeline.md)). |
+| **Theta cycle** | Monday 06:00 UTC, Airflow DAG `gaius_theta_cycle`, `ThetaCycleFlow`: encode the week's thoughts through `EmbedTexts`, NVAR drift, BERTSubs subsumption, knowledge-gradient selection, KB augmentation; objective `theta_cycle` ([Theta Consolidation](./architecture/theta.md)). |
+| **Schedule** | The workload catalogue declares every class (mirrored as inactive pg_cron jobs); the engine syncs it to Signals, which materialises one Airflow DAG per enabled class; a run is an Activity that asserts the class's YuniKorn claims for its duration; the engine starts the work when it sees its own Activity in force ([Metaflow](./architecture/metaflow.md), [pg_cron](./architecture/pgcron.md)). |
+| **Workflows** | Substantive work is a `GaiusFlow` on platform Metaflow (Signals metadata service, artifacts on RustFS, Kubernetes under YuniKorn). Flows are engine clients: thinking and embeddings over gRPC, never a local model ([Engine-First and workload execution](./architecture/engine-first.md#engine-first-and-workload-execution)). |
+| **Knowledge base** | A markdown zettelkasten at `/raid/signals/var/kb/dev` (`build/dev`): `current/`, `scratch/<date>/`, `archive/`; indexed in Qdrant; Bases and DQL for structured queries ([Knowledge Base](./architecture/knowledge-base.md)). |
+| **Storage** | PostgreSQL `zndx_gaius` for state and queues; Qdrant for vectors; the Signals warehouse for data products — Kudu hot tier, Iceberg on RustFS settled tier, Impala across both, `impala_fdw` from Postgres; HX (exchanges, reasoning traces) as Iceberg tables through Polaris ([Lineage](./architecture/lineage.md)). |
+| **Verification** | Every scheduled class carries an Objective defined on the surfaced result; probes are Brier-scored forecasts in the efficacy ledger; Nautilus supervises the Operations Backlog beside the engine; Overwatch (ACP + Grok) judges what determinism cannot settle ([Verification](./architecture/verification.md)). |
+| **Health** | FMEA-scored health observer, `/health fix <service>` self-healing first, guru meditation codes on every failure ([Health](./architecture/health.md)). |
 
-2. **Persistent Homology (H₀–H₂)**: Ripser computes a Vietoris–Rips filtration over the cosine distance matrix of the original high-dimensional embeddings (not the projected coordinates), producing persistence barcodes for dimensions 0 through 2. Intervals with persistence > 0.1 are marked significant (a heuristic threshold; no stability analysis is applied). H₀ captures connected components, H₁ captures 1-cycles, and H₂ captures 2-dimensional voids. Barcodes are rendered as overlays on the lattice, with persistent generators mapped to their lattice positions via the UMAP projection.
+## The peer
 
-3. **Ollivier–Ricci Curvature**: Discrete Ricci curvature is computed on a k-nearest-neighbor graph (k=15, cosine metric) constructed from the embedding space, using the OTD method with α=0.5. Per-node curvature is the mean of incident edge curvatures. The resulting curvature field, gradient vectors (finite-difference approximation), and divergence values are projected to the Iso mini-grid. Positive curvature indicates regions where neighborhoods overlap (cluster interiors); negative curvature indicates diverging neighborhoods (transition regions between topics).
-
-4. **Multi-Agent Exploration**: Seven agents (Leader, Risk, Optimizer, Planner, Critic, Executor, Adversary) navigate the lattice with role-specific positioning behaviors and cluster affinities. Leader seeks cluster centroids (positive curvature regions); Risk positions at semantic boundaries (negative curvature); Adversary samples uniformly. Persistent homology features and Ricci curvature values are available as grid state, directly informing agent trajectory selection and the Planner's constraint-satisfaction decisions.
-
-    Agent training uses the RASE framework (Rapid Agentic Systems Engineering), where constraints are composed declaratively via AllOf/AnyOf/Not and evaluated by a ground-truth oracle to produce verifiable reward signals — not learned proxies.
-
-5. **Modal Interface**: Vim-style modal navigation (`hjkl` motion, slash-command dispatch, overlay toggles) over both the lattice and the underlying gRPC service graph.
-
-6. **FMEA Health Observer**: A background daemon scores system components on Severity × Occurrence × Detection. When risk priority numbers exceed configured thresholds, it escalates to an agent via the [Agent Client Protocol](https://agentclientprotocol.com/) (ACP) for FMEA-mediated intervention.
-
-## Computational Pipeline
-
-The following pipeline is implemented end-to-end:
-
-1. **Embed** — Documents are encoded as multi-vector embeddings (ColBERT-Zero, GPU-accelerated) and indexed.
-2. **Project** — UMAP maps the embedding space to 2D; coordinates are rounded to the 19×19 integer lattice.
-3. **Filtration** — Vietoris–Rips filtration over the cosine distance matrix of original embeddings; Ripser computes persistence barcodes for H₀, H₁, H₂. Significant intervals (persistence > 0.1) produce topological overlays.
-4. **Curvature** — Ollivier–Ricci curvature on the k-NN graph (k=15, α=0.5, OTD); curvature, gradient, and divergence fields are interpolated onto the 9×9 Iso mini-grid via IDW.
-5. **Exploration** — Agents operate on the lattice using persistent features and curvature fields as state; the RASE oracle evaluates trajectories against topological invariants to produce verifiable rewards.
-6. **Rendering** — LuxCore path-traces procedural card visualizations from the computed geometric features.
-
-The lattice serves as both a visualization surface and a discrete approximation of the data manifold, integrating persistent homology, discrete curvature, and agent-based exploration.
-
-## Architecture
-
-- **Inference** — gRPC control plane with 37 services coordinating 6 NVIDIA GPUs via OR-Tools CP-SAT constraint programming for priority-preemptive scheduling and makespan optimization across inference, rendering, and evolution workloads
-- **Interfaces** — TUI, CLI, and MCP server (163 tools), all communicating with the engine via shared gRPC protocol
-- **Pipelines** — Metaflow orchestration for article curation, agent evaluation, and batch rendering
-- **Visualization** — LuxCore PATHOCL engine with GPU-accelerated rendering driven by a CFDG-inspired grammar
-- **Observability** — FMEA-scored health observer with [ACP](https://agentclientprotocol.com/)-mediated agent intervention
-- **Storage** — Bases feature store with a domain query language compiled to SQL via AST-based guardrails; RASE metamodel for agent verification
-
-## Getting Started
-
-```bash
-# Launch the TUI
-uv run gaius
-
-# Use the CLI for scripting
-uv run gaius-cli --cmd "/health" --format json
-
-# Check system status
-uv run gaius-cli --cmd "/gpu status" --format json
+```
+   TUI · CLI · MCP ── gRPC ──▶ gaius engine :50051 ──▶ thinking (vLLM, Qwen3.8-27B)
+                                     │                ColBERT-Zero (EmbedTexts)
+                                     │                cognition · agenda · objectives
+                                     │
+              zndx.engine.v1 / zndx.scheduler.v1 (signals-protocol)
+                                     │
+                          Signals engine :50551
+                     Airflow (clock) · YuniKorn (admission)
+                     Metaflow (flows) · Kudu/Iceberg/Impala (warehouse)
+                                     │
+                    board :9890 · gaius.zndx.org (article surface)
 ```
 
-Navigate with `hjkl`. Cycle overlays with `o`. Toggle modes with `v`. Press `?` for help.
+## Getting started
+
+```bash
+# Peer unit (devenv graph under systemd)
+systemctl status gaius.service
+just up                                   # or: just restart-clean
+
+# Thin clients
+uv run gaius                              # TUI
+uv run gaius-cli --cmd "/health" --format json
+uv run gaius-cli --cmd "/gpu status" --format json
+uv run gaius-cli --cmd "/objective verify" --format json
+```
+
+Next: [System Overview](./architecture/overview.md) for the service map, [Signals Peer Unit](./operations/peer-unit.md) for how the peer attaches, and [Engine-First](./architecture/engine-first.md) for the one rule that shapes the code.

@@ -32,7 +32,7 @@ Documents are organized into weekly slices (`YYYY-WNN`). Each slice represents a
 
 Nonlinear Vector AutoRegression via reservoir computing (Gauthier et al., 2021) computes a consolidation urgency signal from embedding centroid trajectories.
 
-Given slice centroids **c**_1,...,**c**_t in R^768:
+Given slice centroids **c**_1,...,**c**_t in R^128 (ColBERT-Zero `agg` centroids):
 - NVAR predicts **c_hat**_{t+1} using a polynomial basis over delayed embeddings
 - Drift = ||**c_hat**_{t+1} - **c**_t||_2
 - Urgency = sigmoid(alpha * drift)
