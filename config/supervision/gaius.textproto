@@ -278,14 +278,12 @@ machines {
   }
 }
 
-# Weekly Theta consolidation: one GPU on the light leaf (ColBERT-Zero encode
-# + TBox MaxSim in the child). Standing light guaranteed is 0 so leftover
-# tokens stay with extract/medium. The Monday Airflow Activity asserts
-# floor 1 on this leaf (queue-share); YK preemption then fires for a
-# starving light queue against floor-0 holders (clt-probe). Same shape as
-# agent-rtc, but a standing scheduled procedure, not an interactive session.
-# Do not declare a shared embedding claim — the run's LIGHT token backs ColBERT
-# (own_gpu_application). Do not invent a theta leaf.
+# Weekly Theta consolidation on the light leaf. ColBERT-Zero (encode + TBox
+# MaxSim) and the CLT worker are different models and need not share a step:
+# extract first (resident gaius-clt in parallel, else sequential on this
+# token), then ColBERT. BERTSubs is CPU. Standing light guaranteed stays 0;
+# the Monday Activity asserts floor 1. Do not invent a theta leaf. Do not
+# declare a shared embedding claim.
 machines {
   id: "theta_cycle"
   process: "flow.ThetaCycleFlow"
@@ -302,27 +300,39 @@ machines {
                 rationale: "token held as the run's identity; CUDA not yet required" }
   }
   phases {
-    id: "encode" order: 2
+    id: "extract" order: 2
+    steps: "extract"
+    gate { name: "clt_tape_ready" kind: GATE_KIND_FLOW_REACHED_STEP tier: TIER_SILVER
+           params { key: "step" value: "encode" }
+           rationale: "week's admitted items have CLT activations (resident worker or sequential on this token)" }
+    horizon { window_seconds: 3600 resolve_within_phase_only: true }
+    resources { leaf: "root.internal.inference.light" workload: "theta-cycle" occupancy: 1 floor: 1 priority: 50
+                rationale: "sequential: CLT worker on this LIGHT token after ColBERT is not yet loaded" }
+    resources { leaf: "root.internal.inference.light" workload: "clt-probe" occupancy: 1 floor: 0 priority: 50
+                rationale: "parallel: reuse resident gaius-clt on the other light GPU; floor 0 so this is not a second guarantee (the 2026-09-04 third-token failure was embedding+admit+clt)" }
+  }
+  phases {
+    id: "encode" order: 3
     steps: "encode"
     gate { name: "centroid_encoded" kind: GATE_KIND_FLOW_REACHED_STEP tier: TIER_SILVER
            params { key: "step" value: "infer" }
-           rationale: "ColBERT-Zero centroid of the week's thoughts" }
+           rationale: "ColBERT-Zero centroid + TBox MaxSim of admitted texts" }
     horizon { window_seconds: 1800 resolve_within_phase_only: true }
     resources { leaf: "root.internal.inference.light" workload: "theta-cycle" occupancy: 1 floor: 1 priority: 50
-                rationale: "in-process ColBERT-Zero; floor 1 so YK can preempt floor-0 light (clt-probe) after the Activity asserts the guarantee — weekly product run, above admit (20) and probe (10), yields to a prospects embedding phase (60)" }
+                rationale: "ColBERT-Zero after CLT extract; sequential changeover unloads CLT first; parallel leaves gaius-clt on the other card" }
   }
   phases {
-    id: "infer" order: 3
+    id: "infer" order: 4
     steps: "infer"
     gate { name: "pairs_scored" kind: GATE_KIND_FLOW_REACHED_STEP tier: TIER_SILVER
            params { key: "step" value: "complete" }
-           rationale: "CLT incidence MaxSim-grounded; BERTSubs Intra on the TBox" }
+           rationale: "BERTSubs Intra on CLT-linked MaxSim-grounded pairs; no GPU model" }
     horizon { window_seconds: 7200 resolve_within_phase_only: true }
-    resources { leaf: "root.internal.inference.light" workload: "theta-cycle" occupancy: 1 floor: 1 priority: 50
-                rationale: "TBox MaxSim uses the same ColBERT as encode; still the run's light token" }
+    resources { leaf: "root.internal.inference.light" workload: "theta-cycle" occupancy: 1 floor: 0 priority: 35
+                rationale: "JVM/CPU BERTSubs; ColBERT can be released; token held until process exit" }
   }
   phases {
-    id: "complete" order: 4
+    id: "complete" order: 5
     steps: "complete" steps: "end"
     gate { name: "queue_written" kind: GATE_KIND_FLOW_REACHED_STEP tier: TIER_SILVER
            params { key: "step" value: "end" }

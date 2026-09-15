@@ -84,6 +84,141 @@ def _ground_items(
     return grouped
 
 
+async def missing_activation_items(conn: Any, slice_id: str) -> list[Any]:
+    return await conn.fetch(
+        """
+        SELECT i.id, i.text
+          FROM admitted_item i
+         WHERE coalesce(i.text, '') <> ''
+           AND to_char(i.admitted_at AT TIME ZONE 'UTC', 'IYYY')
+               || '-W' || to_char(i.admitted_at AT TIME ZONE 'UTC', 'IW')
+               = $1
+           AND NOT EXISTS (
+                 SELECT 1 FROM activation a WHERE a.item_id = i.id
+               )
+        """,
+        slice_id,
+    )
+
+
+async def extract_missing_for_slice(
+    dsn: str,
+    slice_id: str,
+    *,
+    top_k: int = 16,
+) -> dict[str, Any]:
+    """Fill CLT activations for the week's admitted items.
+
+    Prefers a resident clt-probe worker (parallel on the other light GPU).
+    Otherwise runs CLT on this flow's LIGHT token (sequential changeover).
+    """
+    import asyncpg
+
+    from gaius.engine.services.clt_skos_extract import extract_positional_reuse_or_own
+    from gaius.engine.services.clt_skos_ground import spans_for_features
+    from gaius.engine.services.clt_skos_ledger import insert_activations
+
+    pool = await asyncpg.create_pool(dsn)
+    mode = "skip"
+    extracted = 0
+    try:
+        async with pool.acquire() as conn:
+            try:
+                rows = await missing_activation_items(conn, slice_id)
+            except asyncpg.UndefinedTableError:
+                return {"mode": "skip", "missing": 0, "extracted": 0}
+        if not rows:
+            return {"mode": "skip", "missing": 0, "extracted": 0}
+        for row in rows:
+            got, mode = extract_positional_reuse_or_own(str(row["text"] or ""), top_k=top_k)
+            grounded = spans_for_features(got["features"], got["offsets"])
+            extracted += await insert_activations(pool, int(row["id"]), grounded)
+        return {"mode": mode, "missing": len(rows), "extracted": extracted}
+    finally:
+        await pool.close()
+
+
+async def week_item_texts(conn: Any, slice_id: str) -> list[dict[str, Any]]:
+    rows = await conn.fetch(
+        """
+        SELECT DISTINCT i.id, i.text
+          FROM admitted_item i
+         WHERE coalesce(i.text, '') <> ''
+           AND to_char(i.admitted_at AT TIME ZONE 'UTC', 'IYYY')
+               || '-W' || to_char(i.admitted_at AT TIME ZONE 'UTC', 'IW')
+               = $1
+        """,
+        slice_id,
+    )
+    return [dict(r) for r in rows]
+
+
+async def load_week_item_texts(dsn: str, slice_id: str) -> list[dict[str, Any]]:
+    import asyncpg
+
+    pool = await asyncpg.create_pool(dsn)
+    try:
+        async with pool.acquire() as conn:
+            try:
+                return await week_item_texts(conn, slice_id)
+            except asyncpg.UndefinedTableError:
+                return []
+    finally:
+        await pool.close()
+
+
+async def pairs_for_slice_with_groundings(
+    dsn: str,
+    slice_id: str,
+    item_groundings: list[dict[str, Any]],
+    *,
+    ranked_limit: int = 64,
+) -> list[tuple[str, str]]:
+    import asyncpg
+
+    from gaius.agents.theta.tbox import entailed_subsumptions
+
+    gmap = {
+        int(g["id"]): tuple((str(iri), float(sc)) for iri, sc in (g.get("classes") or []))
+        for g in item_groundings
+    }
+    pool = await asyncpg.create_pool(dsn)
+    try:
+        async with pool.acquire() as conn:
+            try:
+                rows = await conn.fetch(
+                    """
+                    SELECT i.id, a.layer, a.feature_idx, a.activation
+                      FROM activation a
+                      JOIN admitted_item i ON i.id = a.item_id
+                     WHERE to_char(i.admitted_at AT TIME ZONE 'UTC', 'IYYY')
+                           || '-W' || to_char(i.admitted_at AT TIME ZONE 'UTC', 'IW')
+                           = $1
+                    """,
+                    slice_id,
+                )
+            except asyncpg.UndefinedTableError:
+                return []
+    finally:
+        await pool.close()
+    grouped: dict[tuple[int, int], list[GroundedItem]] = defaultdict(list)
+    for row in rows:
+        iid = int(row["id"])
+        classes = gmap.get(iid)
+        if not classes:
+            continue
+        grouped[(int(row["layer"]), int(row["feature_idx"]))].append(
+            GroundedItem(
+                item_id=iid,
+                classes=classes,
+                activation=float(row["activation"] or 0.0),
+            )
+        )
+    return novel_directed_pairs(
+        grouped, entailed_subsumptions(), ranked_limit=ranked_limit
+    )
+
+
 async def owl_pairs_from_conn(
     conn: Any,
     slice_id: str,

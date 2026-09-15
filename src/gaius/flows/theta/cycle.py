@@ -1,9 +1,9 @@
-"""ThetaCycleFlow — encode thoughts, CLT incidence, BERTSubs Intra on the TBox.
+"""ThetaCycleFlow — CLT extract, ColBERT encode/ground, BERTSubs Intra.
 
-Airflow DAG ``gaius_theta_cycle`` (Monday 06:00). This child admits LIGHT
-for ColBERT-Zero (encode + TBox MaxSim) and releases the sentinel on
-exit. The engine owns the queue, not the CUDA. Never constructs
-ThetaService.
+Airflow DAG ``gaius_theta_cycle`` (Monday 06:00). LIGHT token for one GPU
+at a time: extract uses CLT (resident gaius-clt in parallel, else
+changeover on this token), then encode loads ColBERT-Zero. BERTSubs is
+CPU/JVM. Never constructs ThetaService.
 
     uv run python -m gaius.flows.theta.cycle run
 """
@@ -90,14 +90,31 @@ class ThetaCycleFlow(GaiusFlow):
                 "guru_code": NOTHOUGHTS,
                 "stage": "encode",
             }
+        self.next(self.extract)
+
+    @step
+    def extract(self):
+        """CLT activations for the week. Parallel if gaius-clt is resident; else sequential on this LIGHT token."""
+        from gaius.agents.theta.clt_incidence import extract_missing_for_slice
+
+        stats = asyncio.run(extract_missing_for_slice(self.dsn, self.week))
+        self.clt_extract = stats
+        self.stage = "extract"
+        print(
+            f"theta.cycle.extract mode={stats.get('mode')} "
+            f"missing={stats.get('missing')} extracted={stats.get('extracted')}"
+        )
         self.next(self.encode)
 
     @step
     def encode(self):
-        """Centroid from this process's admitted ColBERT-Zero (LIGHT token)."""
+        """ColBERT-Zero centroid and TBox MaxSim (one residency; after CLT extract)."""
+        from gaius.agents.theta.clt_incidence import load_week_item_texts
+        from gaius.agents.theta.tbox_maxsim import live_tbox_maxsim
         from gaius.engine.embeddings.colbert import agg_vectors_for_texts
         from gaius.engine.services.theta_cycle import NOENCODE
 
+        self.item_groundings: list[dict] = []
         if self.thoughts and not (getattr(self, "result", None) or {}).get("guru_code"):
             texts = [
                 f"{t.get('title') or ''}\n{t.get('content') or ''}".strip()
@@ -109,8 +126,20 @@ class ThetaCycleFlow(GaiusFlow):
                 if not vecs:
                     raise RuntimeError("empty ColBERT encode")
                 self.centroid = np.mean(np.asarray(vecs, dtype=float), axis=0)
+                items = asyncio.run(load_week_item_texts(self.dsn, self.week))
+                maxsim = live_tbox_maxsim()
+                self.item_groundings = [
+                    {
+                        "id": int(it["id"]),
+                        "classes": [list(p) for p in maxsim(str(it["text"] or ""))],
+                    }
+                    for it in items
+                ]
                 self.stage = "encode"
-                print(f"theta.cycle.encode n={len(vecs)} dim={self.centroid.shape}")
+                print(
+                    f"theta.cycle.encode n={len(vecs)} dim={self.centroid.shape} "
+                    f"grounded={len(self.item_groundings)}"
+                )
             except Exception as e:
                 self.result = {
                     "success": False,
@@ -123,15 +152,19 @@ class ThetaCycleFlow(GaiusFlow):
 
     @step
     def infer(self):
-        """NVAR + BERTSubs + KG + augmentation in this process (not the engine)."""
+        """BERTSubs Intra on CLT-linked, MaxSim-grounded pairs (CPU/JVM; ColBERT already done)."""
         from gaius.agents.theta.agent import ThetaAgent
 
         if getattr(self, "centroid", None) is not None:
             try:
-                from gaius.agents.theta.clt_incidence import load_owl_pairs_for_slice
+                from gaius.agents.theta.clt_incidence import pairs_for_slice_with_groundings
 
                 owl_pairs = asyncio.run(
-                    load_owl_pairs_for_slice(self.dsn, self.week)
+                    pairs_for_slice_with_groundings(
+                        self.dsn,
+                        self.week,
+                        getattr(self, "item_groundings", []) or [],
+                    )
                 )
                 print(f"theta.cycle.infer clt_pairs={len(owl_pairs)}")
                 agent = ThetaAgent(kb_root=self.kb_root)

@@ -51,6 +51,8 @@ def test_theta_cycle_declares_light_floor_for_encode(spec) -> None:
     assert it.floor == 1 and it.occupancy == 1
     hit = spec.phase_for_step("theta-cycle", "encode")
     assert hit is not None and hit[1].id == "encode"
+    hit_ex = spec.phase_for_step("theta-cycle", "extract")
+    assert hit_ex is not None and hit_ex[1].id == "extract"
     hit_inf = spec.phase_for_step("theta-cycle", "infer")
     assert hit_inf is not None and hit_inf[1].id == "infer"
 

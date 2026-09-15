@@ -62,6 +62,7 @@ def test_flow_is_platform_vessel() -> None:
     from gaius.engine.sentinel_claim import LIGHT, resource_class_for
 
     assert resource_class_for("theta-cycle") is LIGHT
+    assert hasattr(ThetaCycleFlow, "extract")
     assert hasattr(ThetaCycleFlow, "encode")
     assert hasattr(ThetaCycleFlow, "infer")
     assert hasattr(ThetaCycleFlow, "complete")
