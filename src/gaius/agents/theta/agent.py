@@ -706,6 +706,8 @@ class ThetaAgent:
         temporal_slice: str | None = None,
         max_candidates: int = 10,
         holdout_queries: list[str] | None = None,
+        centroid: "np.ndarray | None" = None,
+        documents: list[dict[str, Any]] | None = None,
     ) -> ConsolidationResult:
         """Run a consolidation cycle for a temporal slice.
 
@@ -736,10 +738,12 @@ class ThetaAgent:
         result = ConsolidationResult(slice_id=slice_id)
 
         try:
-            # Step 1: Get slice centroid from latent memory
-            centroid = await self._get_slice_centroid(slice_id)
+            # Step 1: Centroid from cognition_thoughts (caller encodes). The
+            # 2025 Qdrant latent path is empty and is not an honest fail.
             if centroid is None:
-                result.error = f"No documents found for slice {slice_id}"
+                result.error = (
+                    f"#THETA.00000009.NOTHOUGHTS no encoded thoughts for {slice_id}"
+                )
                 logger.warning(result.error)
                 return result
 
@@ -747,7 +751,11 @@ class ThetaAgent:
             signal = self.dynamics.add_slice(
                 slice_id=slice_id,
                 centroid=centroid,
-                document_count=await self._get_slice_document_count(slice_id),
+                document_count=(
+                    len(documents)
+                    if documents is not None
+                    else await self._get_slice_document_count(slice_id)
+                ),
             )
             result.signal = signal
 
@@ -760,9 +768,13 @@ class ThetaAgent:
                 logger.info(f"Consolidation signal: urgency={urgency:.3f}, drift={signal.drift:.3f}")
 
             # Step 3: Extract concept pairs from slice documents
-            concept_pairs = await self._extract_concept_pairs(slice_id, limit=max_candidates * 2)
+            concept_pairs = await self._extract_concept_pairs(
+                slice_id, limit=max_candidates * 2, documents=documents
+            )
             if not concept_pairs:
-                result.error = "No concept pairs extracted"
+                result.error = (
+                    f"#THETA.00000011.NOPAIRS no concept pairs in {slice_id}"
+                )
                 logger.warning(result.error)
                 return result
 
@@ -861,6 +873,7 @@ class ThetaAgent:
         self,
         slice_id: str,
         limit: int = 20,
+        documents: list[dict[str, Any]] | None = None,
     ) -> list[tuple[str, str]]:
         """Extract concept pairs from slice documents for subsumption inference.
 
@@ -877,6 +890,27 @@ class ThetaAgent:
             List of (subclass, superclass) candidate pairs.
         """
         pairs = []
+        if documents:
+            concepts: set[str] = set()
+            for doc in documents:
+                title = str(doc.get("title") or "")
+                if title:
+                    concepts.add(title.split()[0] if title.split() else title)
+                for d in doc.get("domains") or []:
+                    if d:
+                        concepts.add(str(d))
+                for path in doc.get("kb_paths") or []:
+                    stem = Path(str(path)).stem
+                    if stem and not stem.startswith("_"):
+                        concepts.add(stem)
+                content = str(doc.get("content") or "")
+                concepts.update(re.findall(r"\[\[([^\]]+)\]\]", content))
+            concept_list = sorted(concepts, key=len)
+            for i, subclass in enumerate(concept_list[: limit // 2]):
+                for superclass in concept_list[i + 1 : i + 4]:
+                    if subclass != superclass:
+                        pairs.append((subclass, superclass))
+            return pairs[:limit]
 
         try:
             from ..mcp_client import call_mcp_tool

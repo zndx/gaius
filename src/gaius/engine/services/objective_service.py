@@ -150,7 +150,13 @@ OBJECTIVES: dict[str, ObjectiveSpec] = {
         "rubric self-score are FORECASTS resolved by that call, never "
         "gates. (Found 2026-09-02: flow died mid-DAG with a green task "
         "row and hollow briefs on the user surface; year audit: last "
-        "decision-grade brief 2026-01-11.)",
+        "decision-grade brief 2026-01-11.) Outside-in gates added "
+        "2026-09-12 on the AGENDA card — the reader's entry point: it "
+        "must carry a decision (call, conviction, or supported "
+        "no-action), never the vacuous 'nothing to book', and a failure "
+        "reminder must not outlive a newer clean run (that day: six "
+        "decision-grade briefs in scratch, a vacuous agenda card, two "
+        "stale failure reminders — all prior gates green).",
         verifier="verify_prospects_intelligence",
         params={
             # 36h = daily-ish prospects cadence x 1.5 buffer.
@@ -163,6 +169,11 @@ OBJECTIVES: dict[str, ObjectiveSpec] = {
             # Rubric final call is the Overwatch ACP+Grok judge
             # (LLM-as-Judge); at most this many briefs go to it per run.
             "rubric_sample_max": 3,
+            # agenda_hygiene: an open 'Prospects update failed' reminder
+            # older than this against a newer clean card is a staleness
+            # inversion (2026-09-12: reminders outlived the fix by a day
+            # and every brief kept chewing them).
+            "stale_reminder_hours": 6,
         },
     ),
     "skos_labels": ObjectiveSpec(
@@ -217,6 +228,18 @@ OBJECTIVES: dict[str, ObjectiveSpec] = {
             "SELECT count(*) FROM cognition_thoughts "
             "WHERE created_at > NOW() - INTERVAL '8 hours'"
         ),
+    ),
+    "theta_cycle": ObjectiveSpec(
+        name="theta_cycle",
+        dag=("theta_cycle",),
+        cadence=timedelta(hours=5),
+        description=(
+            "Mechanics: the current ISO-week consolidation row completed "
+            "within the 5 h horizon. Intent: documents augmented with a "
+            "non-null effectiveness delta, judged by Overwatch."
+        ),
+        verifier="verify_theta_cycle",
+        params={"horizon_hours": 5},
     ),
     # (2026-09-04) The two flows that replaced the engine's private timers.
     "market_buffer": ObjectiveSpec(
@@ -417,6 +440,135 @@ class ObjectiveService:
     # ------------------------------------------------------------------
     # Verifiers
     # ------------------------------------------------------------------
+
+    async def verify_theta_cycle(self, spec: ObjectiveSpec) -> list[dict[str, Any]]:
+        """Gates named by consolidation stage. Mechanics vs Overwatch intent."""
+        from gaius.agents.theta.consolidation import get_week_slice_id
+
+        hours = int(spec.params.get("horizon_hours") or 5)
+        slice_id = get_week_slice_id()
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT status, error, urgency, candidates_evaluated,
+                       candidates_selected, documents_augmented, completed_at
+                  FROM theta_consolidation_runs
+                 WHERE slice_id = $1
+                 ORDER BY completed_at DESC NULLS LAST, id DESC
+                 LIMIT 1
+                """,
+                slice_id,
+            )
+        gates: list[dict[str, Any]] = []
+
+        def gate(name: str, ok: bool, evidence: str) -> None:
+            gates.append(
+                {"gate": name, "verdict": "pass" if ok else "fail", "evidence": evidence}
+            )
+
+        if row is None:
+            gate("encode", False, f"no row for {slice_id}")
+            gate("nvar", False, "no row")
+            gate("subsumption", False, "no row")
+            gate("kg", False, "no row")
+            gate("augment", False, "no row")
+            gates.append(
+                {
+                    "gate": "effectiveness",
+                    "verdict": "fail",
+                    "authority": "overwatch-grok",
+                    "evidence": "no completed slice to judge",
+                }
+            )
+            return gates
+        err = str(row["error"] or "")
+        completed = row["status"] == "completed"
+        within = bool(row["completed_at"])  # horizon checked by cadence of verify
+        encode_ok = completed or not err.startswith("#THETA.00000009") and not err.startswith("#THETA.00000010")
+        if err.startswith("#THETA.00000009") or err.startswith("#THETA.00000010"):
+            encode_ok = False
+        elif completed:
+            encode_ok = True
+        gate(
+            "encode",
+            encode_ok and (completed or not err.startswith("#THETA.00000008")),
+            err or f"status={row['status']} slice={slice_id} horizon={hours}h",
+        )
+        gate(
+            "nvar",
+            row["urgency"] is not None or completed,
+            f"urgency={row['urgency']}",
+        )
+        gate(
+            "subsumption",
+            int(row["candidates_evaluated"] or 0) > 0,
+            f"candidates_evaluated={row['candidates_evaluated']}",
+        )
+        gate(
+            "kg",
+            completed and int(row["candidates_evaluated"] or 0) > 0,
+            f"candidates_selected={row['candidates_selected']}",
+        )
+        gate(
+            "augment",
+            int(row["documents_augmented"] or 0) > 0,
+            f"documents_augmented={row['documents_augmented']}",
+        )
+        # Intent: Overwatch judges a non-null effectiveness delta.
+        delta = None
+        try:
+            from gaius.engine.services.overwatch_judge import get_judge
+
+            result = await get_judge().judge_rubric(
+                objective=spec.name,
+                surface=f"theta consolidation {slice_id}",
+                rubric=(
+                    "Intent: documents were augmented with a non-null "
+                    "effectiveness delta this ISO week."
+                ),
+                artifacts=[
+                    {
+                        "slice_id": slice_id,
+                        "status": row["status"],
+                        "documents_augmented": row["documents_augmented"],
+                        "error": err,
+                    }
+                ],
+            )
+            if result.get("status") != "verdict":
+                gates.append(
+                    {
+                        "gate": "effectiveness",
+                        "verdict": "error",
+                        "authority": "overwatch-grok",
+                        "evidence": str(result.get("reason") or result.get("status"))[:160],
+                    }
+                )
+            else:
+                v = result["verdict"]
+                ok = bool(v.get("sufficient")) and int(row["documents_augmented"] or 0) > 0
+                gates.append(
+                    {
+                        "gate": "effectiveness",
+                        "verdict": "pass" if ok else "fail",
+                        "authority": "overwatch-grok",
+                        "evidence": (
+                            f"augmented={row['documents_augmented']} "
+                            f"sufficient={v.get('sufficient')} "
+                            f"{str(v.get('note') or '')[:120]}"
+                        ),
+                    }
+                )
+        except Exception as e:  # noqa: BLE001
+            gates.append(
+                {
+                    "gate": "effectiveness",
+                    "verdict": "error",
+                    "authority": "overwatch-grok",
+                    "evidence": str(e)[:160],
+                }
+            )
+        return gates
 
     async def _verify_skeleton(self, spec: ObjectiveSpec) -> list[dict[str, Any]]:
         """Skeleton verifier: the objective's DB footprint advanced
@@ -789,6 +941,93 @@ class ObjectiveService:
 
         kb = kb_root_from_env()
         cutoff = _time.time() - window_h * 3600
+
+        # Gates 0/0b — outside-in on the AGENDA card, the entry point the
+        # reader actually opens (2026-09-12: six decision-grade briefs
+        # existed in scratch while the agenda card said "nothing to book" —
+        # the UX fell short with every gate below green). The card must
+        # carry a decision: a call, a conviction, or an explicit supported
+        # no-action conclusion; and a failure reminder must not outlive a
+        # newer clean run (staleness inversion — the agenda chewing a
+        # failure that no longer exists).
+        agenda_files = [
+            f
+            for f in _glob.glob(str(kb / "scratch" / "*" / "*prospects-*.md"))
+            if _os.path.getmtime(f) > cutoff
+        ]
+        cards = [
+            f for f in agenda_files if "failed" not in _os.path.basename(f)
+        ]
+        decision_re = _re.compile(
+            r"\b(BUY|HOLD|SELL|TRIM|ADD|WATCH)\b|\d{1,3}%"
+            r"|[Nn]o action warranted"
+        )
+        vacuous_re = _re.compile(r"nothing to book|No new filing count")
+        if not cards:
+            gates.append(
+                {"gate": "agenda_surfaced", "verdict": "fail",
+                 "evidence": f"no prospects agenda card in {window_h}h — "
+                 "the reader's entry surface is silent"}
+            )
+        else:
+            latest_card = max(cards, key=_os.path.getmtime)
+            card_base = _os.path.basename(latest_card)
+            try:
+                with open(latest_card, encoding="utf-8") as fh:
+                    card_text = fh.read()
+            except OSError:
+                card_text = ""
+            if vacuous_re.search(card_text) or not decision_re.search(card_text):
+                gates.append(
+                    {"gate": "agenda_surfaced", "verdict": "fail",
+                     "evidence": f"{card_base} is vacuous: no call, "
+                     "conviction, or supported no-action conclusion"}
+                )
+            else:
+                linked = "[[" in card_text
+                gates.append(
+                    {"gate": "agenda_surfaced", "verdict": "pass",
+                     "evidence": f"{card_base} carries a decision"
+                     + ("" if linked else " (but no KB links)")}
+                )
+        stale_h = int(spec.params.get("stale_reminder_hours", 6))
+        open_failures: list[str] = []
+        for f in agenda_files:
+            if "failed" not in _os.path.basename(f):
+                continue
+            try:
+                with open(f, encoding="utf-8") as fh:
+                    if "- [ ]" in fh.read():
+                        open_failures.append(f)
+            except OSError:
+                continue
+        if not open_failures:
+            gates.append(
+                {"gate": "agenda_hygiene", "verdict": "pass",
+                 "evidence": "no open prospects failure reminders"}
+            )
+        else:
+            newest_clean = max(
+                (_os.path.getmtime(f) for f in cards), default=0.0
+            )
+            stale = [
+                _os.path.basename(f)
+                for f in open_failures
+                if newest_clean - _os.path.getmtime(f) > stale_h * 3600
+            ]
+            if stale:
+                gates.append(
+                    {"gate": "agenda_hygiene", "verdict": "fail",
+                     "evidence": "open failure reminder(s) outlived a "
+                     f"clean run by >{stale_h}h: " + ", ".join(stale[:3])}
+                )
+            else:
+                gates.append(
+                    {"gate": "agenda_hygiene", "verdict": "pass",
+                     "evidence": f"{len(open_failures)} open failure "
+                     "reminder(s), none stale against the latest clean card"}
+                )
+
         files = sorted(
             f
             for f in _glob.glob(str(kb / "scratch" / "*" / "*prospect_*.md"))

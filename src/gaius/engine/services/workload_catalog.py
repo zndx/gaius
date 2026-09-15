@@ -168,8 +168,8 @@ WORKLOAD_CATALOG: tuple[WorkloadEntry, ...] = (
     ),
     WorkloadEntry(
         kind="theta_cycle", task_type="theta_cycle", payload={}, cron="0 6 * * 1",
-        singleton=True, runner=RUNNER_METAFLOW, horizon_s=H5,
-        description="Theta consolidation cycle (NVAR → BERTSubs → KG); consumes theta_consolidation_runs",
+        singleton=True, runner=RUNNER_TASK, horizon_s=H5,
+        description="Theta consolidation cycle (NVAR → BERTSubs → KG) over cognition_thoughts",
         enabled=True, airflow_dag_id="gaius_theta_cycle",
         pg_cron_job="theta-weekly-consolidation", pg_cron_active=False,
     ),

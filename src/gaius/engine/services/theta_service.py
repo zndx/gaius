@@ -292,12 +292,36 @@ class ThetaService(BaseDaemon):
         Raises:
             Exception: If consolidation fails
         """
+        from gaius.agents.theta.consolidation import get_week_slice_id
+        from gaius.engine.services.theta_cycle import NOTHOUGHTS, NOENCODE
+
         agent = self._get_agent()
+        slice_id = temporal_slice or get_week_slice_id()
 
         try:
+            thoughts = await self._thoughts_for_slice(slice_id)
+            if not thoughts:
+                return {
+                    "success": False,
+                    "slice_id": slice_id,
+                    "error": f"{NOTHOUGHTS} no cognition_thoughts in {slice_id}",
+                    "guru_code": NOTHOUGHTS,
+                }
+            try:
+                centroid = await self._encode_centroid(thoughts)
+            except Exception as e:
+                logger.exception("%s encode %s", NOENCODE, slice_id)
+                return {
+                    "success": False,
+                    "slice_id": slice_id,
+                    "error": f"{NOENCODE} {e}",
+                    "guru_code": NOENCODE,
+                }
             result = await agent.run_consolidation(
-                temporal_slice=temporal_slice,
+                temporal_slice=slice_id,
                 max_candidates=max_candidates or self.config.default_max_candidates,
+                centroid=centroid,
+                documents=thoughts,
             )
 
             self._consolidation_count += 1
@@ -324,10 +348,45 @@ class ThetaService(BaseDaemon):
             logger.exception(f"[{guru_code}] Consolidation failed: {e}")
             return {
                 "success": False,
-                "slice_id": temporal_slice or "current",
+                "slice_id": slice_id,
                 "error": error_msg,
                 "guru_code": guru_code,
             }
+
+    async def _thoughts_for_slice(self, slice_id: str) -> list[dict[str, Any]]:
+        """ISO-week thoughts from Postgres — the live consolidation input."""
+        if self._db_pool is None:
+            return []
+        async with self._db_pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT id::text AS id, title, content, domains, kb_paths
+                  FROM cognition_thoughts
+                 WHERE to_char(created_at AT TIME ZONE 'UTC', 'IYYY')
+                       || '-W' || to_char(created_at AT TIME ZONE 'UTC', 'IW')
+                       = $1
+                """,
+                slice_id,
+            )
+        return [dict(r) for r in rows]
+
+    async def _encode_centroid(self, thoughts: list[dict[str, Any]]) -> Any:
+        """Mean embedding of thought title+content. Fail closed (no zero vector)."""
+        import numpy as np
+        from gaius.models.embeddings import embed_text
+
+        vecs = []
+        for t in thoughts:
+            text = f"{t.get('title') or ''}\n{t.get('content') or ''}".strip()
+            if not text:
+                continue
+            vec = await embed_text(text)
+            if vec is None or getattr(vec, "size", 0) == 0:
+                raise RuntimeError("empty embedding")
+            vecs.append(np.asarray(vec, dtype=float))
+        if not vecs:
+            raise RuntimeError("no thought text to encode")
+        return np.mean(np.stack(vecs), axis=0)
 
     def agenda(self, action: str = "list", horizon: str = "day") -> dict[str, Any]:
         """List or init the KB day agenda.

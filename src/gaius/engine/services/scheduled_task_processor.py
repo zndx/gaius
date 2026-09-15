@@ -206,6 +206,7 @@ class ScheduledTaskProcessor(BaseDaemon):
         # Task handlers by type
         self._handlers: dict[str, TaskHandler] = {}
         self._cognition: CognitionTaskRunner | None = None
+        self._theta: Any | None = None
         self._inflight_ids: set[int] = set()
         self._inflight_types: set[str] = set()
         self._inflight_tasks: dict[int, asyncio.Task[None]] = {}
@@ -645,6 +646,10 @@ class ScheduledTaskProcessor(BaseDaemon):
             "Bound CognitionService: %s pipeline type(s) delegated",
             bound,
         )
+
+    def bind_theta(self, theta: Any) -> None:
+        """Engine ThetaService — consolidation must not spawn a second agent."""
+        self._theta = theta
 
     async def start(self) -> None:
         """Start the task processor."""
@@ -1287,23 +1292,33 @@ class ScheduledTaskProcessor(BaseDaemon):
             )
 
         async def handle_theta_cycle(task: ScheduledTask) -> dict[str, Any]:
-            """ThetaCycleFlow: drain pending NVAR/BERTSubs consolidations."""
-            return await self._run_spawned_metaflow(
-                kind="theta-cycle",
-                task=task,
-                argv=[
-                    "uv",
-                    "run",
-                    "--no-sync",
-                    "python",
-                    "-m",
-                    "gaius.flows.theta.cycle",
-                    "run",
-                ],
-                log_prefix="ThetaCycle",
-                idle_timeout=1800,
-                metaflow_mode="platform",
-            )
+            """In-engine drain of the current ISO-week consolidation slice."""
+            from gaius.agents.theta.consolidation import get_week_slice_id
+            from gaius.engine.services.theta_cycle import consume_pending
+
+            theta = self._theta
+            if theta is None:
+                raise RuntimeError(
+                    "#THETA.00000007.NOSVC ThetaService not bound on STP.\n"
+                    "  Try: restart engine"
+                )
+            slice_id = str(task.payload.get("slice_id") or get_week_slice_id())
+
+            async def consolidator(sid: str) -> dict[str, Any]:
+                return await theta.run_consolidation(temporal_slice=sid)
+
+            async with self._pool.acquire() as conn:
+                jobs = await consume_pending(
+                    conn, consolidator=consolidator, current_slice=slice_id
+                )
+            failed = [
+                j for j in jobs
+                if j.get("job_id") and not j.get("success") and not j.get("skipped")
+            ]
+            out = {"status": "failed" if failed else "completed", "jobs": jobs}
+            if failed:
+                out["error"] = failed[0].get("error") or failed[0].get("guru_code")
+            return out
 
         self.register_handler("fmp_roll", handle_fmp_roll)
         self.register_handler("ambient_synthesis", handle_ambient_synthesis)

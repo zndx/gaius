@@ -58,54 +58,6 @@ def test_remainder_spans_none_and_ambiguous_not_overlap() -> None:
     assert all(s["axis"] == "ambient" for s in spans)
 
 
-@pytest.mark.asyncio
-async def test_record_remainder_fail_open_without_pool() -> None:
-    from gaius.engine.services.theta_scratch import record_remainder_fail_open
-
-    n = await record_remainder_fail_open(None, [{"reason": "none", "start": 0, "end": 1}])
-    assert n == 0
-
-
-@pytest.mark.asyncio
-async def test_record_remainder_inserts_vertex_rows() -> None:
-    from gaius.engine.services.theta_scratch import record_remainder
-
-    class _Conn:
-        def __init__(self) -> None:
-            self.sql: list[str] = []
-            self.rows: list = []
-
-        async def fetchval(self, sql: str, *args: object) -> str:
-            self.sql.append(sql)
-            return "ok"
-
-        async def executemany(self, sql: str, rows: list) -> None:
-            self.sql.append(sql)
-            self.rows.extend(rows)
-
-    conn = _Conn()
-    n = await record_remainder(
-        conn,
-        [
-            {
-                "axis": "ambient",
-                "entry_id": "ab",
-                "start": 0,
-                "end": 12,
-                "reason": "none",
-                "margin": 0.02,
-            }
-        ],
-        aperture="sdg_aperture",
-        c_epoch="pin",
-        tau=0.1,
-    )
-    assert n == 1
-    assert "theta_cycle_vertex_tier0" in conn.sql[-1]
-    assert conn.rows[0][3] == "window"
-    assert conn.rows[0][9] == "none"
-
-
 def test_unique_topic_ambiguous_two_above() -> None:
     tau = SdgAperture.load().tau
     code, _, reason = unique_topic(

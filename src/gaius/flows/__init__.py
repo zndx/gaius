@@ -72,10 +72,7 @@ def _register_builtin_flows():
     except ImportError:
         pass
 
-    try:
-        from gaius.flows.theta import ThetaCycleFlow  # noqa: F401
-    except ImportError:
-        pass
+
 
 
 _register_builtin_flows()

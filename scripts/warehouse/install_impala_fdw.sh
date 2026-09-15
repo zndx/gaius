@@ -49,18 +49,6 @@ sed \
 psql -h "$PGHOST" -p "$PGPORT" -d "$PGDATABASE" -v ON_ERROR_STOP=1 \
   -f "$ROOT/scripts/warehouse/nautilus-fdw.sql"
 
-# gaius.theta.cycle product FTs; scratch is the Kudu/Iceberg tablet family.
-THETA_FDW="$SIGNALS_ROOT/config/platform/theta-cycle-fdw.sql"
-if [[ -f "$THETA_FDW" ]]; then
-  psql -h "$PGHOST" -p "$PGPORT" -d "$PGDATABASE" -v ON_ERROR_STOP=1 -f "$THETA_FDW"
-  psql -h "$PGHOST" -p "$PGPORT" -d "$PGDATABASE" -v ON_ERROR_STOP=1 \
-    -c "GRANT SELECT, INSERT ON theta_cycle_vertex_tier0, theta_cycle_edge_tier0, theta_cycle_incidence_tier0 TO gaius;" \
-    -c "GRANT SELECT ON theta_cycle_vertex, theta_cycle_edge, theta_cycle_incidence TO gaius;" \
-    2>/dev/null || true
-else
-  echo "theta-cycle-fdw.sql missing under SIGNALS_ROOT=$SIGNALS_ROOT (cycle FTs skipped)"
-fi
-
 # Warehouse-side settle function, invoked by Gaius pg_cron → engine, not Signals cron.
 if [[ -f "$SIGNALS_ROOT/config/platform/gpu-metrics-settle.sql" ]]; then
   grep -v 'cron.schedule\|cron.unschedule' \

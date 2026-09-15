@@ -1246,6 +1246,8 @@ class GaiusEngine:
                 "  Guru: #STP.00000003.NOHANDLER\n"
                 "  feed_check / triage stay pending until cognition starts."
             )
+        if self._scheduled_task_processor and self._theta_service:
+            self._scheduled_task_processor.bind_theta(self._theta_service)
 
         # Log startup results
         for result in results:
@@ -1443,6 +1445,9 @@ class GaiusEngine:
                 config=ThetaConfig(kb_root=kb_root),
                 db_pool=self._db_pool,
             )
+            from .services import theta_service as theta_mod
+
+            theta_mod._theta_service = self._theta_service
 
             # Start the service (marks it as running)
             await self._theta_service.start()
