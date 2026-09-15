@@ -123,16 +123,20 @@ class ThetaCycleFlow(GaiusFlow):
         from gaius.agents.theta.agent import ThetaAgent
 
         if getattr(self, "centroid", None) is not None:
-            agent = ThetaAgent(kb_root=self.kb_root)
-            result = asyncio.run(
-                agent.run_consolidation(
-                    temporal_slice=self.week,
-                    centroid=self.centroid,
-                    documents=self.thoughts,
+            try:
+                agent = ThetaAgent(kb_root=self.kb_root)
+                result = asyncio.run(
+                    agent.run_consolidation(
+                        temporal_slice=self.week,
+                        centroid=self.centroid,
+                        documents=self.thoughts,
+                    )
                 )
-            )
+                err = result.error
+            except Exception as e:
+                err = str(e)
+                result = None
             guru = ""
-            err = result.error
             if err:
                 if "THINCABI" in err:
                     guru = "#THETA.00000012.THINCABI"
@@ -142,22 +146,33 @@ class ThetaCycleFlow(GaiusFlow):
                     guru = "#THETA.00000001.DEEPONTO"
                 elif err.startswith("#THETA"):
                     guru = err.split()[0]
-            self.stage = "augment" if result.error is None else (guru or "infer")
-            self.result = {
-                "success": result.error is None,
-                "slice_id": result.slice_id,
-                "signal": result.signal.to_dict() if result.signal else None,
-                "candidates_evaluated": result.candidates_evaluated,
-                "candidates_selected": result.candidates_selected,
-                "documents_augmented": result.documents_augmented,
-                "effectiveness": result.effectiveness,
-                "error": result.error,
-                "guru_code": guru,
-                "stage": self.stage,
-            }
+            if result is None:
+                self.stage = guru or "infer"
+                self.result = {
+                    "success": False,
+                    "slice_id": self.week,
+                    "error": err,
+                    "guru_code": guru,
+                    "stage": self.stage,
+                }
+            else:
+                self.stage = "augment" if result.error is None else (guru or "infer")
+                self.result = {
+                    "success": result.error is None,
+                    "slice_id": result.slice_id,
+                    "signal": result.signal.to_dict() if result.signal else None,
+                    "candidates_evaluated": result.candidates_evaluated,
+                    "candidates_selected": result.candidates_selected,
+                    "documents_augmented": result.documents_augmented,
+                    "effectiveness": result.effectiveness,
+                    "error": result.error,
+                    "guru_code": guru,
+                    "stage": self.stage,
+                }
             print(
                 f"theta.cycle.infer success={self.result['success']} "
-                f"eval={result.candidates_evaluated} aug={result.documents_augmented}"
+                f"eval={self.result.get('candidates_evaluated')} "
+                f"aug={self.result.get('documents_augmented')}"
             )
         self.next(self.complete)
 
