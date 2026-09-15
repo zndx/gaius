@@ -83,7 +83,8 @@ LAST_AIRFLOW_TICK_SQL = (
 # VERBATIM, so an Airflow-declared run and a cron-declared run are the same
 # workload to the processor. The watcher starts ANY catalogued kind whose own
 # Activity is in force; a gate that says no releases the activity as "skipped"
-# — the Airflow run closes clean. Classes whose schedule already lives in the
+# (Airflow close then fails #CO.0000000F.NOEFFECT — skip is not success).
+# Classes whose schedule already lives in the
 # Signals Airflow are the catalogue's `enabled` entries (ServerQuery SCHEDULES
 # reports source=airflow for them; pg_cron stays the source for the rest).
 from gaius.engine.services import workload_catalog as _catalog
@@ -98,6 +99,12 @@ def _spec_of(entry: Any) -> dict[str, Any]:
         # Never true for enabled kinds. pg_cron cover hid Airflow death.
         "coexists_with_pg_cron": bool(entry.pg_cron_active) and not entry.enabled,
     }
+
+
+# A gate that says no still RELEASES the lease (so the hold ends) with
+# outcome ``skipped: …``. That is not DAG success: Signals close fails
+# ``#CO.0000000F.NOEFFECT``. Skip is a fail — the intended effect did not
+# occur (gaius_prospects_check 07:00 green-skip 12–15 Sep 2026).
 
 
 WORKLOAD_KINDS: dict[str, dict[str, Any]] = {e.kind: _spec_of(e) for e in _catalog.entries()}
