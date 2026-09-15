@@ -29,7 +29,7 @@ class ThetaCycleFlow(GaiusFlow):
 
     @step
     def start(self):
-        from gaius.agents.theta.consolidation import get_week_slice_id
+        from gaius.agents.theta.consolidation import get_previous_week_slice_id
         from gaius.flows.config import apply_metaflow_config
         from gaius.flows.lattice import require_signals_metaflow
         from gaius.storage.database import get_database_url
@@ -38,7 +38,7 @@ class ThetaCycleFlow(GaiusFlow):
         require_signals_metaflow()
         self.kb_root = os.environ.get("GAIUS_KB_ROOT") or "build/dev"
         self.dsn = os.environ.get("DATABASE_URL") or get_database_url()
-        self.week = str(self.slice_id or get_week_slice_id())
+        self.week = str(self.slice_id or get_previous_week_slice_id())
         self.run_id = str(getattr(current, "run_id", None) or "")
         print(
             f"theta.cycle.start week={self.week} kb_root={self.kb_root} "

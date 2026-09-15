@@ -431,6 +431,20 @@ def get_week_slice_id(dt: datetime | None = None) -> str:
     return f"{iso_cal.year}-W{iso_cal.week:02d}"
 
 
+def get_previous_week_slice_id(dt: datetime | None = None) -> str:
+    """ISO week that just closed. Monday 06:00 must not encode an empty new week.
+
+    Args:
+        dt: Anchor datetime (default: now). The returned id is the week
+            containing ``dt - 7 days``.
+    """
+    from datetime import timedelta
+
+    if dt is None:
+        dt = datetime.now()
+    return get_week_slice_id(dt - timedelta(days=7))
+
+
 def get_quarter_slice_id(dt: datetime | None = None) -> str:
     """Get quarter identifier for a datetime.
 

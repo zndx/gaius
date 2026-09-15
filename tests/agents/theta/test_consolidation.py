@@ -23,6 +23,7 @@ from gaius.agents.theta.consolidation import (
     ConsolidationSignal,
     TemporalSlice,
     get_week_slice_id,
+    get_previous_week_slice_id,
     get_quarter_slice_id,
 )
 
@@ -269,6 +270,11 @@ class TestSliceIdFunctions:
         dt = datetime(2025, 12, 29)  # Last week of 2025
         slice_id = get_week_slice_id(dt)
         assert slice_id.startswith("2025-W") or slice_id.startswith("2026-W")
+
+    def test_previous_week_on_monday_is_the_closed_iso_week(self):
+        monday = datetime(2026, 9, 21, 6, 0, 0)  # Airflow tick → W39
+        assert get_week_slice_id(monday) == "2026-W39"
+        assert get_previous_week_slice_id(monday) == "2026-W38"
 
     def test_get_quarter_slice_id(self):
         """Test quarter identifier generation."""

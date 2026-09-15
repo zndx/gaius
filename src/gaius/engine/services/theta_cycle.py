@@ -16,7 +16,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Awaitable, Callable
 
-from gaius.agents.theta.consolidation import get_week_slice_id
+from gaius.agents.theta.consolidation import get_previous_week_slice_id
 
 logger = logging.getLogger(__name__)
 
@@ -64,7 +64,7 @@ async def consume_pending(
     max_jobs: int = 1,
 ) -> list[dict[str, Any]]:
     """Run at most the current ISO-week slice. Never drain the stale backlog."""
-    slice_id = current_slice or get_week_slice_id()
+    slice_id = current_slice or get_previous_week_slice_id()
     superseded = await supersede_stale(conn, slice_id)
     rows = await conn.fetch("SELECT * FROM get_pending_theta_consolidations()")
     rows = [r for r in rows if str(r["slice_id"]) == slice_id]

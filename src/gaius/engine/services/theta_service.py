@@ -293,10 +293,10 @@ class ThetaService(BaseDaemon):
         Raises:
             Exception: If consolidation fails
         """
-        from gaius.agents.theta.consolidation import get_week_slice_id
+        from gaius.agents.theta.consolidation import get_previous_week_slice_id
         from gaius.engine.services.theta_cycle import NOTHOUGHTS, NOENCODE
 
-        slice_id = temporal_slice or get_week_slice_id()
+        slice_id = temporal_slice or get_previous_week_slice_id()
 
         try:
             thoughts = await self._thoughts_for_slice(slice_id)

@@ -26,7 +26,7 @@ The `/sitrep` command generates a structured `SituationReport` through three com
 
 ### Stage 1: Temporal Slicing
 
-Documents are organized into weekly slices (`YYYY-WNN`). Each slice represents a temporal unit for consolidation.
+Documents are organized into weekly slices (`YYYY-WNN`). The Monday 06:00 cycle consolidates the **previous** ISO week (the week that just closed), not the empty week that starts that morning.
 
 ### Stage 2: NVAR Dynamics
 

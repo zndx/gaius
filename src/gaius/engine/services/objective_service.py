@@ -443,10 +443,10 @@ class ObjectiveService:
 
     async def verify_theta_cycle(self, spec: ObjectiveSpec) -> list[dict[str, Any]]:
         """Gates named by consolidation stage. Mechanics vs Overwatch intent."""
-        from gaius.agents.theta.consolidation import get_week_slice_id
+        from gaius.agents.theta.consolidation import get_previous_week_slice_id
 
         hours = int(spec.params.get("horizon_hours") or 5)
-        slice_id = get_week_slice_id()
+        slice_id = get_previous_week_slice_id()
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(
                 """
