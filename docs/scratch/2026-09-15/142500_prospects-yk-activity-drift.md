@@ -1,11 +1,26 @@
 # Prospects vs AgentRTC / Theta: activity-aligned YK claims
 
+Correction (user, 2026-09-15): treating prospects as a GPU claimant that
+might evict thinking is a **category error**. `thinking` and `instruct`
+are operating profiles of **one** Qwen3.8-27B on **heavy**. Product
+workloads are Metaflow; they `Engine/Complete` the engine that hosts
+that vLLM (so a spot remote engine can serve them). They do not take
+heavy tokens. In-engine tasks should be gone.
+
 00:50 `#EP.00000016.NOTREADY` was thinking **absent** after YK
 `gaius-thinking` `#YK.00000002.NOTADMITTED` (heavy). Hardware util now
-is the 02:42 vLLM, not that window.
+is the 02:42 vLLM, not that window. The flow was a **client of a missing
+endpoint**, not a rival for its GPUs.
 
-The deeper drift: **prospects_update is not on the Airflow-activity
-claim path** that AgentRTC and Theta use.
+The remaining drift: **prospects_check is still `RUNNER_TASK`**
+(in-engine, catch-up enqueues the update). The Metaflow should be
+Airflow-ordered and Complete whichever engine advertises healthy
+thinking/instruct. `lattice.engine_target()` still defaults to
+`127.0.0.1:50051`.
+
+Earlier (wrong) frame: **prospects_update is not on the Airflow-activity
+claim path** that AgentRTC and Theta use. Keep the table as inventory of
+what the code does today, not as the desired claim model.
 
 | | AgentRTC | ThetaCycleFlow | prospects_check | prospects_update |
 |---|---|---|---|---|
