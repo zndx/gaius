@@ -524,6 +524,18 @@ class SubsumptionInferencer:
 
                 self._pipeline = BERTSubsIntraPipeline(ontology, config)
                 logger.info(f"Initialized BERTSubsIntraPipeline with {self.bert_checkpoint}")
+            except ZeroDivisionError as e:
+                # Intra pipeline extracts train subsumptions from the OWL.
+                # A thought-label OWL is a flat Thing-list — 0 axioms, 0/0.
+                raise OntologyValidationError(
+                    ontology_path=self.ontology_path,
+                    validation_stage="bertsubs_intra",
+                    issues=[
+                        "BERTSubsIntraPipeline needs subsumption axioms; "
+                        "thought labels are a flat Thing-list"
+                    ],
+                    original_error=e,
+                ) from e
             except ImportError as e:
                 raise DeepOntoNotAvailableError("BERTSubsIntraPipeline", e)
             except Exception as e:
