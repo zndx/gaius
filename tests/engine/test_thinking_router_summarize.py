@@ -31,6 +31,13 @@ def test_trace_without_answer_is_an_error(monkeypatch: pytest.MonkeyPatch) -> No
     assert "reasoning_chars=" in msg and "output_tokens=89702" in msg
 
 
+def test_lattice_router_allows_instruct_on_thinking_gpus():
+    """instruct is the low-effort thinking profile, not a different lane."""
+    # Construction must not reject the alias compact uses.
+    router = tr.LatticeRouter()
+    assert callable(router.complete)
+
+
 def test_answer_is_returned_stripped(monkeypatch: pytest.MonkeyPatch) -> None:
     async def fake_complete(self, **kw):  # noqa: ANN001
         return _resp("  ## Goal\nsummary\n", "some trace")

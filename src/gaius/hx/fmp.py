@@ -60,6 +60,7 @@ class FMPEndpoint:
     CASHFLOW = "cash-flow"
     KEY_METRICS = "key-metrics"
     RATIOS = "ratios"
+    QUOTE = "quote"
     UNKNOWN = "unknown"
 
     @classmethod
@@ -76,6 +77,8 @@ class FMPEndpoint:
             return cls.EIGHT_K
         elif "sec_filings" in url_lower or "sec-filings" in url_lower:
             return cls.SEC_FILINGS
+        elif "/stable/quote" in url_lower or url_lower.rstrip("/").endswith("/quote"):
+            return cls.QUOTE
         elif "/profile" in url_lower:
             return cls.PROFILE
         elif "press-release" in url_lower:

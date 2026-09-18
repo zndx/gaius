@@ -8,6 +8,13 @@ import pytest
 from gaius.engine.services.fmp_tools import BY_NAME, call_tool, list_tools
 
 
+def test_form_key_normalizes_eight_k():
+    from gaius.engine.services.fmp_client import _form_key
+
+    assert _form_key("8-K") == _form_key("8K") == "8K"
+    assert _form_key("Form 4") == "FORM4" or _form_key("4") == "4"
+
+
 def test_catalog_names_are_starter_legal():
     names = {t["name"] for t in list_tools()}
     assert "fmp_search" in names
@@ -15,7 +22,8 @@ def test_catalog_names_are_starter_legal():
     assert "fmp_statement" in names
     assert "fmp_13f" not in names
     assert "fmp_transcript" not in names
-    assert set(BY_NAME) >= {"search", "quote", "news", "filings", "8k"}
+    assert set(BY_NAME) >= {"search", "quote", "news", "filings", "8k", "profile", "eod"}
+    assert BY_NAME["profile"] is not BY_NAME["quote"]
 
 
 @pytest.mark.asyncio

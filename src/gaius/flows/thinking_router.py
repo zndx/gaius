@@ -53,14 +53,18 @@ class LatticeRouter:
         )
         from gaius.flows.lattice import complete
 
-        if agent_alias not in ("thinking", "reasoning"):
+        # thinking / reasoning → xhigh. instruct → same GPUs 0-3, thinking=on,
+        # effort=low so an ANSWER lands (xhigh compact thinks to EOS).
+        if agent_alias not in ("thinking", "reasoning", "instruct"):
             raise ValueError(
                 f"LatticeRouter serves the thinking lane only (got agent_alias={agent_alias!r})"
             )
+        cap = "instruct" if agent_alias == "instruct" else "thinking"
         max_tok = int(max_tokens or thinking_output_tokens(prompt))
         r = await asyncio.to_thread(
             complete,
             prompt,
+            capability=cap,
             max_tokens=max_tok,
             temperature=float(temperature),
             timeout_s=thinking_read_timeout_s(max_tok),
@@ -96,7 +100,11 @@ async def summarize_with_thinking(prompt: str) -> str:
     # room for it and its reasoning and ends a runaway in ~1.7 h, not 4.
     ceiling = min(COMPACTION_MAX_TOKENS, thinking_output_tokens(prompt))
     resp = await LatticeRouter().complete(
-        prompt=prompt, temperature=0.2, task_type="buffer_compaction", max_tokens=ceiling
+        prompt=prompt,
+        agent_alias="instruct",
+        temperature=0.2,
+        task_type="buffer_compaction",
+        max_tokens=ceiling,
     )
     text = (resp.content or "").strip()
     if not text:

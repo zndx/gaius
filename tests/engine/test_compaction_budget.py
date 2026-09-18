@@ -12,6 +12,7 @@ def test_summarize_with_thinking_caps_the_generation(monkeypatch):
 
     async def fake_complete(self, *, prompt, max_tokens=None, **kw):
         seen["max_tokens"] = max_tokens
+        seen["agent_alias"] = kw.get("agent_alias")
         return tr.RouterResponse(content="state", reasoning_content="r", model="m", input_tokens=1, output_tokens=1)
 
     monkeypatch.setattr(tr.LatticeRouter, "complete", fake_complete)
@@ -21,6 +22,7 @@ def test_summarize_with_thinking_caps_the_generation(monkeypatch):
     out = asyncio.run(tr.summarize_with_thinking("x" * 1000))
     assert out == "state"
     assert seen["max_tokens"] == budgets.COMPACTION_MAX_TOKENS == 65536
+    assert seen["agent_alias"] == "instruct"
 
 
 def test_small_prompt_room_wins_over_the_cap(monkeypatch):

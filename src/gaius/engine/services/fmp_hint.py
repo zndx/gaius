@@ -55,7 +55,11 @@ def _spoken(hits: list[dict[str, str]], stream: str) -> str:
     if stream == "news":
         return "FMP news: " + "; ".join(bits)
     if stream == "quote":
-        return "FMP: " + "; ".join(bits)
+        return "FMP quote: " + "; ".join(bits)
+    if stream in ("eight_k", "8k"):
+        return "FMP 8-K: " + "; ".join(bits)
+    if stream == "insider":
+        return "FMP insider: " + "; ".join(bits)
     return "FMP tickers: " + "; ".join(bits)
 
 
@@ -91,24 +95,40 @@ async def collect_fmp(
     for row in raw.get("items") or []:
         if not isinstance(row, dict):
             continue
+        snippet = str(
+            row.get("snippet")
+            or " · ".join(
+                p
+                for p in (
+                    str(row.get("sector") or ""),
+                    str(row.get("industry") or ""),
+                )
+                if p
+            )
+            or row.get("description")
+            or row.get("filed")
+            or ""
+        )
+        if not snippet:
+            bits = []
+            for k, v in row.items():
+                if k in ("symbol", "title", "name", "url", "source", "exchange") or v in (
+                    None,
+                    "",
+                    [],
+                    {},
+                ):
+                    continue
+                if isinstance(v, (int, float)) or (isinstance(v, str) and v[:1].isdigit()):
+                    bits.append(f"{k}={v}")
+                if len(bits) >= 8:
+                    break
+            snippet = " · ".join(bits)
         hits.append(
             _hit(
                 symbol=str(row.get("symbol") or q),
                 title=str(row.get("title") or row.get("name") or row.get("form") or ""),
-                snippet=str(
-                    row.get("snippet")
-                    or " · ".join(
-                        p
-                        for p in (
-                            str(row.get("sector") or ""),
-                            str(row.get("industry") or ""),
-                        )
-                        if p
-                    )
-                    or row.get("description")
-                    or row.get("filed")
-                    or ""
-                ),
+                snippet=snippet,
                 url=str(row.get("url") or row.get("website") or ""),
                 exchange=str(row.get("exchange") or ""),
                 as_of=str(row.get("as_of") or row.get("filed") or row.get("date") or ""),

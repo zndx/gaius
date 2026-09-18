@@ -42,6 +42,11 @@ from gaius.hx.fmp import (
 logger = logging.getLogger(__name__)
 
 
+def _form_key(form: str) -> str:
+    """Normalize 8-K / 8K / Form 4 / 4 so per-symbol filters hit."""
+    return "".join(ch for ch in (form or "").upper() if ch.isalnum())
+
+
 def _fmp_rows(data: Any) -> list[dict]:
     """Stable news endpoints return a list; older wrappers used {content|data}."""
     if isinstance(data, list):
@@ -549,9 +554,13 @@ class FMPClient:
         # Parse all filings
         filings = [SECFiling.from_fmp_response(item) for item in data]
 
-        # Filter by type if specified
         if filing_type:
-            filings = [f for f in filings if f.filing_type == filing_type]
+            want = _form_key(filing_type)
+            filings = [
+                f
+                for f in filings
+                if want and (want == _form_key(f.filing_type) or _form_key(f.filing_type).startswith(want))
+            ]
 
         return filings[:limit]
 
@@ -618,6 +627,69 @@ class FMPClient:
             return CompanyProfile.from_fmp_response(data[0])
 
         return None
+
+    async def get_quote(
+        self,
+        symbol: str,
+        *,
+        source_context: dict | None = None,
+    ) -> dict[str, Any] | None:
+        """Live quote (price, change, volume). Not the company profile."""
+        sym = (symbol or "").strip().upper()
+        if not sym:
+            return None
+        data = await self._request(
+            endpoint=FMPEndpoint.QUOTE,
+            path="/stable/quote",
+            symbol=sym,
+            params={"symbol": sym},
+            source_context=source_context or {"source": "fmp_quote"},
+        )
+        rows = data if isinstance(data, list) else []
+        if isinstance(data, dict) and not rows:
+            rows = [data]
+        row = next((r for r in rows if isinstance(r, dict)), None)
+        return row
+
+    async def get_stock_news(
+        self,
+        symbol: str,
+        *,
+        limit: int = 12,
+        source_context: dict | None = None,
+    ) -> list[dict]:
+        """Per-symbol stock news. /stable/news/stock?symbols="""
+        sym = (symbol or "").strip().upper()
+        if not sym:
+            return []
+        data = await self._request(
+            endpoint=FMPEndpoint.STOCK_NEWS,
+            path="/stable/news/stock",
+            symbol=sym,
+            params={"symbols": sym, "page": "0", "limit": str(max(1, min(int(limit), 50)))},
+            source_context=source_context or {"source": "fmp_news"},
+        )
+        return _fmp_rows(data)
+
+    async def get_insider_trades(
+        self,
+        symbol: str,
+        *,
+        limit: int = 20,
+        source_context: dict | None = None,
+    ) -> list[dict]:
+        """Per-symbol insider trades. /stable/insider-trading/search?symbol="""
+        sym = (symbol or "").strip().upper()
+        if not sym:
+            return []
+        data = await self._request(
+            endpoint=FMPEndpoint.INSIDER,
+            path="/stable/insider-trading/search",
+            symbol=sym,
+            params={"symbol": sym, "page": "0", "limit": str(max(1, min(int(limit), 100)))},
+            source_context=source_context or {"source": "fmp_insider"},
+        )
+        return _fmp_rows(data)
 
     async def search_ticker(
         self,
