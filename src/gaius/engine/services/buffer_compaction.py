@@ -30,6 +30,9 @@ GURU = (
 
 COMPACT_PROMPT = """You are a context summarization assistant, not a coding assistant.
 Produce a shift-handoff briefing. Do not continue the conversation.
+Reason as long as you need; the reasoning trace is discarded. Only the
+briefing sections below are kept as the compacted buffer. After thinking,
+you MUST write those sections.
 
 Sections (use these headings):
 ## Goal
@@ -87,11 +90,14 @@ def serialize_entries(entries: list) -> str:
 
 
 def compaction_prompt(material: str, prior: str = "") -> str:
+    from gaius.core.budgets import COMPACTION_GENERATION_RESERVE_TOKENS
     from gaius.engine.services.cognition_buffer import pack_thinking_slices
 
     prior_s = prior or "(none)"
     tmpl = COMPACT_PROMPT.format(prior=prior_s, material="{slices}")
-    return pack_thinking_slices(tmpl, material)
+    return pack_thinking_slices(
+        tmpl, material, generation_reserve=COMPACTION_GENERATION_RESERVE_TOKENS
+    )
 
 
 def over_token_budget(

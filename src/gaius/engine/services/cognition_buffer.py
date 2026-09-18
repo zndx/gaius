@@ -108,14 +108,24 @@ def thinking_output_tokens(prompt: str) -> int:
     return left
 
 
-def pack_thinking_slices(template: str, slices: str) -> str:
-    """Fit evidence so at least one full think (64k) remains for output."""
-    overhead = thinking_token_count(template.replace("{slices}", ""))
-    slice_budget = (
-        DEFAULT_SCRATCH_TOKEN_BUDGET
-        - NEXT_QUESTION_RESERVE_TOKENS
-        - overhead
+def pack_thinking_slices(
+    template: str,
+    slices: str,
+    *,
+    generation_reserve: int | None = None,
+) -> str:
+    """Fit evidence so ``generation_reserve`` tokens remain for thinking+answer.
+
+    Default reserve is one next-question slot (65_536). Compaction passes a
+    larger reserve so xhigh thinking is not clipped to that floor.
+    """
+    reserve = (
+        NEXT_QUESTION_RESERVE_TOKENS
+        if generation_reserve is None
+        else max(1, int(generation_reserve))
     )
+    overhead = thinking_token_count(template.replace("{slices}", ""))
+    slice_budget = DEFAULT_SCRATCH_TOKEN_BUDGET - reserve - overhead
     if slice_budget < 1:
         raise RuntimeError("SYNTH_PROMPT leaves no room for Aperture slices")
     body = clip_to_token_budget(slices, slice_budget)

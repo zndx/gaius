@@ -60,6 +60,17 @@ def test_plan_compaction_cut_at_entry_boundary() -> None:
     assert "old" in plan.material or "mid" in plan.material
 
 
+def test_compaction_prompt_leaves_xhigh_generation_room(_fake_thinking_tokenizer) -> None:
+    from gaius.core.budgets import COMPACTION_GENERATION_RESERVE_TOKENS
+    from gaius.engine.services.buffer_compaction import compaction_prompt
+    from gaius.engine.services.cognition_buffer import thinking_output_tokens
+
+    prompt = compaction_prompt("n" * 400_000, prior="old")
+    assert thinking_output_tokens(prompt) >= COMPACTION_GENERATION_RESERVE_TOKENS
+    assert "Reason as long as you need" in prompt
+    assert "discarded" in prompt
+
+
 def test_estimate_tokens_nonzero() -> None:
     assert estimate_tokens("abcd") >= 1
 

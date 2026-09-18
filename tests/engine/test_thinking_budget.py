@@ -51,6 +51,18 @@ def test_pack_leaves_full_think_budget(char_tok: None) -> None:
     assert thinking_output_tokens(packed) >= NEXT_QUESTION_RESERVE_TOKENS
 
 
+def test_pack_compaction_reserve_leaves_xhigh_generation(char_tok: None) -> None:
+    from gaius.core.budgets import COMPACTION_GENERATION_RESERVE_TOKENS
+
+    tmpl = "HEAD{slices}TAIL"
+    huge = "x" * (DEFAULT_SCRATCH_TOKEN_BUDGET * 2)
+    packed = pack_thinking_slices(
+        tmpl, huge, generation_reserve=COMPACTION_GENERATION_RESERVE_TOKENS
+    )
+    assert thinking_output_tokens(packed) >= COMPACTION_GENERATION_RESERVE_TOKENS
+    assert COMPACTION_GENERATION_RESERVE_TOKENS > NEXT_QUESTION_RESERVE_TOKENS
+
+
 def test_read_timeout_scales_with_output_budget() -> None:
     assert thinking_read_timeout_s(8_000) >= 420
     assert thinking_read_timeout_s(65_536) > thinking_read_timeout_s(3_072)

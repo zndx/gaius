@@ -53,8 +53,7 @@ class LatticeRouter:
         )
         from gaius.flows.lattice import complete
 
-        # thinking / reasoning → xhigh. instruct → same GPUs 0-3, thinking=on,
-        # effort=low so an ANSWER lands (xhigh compact thinks to EOS).
+        # thinking / reasoning → xhigh. instruct → same GPUs 0-3, effort=low.
         if agent_alias not in ("thinking", "reasoning", "instruct"):
             raise ValueError(
                 f"LatticeRouter serves the thinking lane only (got agent_alias={agent_alias!r})"
@@ -94,14 +93,13 @@ async def summarize_with_thinking(prompt: str) -> str:
     from gaius.core.budgets import COMPACTION_MAX_TOKENS
     from gaius.engine.services.cognition_buffer import thinking_output_tokens
 
-    # (2026-09-07) Bound the compaction's generation: the scratch-budget
-    # ceiling (~150k tokens) let a think-to-EOS compaction run 3.5 h before
-    # TRUNCATED (fmp_roll #33324). The state needs ~33k tokens; 65k leaves
-    # room for it and its reasoning and ends a runaway in ~1.7 h, not 4.
+    # xhigh on the thinking lane. Ceiling is the leftover of the 262k
+    # window after the prompt (capped at COMPACTION_MAX_TOKENS = scratch
+    # budget). The trace is not stored; empty content is still a fail.
     ceiling = min(COMPACTION_MAX_TOKENS, thinking_output_tokens(prompt))
     resp = await LatticeRouter().complete(
         prompt=prompt,
-        agent_alias="instruct",
+        agent_alias="thinking",
         temperature=0.2,
         task_type="buffer_compaction",
         max_tokens=ceiling,

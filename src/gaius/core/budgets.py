@@ -30,19 +30,26 @@ LONG_FORM_MAX_TOKENS = 32768
 # consultations). The agent's whole reasoning for a turn fits here.
 AGENT_TURN_MAX_TOKENS = 65536
 
-# Buffer compaction (ambient window, FMP market-state roll): the answer is a
-# ~110–130 KB state (~33k tokens) plus its reasoning. Until 2026-09-07 the
-# ceiling was "whatever the scratch budget leaves" (~150k tokens): a think-to-
-# EOS compaction then ran 3 h 32 m at 10 tok/s before #EP.00000017.TRUNCATED
-# (fmp_roll #33324, 10:07→13:40), starving the roll for the whole afternoon.
-# This bounds a runaway to ~1.7 h while leaving the state twice its room;
-# a bigger state is the buffers redesign's problem, not a bigger ceiling's.
-COMPACTION_MAX_TOKENS = 65536
-
 # Mirror of agents.conf ``thinking.resources.context-length`` — the live
 # ``--max-model-len``. Advertised to grok-build so its compaction logic
 # sees the real window.
 THINKING_CONTEXT_WINDOW = 262144
+
+# Buffer compaction (ambient window, FMP market-state roll).
+#
+# xhigh traces count against max_tokens and are discarded — only the
+# briefing (~33k tokens) is written to the buffer. A 65k generation cap
+# truncated that thinking mid-thought and produced empty answers
+# (#BUF.00000001). The ceiling is the thinking window minus the
+# next-question reserve (same 65_536 as cognition_buffer): whatever
+# remains after the prompt is available for think + answer. Progress
+# doctrine still applies (stall, not a wall-clock kill).
+COMPACTION_MAX_TOKENS = THINKING_CONTEXT_WINDOW - 65_536  # 196_608
+
+# When packing evidence into the compact prompt, leave at least this
+# much generation (xhigh think + briefing). Synthesis keeps the smaller
+# default in pack_thinking_slices.
+COMPACTION_GENERATION_RESERVE_TOKENS = 131_072
 
 # External API models (xAI grok-4-1-fast, Cerebras). Reasoning tokens
 # count against the cap there too; still a ceiling, billed per token
