@@ -9,6 +9,7 @@ from gaius.engine.services.agenda_emit import (
     backfill_surfaces,
     emit,
     emit_prospects_update,
+    emit_prospects_watch,
     emit_publish_cards,
 )
 
@@ -151,7 +152,7 @@ def test_prospects_completed_tail_is_not_an_error(tmp_path: Path) -> None:
     )
     assert item is not None
     assert item.intent == "brief"
-    assert "nothing to book" in item.body
+    assert "no per-symbol outcomes" in item.body
 
 
 def test_prospects_yielded_is_not_an_alarm(tmp_path: Path) -> None:
@@ -174,8 +175,25 @@ def test_prospects_filings_book_session(tmp_path: Path) -> None:
         {
             "status": "completed",
             "symbols": ["CHTR", "DIS"],
-            "new_filings_count": 12,
             "error": "",
+            "outcomes_summary": {
+                "filings_analyzed_total": 12,
+                "total_cost_usd": 0.0,
+                "outcomes": [
+                    {
+                        "symbol": "CHTR",
+                        "recommendation": "hold",
+                        "conviction": 0.6,
+                        "filings_analyzed": 7,
+                    },
+                    {
+                        "symbol": "DIS",
+                        "recommendation": "watch",
+                        "conviction": 0.4,
+                        "filings_analyzed": 5,
+                    },
+                ],
+            },
         },
         root=kb,
     )
@@ -183,6 +201,34 @@ def test_prospects_filings_book_session(tmp_path: Path) -> None:
     assert item.intent == "session"
     assert item.starts
     assert "CHTR" in item.body
+
+
+def test_prospects_watch_is_a_conclusion_not_an_empty_book(tmp_path: Path) -> None:
+    kb = tmp_path / "kb"
+    (kb / "scratch").mkdir(parents=True)
+    item = emit_prospects_watch(
+        reason="System converged - no pending work",
+        stances=[
+            {"symbol": "SLB", "recommendation": "hold", "conviction": 0.7},
+            {"symbol": "MTN", "recommendation": "", "conviction": None},
+        ],
+        headlines=[
+            {
+                "kind": "8-K",
+                "symbol": "SLB",
+                "title": "SLB 8-K",
+                "when": "2026-08-31",
+                "on_watch": True,
+            }
+        ],
+        root=kb,
+    )
+    assert item is not None
+    assert item.intent == "brief"
+    assert "SLB HOLD" in item.body
+    assert "MTN" in item.body
+    assert "nothing to book" not in item.body
+    assert "No action warranted" in item.body
 
 
 def test_backfill_is_idempotent(tmp_path: Path) -> None:

@@ -613,18 +613,32 @@ class ProspectsService:
             try:
                 filings = await self._fetch_sec_filings(symbol, api_key, profile, domain)
 
-                # Count new filings
+                # Count new filings — new against the KB, not the calendar.
+                # The bare lookback window re-counted the same filings on
+                # every check ("55 new" forever, 2026-09-09..12); a filing
+                # whose artifact is already booked under
+                # current/prospects/<sym>/filings/ is not new.
+                booked = self._booked_filing_stems(symbol)
                 new_for_symbol = 0
                 for filing in filings:
                     filing_date_str = filing.get("fillingDate") or filing.get("acceptedDate")
-                    if filing_date_str:
-                        try:
-                            filing_date = datetime.strptime(filing_date_str[:10], "%Y-%m-%d")
-                            filing_date = filing_date.replace(tzinfo=timezone.utc)
-                            if filing_date > cutoff_date:
-                                new_for_symbol += 1
-                        except ValueError:
-                            pass
+                    if not filing_date_str:
+                        continue
+                    try:
+                        filing_date = datetime.strptime(filing_date_str[:10], "%Y-%m-%d")
+                        filing_date = filing_date.replace(tzinfo=timezone.utc)
+                    except ValueError:
+                        continue
+                    if filing_date <= cutoff_date:
+                        continue
+                    ftype = str(filing.get("type") or filing.get("formType") or "")
+                    if ftype:
+                        from gaius.flows.base import safe_filename
+
+                        stem = f"{safe_filename(ftype)}_{filing_date_str[:10]}"
+                        if stem in booked:
+                            continue
+                    new_for_symbol += 1
 
                 if new_for_symbol > 0:
                     symbols_with_new.append(symbol)
@@ -1036,6 +1050,26 @@ class ProspectsService:
         except Exception as e:
             logger.warning(f"Failed to check pending synthesis: {e}")
             return {}
+
+    def _booked_filing_stems(self, symbol: str) -> set[str]:
+        """Stems of filing artifacts already booked in the KB for a symbol.
+
+        `<safe form type>_<YYYY-MM-DD>` — the exact names the update flow
+        writes under current/prospects/<sym>/filings/. This is the
+        filing watermark; no separate table needed.
+        """
+        from gaius.flows.base import safe_filename
+
+        d = (
+            Path(self._config.kb_root)
+            / "current/prospects"
+            / safe_filename(symbol).lower()
+            / "filings"
+        )
+        try:
+            return {p.stem for p in d.glob("*.md")}
+        except OSError:
+            return set()
 
     async def _fetch_sec_filings(
         self,

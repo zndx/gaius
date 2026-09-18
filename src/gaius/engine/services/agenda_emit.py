@@ -157,7 +157,6 @@ def emit_prospects_update(result: dict[str, Any], root: Path | None = None) -> A
     now = datetime.now(timezone.utc)
     symbols = result.get("symbols") or []
     status = result.get("status") or ("error" if result.get("error") else "unknown")
-    filings = result.get("new_filings_count")
     err = (result.get("error") or "").strip()
     failed = bool(err) or status in _PROSPECTS_FAILURES
     if failed and not err:
@@ -190,37 +189,216 @@ def emit_prospects_update(result: dict[str, Any], root: Path | None = None) -> A
             root=root,
         )
 
-    if filings:
-        start = _next_session_slot(now)
-        ends = start + timedelta(minutes=30)
-        starts_s = start.isoformat()
-        ends_s = ends.isoformat()
-        brief = (
-            f"Walk {filings} new FMP filing(s) on {sym}.\n"
-            "Do not treat an empty 13F cache as no change "
-            "(institutional-ownership is 402 on this key).\n"
+    summary = result.get("outcomes_summary") or {}
+    outcomes = summary.get("outcomes") or []
+
+    if outcomes:
+        total_filings = int(summary.get("filings_analyzed_total") or 0)
+        cost = float(summary.get("total_cost_usd") or 0.0)
+        rows: list[str] = []
+        lines: list[str] = []
+        for o in outcomes:
+            osym = str(o.get("symbol") or "?")
+            rec = str(o.get("recommendation") or "?").upper()
+            conv = o.get("conviction")
+            conv_s = f"{float(conv):.0%}" if isinstance(conv, (int, float)) else "—"
+            prior = o.get("prior") or {}
+            if prior:
+                p_rec = str(prior.get("recommendation") or "?").upper()
+                p_conv = prior.get("conviction")
+                p_conv_s = (
+                    f"{float(p_conv):.0%}" if isinstance(p_conv, (int, float)) else "?"
+                )
+                delta = f"was {p_rec} {p_conv_s}"
+            else:
+                delta = "new (no prior)"
+            action = str((o.get("rebalancing_call") or {}).get("action") or "watch")
+            rows.append(
+                f"| {osym} | {rec} | {conv_s} | {delta} | {action} "
+                f"| {int(o.get('filings_analyzed') or 0)} |"
+            )
+            change = str(o.get("change") or "").strip()
+            first = change.split(". ")[0].strip()[:220]
+            links: list[str] = []
+            note_path = str(o.get("scratch_note") or "").removesuffix(".md")
+            if note_path:
+                links.append(f"[[{note_path}|log]]")
+            synth_path = str(o.get("synthesis_path") or "").removesuffix(".md")
+            if synth_path:
+                links.append(f"[[{synth_path}|synthesis]]")
+            lines.append(
+                f"- **{osym}** — {first or 'no change note produced'}"
+                + (f" · {' · '.join(links)}" if links else "")
+            )
+        sitrep = str(summary.get("sitrep_path") or "").removesuffix(".md")
+        body = (
+            f"Prospects update completed on {len(outcomes)} position(s) — "
+            f"{total_filings} filing(s) analyzed, ${cost:.2f}.\n\n"
+            "| Symbol | Call | Conviction | Δ vs prior | Action | Filings |\n"
+            "|--------|------|------------|-----------|--------|---------|\n"
+            + "\n".join(rows)
+            + "\n\n"
+            + "\n".join(lines)
+            + "\n"
+            + (f"\nSitrep: [[{sitrep}]]\n" if sitrep else "")
         )
+        resolved = _resolve_open_failures(now, root=root)
+        if resolved:
+            body += (
+                f"\nResolved {resolved} open 'Prospects update failed' "
+                "reminder(s) — this run completed clean.\n"
+            )
+        if total_filings > 0:
+            start = _next_session_slot(now)
+            ends = start + timedelta(minutes=30)
+            return upsert(
+                kind="event",
+                title="Prospects filings session",
+                body=body,
+                now=start,
+                starts=start.isoformat(),
+                ends=ends.isoformat(),
+                tags=["prospects", "watchlist"],
+                intent="session",
+                with_whom="agents",
+                root=root,
+            )
         return upsert(
-            kind="event",
-            title="Prospects filings session",
-            body=brief,
-            now=start,
-            starts=starts_s,
-            ends=ends_s,
+            kind="note",
+            title="Prospects update",
+            body=body,
+            now=now,
             tags=["prospects", "watchlist"],
-            intent="session",
-            with_whom="agents",
+            intent="brief",
             root=root,
         )
 
+    # Clean run but no outcomes handed over: say so rather than pretending
+    # nothing happened — the per-symbol artifacts may still exist.
     body = (
-        f"Prospects update {status}. Symbols: {sym}. "
-        "No new filing count — nothing to book.\n"
+        f"Prospects update {status}. Symbols: {sym}.\n\n"
+        "The flow reported no per-symbol outcomes "
+        "(current/prospects/last_update_outcomes.json missing or stale) — "
+        "see the ProspectsUpdate flow log and current/prospects/ for what "
+        "was actually produced.\n"
     )
     return upsert(
         kind="note",
         title="Prospects update",
         body=body,
+        now=now,
+        tags=["prospects", "watchlist"],
+        intent="brief",
+        root=root,
+    )
+
+
+def _resolve_open_failures(
+    now: datetime, *, days: int = 14, root: Path | None = None
+) -> int:
+    """Tick open 'Prospects update failed' reminders after a clean run.
+
+    The failure branch upserts a per-day reminder with an unticked box;
+    without this, every later agenda brief re-chews a failure that no
+    longer exists (2026-09-12: two stale reminders outlived the fix by
+    a day). Direct text surgery on the zettels; fail-open on any error.
+    """
+    resolved = 0
+    try:
+        kb = root or kb_root_from_env()
+        for back in range(days):
+            day = (now - timedelta(days=back)).astimezone(timezone.utc)
+            day_dir = kb / "scratch" / day.strftime("%Y-%m-%d")
+            if not day_dir.is_dir():
+                continue
+            for path in day_dir.glob("*prospects-update-failed*.md"):
+                text = path.read_text(encoding="utf-8")
+                if "- [ ]" not in text:
+                    continue
+                stamp = now.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+                text = text.replace("- [ ] ", "- [x] ")
+                text += (
+                    f"\n> Resolved {stamp}: a clean prospects update run "
+                    "booked the calls.\n"
+                )
+                path.write_text(text, encoding="utf-8")
+                resolved += 1
+    except (OSError, AgendaError) as exc:
+        logger.error("%s\n  cause: %s", GURU_EMITFAIL, exc)
+    return resolved
+
+
+def emit_prospects_watch(
+    *,
+    reason: str,
+    stances: list[dict[str, Any]],
+    headlines: list[dict[str, Any]],
+    root: Path | None = None,
+) -> AgendaItem | None:
+    """Book the no-update-work readout: standing calls vs the 36h tape.
+
+    A check that finds no filing work must still inform rebalancing —
+    'all quiet, no action warranted' is a conclusion, 'nothing to book'
+    is not. Data comes from the fmp_roll durable buffer; do not invent
+    items the clocks did not produce.
+    """
+    now = datetime.now(timezone.utc)
+
+    calls = [
+        f"{s['symbol']} {str(s.get('recommendation') or '?').upper()}"
+        + (
+            f" {float(s['conviction']):.0%}"
+            if isinstance(s.get("conviction"), (int, float))
+            else ""
+        )
+        for s in stances
+        if str(s.get("recommendation") or "").strip()
+    ]
+    missing = [
+        str(s.get("symbol"))
+        for s in stances
+        if not str(s.get("recommendation") or "").strip()
+    ]
+
+    watch_items = [h for h in headlines if h.get("on_watch")]
+    general_items = [h for h in headlines if not h.get("on_watch")]
+
+    parts: list[str] = []
+    parts.append(f"No filing work pending ({reason or 'converged'}).\n")
+    if calls:
+        parts.append("Standing calls: " + " · ".join(calls) + "\n")
+    if missing:
+        parts.append(
+            "No thesis on record for: " + ", ".join(missing)
+            + " — the next filing-driven update writes one.\n"
+        )
+    if watch_items:
+        parts.append("Watchlist tape (36h, market buffer):\n")
+        parts.extend(
+            f"- [{h['kind']}] {h['symbol'] or '—'} — {h['title']} ({h['when']})"
+            for h in watch_items
+        )
+        parts.append("")
+    if general_items:
+        parts.append("Elsewhere on the tape:\n")
+        parts.extend(
+            f"- [{h['kind']}] {h['symbol'] or '—'} — {h['title']} ({h['when']})"
+            for h in general_items
+        )
+        parts.append("")
+    if not watch_items and not general_items:
+        parts.append(
+            "The market buffer held no watchlist items in the last 36h — "
+            "if this persists, check the fmp_roll clock (/health).\n"
+        )
+    parts.append(
+        "No action warranted from the tape alone; filings drive re-synthesis."
+    )
+
+    return upsert(
+        kind="note",
+        title="Prospects watch",
+        body="\n".join(parts) + "\n",
         now=now,
         tags=["prospects", "watchlist"],
         intent="brief",

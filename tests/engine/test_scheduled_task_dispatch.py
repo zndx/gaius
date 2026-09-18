@@ -209,16 +209,15 @@ def test_prospects_requests_the_platform_metaflow_profile() -> None:
     assert sig.parameters["metaflow_mode"].default == "local"
 
 
-def test_only_prospects_opts_into_platform() -> None:
-    """A flow with @kubernetes steps hangs under the platform profile."""
+def test_spawned_metaflow_defaults_to_local() -> None:
+    """@kubernetes steps hang under the platform profile; default stays local."""
     import inspect
 
     from gaius.engine.services import scheduled_task_processor as stp
 
     src = inspect.getsource(stp.ScheduledTaskProcessor)
-    # Actual call-site arguments, not the prose explaining them.
-    opt_ins = [
-        line for line in src.splitlines()
-        if line.strip() == 'metaflow_mode="platform",'
-    ]
-    assert len(opt_ins) == 1, opt_ins
+    handler = src[src.index("async def handle_prospects_update") :]
+    handler = handler[: handler.index("async def handle_metabase_sync")]
+    assert 'metaflow_mode="platform"' in handler
+    sig = inspect.signature(stp.ScheduledTaskProcessor._run_spawned_metaflow)
+    assert sig.parameters["metaflow_mode"].default == "local"

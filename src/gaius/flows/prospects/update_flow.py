@@ -672,6 +672,9 @@ class ProspectsUpdateFlow(TracedFlow, GaiusFlow):
         self.syntheses: dict[str, PositionSynthesis] = {}
         self.synthesis_errors: list[str] = []
         self.synthesis_skipped_already_exists = 0
+        # Prior stance per symbol, captured before re-synthesis so the
+        # agenda rollup can state the delta (rec/conviction) explicitly.
+        self.priors_by_symbol: dict[str, dict] = {}
 
         # Check which symbols need synthesis (analyses exist, KB does not)
         symbols_needing_synthesis = []
@@ -768,6 +771,12 @@ class ProspectsUpdateFlow(TracedFlow, GaiusFlow):
                 prior_thesis = ""
                 try:
                     prior = load_synthesis_from_kb(self.kb_root, symbol)
+                    if prior is not None:
+                        self.priors_by_symbol[symbol] = {
+                            "recommendation": prior.recommendation,
+                            "conviction": prior.conviction_score,
+                            "as_of": str(prior.synthesis_at or ""),
+                        }
                     if prior is not None and (prior.thesis_summary or "").strip():
                         prior_thesis = (
                             f"Recommendation {prior.recommendation} at conviction "
@@ -838,6 +847,7 @@ class ProspectsUpdateFlow(TracedFlow, GaiusFlow):
         time_str = now.strftime("%H%M%S")
 
         self.kb_paths: list[str] = []
+        self.scratch_note_by_symbol: dict[str, str] = {}
         kb_root = self.kb_root
 
         for symbol, synthesis in self.syntheses.items():
@@ -904,6 +914,7 @@ class ProspectsUpdateFlow(TracedFlow, GaiusFlow):
             scratch_full_path.parent.mkdir(parents=True, exist_ok=True)
             scratch_full_path.write_text(scratch_content)
             self.kb_paths.append(scratch_path)
+            self.scratch_note_by_symbol[symbol] = scratch_path
 
         self.next(self.generate_base_files)
 
@@ -1564,6 +1575,42 @@ run_id: "{metrics['run_id']}"
 
         # Count analyzed filings
         total_filings_analyzed = sum(len(a) for a in self.analyses.values())
+
+        # Hand the engine the decision-bearing outcomes so the agenda rollup
+        # can state the calls instead of "nothing to book" (2026-09-12: the
+        # emitter keyed on a check-only field and every success surfaced thin).
+        # Always written — an empty outcomes list is an honest result.
+        priors = getattr(self, "priors_by_symbol", {}) or {}
+        scratch_notes = getattr(self, "scratch_note_by_symbol", {}) or {}
+        outcomes = []
+        for symbol, s in self.syntheses.items():
+            safe_symbol = safe_filename(symbol).lower()
+            outcomes.append({
+                "symbol": symbol,
+                "company_name": s.company_name or symbol,
+                "recommendation": s.recommendation,
+                "conviction": s.conviction_score,
+                "risk": s.risk_level,
+                "change": (s.change_since_prior or "").strip(),
+                "rebalancing_call": s.rebalancing_call or {},
+                "prior": priors.get(symbol),
+                "filings_analyzed": len(self.analyses.get(symbol, [])),
+                "scratch_note": scratch_notes.get(symbol, ""),
+                "synthesis_path": f"current/prospects/{safe_symbol}/synthesis.md",
+            })
+        outcomes_doc = {
+            "completed_at": datetime.now(timezone.utc).isoformat(),
+            "correlation_id": self.get_correlation_id(),
+            "symbols": list(self.symbol_list),
+            "filings_analyzed_total": total_filings_analyzed,
+            "total_cost_usd": total_cost,
+            "sitrep_path": getattr(self, "sitrep_path", ""),
+            "outcomes": outcomes,
+        }
+        outcomes_path = self.kb_root / "current/prospects/last_update_outcomes.json"
+        outcomes_path.parent.mkdir(parents=True, exist_ok=True)
+        outcomes_path.write_text(json.dumps(outcomes_doc, indent=2, default=str))
+        print(f"Outcomes: {outcomes_path} ({len(outcomes)} positions)")
 
         current.card.append(Markdown("## Cost Summary"))
         current.card.append(Table([

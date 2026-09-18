@@ -829,7 +829,6 @@ CREATE FUNCTION meta.should_run_prospects_check() RETURNS boolean
     AS $$
 DECLARE
     v_last_run TIMESTAMPTZ;
-    v_hours_since NUMERIC;
 BEGIN
     SELECT last_run_at INTO v_last_run
     FROM meta.prospects_cron_state
@@ -839,8 +838,7 @@ BEGIN
         RETURN TRUE;
     END IF;
 
-    v_hours_since := EXTRACT(EPOCH FROM (NOW() - v_last_run)) / 3600;
-    RETURN v_hours_since >= 24;
+    RETURN (timezone('UTC', v_last_run))::date < (timezone('UTC', NOW()))::date;
 END;
 $$;
 
@@ -849,8 +847,9 @@ $$;
 -- Name: FUNCTION should_run_prospects_check(); Type: COMMENT; Schema: meta; Owner: -
 --
 
-COMMENT ON FUNCTION meta.should_run_prospects_check() IS 'Returns TRUE if 24+ hours have passed since last prospects check.
-Called by pg_cron job to enforce cooldown period.';
+COMMENT ON FUNCTION meta.should_run_prospects_check() IS
+'TRUE if no prospects check has completed on the current UTC date.
+Airflow owns 07:00; engine catch-up uses the same predicate after 07:00.';
 
 
 --
@@ -5415,8 +5414,8 @@ CREATE TABLE meta.prospects_cron_state (
 -- Name: TABLE prospects_cron_state; Type: COMMENT; Schema: meta; Owner: -
 --
 
-COMMENT ON TABLE meta.prospects_cron_state IS 'Tracks prospects check state for 24-hour cooldown enforcement.
-Used by pg_cron job to implement daily interval via should_run_prospects_check().';
+COMMENT ON TABLE meta.prospects_cron_state IS 'Tracks last prospects check (UTC calendar day).
+Airflow gaius_prospects_check is 07:00; should_run_prospects_check is the gate.';
 
 
 --

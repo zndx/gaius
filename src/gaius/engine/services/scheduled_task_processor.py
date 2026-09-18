@@ -11,8 +11,9 @@ Design:
   no STP handler stay pending for their owner — never completed as
   #STP.00000003.NOHANDLER (that poison starved fetch → tape).
 - Marks owned tasks complete with result/error
-- Prospects check/update catch up on engine start so a recycle
-  cannot skip the daily Data Product clock.
+- Prospects check/update catch up on engine start after 07:00 UTC
+  so a recycle cannot skip the daily Data Product clock, and does
+  not steal Airflow's 07:00 tick.
 - Due pickup is non-blocking (create_task). A LuxCore enrich must
   not stall LISTEN / board_reindex. publish_cards is a singleton.
 
@@ -56,6 +57,39 @@ def _ms(ts: Any) -> int:
         return int(ts.timestamp() * 1000) if ts is not None else 0
     except Exception:  # noqa: BLE001
         return 0
+
+
+def _prospects_stances() -> list[dict[str, Any]]:
+    """Standing calls from current/prospects/*/synthesis.md. Fail-open."""
+    try:
+        from pathlib import Path
+
+        from gaius.flows.prospects.flow import load_watchlist
+        from gaius.flows.prospects.update_flow import load_synthesis_from_kb
+
+        kb = Path(os.environ.get("GAIUS_KB_ROOT", "build/dev"))
+        out: list[dict[str, Any]] = []
+        for entry in load_watchlist():
+            sym = str(entry.get("symbol") or "").upper()
+            if not sym:
+                continue
+            syn = load_synthesis_from_kb(kb, sym)
+            out.append(
+                {
+                    "symbol": sym,
+                    "recommendation": getattr(syn, "recommendation", "") if syn else "",
+                    "conviction": getattr(syn, "conviction_score", None) if syn else None,
+                }
+            )
+        return out
+    except Exception:  # noqa: BLE001
+        logger.debug("prospects stances unreadable", exc_info=True)
+        return []
+
+
+def prospects_catchup_should_enqueue(due: bool, *, hour: int) -> bool:
+    """Airflow owns 07:00 UTC; catch-up only after that hour."""
+    return bool(due) and int(hour) >= 7
 
 
 async def _coord_release(done_row: Any, task: Any, status: str, task_id: int) -> None:
@@ -987,6 +1021,16 @@ class ScheduledTaskProcessor(BaseDaemon):
                 else:
                     from gaius.flows.prospects.publish import record_availability
 
+                    try:
+                        from gaius.engine.services.agenda_emit import emit_prospects_watch
+
+                        emit_prospects_watch(
+                            reason=str(result.get("reason") or "no new filings"),
+                            stances=_prospects_stances(),
+                            headlines=[],
+                        )
+                    except Exception:
+                        logger.debug("prospects watch emit failed", exc_info=True)
                     avail = record_availability(
                         reason=str(result.get("reason") or "no new filings")
                     )
@@ -1057,8 +1101,19 @@ class ScheduledTaskProcessor(BaseDaemon):
                 metaflow_mode="platform",
             )
             result["symbols"] = symbols
+            from pathlib import Path
+
             from gaius.engine.services.agenda_emit import emit_prospects_update
 
+            kb = Path(os.environ.get("GAIUS_KB_ROOT", "build/dev"))
+            outcomes_path = kb / "current/prospects/last_update_outcomes.json"
+            try:
+                if outcomes_path.is_file():
+                    result["outcomes_summary"] = json.loads(
+                        outcomes_path.read_text(encoding="utf-8")
+                    )
+            except (OSError, ValueError):
+                logger.warning("prospects outcomes file unreadable: %s", outcomes_path)
             emit_prospects_update(result)
             return result
 
@@ -1534,7 +1589,12 @@ class ScheduledTaskProcessor(BaseDaemon):
         )
 
     async def _catch_up_prospects(self) -> None:
-        """Re-arm the daily clock after engine recycle; run leftover tasks."""
+        """Re-arm the daily clock after engine recycle; run leftover tasks.
+
+        Airflow owns 07:00 UTC. Catch-up after that hour covers a missed
+        morning; before 07:00 it would steal the DAG's tick (gate_false skip
+        ≠ success).
+        """
         if not self._pool:
             return
         async with self._pool.acquire() as conn:
@@ -1543,7 +1603,8 @@ class ScheduledTaskProcessor(BaseDaemon):
             except Exception as e:
                 logger.warning("prospects cooldown function missing: %s", e)
                 due = False
-            if due:
+            hour = datetime.now(timezone.utc).hour
+            if prospects_catchup_should_enqueue(bool(due), hour=hour):
                 await conn.execute(
                     """
                     INSERT INTO scheduled_tasks (task_type, payload, source, scheduled_for)
