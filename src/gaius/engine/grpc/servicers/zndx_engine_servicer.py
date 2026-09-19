@@ -685,10 +685,8 @@ class GaiusZndxEngineServicer(zpb_grpc.EngineServicer):
                 intent=intent,
                 with_whom=str(getattr(it, "with_whom", "") or ""),
                 tz_name="",
-                origin_project="gaius",
+                origin_project=caller,
                 origin_agent=agent,
-                session_prompt=str(getattr(it, "session_prompt", "") or ""),
-                session_materials=str(getattr(it, "session_materials", "") or ""),
             )
         except AgendaError as e:
             return zpb.PutAgendaItemResponse(ok=False, note=str(e))

@@ -42,14 +42,18 @@ async def test_put_agenda_item_from_hermes_ripley(tmp_path, monkeypatch):
             intent="session",
             body="Talk through Discover.",
             starts_ms=starts,
-            session_prompt="Open on Discover, not leftover thoughts.",
         ),
     )
     resp = await servicer.PutAgendaItem(req, MagicMock())
     assert resp.ok is True
     assert resp.item.id.startswith("scratch/")
     assert resp.item.origin_agent == "ripley"
-    assert "not leftover thoughts" in resp.item.session_prompt
+    assert resp.item.origin_project == "hermes"
+    assert not (resp.item.session_prompt or "").strip()
+    text = (kb / resp.item.id).read_text(encoding="utf-8")
+    assert "origin: hermes" in text
+    assert "agent: ripley" in text
+    assert "## Session prompt" not in text
     empty = await servicer.PutAgendaItem(
         zpb.PutAgendaItemRequest(origin_project="hermes", origin_agent="grok"),
         MagicMock(),
