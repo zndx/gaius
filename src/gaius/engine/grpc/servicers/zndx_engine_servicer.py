@@ -29,6 +29,40 @@ CAPABILITY_COGNITION = "cognition"
 CAPABILITY_THINKING = "thinking"
 
 
+def _agenda_item_to_proto(item) -> zpb.AgendaHintItem:
+    from gaius.engine.services.agenda_notes import (
+        extract_session_sections,
+        parse_when,
+        split_public_deck,
+    )
+
+    def _ms(iso: str) -> int:
+        dt = parse_when(iso) if iso else None
+        return int(dt.timestamp() * 1000) if dt else 0
+
+    public, _deck = split_public_deck(item.body)
+    prompt, materials = extract_session_sections(item.body)
+    hint = zpb.AgendaHintItem(
+        id=item.path,
+        starts_ms=_ms(item.starts),
+        ends_ms=_ms(item.ends),
+        kind=item.kind,
+        intent=item.intent,
+        title=item.title,
+        summary=(public or "")[:300],
+        pinned=bool(item.pin),
+        with_whom=item.with_whom or "",
+        body=item.body or "",
+        created_ms=int(item.created_ms or 0),
+        origin_project=getattr(item, "origin_project", "") or "gaius",
+        origin_agent=getattr(item, "origin_agent", "") or "",
+        session_prompt=prompt,
+        session_materials=materials,
+    )
+    hint.tags.extend(str(t) for t in (item.tags or []))
+    return hint
+
+
 ASK_REPLICAS = ("interpretable", "interpretable-b")
 ASK_SAE = ("ask-sae",)
 _HEALTHY_STATUSES = frozenset({"healthy", "running", "ready"})
@@ -603,6 +637,74 @@ class GaiusZndxEngineServicer(zpb_grpc.EngineServicer):
             f"peer {request.project or '?'} at {request.engine_target or '?'} not recorded.",
         )
         return zpb.AnnounceAck()  # unreachable; abort raises
+
+    async def PutAgendaItem(
+        self,
+        request: zpb.PutAgendaItemRequest,
+        context: aio.ServicerContext,
+    ) -> zpb.PutAgendaItemResponse:
+        """Gaius holds the Agenda. Hermes named profiles (Ripley, Grok) write here."""
+        from datetime import datetime, timezone as dt_timezone
+
+        from gaius.engine.services.agenda_notes import (
+            AgendaError,
+            create_item,
+            kb_root_from_env,
+        )
+
+        it = request.item
+        title = str(getattr(it, "title", "") or "").strip()
+        if not title:
+            return zpb.PutAgendaItemResponse(
+                ok=False,
+                note="Agenda item title is required.\n  Guru: #AG.00000011.NOTITLE",
+            )
+
+        def _iso(ms: int) -> str:
+            if not ms:
+                return ""
+            return datetime.fromtimestamp(int(ms) / 1000, tz=dt_timezone.utc).isoformat()
+
+        kind = str(getattr(it, "kind", "") or "event")
+        intent = str(getattr(it, "intent", "") or "")
+        if not intent and kind == "event":
+            intent = "session"
+        caller = str(request.origin_project or "").strip() or "hermes"
+        agent = str(request.origin_agent or "").strip()
+        try:
+            created = await asyncio.to_thread(
+                create_item,
+                kb_root_from_env(),
+                kind=kind,
+                title=title,
+                body=str(getattr(it, "body", "") or ""),
+                starts=_iso(int(getattr(it, "starts_ms", 0) or 0)),
+                ends=_iso(int(getattr(it, "ends_ms", 0) or 0)),
+                tags=list(getattr(it, "tags", []) or []),
+                pin=bool(getattr(it, "pinned", False)),
+                intent=intent,
+                with_whom=str(getattr(it, "with_whom", "") or ""),
+                tz_name="",
+                origin_project="gaius",
+                origin_agent=agent,
+                session_prompt=str(getattr(it, "session_prompt", "") or ""),
+                session_materials=str(getattr(it, "session_materials", "") or ""),
+            )
+        except AgendaError as e:
+            return zpb.PutAgendaItemResponse(ok=False, note=str(e))
+        except Exception as e:
+            logger.exception("PutAgendaItem failed from %s/%s", caller, agent)
+            return zpb.PutAgendaItemResponse(
+                ok=False,
+                note=f"Agenda put failed: {e}\n  Guru: #AG.00000012.PUTFAIL",
+            )
+        logger.info(
+            "PutAgendaItem ok path=%s caller=%s agent=%s",
+            created.path,
+            caller,
+            agent or "-",
+        )
+        return zpb.PutAgendaItemResponse(ok=True, item=_agenda_item_to_proto(created))
 
     async def Yield(
         self,

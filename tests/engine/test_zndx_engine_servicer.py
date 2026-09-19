@@ -26,6 +26,38 @@ from gaius.engine.grpc.servicers.zndx_engine_servicer import (
 )
 
 
+@pytest.mark.asyncio
+async def test_put_agenda_item_from_hermes_ripley(tmp_path, monkeypatch):
+    kb = tmp_path / "build" / "dev"
+    (kb / "scratch").mkdir(parents=True)
+    monkeypatch.setenv("GAIUS_KB_ROOT", str(kb))
+    servicer = GaiusZndxEngineServicer(_services())
+    starts = 1789851600000
+    req = zpb.PutAgendaItemRequest(
+        origin_project="hermes",
+        origin_agent="ripley",
+        item=zpb.AgendaHintItem(
+            title="Ripley catch-up",
+            kind="event",
+            intent="session",
+            body="Talk through Discover.",
+            starts_ms=starts,
+            session_prompt="Open on Discover, not leftover thoughts.",
+        ),
+    )
+    resp = await servicer.PutAgendaItem(req, MagicMock())
+    assert resp.ok is True
+    assert resp.item.id.startswith("scratch/")
+    assert resp.item.origin_agent == "ripley"
+    assert "not leftover thoughts" in resp.item.session_prompt
+    empty = await servicer.PutAgendaItem(
+        zpb.PutAgendaItemRequest(origin_project="hermes", origin_agent="grok"),
+        MagicMock(),
+    )
+    assert empty.ok is False
+    assert "AG.00000011" in empty.note
+
+
 def _services(**kwargs):
     defaults = {
         "config": SimpleNamespace(gpus=SimpleNamespace(total=6, reserved=[])),

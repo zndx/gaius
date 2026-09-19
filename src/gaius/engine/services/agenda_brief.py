@@ -156,6 +156,8 @@ def item_row(item: Any, *, zone: str, today: date, with_body: bool = False) -> d
         "created_ms": int(item.created_ms or 0),
         "day": bucket_for(day, today),
         "calendar_day": day,
+        "origin_project": getattr(item, "origin_project", "") or "",
+        "origin_agent": getattr(item, "origin_agent", "") or "",
     }
     if with_body:
         # Sessions keep the presenterm deck intact (off-invite guide).
@@ -647,6 +649,8 @@ def to_proto(d: dict[str, Any]):
             body=str(r.get("body") or ""),
             created_ms=int(r.get("created_ms") or 0),
             day=str(r.get("day") or ""),
+            origin_project=str(r.get("origin_project") or ""),
+            origin_agent=str(r.get("origin_agent") or ""),
         )
         it.tags.extend(str(t) for t in (r.get("tags") or []))
         return it

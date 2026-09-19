@@ -51,6 +51,10 @@ GURU_BADTZ = (
     "Agenda timezone must be a valid IANA name (e.g. America/Denver).\n"
     "  Guru: #AG.00000010.BADTZ"
 )
+GURU_NOTITLE = (
+    "Agenda item title is required.\n"
+    "  Guru: #AG.00000011.NOTITLE"
+)
 
 NEW_NAME = re.compile(
     r"^(?P<date>\d{4}-\d{2}-\d{2})-(?P<time>\d{6})_(?P<skewer>[a-z0-9][a-z0-9-]{0,47})\.md$"
@@ -83,6 +87,11 @@ def require_kb(root: Path) -> Path:
     if not root.is_dir():
         raise AgendaError(GURU_NOKB)
     return root
+
+
+def _clean_agent(name: str) -> str:
+    raw = re.sub(r"[^a-z0-9_-]+", "", (name or "").strip().lower())
+    return raw[:32]
 
 
 def skewer(title: str, fallback: str = "item") -> str:
@@ -190,6 +199,46 @@ def split_public_deck(body: str) -> tuple[str, str]:
     return public, deck
 
 
+_SESSION_PROMPT_HEADING = re.compile(r"(?im)^##\s+(Session prompt|AgentRTC|Connect prompt)\s*$")
+_MATERIALS_HEADING = re.compile(r"(?im)^##\s+(Materials|Supporting materials)\s*$")
+
+
+def compose_session_body(
+    public: str,
+    *,
+    session_prompt: str = "",
+    session_materials: str = "",
+) -> str:
+    """Public lede plus optional AgentRTC prompt/materials sections (not speaker notes)."""
+    parts = [(public or "").rstrip()]
+    prompt = (session_prompt or "").strip()
+    materials = (session_materials or "").strip()
+    if prompt and not _SESSION_PROMPT_HEADING.search("\n".join(parts)):
+        parts.append("## Session prompt\n\n" + prompt)
+    if materials and not _MATERIALS_HEADING.search("\n".join(parts)):
+        parts.append("## Materials\n\n" + materials)
+    text = "\n\n".join(p for p in parts if p).rstrip()
+    return text + ("\n" if text else "")
+
+
+def extract_session_sections(body: str) -> tuple[str, str]:
+    """(session_prompt, materials) from optional ## headings in the body."""
+    text = body or ""
+    prompt = ""
+    materials = ""
+    pm = _SESSION_PROMPT_HEADING.search(text)
+    if pm:
+        rest = text[pm.end() :]
+        stop = _MATERIALS_HEADING.search(rest) or DECK_HEADING.search(rest)
+        prompt = (rest[: stop.start()] if stop else rest).strip()
+    mm = _MATERIALS_HEADING.search(text)
+    if mm:
+        rest = text[mm.end() :]
+        stop = DECK_HEADING.search(rest)
+        materials = (rest[: stop.start()] if stop else rest).strip()
+    return prompt, materials
+
+
 def agent_rtc_join_url(item_path: str, *, base: str = "") -> str:
     """Cloudflare-FQDN Listen deep link. Query is the Agenda note path."""
     import os
@@ -293,6 +342,8 @@ class AgendaItem:
     intent: str = "brief"
     with_whom: str = ""
     timezone: str = ""
+    origin_project: str = ""
+    origin_agent: str = ""
 
     def join_url(self) -> str:
         if self.intent != "session":
@@ -356,6 +407,8 @@ def _parse_header(text: str) -> tuple[dict[str, str], str, str]:
                 "intent",
                 "with",
                 "timezone",
+                "origin",
+                "agent",
             ):
                 fields[key] = rest.strip()
                 i += 1
@@ -435,6 +488,8 @@ def parse_item(root: Path, path: Path) -> AgendaItem:
         intent=intent,
         with_whom=with_whom or ("agents" if intent == "session" else ""),
         timezone=(fields.get("timezone") or "").strip(),
+        origin_project=(fields.get("origin") or "").strip(),
+        origin_agent=(fields.get("agent") or "").strip(),
     )
 
 
@@ -454,6 +509,8 @@ def render_item(item: AgendaItem) -> str:
         f"intent: {item.intent}",
         f"with: {item.with_whom}",
         f"timezone: {item.timezone}",
+        f"origin: {item.origin_project}",
+        f"agent: {item.origin_agent}",
         "",
         f"# {item.title}",
         "",
@@ -543,10 +600,17 @@ def create_item(
     intent: str = "",
     with_whom: str = "",
     tz_name: str = "",
+    origin_project: str = "",
+    origin_agent: str = "",
+    session_prompt: str = "",
+    session_materials: str = "",
 ) -> AgendaItem:
     root = require_kb(root)
     kind = validate_kind(kind)
     intent = validate_intent(intent, kind)
+    title = (title or "").strip()
+    if not title:
+        raise AgendaError(GURU_NOTITLE)
     tz_name = validate_timezone(tz_name)
     if intent == "session" and not (starts or "").strip():
         raise AgendaError(GURU_NOMEETTIME)
@@ -574,10 +638,15 @@ def create_item(
         prev_rel = str(prev_path.relative_to(root)).replace("\\", "/")
     if kind == "list" and body.strip() == "":
         body = "- [ ] \n"
+    body = compose_session_body(
+        body,
+        session_prompt=session_prompt,
+        session_materials=session_materials,
+    )
     item = AgendaItem(
         path=rel,
         kind=kind,
-        title=title.strip() or kind.title(),
+        title=title,
         body=body if body.endswith("\n") or not body else body + "\n",
         prev=prev_rel,
         next="",
@@ -589,6 +658,8 @@ def create_item(
         intent=intent,
         with_whom=with_whom,
         timezone=tz_name,
+        origin_project=(origin_project or "").strip() or "gaius",
+        origin_agent=_clean_agent(origin_agent),
     )
     path.write_text(render_item(item), encoding="utf-8")
     if prev_path is not None:

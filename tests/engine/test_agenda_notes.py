@@ -41,6 +41,35 @@ def test_jail_rejects_escape(tmp_path: Path) -> None:
         jail_path(kb, "current/projects/x.md")
 
 
+def test_create_from_hermes_profile_writes_origin_and_session_prompt(tmp_path: Path) -> None:
+    kb = tmp_path / "build" / "dev"
+    (kb / "scratch").mkdir(parents=True)
+    now = datetime(2026, 9, 19, 21, 0, 0, tzinfo=timezone.utc)
+    item = create_item(
+        kb,
+        kind="event",
+        title="Ripley catch-up",
+        body="Talk through Discover.",
+        starts=now.isoformat(),
+        intent="session",
+        origin_project="gaius",
+        origin_agent="ripley",
+        session_prompt="Open on Discover reliability, not leftover thoughts.",
+        session_materials="Theta skip is not success.",
+        now=now,
+    )
+    assert item.origin_agent == "ripley"
+    assert item.origin_project == "gaius"
+    text = (tmp_path / "build" / "dev" / item.path).read_text(encoding="utf-8")
+    assert "agent: ripley" in text
+    assert "origin: gaius" in text
+    assert "## Session prompt" in text
+    assert "not leftover thoughts" in text
+    assert "## Materials" in text
+    with pytest.raises(AgendaError, match="AG.00000011"):
+        create_item(kb, kind="note", title="  ")
+
+
 def test_create_list_get_update_chain(tmp_path: Path) -> None:
     kb = tmp_path / "build" / "dev"
     (kb / "scratch").mkdir(parents=True)
