@@ -28,17 +28,17 @@ Token reduction: 70–90% compared to text-based coordination. The collection sc
 
 ## ThetaAgent: Temporal Consolidation
 
-ThetaAgent (`agents/theta/agent.py`) executes a five-stage deterministic pipeline for cross-temporal knowledge linking:
+ThetaAgent (`agents/theta/agent.py`) plus `ThetaCycleFlow` (`gaius_theta_cycle`) execute a five-stage pipeline. The **product** is one week-level `theta_consolidation_runs` row per ISO week, not a stack of day slices. Vessel: Metaflow on LIGHT (ColBERT-Zero); BERTSubs is CPU/JVM.
 
-1. **Temporal slicing** — Documents organized into weekly slices (`YYYY-WNN`). Each slice is a consolidation unit.
+1. **Temporal slicing** — The window is the ISO week (`YYYY-WNN`). On-time Monday 06:00 consolidates the previous closed week. A miss remediates with daily LIGHT increments that refine the **same** week row (`zndx.window_date`); the week completes when Monday–Sunday are incorporated. That finer grain is a work unit, not a [ShadowStrategy](./theta.md#shadowstrategy).
 
-2. **NVAR dynamics** — Nonlinear Vector AutoRegression via reservoir computing (Gauthier et al., 2021) computes a consolidation signal from embedding centroid trajectories. Given slice centroids **c**₁,...,**c**ₜ ∈ ℝ⁷⁶⁸, NVAR predicts **ĉ**ₜ₊₁ and computes drift = ‖**ĉ**ₜ₊₁ − **c**ₜ‖₂. High drift → high urgency → consolidation priority.
+2. **NVAR dynamics** — Nonlinear Vector AutoRegression (Gauthier et al., 2021) on ColBERT-Zero `agg` centroids (ℝ¹²⁸). Same `slice_id` replaces the week centroid (refinement), it does not append a new temporal product. Drift = ‖ĉₜ₊₁ − **c**ₜ‖₂.
 
-3. **BERTSubs inference** — Subsumption relationships (A ⊑ B) between concepts are inferred using BERTSubs (Chen et al., 2023) from DeepOnto. Requires an OWL domain ontology with `rdfs:subClassOf` axioms and JVM via JPype.
+3. **BERTSubs inference** — `A ⊑ B` on CLT-linked, MaxSim-grounded pairs against the HermiT-certified SDG TBox (`sdg-ontology.owl`). Pairing uses the week's activations and accumulated groundings.
 
-4. **Knowledge Gradient selection** — Candidate relationships filtered by the KG policy (Powell & Ryzhov, 2012), which balances exploration (uncertain candidates) against exploitation (high-confidence relationships). Only candidates whose expected improvement exceeds a cost threshold are selected.
+4. **Knowledge Gradient selection** — KG policy (Powell & Ryzhov, 2012) keeps candidates whose expected improvement exceeds cost.
 
-5. **Document augmentation** — Selected relationships injected as wikilinks (`[[Target]]`) and action links (`[action:search "query"]`) into source documents.
+5. **Document augmentation** — Wikilinks (`[[Target]]`) and action links (`[action:search "query"]`) on the week's documents.
 
 ## MetaAgent Coordination
 

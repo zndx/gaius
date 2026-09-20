@@ -74,6 +74,24 @@ Selected relationships are injected into source documents as:
 
 The `EffectivenessTracker` measures augmentation impact by recording whether users follow injected links. When SHAP is available, feature attribution analysis identifies which augmentation types and document characteristics predict user engagement.
 
+## ShadowStrategy
+
+Gaius consumes `external/sdg-strategy` (`SdgAperture`). **ShadowStrategy** there means a
+**branch of the strategy repo** (lens / voices / knobs / targets), not a Theta time grain.
+See `external/sdg-strategy/README.md` (Shadows are branches).
+
+| Coordinate | Theta |
+|---|---|
+| **window** | ISO week of the `theta_consolidation_runs` row (the product) |
+| **strategy** | pinned `strategy_id` / aperture |
+| **code** | Gaius + `ThetaCycleFlow` |
+| **work unit** | on-time: one Monday run for the closed week; backfill: one UTC day of LIGHT that *refines* that week row |
+| **shadow** | a different strategy branch. Compare week artifacts, never day windows |
+
+Daily increments (`zndx.window_date`) are not shadows and not day-bounded releases. A week row completes when Monday–Sunday of that slice are incorporated. DAG `catchup=False`; `just theta-backfill` (Signals) serializes days with `max_active_runs=1`.
+
+A shadow Theta comparison is: same ISO week, two `strategy_id`s, two week-level consolidation rows. Promotion is cherry-pick/merge of the strategy delta, not of a day's increment.
+
 ## CLI Commands
 
 ```bash
