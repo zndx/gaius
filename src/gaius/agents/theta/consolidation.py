@@ -265,16 +265,22 @@ class ThetaDynamics:
         Returns:
             ConsolidationSignal if enough history and trained readout, None otherwise
         """
-        # Create and store slice (full resolution)
+        # Create and store slice (full resolution). Same slice_id is a
+        # refinement of the week artifact, not a new temporal product.
         ts = TemporalSlice(
             slice_id=slice_id,
             centroid=centroid,
             document_count=document_count,
         )
-        self.history.append(ts)
-
-        # Accumulate raw centroids for PCA
-        self._raw_centroids.append(centroid.copy())
+        if self.history and self.history[-1].slice_id == slice_id:
+            self.history[-1] = ts
+            if self._raw_centroids:
+                self._raw_centroids[-1] = centroid.copy()
+            else:
+                self._raw_centroids.append(centroid.copy())
+        else:
+            self.history.append(ts)
+            self._raw_centroids.append(centroid.copy())
 
         # Refit PCA periodically (every 5 new slices after initial fit)
         if len(self._raw_centroids) >= self.reduced_dim and len(self._raw_centroids) % 5 == 0:

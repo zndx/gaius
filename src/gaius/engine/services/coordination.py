@@ -507,11 +507,14 @@ class CoordinationWatcher:
 
     def _workload_payload(self, spec: dict[str, Any], a: dict[str, Any], aid: str, kind: str) -> dict[str, Any]:
         payload = dict(spec.get("payload") or {})
-        from gaius.engine.services.theta_cycle import slice_id_from_activity
+        from gaius.engine.services.theta_cycle import slice_id_from_activity, window_date_from_activity
 
         sid = slice_id_from_activity(a)
+        wd = window_date_from_activity(a)
         if sid:
             payload["slice_id"] = sid
+        if wd:
+            payload["window_date"] = wd
         payload.update({"activity_id": aid, "activity_kind": kind, "source": WORKLOAD_SOURCE})
         return payload
 
@@ -547,11 +550,14 @@ class CoordinationWatcher:
             # must never attach to the afternoon row), not yet stamped by
             # another activity.
             contained = dict(spec.get("payload") or {})
-            from gaius.engine.services.theta_cycle import slice_id_from_activity
+            from gaius.engine.services.theta_cycle import slice_id_from_activity, window_date_from_activity
 
             sid = slice_id_from_activity(a)
+            wd = window_date_from_activity(a)
             if sid:
                 contained["slice_id"] = sid
+            if wd:
+                contained["window_date"] = wd
             live = await pool.fetchrow(
                 "SELECT id, picked_up_at FROM scheduled_tasks WHERE task_type = $1 AND completed_at IS NULL "
                 "AND COALESCE(payload, '{}'::jsonb) @> $2::jsonb AND payload->>'activity_id' IS NULL "
@@ -578,7 +584,12 @@ class CoordinationWatcher:
                 await self._heartbeat(aid, at)
                 return "awaiting_pg_cron"
             else:
-                tid = await self._enqueue(pool, spec, aid, kind, extra={"slice_id": sid} if sid else None)
+                extra: dict[str, Any] = {}
+                if sid:
+                    extra["slice_id"] = sid
+                if wd:
+                    extra["window_date"] = wd
+                tid = await self._enqueue(pool, spec, aid, kind, extra=extra or None)
                 action = "started_workload"
                 logger.info("coordination: started workload %s #%d for activity %s", task_type, tid, aid)
             self._workloads[aid] = {"task_id": tid, "task_type": task_type, "state": state, "last_heartbeat_ns": 0}

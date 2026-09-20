@@ -64,6 +64,33 @@ def test_slice_id_for_monday_logical_date_is_previous_iso_week() -> None:
     assert slice_id_from_activity({}) == ""
 
 
+def test_daily_window_refines_containing_week_artifact() -> None:
+    from gaius.engine.services.theta_cycle import (
+        iso_week_days,
+        merge_centroid,
+        slice_id_from_activity,
+        week_is_complete,
+        window_date_from_activity,
+    )
+
+    act = {
+        "postures": {
+            "zndx.logical_date": "2026-09-14T06:00:00+00:00",
+            "zndx.window_date": "2026-09-14",
+        }
+    }
+    assert window_date_from_activity(act) == "2026-09-14"
+    assert slice_id_from_activity(act) == "2026-W38"
+    days = iso_week_days("2026-W38")
+    assert days[0] == "2026-09-14" and days[-1] == "2026-09-20" and len(days) == 7
+    assert not week_is_complete(["2026-09-14", "2026-09-15"], "2026-W38")
+    assert week_is_complete(days, "2026-W38")
+    merged, n = merge_centroid(None, 0, [[2.0, 0.0], [0.0, 2.0]])
+    assert n == 2 and merged == [1.0, 1.0]
+    merged, n = merge_centroid(merged, n, [[1.0, 1.0]])
+    assert n == 3 and merged[0] == pytest.approx(1.0)
+
+
 def test_theta_service_has_no_in_engine_consolidator() -> None:
     from gaius.engine.services.theta_service import ThetaService
 

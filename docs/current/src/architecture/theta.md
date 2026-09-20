@@ -28,7 +28,9 @@ The `/sitrep` command generates a structured `SituationReport` through three com
 
 Documents are organized into weekly slices (`YYYY-WNN`). The Monday 06:00 cycle consolidates the **previous** ISO week *for that run's logical date* (the week that closed relative to that Monday), not the empty week that starts that morning, and not "everything since the last success."
 
-DAG `gaius_theta_cycle` stays `catchup=False`: unpausing must not dump every missed Monday onto the LIGHT token (that window grows until Theta starves other Airflow workloads). Missed weeks are a persistent failure. Remediate with [Airflow backfill](https://airflow.apache.org/docs/apache-airflow/stable/core-concepts/backfill.html) of a bounded Monday range from the Signals tree (`just theta-backfill --from-date … --to-date …`, `max_active_runs=1`, latest week first). Each backfill run consolidates one closed ISO week.
+DAG `gaius_theta_cycle` stays `catchup=False`: unpausing must not dump every missed Monday onto the LIGHT token (that window grows until Theta starves other Airflow workloads). Missed weeks are a persistent failure.
+
+Remediate from the Signals tree with daily LIGHT increments that **refine the same week-level artifact** (`just theta-backfill --from-date … --to-date …`). Each UTC day encodes that day's thoughts and merges centroid, CLT, and groundings into one `theta_consolidation_runs` row for the containing ISO week. The data product is the week consolidation, not a stack of day slices. The week row completes when Monday–Sunday of that slice have been incorporated. `max_active_runs=1` serializes the days. `--weekly` is the coarse one-Monday-run path.
 
 ### Stage 2: NVAR Dynamics
 

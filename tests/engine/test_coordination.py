@@ -840,6 +840,34 @@ def test_theta_activity_enqueues_slice_for_logical_date(monkeypatch):
     asyncio.run(run())
 
 
+def test_theta_daily_window_enqueues_week_artifact_and_day(monkeypatch):
+    """A daily increment names the containing week plus the UTC day."""
+    monkeypatch.setattr(co, "theta_still_in_admission", lambda _now: True)
+    pool = FakePool(theta_caught_up=True)
+    w, _ = _watcher(pool, monkeypatch)
+    act = _act(
+        aid="t2",
+        kind="theta_cycle",
+        peer="gaius",
+        owner="airflow:gaius_theta_cycle",
+        state="running",
+        postures={
+            "zndx.logical_date": "2026-09-16T06:00:00+00:00",
+            "zndx.window_date": "2026-09-16",
+        },
+        claims=[],
+    )
+
+    async def run():
+        w.ingest([act], NOW)
+        assert await w.workload_pass(NOW) == [("t2", "started_workload")]
+        row = pool.inserts()[0]
+        assert row["payload"]["slice_id"] == "2026-W38"
+        assert row["payload"]["window_date"] == "2026-09-16"
+
+    asyncio.run(run())
+
+
 def test_theta_still_in_admission_monday_morning():
     from datetime import datetime, timezone
 

@@ -84,9 +84,10 @@ def _ground_items(
     return grouped
 
 
-async def missing_activation_items(conn: Any, slice_id: str) -> list[Any]:
-    return await conn.fetch(
-        """
+async def missing_activation_items(
+    conn: Any, slice_id: str, window_date: str = ""
+) -> list[Any]:
+    sql = """
         SELECT i.id, i.text
           FROM admitted_item i
          WHERE coalesce(i.text, '') <> ''
@@ -96,9 +97,12 @@ async def missing_activation_items(conn: Any, slice_id: str) -> list[Any]:
            AND NOT EXISTS (
                  SELECT 1 FROM activation a WHERE a.item_id = i.id
                )
-        """,
-        slice_id,
-    )
+    """
+    args: list[Any] = [slice_id]
+    if window_date:
+        sql += " AND (i.admitted_at AT TIME ZONE 'UTC')::date = $2::date"
+        args.append(window_date)
+    return await conn.fetch(sql, *args)
 
 
 async def extract_missing_for_slice(
@@ -106,6 +110,7 @@ async def extract_missing_for_slice(
     slice_id: str,
     *,
     top_k: int = 16,
+    window_date: str = "",
 ) -> dict[str, Any]:
     """Fill CLT activations for the week's admitted items.
 
@@ -124,7 +129,9 @@ async def extract_missing_for_slice(
     try:
         async with pool.acquire() as conn:
             try:
-                rows = await missing_activation_items(conn, slice_id)
+                rows = await missing_activation_items(
+                    conn, slice_id, window_date=window_date
+                )
             except asyncpg.UndefinedTableError:
                 return {"mode": "skip", "missing": 0, "extracted": 0}
         if not rows:
@@ -138,29 +145,35 @@ async def extract_missing_for_slice(
         await pool.close()
 
 
-async def week_item_texts(conn: Any, slice_id: str) -> list[dict[str, Any]]:
-    rows = await conn.fetch(
-        """
+async def week_item_texts(
+    conn: Any, slice_id: str, window_date: str = ""
+) -> list[dict[str, Any]]:
+    sql = """
         SELECT DISTINCT i.id, i.text
           FROM admitted_item i
          WHERE coalesce(i.text, '') <> ''
            AND to_char(i.admitted_at AT TIME ZONE 'UTC', 'IYYY')
                || '-W' || to_char(i.admitted_at AT TIME ZONE 'UTC', 'IW')
                = $1
-        """,
-        slice_id,
-    )
+    """
+    args: list[Any] = [slice_id]
+    if window_date:
+        sql += " AND (i.admitted_at AT TIME ZONE 'UTC')::date = $2::date"
+        args.append(window_date)
+    rows = await conn.fetch(sql, *args)
     return [dict(r) for r in rows]
 
 
-async def load_week_item_texts(dsn: str, slice_id: str) -> list[dict[str, Any]]:
+async def load_week_item_texts(
+    dsn: str, slice_id: str, window_date: str = ""
+) -> list[dict[str, Any]]:
     import asyncpg
 
     pool = await asyncpg.create_pool(dsn)
     try:
         async with pool.acquire() as conn:
             try:
-                return await week_item_texts(conn, slice_id)
+                return await week_item_texts(conn, slice_id, window_date=window_date)
             except asyncpg.UndefinedTableError:
                 return []
     finally:

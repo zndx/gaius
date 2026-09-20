@@ -29,10 +29,12 @@ class ThetaCycleFlow(GaiusFlow):
     model = "lightonai/ColBERT-Zero"
     scheduled_task_id = Parameter("scheduled-task-id", default=0, type=int)
     slice_id = Parameter("slice-id", default="", type=str)
+    window_date = Parameter("window-date", default="", type=str)
 
     @step
     def start(self):
-        from gaius.agents.theta.consolidation import get_previous_week_slice_id
+        from gaius.agents.theta.consolidation import get_previous_week_slice_id, get_week_slice_id
+        from gaius.engine.services.theta_cycle import utc_day
         from gaius.flows.config import apply_metaflow_config
         from gaius.flows.lattice import require_signals_metaflow
         from gaius.storage.database import get_database_url
@@ -40,11 +42,18 @@ class ThetaCycleFlow(GaiusFlow):
         apply_metaflow_config()
         require_signals_metaflow()
         self.dsn = os.environ.get("DATABASE_URL") or get_database_url()
-        self.week = str(self.slice_id or get_previous_week_slice_id())
+        self.window = utc_day(self.window_date)
+        if self.window:
+            from datetime import datetime, timezone
+
+            day = datetime.fromisoformat(self.window).replace(tzinfo=timezone.utc)
+            self.week = str(self.slice_id or get_week_slice_id(day))
+        else:
+            self.week = str(self.slice_id or get_previous_week_slice_id())
         self.run_id = str(getattr(current, "run_id", None) or "")
         print(
-            f"theta.cycle.start week={self.week} kb_root={self.kb_root} "
-            f"run_id={self.run_id} task={self.scheduled_task_id}"
+            f"theta.cycle.start week={self.week} window={self.window or 'week'} "
+            f"kb_root={self.kb_root} run_id={self.run_id} task={self.scheduled_task_id}"
         )
         self.emit_lineage_start(
             job_name="theta_cycle",
@@ -67,25 +76,32 @@ class ThetaCycleFlow(GaiusFlow):
             pool = await asyncpg.create_pool(self.dsn)
             try:
                 async with pool.acquire() as conn:
-                    job_id, superseded = await start_current_job(conn, self.week)
-                    thoughts = await load_thoughts(conn, self.week)
-                    return job_id, superseded, thoughts
+                    job_id, superseded, meta = await start_current_job(conn, self.week)
+                    increment = await load_thoughts(
+                        conn, self.week, window_date=self.window
+                    )
+                    week_thoughts = await load_thoughts(conn, self.week)
+                    return job_id, superseded, meta, increment, week_thoughts
             finally:
                 await pool.close()
 
-        job_id, superseded, thoughts = asyncio.run(_go())
+        job_id, superseded, meta, increment, week_thoughts = asyncio.run(_go())
         self.job_id = job_id
         self.superseded = superseded
-        self.thoughts = thoughts
+        self.artifact_meta = dict(meta or {})
+        self.thoughts = increment  # LIGHT increment (the day, or the whole week)
+        self.week_thoughts = week_thoughts  # week-level product surface
         self.stage = "prepare"
         print(
             f"theta.cycle.prepare job={job_id} superseded={superseded} "
-            f"thoughts={len(thoughts)}"
+            f"increment={len(increment)} week={len(week_thoughts)} "
+            f"window={self.window or 'week'}"
         )
-        if not thoughts:
+        if not increment and not self.window:
             self.result = {
                 "success": False,
                 "slice_id": self.week,
+                "window_date": self.window,
                 "error": f"{NOTHOUGHTS} no cognition_thoughts in {self.week}",
                 "guru_code": NOTHOUGHTS,
                 "stage": "encode",
@@ -97,7 +113,11 @@ class ThetaCycleFlow(GaiusFlow):
         """CLT activations for the week. Parallel if gaius-clt is resident; else sequential on this LIGHT token."""
         from gaius.agents.theta.clt_incidence import extract_missing_for_slice
 
-        stats = asyncio.run(extract_missing_for_slice(self.dsn, self.week))
+        stats = asyncio.run(
+            extract_missing_for_slice(
+                self.dsn, self.week, window_date=getattr(self, "window", "") or ""
+            )
+        )
         self.clt_extract = stats
         self.stage = "extract"
         print(
@@ -112,9 +132,13 @@ class ThetaCycleFlow(GaiusFlow):
         from gaius.agents.theta.clt_incidence import load_week_item_texts
         from gaius.agents.theta.tbox_maxsim import live_tbox_maxsim
         from gaius.engine.embeddings.colbert import agg_vectors_for_texts
-        from gaius.engine.services.theta_cycle import NOENCODE
+        from gaius.engine.services.theta_cycle import NOENCODE, merge_centroid
 
-        self.item_groundings: list[dict] = []
+        meta = dict(getattr(self, "artifact_meta", None) or {})
+        prior_ground = {
+            int(g["id"]): g for g in (meta.get("item_groundings") or []) if g.get("id") is not None
+        }
+        self.item_groundings: list[dict] = list(prior_ground.values())
         if self.thoughts and not (getattr(self, "result", None) or {}).get("guru_code"):
             texts = [
                 f"{t.get('title') or ''}\n{t.get('content') or ''}".strip()
@@ -122,32 +146,54 @@ class ThetaCycleFlow(GaiusFlow):
             ]
             texts = [t for t in texts if t]
             try:
-                vecs = agg_vectors_for_texts(texts)
-                if not vecs:
+                vecs = agg_vectors_for_texts(texts) if texts else []
+                merged, n_enc = merge_centroid(
+                    meta.get("centroid"),
+                    int(meta.get("n_encoded") or 0),
+                    vecs,
+                )
+                if not merged:
                     raise RuntimeError("empty ColBERT encode")
-                self.centroid = np.mean(np.asarray(vecs, dtype=float), axis=0)
-                items = asyncio.run(load_week_item_texts(self.dsn, self.week))
+                self.centroid = np.asarray(merged, dtype=float)
+                items = asyncio.run(
+                    load_week_item_texts(
+                        self.dsn,
+                        self.week,
+                        window_date=getattr(self, "window", "") or "",
+                    )
+                )
                 maxsim = live_tbox_maxsim()
-                self.item_groundings = [
-                    {
+                for it in items:
+                    prior_ground[int(it["id"])] = {
                         "id": int(it["id"]),
                         "classes": [list(p) for p in maxsim(str(it["text"] or ""))],
                     }
-                    for it in items
-                ]
+                self.item_groundings = list(prior_ground.values())
+                self.artifact_meta = {
+                    **meta,
+                    "centroid": merged,
+                    "n_encoded": n_enc,
+                    "item_groundings": self.item_groundings,
+                }
                 self.stage = "encode"
                 print(
-                    f"theta.cycle.encode n={len(vecs)} dim={self.centroid.shape} "
-                    f"grounded={len(self.item_groundings)}"
+                    f"theta.cycle.encode n={len(vecs)} week_n={n_enc} "
+                    f"dim={self.centroid.shape} grounded={len(self.item_groundings)}"
                 )
             except Exception as e:
                 self.result = {
                     "success": False,
                     "slice_id": self.week,
+                    "window_date": getattr(self, "window", "") or "",
                     "error": f"{NOENCODE} {e}",
                     "guru_code": NOENCODE,
                     "stage": "encode",
+                    "metadata": meta,
                 }
+        elif getattr(self, "artifact_meta", {}).get("centroid") and not (
+            getattr(self, "result", None) or {}
+        ).get("guru_code"):
+            self.centroid = np.asarray(self.artifact_meta["centroid"], dtype=float)
         self.next(self.infer)
 
     @step
@@ -172,7 +218,7 @@ class ThetaCycleFlow(GaiusFlow):
                     agent.run_consolidation(
                         temporal_slice=self.week,
                         centroid=self.centroid,
-                        documents=self.thoughts,
+                        documents=getattr(self, "week_thoughts", None) or self.thoughts,
                         owl_pairs=owl_pairs,
                     )
                 )
@@ -190,20 +236,24 @@ class ThetaCycleFlow(GaiusFlow):
                     guru = "#THETA.00000001.DEEPONTO"
                 elif err.startswith("#THETA"):
                     guru = err.split()[0]
+            meta = dict(getattr(self, "artifact_meta", None) or {})
             if result is None:
                 self.stage = guru or "infer"
                 self.result = {
                     "success": False,
                     "slice_id": self.week,
+                    "window_date": getattr(self, "window", "") or "",
                     "error": err,
                     "guru_code": guru,
                     "stage": self.stage,
+                    "metadata": meta,
                 }
             else:
                 self.stage = "augment" if result.error is None else (guru or "infer")
                 self.result = {
                     "success": result.error is None,
                     "slice_id": result.slice_id,
+                    "window_date": getattr(self, "window", "") or "",
                     "signal": result.signal.to_dict() if result.signal else None,
                     "candidates_evaluated": result.candidates_evaluated,
                     "candidates_selected": result.candidates_selected,
@@ -212,12 +262,24 @@ class ThetaCycleFlow(GaiusFlow):
                     "error": result.error,
                     "guru_code": guru,
                     "stage": self.stage,
+                    "metadata": meta,
                 }
             print(
                 f"theta.cycle.infer success={self.result['success']} "
                 f"eval={self.result.get('candidates_evaluated')} "
                 f"aug={self.result.get('documents_augmented')}"
             )
+        elif getattr(self, "window", "") and not (getattr(self, "result", None) or {}).get("guru_code"):
+            self.result = {
+                "success": True,
+                "slice_id": self.week,
+                "window_date": self.window,
+                "candidates_evaluated": 0,
+                "candidates_selected": 0,
+                "documents_augmented": 0,
+                "stage": "prepare",
+                "metadata": dict(getattr(self, "artifact_meta", None) or {}),
+            }
         self.next(self.complete)
 
     @step

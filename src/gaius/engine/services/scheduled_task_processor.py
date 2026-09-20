@@ -1362,6 +1362,9 @@ class ScheduledTaskProcessor(BaseDaemon):
             slice_id = str(task.payload.get("slice_id") or "")
             if slice_id:
                 argv.extend(["--slice-id", slice_id])
+            window_date = str(task.payload.get("window_date") or "")
+            if window_date:
+                argv.extend(["--window-date", window_date])
             return await self._run_spawned_metaflow(
                 kind="theta-cycle",
                 task=task,
