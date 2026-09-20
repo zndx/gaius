@@ -4,12 +4,15 @@ from gaius.engine.services.theta_cycle import enqueue_theta_cycle
 
 
 class _EnqueueConn:
-    def __init__(self, pending_id: int | None = None) -> None:
+    def __init__(self, pending_id: int | None = None, pending_slice: str = "") -> None:
         self.pending_id = pending_id
+        self.pending_slice = pending_slice
         self.inserted: list[tuple] = []
 
     async def fetchval(self, sql: str, *args: object):
         if "completed_at IS NULL" in sql:
+            if args and args[0] != self.pending_slice:
+                return None
             return self.pending_id
         if "INSERT INTO scheduled_tasks" in sql:
             self.inserted.append(args)
@@ -32,6 +35,33 @@ async def test_enqueue_theta_cycle_reuses_pending() -> None:
     tid, fresh = await enqueue_theta_cycle(conn, source="operator")
     assert tid == 7 and fresh is False
     assert conn.inserted == []
+
+
+@pytest.mark.asyncio
+async def test_enqueue_theta_cycle_reuses_same_slice_only() -> None:
+    conn = _EnqueueConn(pending_id=7, pending_slice="2026-W37")
+    tid, fresh = await enqueue_theta_cycle(conn, slice_id="2026-W37", source="operator")
+    assert tid == 7 and fresh is False
+    tid, fresh = await enqueue_theta_cycle(conn, slice_id="2026-W36", source="airflow")
+    assert fresh is True and tid == 99
+    assert "2026-W36" in str(conn.inserted[0][0])
+
+
+def test_slice_id_for_monday_logical_date_is_previous_iso_week() -> None:
+    from datetime import datetime, timezone
+
+    from gaius.engine.services.theta_cycle import (
+        slice_id_for_logical_date,
+        slice_id_from_activity,
+    )
+
+    monday = datetime(2026, 9, 14, 6, 0, tzinfo=timezone.utc)
+    assert slice_id_for_logical_date(monday) == "2026-W37"
+    assert slice_id_for_logical_date("2026-09-14T06:00:00+00:00") == "2026-W37"
+    assert slice_id_from_activity(
+        {"postures": {"zndx.logical_date": "2026-09-21T06:00:00+00:00"}}
+    ) == "2026-W38"
+    assert slice_id_from_activity({}) == ""
 
 
 def test_theta_service_has_no_in_engine_consolidator() -> None:

@@ -18,7 +18,7 @@ import logging
 import json
 from typing import Any
 
-from gaius.agents.theta.consolidation import get_previous_week_slice_id
+from gaius.agents.theta.consolidation import get_previous_week_slice_id, get_week_slice_id
 
 logger = logging.getLogger(__name__)
 
@@ -27,6 +27,29 @@ STALE = "#THETA.00000008.STALESLICE"
 NOTHOUGHTS = "#THETA.00000009.NOTHOUGHTS"
 NOENCODE = "#THETA.00000010.NOENCODE"
 NOPAIRS = "#THETA.00000011.NOPAIRS"
+
+# Matches coord_lease.LOGICAL_DATE_POSTURE — the DAG run's logical date on the
+# WatchActivities postures map (not a hold-uptime key).
+LOGICAL_DATE_POSTURE = "zndx.logical_date"
+
+
+def slice_id_for_logical_date(logical_date: Any) -> str:
+    """Monday 06:00 consolidates the ISO week that closed relative to that Monday."""
+    from datetime import datetime
+
+    if logical_date is None or logical_date == "":
+        return ""
+    if isinstance(logical_date, datetime):
+        dt = logical_date
+    else:
+        dt = datetime.fromisoformat(str(logical_date).replace("Z", "+00:00"))
+    return get_previous_week_slice_id(dt)
+
+
+def slice_id_from_activity(a: dict[str, Any] | None) -> str:
+    iso = str(((a or {}).get("postures") or {}).get(LOGICAL_DATE_POSTURE) or "").strip()
+    return slice_id_for_logical_date(iso)
+
 
 STALE_REASON = (
     f"{STALE} Qdrant latent store empty; superseded 2026-09-15; "
@@ -43,13 +66,24 @@ async def enqueue_theta_cycle(
 
     Returns (scheduled_tasks.id, freshly_queued). A pending row is reused.
     """
-    existing = await conn.fetchval(
-        """
-        SELECT id FROM scheduled_tasks
-         WHERE task_type = 'theta_cycle' AND completed_at IS NULL
-         ORDER BY id LIMIT 1
-        """
-    )
+    if slice_id:
+        existing = await conn.fetchval(
+            """
+            SELECT id FROM scheduled_tasks
+             WHERE task_type = 'theta_cycle' AND completed_at IS NULL
+               AND payload->>'slice_id' = $1
+             ORDER BY id LIMIT 1
+            """,
+            slice_id,
+        )
+    else:
+        existing = await conn.fetchval(
+            """
+            SELECT id FROM scheduled_tasks
+             WHERE task_type = 'theta_cycle' AND completed_at IS NULL
+             ORDER BY id LIMIT 1
+            """
+        )
     if existing is not None:
         return int(existing), False
     payload: dict[str, str] = {}
@@ -68,7 +102,17 @@ async def enqueue_theta_cycle(
 
 
 async def supersede_stale(conn: Any, current_slice: str) -> int:
-    """Fail every scheduled row that is not this week's slice."""
+    """Don't encode the empty ISO week that starts this Monday.
+
+    Historical slices stay queued for Airflow backfill (one logical Monday at
+    a time). Only the live calendar week — which has not closed — is dropped
+    when we are consolidating a different slice.
+    """
+    from datetime import datetime, timezone
+
+    live = get_week_slice_id(datetime.now(timezone.utc))
+    if not live or live == current_slice:
+        return 0
     return int(
         await conn.fetchval(
             """
@@ -78,12 +122,12 @@ async def supersede_stale(conn: Any, current_slice: str) -> int:
                        completed_at = NOW(),
                        error = $2
                  WHERE status = 'scheduled'
-                   AND slice_id <> $1
+                   AND slice_id = $1
              RETURNING id
             )
             SELECT count(*)::int FROM u
             """,
-            current_slice,
+            live,
             STALE_REASON,
         )
         or 0

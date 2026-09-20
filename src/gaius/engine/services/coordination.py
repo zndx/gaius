@@ -505,6 +505,16 @@ class CoordinationWatcher:
                     actions.append((aid, action))
         return actions
 
+    def _workload_payload(self, spec: dict[str, Any], a: dict[str, Any], aid: str, kind: str) -> dict[str, Any]:
+        payload = dict(spec.get("payload") or {})
+        from gaius.engine.services.theta_cycle import slice_id_from_activity
+
+        sid = slice_id_from_activity(a)
+        if sid:
+            payload["slice_id"] = sid
+        payload.update({"activity_id": aid, "activity_kind": kind, "source": WORKLOAD_SOURCE})
+        return payload
+
     async def _workload_step(self, pool: Any, a: dict[str, Any], aid: str, kind: str, spec: dict[str, Any], at: int) -> str:
         task_type = str(spec["task_type"])
         row = await pool.fetchrow(
@@ -518,8 +528,7 @@ class CoordinationWatcher:
                 ok = await pool.fetchval(str(gate))
                 if not ok:
                     outcome = f"skipped: {gate} is false"
-                    payload = dict(spec.get("payload") or {})
-                    payload.update({"activity_id": aid, "activity_kind": kind, "source": WORKLOAD_SOURCE})
+                    payload = self._workload_payload(spec, a, aid, kind)
                     tid = await pool.fetchval(
                         "INSERT INTO scheduled_tasks (task_type, payload, source, scheduled_for, picked_up_at, completed_at, result) "
                         "VALUES ($1, $2::jsonb, $3, NOW(), NOW(), NOW(), $4::jsonb) RETURNING id",
@@ -537,12 +546,18 @@ class CoordinationWatcher:
             # row's (the publish slots share one task_type — a predawn activity
             # must never attach to the afternoon row), not yet stamped by
             # another activity.
+            contained = dict(spec.get("payload") or {})
+            from gaius.engine.services.theta_cycle import slice_id_from_activity
+
+            sid = slice_id_from_activity(a)
+            if sid:
+                contained["slice_id"] = sid
             live = await pool.fetchrow(
                 "SELECT id, picked_up_at FROM scheduled_tasks WHERE task_type = $1 AND completed_at IS NULL "
                 "AND COALESCE(payload, '{}'::jsonb) @> $2::jsonb AND payload->>'activity_id' IS NULL "
                 "ORDER BY id DESC LIMIT 1",
                 task_type,
-                json.dumps(spec.get("payload") or {}, sort_keys=True),
+                json.dumps(contained, sort_keys=True),
             )
             state = "queued"
             if live is not None:
@@ -563,7 +578,7 @@ class CoordinationWatcher:
                 await self._heartbeat(aid, at)
                 return "awaiting_pg_cron"
             else:
-                tid = await self._enqueue(pool, spec, aid, kind)
+                tid = await self._enqueue(pool, spec, aid, kind, extra={"slice_id": sid} if sid else None)
                 action = "started_workload"
                 logger.info("coordination: started workload %s #%d for activity %s", task_type, tid, aid)
             self._workloads[aid] = {"task_id": tid, "task_type": task_type, "state": state, "last_heartbeat_ns": 0}
@@ -678,8 +693,12 @@ class CoordinationWatcher:
                 self.last_guru_detail = ""
         self.missed_ticks = missed
 
-    async def _enqueue(self, pool: Any, spec: dict[str, Any], aid: str, kind: str) -> int:
+    async def _enqueue(
+        self, pool: Any, spec: dict[str, Any], aid: str, kind: str, extra: dict[str, Any] | None = None
+    ) -> int:
         payload = dict(spec.get("payload") or {})
+        if extra:
+            payload.update(extra)
         payload.update({"activity_id": aid, "activity_kind": kind, "source": WORKLOAD_SOURCE})
         tid = await pool.fetchval(
             "INSERT INTO scheduled_tasks (task_type, payload, source, scheduled_for) "

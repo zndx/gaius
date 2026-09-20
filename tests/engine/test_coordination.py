@@ -815,6 +815,31 @@ def test_coordination_endpoint_detail_names_theta_failure():
     assert "theta_not_caught_up" in detail
 
 
+def test_theta_activity_enqueues_slice_for_logical_date(monkeypatch):
+    """A Monday 06:00 backfill run consolidates that week's closed ISO slice."""
+    monkeypatch.setattr(co, "theta_still_in_admission", lambda _now: True)
+    pool = FakePool(theta_caught_up=True)
+    w, _ = _watcher(pool, monkeypatch)
+    act = _act(
+        aid="t1",
+        kind="theta_cycle",
+        peer="gaius",
+        owner="airflow:gaius_theta_cycle",
+        state="running",
+        postures={"zndx.logical_date": "2026-09-14T06:00:00+00:00"},
+        claims=[],
+    )
+
+    async def run():
+        w.ingest([act], NOW)
+        assert await w.workload_pass(NOW) == [("t1", "started_workload")]
+        rows = pool.inserts()
+        assert len(rows) == 1 and rows[0]["task_type"] == "theta_cycle"
+        assert rows[0]["payload"]["slice_id"] == "2026-W37"
+
+    asyncio.run(run())
+
+
 def test_theta_still_in_admission_monday_morning():
     from datetime import datetime, timezone
 
