@@ -671,6 +671,7 @@ class GaiusZndxEngineServicer(zpb_grpc.EngineServicer):
             AgendaError,
             create_item,
             kb_root_from_env,
+            set_attachments,
         )
 
         it = request.item
@@ -707,25 +708,35 @@ class GaiusZndxEngineServicer(zpb_grpc.EngineServicer):
             allowed = bool(getattr(it, "attachments_allowed", False))
         else:
             allowed = bool(getattr(it, "attachments_allowed", False)) or intent == "session"
+        existing_id = str(getattr(it, "id", "") or "").strip()
         try:
-            created = await asyncio.to_thread(
-                create_item,
-                kb_root_from_env(),
-                kind=kind,
-                title=title,
-                body=str(getattr(it, "body", "") or ""),
-                starts=_iso(int(getattr(it, "starts_ms", 0) or 0)),
-                ends=_iso(int(getattr(it, "ends_ms", 0) or 0)),
-                tags=list(getattr(it, "tags", []) or []),
-                pin=bool(getattr(it, "pinned", False)),
-                intent=intent,
-                with_whom=str(getattr(it, "with_whom", "") or ""),
-                tz_name="",
-                origin_project=caller,
-                origin_agent=agent,
-                attachments=stored,
-                attachments_allowed=allowed,
-            )
+            if existing_id:
+                created = await asyncio.to_thread(
+                    set_attachments,
+                    kb_root_from_env(),
+                    existing_id,
+                    attachments=stored,
+                    attachments_allowed=allowed,
+                )
+            else:
+                created = await asyncio.to_thread(
+                    create_item,
+                    kb_root_from_env(),
+                    kind=kind,
+                    title=title,
+                    body=str(getattr(it, "body", "") or ""),
+                    starts=_iso(int(getattr(it, "starts_ms", 0) or 0)),
+                    ends=_iso(int(getattr(it, "ends_ms", 0) or 0)),
+                    tags=list(getattr(it, "tags", []) or []),
+                    pin=bool(getattr(it, "pinned", False)),
+                    intent=intent,
+                    with_whom=str(getattr(it, "with_whom", "") or ""),
+                    tz_name="",
+                    origin_project=caller,
+                    origin_agent=agent,
+                    attachments=stored,
+                    attachments_allowed=allowed,
+                )
         except AgendaError as e:
             return zpb.PutAgendaItemResponse(ok=False, note=str(e))
         except Exception as e:

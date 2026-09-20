@@ -750,6 +750,22 @@ def create_item(
     return parse_item(root, path)
 
 
+def set_attachments(
+    root: Path,
+    rel: str,
+    *,
+    attachments: list[dict[str, str]],
+    attachments_allowed: bool,
+) -> AgendaItem:
+    item = get_item(root, rel)
+    require_attachment_bound(attachments_allowed, attachments)
+    item.attachments = list(attachments)
+    item.attachments_allowed = bool(attachments_allowed)
+    path = jail_path(root, rel)
+    path.write_text(render_item(item), encoding="utf-8")
+    return parse_item(root, path)
+
+
 def get_item(root: Path, rel: str) -> AgendaItem:
     root = require_kb(root)
     path = jail_path(root, rel)

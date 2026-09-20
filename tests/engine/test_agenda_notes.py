@@ -10,6 +10,7 @@ import pytest
 from gaius.engine.services.agenda_notes import (
     AgendaError,
     create_item,
+    set_attachments,
     find_standing_brief,
     get_item,
     google_calendar_url,
@@ -104,6 +105,16 @@ def test_attachments_upper_bound(tmp_path: Path) -> None:
     assert "attachments_allowed: true" in text
     again = get_item(kb, item.path)
     assert again.attachments[0]["name"] == "prompt.md"
+    extra = {
+        "name": "materials.md",
+        "uri": "s3://hermes/resources/scratch/x/materials.md",
+        "role": "materials",
+        "media_type": "text/markdown",
+    }
+    updated = set_attachments(
+        kb, item.path, attachments=[att, extra], attachments_allowed=True
+    )
+    assert len(updated.attachments) == 2
 
 
 def test_create_list_get_update_chain(tmp_path: Path) -> None:
