@@ -30,7 +30,9 @@ Documents are organized into weekly slices (`YYYY-WNN`). The Monday 06:00 cycle 
 
 DAG `gaius_theta_cycle` stays `catchup=False`: unpausing must not dump every missed Monday onto the LIGHT token (that window grows until Theta starves other Airflow workloads). Missed weeks are a persistent failure.
 
-Remediate from the Signals tree with daily LIGHT increments that **refine the same week-level artifact** (`just theta-backfill --from-date … --to-date …`). Each UTC day encodes that day's thoughts and merges centroid, CLT, and groundings into one `theta_consolidation_runs` row for the containing ISO week. The data product is the week consolidation, not a stack of day slices. The week row completes when Monday–Sunday of that slice have been incorporated. `max_active_runs=1` serializes the days. `--weekly` is the coarse one-Monday-run path.
+Remediate from the Signals tree with daily LIGHT increments (`just theta-backfill --from-date … --to-date …`). Each UTC day encodes that day's thoughts and merges centroid, CLT, and groundings into one `theta_consolidation_runs` **ledger** row for the containing ISO week. Completing that row is LIGHT coverage, not the cortical product. `max_active_runs=1` serializes the days. `--weekly` is the coarse one-Monday-run path.
+
+The authentic Signals data product (`gaius.theta.consolidation`) has **not** been published. Intended Aspects (Agenda session materials, week \(X_i\), CLT/MaxSim week binding, replaceable KB week-block, ShadowStrategy aperture delta, History) are considered in `docs/scratch/2026-09-20/160356_theta_consolidation_data_product_aspects.md`. The ledger remains for Nautilus / sitrep.
 
 ### Stage 2: NVAR Dynamics
 
@@ -82,15 +84,16 @@ See `external/sdg-strategy/README.md` (Shadows are branches).
 
 | Coordinate | Theta |
 |---|---|
-| **window** | ISO week of the `theta_consolidation_runs` row (the product) |
+| **window** | ISO week (`YYYY-WNN`) of the consolidation Aspects |
 | **strategy** | pinned `strategy_id` / aperture |
 | **code** | Gaius + `ThetaCycleFlow` |
-| **work unit** | on-time: one Monday run for the closed week; backfill: one UTC day of LIGHT that *refines* that week row |
-| **shadow** | a different strategy branch. Compare week artifacts, never day windows |
+| **work unit** | on-time: one Monday run for the closed week; backfill: one UTC day of LIGHT that *refines* the week Aspects (ledger row is coverage) |
+| **shadow** | a different strategy branch. Compare week Aspects, never day windows |
+| **promotion** | cherry-pick/merge of the strategy delta, **gated by** a booked Gaius/Theta agenda session (Aspect A). Discourse elevates the shadow into the live ColBERT-Zero/Qdrant admission membrane when appropriate. Week close does not auto-promote. |
 
-Daily increments (`zndx.window_date`) are not shadows and not day-bounded releases. A week row completes when Monday–Sunday of that slice are incorporated. DAG `catchup=False`; `just theta-backfill` (Signals) serializes days with `max_active_runs=1`.
+Daily increments (`zndx.window_date`) are not shadows and not day-bounded releases. The ledger row completes when Monday–Sunday of that slice are incorporated. DAG `catchup=False`; `just theta-backfill` (Signals) serializes days with `max_active_runs=1`.
 
-A shadow Theta comparison is: same ISO week, two `strategy_id`s, two week-level consolidation rows. Promotion is cherry-pick/merge of the strategy delta, not of a day's increment.
+A shadow Theta comparison is: same ISO week, two `strategy_id`s, two week-level Aspect sets (B–E), not two SQL rows.
 
 ## CLI Commands
 

@@ -28,9 +28,9 @@ Token reduction: 70–90% compared to text-based coordination. The collection sc
 
 ## ThetaAgent: Temporal Consolidation
 
-ThetaAgent (`agents/theta/agent.py`) plus `ThetaCycleFlow` (`gaius_theta_cycle`) execute a five-stage pipeline. The **product** is one week-level `theta_consolidation_runs` row per ISO week, not a stack of day slices. Vessel: Metaflow on LIGHT (ColBERT-Zero); BERTSubs is CPU/JVM.
+ThetaAgent (`agents/theta/agent.py`) plus `ThetaCycleFlow` (`gaius_theta_cycle`) execute a five-stage pipeline. Vessel: Metaflow on LIGHT (ColBERT-Zero); BERTSubs is CPU/JVM. `theta_consolidation_runs` is the **job ledger** (Nautilus coverage). The authentic Signals product has not been published; intended Aspects live in `docs/scratch/2026-09-20/160356_theta_consolidation_data_product_aspects.md` and [Theta Consolidation](./theta.md).
 
-1. **Temporal slicing** — The window is the ISO week (`YYYY-WNN`). On-time Monday 06:00 consolidates the previous closed week. A miss remediates with daily LIGHT increments that refine the **same** week row (`zndx.window_date`); the week completes when Monday–Sunday are incorporated. That finer grain is a work unit, not a [ShadowStrategy](./theta.md#shadowstrategy).
+1. **Temporal slicing** — The window is the ISO week (`YYYY-WNN`). On-time Monday 06:00 consolidates the previous closed week. A miss remediates with daily LIGHT increments (`zndx.window_date`) that refine the **same week** (ledger coverage + in-place Aspects). That finer grain is a work unit, not a [ShadowStrategy](./theta.md#shadowstrategy).
 
 2. **NVAR dynamics** — Nonlinear Vector AutoRegression (Gauthier et al., 2021) on ColBERT-Zero `agg` centroids (ℝ¹²⁸). Same `slice_id` replaces the week centroid (refinement), it does not append a new temporal product. Drift = ‖ĉₜ₊₁ − **c**ₜ‖₂.
 
