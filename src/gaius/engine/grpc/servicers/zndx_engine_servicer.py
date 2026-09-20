@@ -31,7 +31,6 @@ CAPABILITY_THINKING = "thinking"
 
 def _agenda_item_to_proto(item) -> zpb.AgendaHintItem:
     from gaius.engine.services.agenda_notes import (
-        extract_session_sections,
         parse_when,
         split_public_deck,
     )
@@ -41,7 +40,6 @@ def _agenda_item_to_proto(item) -> zpb.AgendaHintItem:
         return int(dt.timestamp() * 1000) if dt else 0
 
     public, _deck = split_public_deck(item.body)
-    prompt, materials = extract_session_sections(item.body)
     hint = zpb.AgendaHintItem(
         id=item.path,
         starts_ms=_ms(item.starts),
@@ -56,10 +54,15 @@ def _agenda_item_to_proto(item) -> zpb.AgendaHintItem:
         created_ms=int(item.created_ms or 0),
         origin_project=getattr(item, "origin_project", "") or "gaius",
         origin_agent=getattr(item, "origin_agent", "") or "",
-        session_prompt=prompt,
-        session_materials=materials,
+        attachments_allowed=bool(getattr(item, "attachments_allowed", False)),
     )
     hint.tags.extend(str(t) for t in (item.tags or []))
+    for row in getattr(item, "attachments", None) or []:
+        att = hint.attachments.add()
+        att.name = str(row.get("name") or "")
+        att.uri = str(row.get("uri") or "")
+        att.role = str(row.get("role") or "")
+        att.media_type = str(row.get("media_type") or "")
     return hint
 
 
@@ -689,6 +692,21 @@ class GaiusZndxEngineServicer(zpb_grpc.EngineServicer):
             intent = "session"
         caller = str(request.origin_project or "").strip() or "hermes"
         agent = str(request.origin_agent or "").strip()
+        stored = [
+            {
+                "name": str(getattr(a, "name", "") or ""),
+                "uri": str(getattr(a, "uri", "") or ""),
+                "role": str(getattr(a, "role", "") or ""),
+                "media_type": str(getattr(a, "media_type", "") or ""),
+            }
+            for a in (getattr(it, "attachments", None) or [])
+            if str(getattr(a, "name", "") or "").strip()
+            and str(getattr(a, "uri", "") or "").strip()
+        ]
+        if stored:
+            allowed = bool(getattr(it, "attachments_allowed", False))
+        else:
+            allowed = bool(getattr(it, "attachments_allowed", False)) or intent == "session"
         try:
             created = await asyncio.to_thread(
                 create_item,
@@ -705,6 +723,8 @@ class GaiusZndxEngineServicer(zpb_grpc.EngineServicer):
                 tz_name="",
                 origin_project=caller,
                 origin_agent=agent,
+                attachments=stored,
+                attachments_allowed=allowed,
             )
         except AgendaError as e:
             return zpb.PutAgendaItemResponse(ok=False, note=str(e))
@@ -782,6 +802,21 @@ class GaiusZndxEngineServicer(zpb_grpc.EngineServicer):
                     limit=int(request.limit or 0),
                 )
                 resp.fmp_hint.CopyFrom(fmp_to_proto(fmp))
+            if int(request.kind) == zpb.SERVER_QUERY_KIND_RESOURCES:
+                from ...services.session_resources import list_session_materials
+
+                note_id = str(request.note_id or "")
+                hint = resp.resources_hint
+                hint.project = "gaius"
+                hint.note_id = note_id
+                objs = list_session_materials(note_id)
+                for obj in objs:
+                    ro = hint.objects.add()
+                    ro.name = str(obj.get("name") or "")
+                    ro.text = str(obj.get("text") or "")
+                    ro.uri = str(obj.get("uri") or "")
+                if not objs:
+                    hint.note = "empty"
             if int(request.kind) == zpb.SERVER_QUERY_KIND_AGENDA:
                 # (2026-09-07) The Agenda BRIEF (today · tomorrow · the week) plus the
                 # index of covered items; note_id = one item in full. No model call;

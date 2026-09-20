@@ -6,6 +6,7 @@ New writes: scratch/YYYY-MM-DD/YYYY-MM-DD-HHmmss_<skewer>.md
 
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
@@ -54,6 +55,11 @@ GURU_BADTZ = (
 GURU_NOTITLE = (
     "Agenda item title is required.\n"
     "  Guru: #AG.00000011.NOTITLE"
+)
+GURU_ATTACHBOUND = (
+    "attachments_allowed=false forbids a nonempty attachment list "
+    "(SHACL MaxCountConstraintComponent).\n"
+    "  Guru: #AG.00000013.ATTACHBOUND"
 )
 
 NEW_NAME = re.compile(
@@ -344,6 +350,8 @@ class AgendaItem:
     timezone: str = ""
     origin_project: str = ""
     origin_agent: str = ""
+    attachments_allowed: bool = False
+    attachments: list[dict[str, str]] = field(default_factory=list)
 
     def join_url(self) -> str:
         if self.intent != "session":
@@ -358,6 +366,16 @@ class AgendaItem:
         details = public
         if join:
             details = (public + "\n\nJoin AgentRTC: " + join).strip()
+        if self.attachments_allowed:
+            uris = [
+                str(a.get("uri") or "").strip()
+                for a in self.attachments
+                if str(a.get("uri") or "").strip()
+            ]
+            if uris:
+                details = (
+                    details + "\n\nAttachments:\n" + "\n".join(uris)
+                ).strip()
         return google_calendar_url(
             title=self.title,
             starts=self.starts,
@@ -409,6 +427,8 @@ def _parse_header(text: str) -> tuple[dict[str, str], str, str]:
                 "timezone",
                 "origin",
                 "agent",
+                "attachments_allowed",
+                "attachments",
             ):
                 fields[key] = rest.strip()
                 i += 1
@@ -490,6 +510,10 @@ def parse_item(root: Path, path: Path) -> AgendaItem:
         timezone=(fields.get("timezone") or "").strip(),
         origin_project=(fields.get("origin") or "").strip(),
         origin_agent=(fields.get("agent") or "").strip(),
+        attachments_allowed=_parse_allowed(
+            fields.get("attachments_allowed", ""), intent=intent
+        ),
+        attachments=_parse_attachments(fields.get("attachments", "")),
     )
 
 
@@ -511,6 +535,8 @@ def render_item(item: AgendaItem) -> str:
         f"timezone: {item.timezone}",
         f"origin: {item.origin_project}",
         f"agent: {item.origin_agent}",
+        f"attachments_allowed: {'true' if item.attachments_allowed else 'false'}",
+        f"attachments: {_dump_attachments(item.attachments)}",
         "",
         f"# {item.title}",
         "",
@@ -586,6 +612,55 @@ def _update_next(root: Path, prev: Path, new_rel: str) -> None:
         prev.write_text(updated, encoding="utf-8")
 
 
+def _parse_allowed(raw: str, *, intent: str) -> bool:
+    text = (raw or "").strip().lower()
+    if text in ("true", "1", "yes"):
+        return True
+    if text in ("false", "0", "no"):
+        return False
+    return intent == "session"
+
+
+def _parse_attachments(raw: str) -> list[dict[str, str]]:
+    text = (raw or "").strip()
+    if not text:
+        return []
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError as e:
+        raise AgendaError(GURU_ATTACHBOUND) from e
+    if not isinstance(data, list):
+        raise AgendaError(GURU_ATTACHBOUND)
+    out: list[dict[str, str]] = []
+    for row in data:
+        if not isinstance(row, dict):
+            continue
+        name = str(row.get("name") or "").strip()
+        uri = str(row.get("uri") or "").strip()
+        if not name or not uri:
+            continue
+        out.append(
+            {
+                "name": name,
+                "uri": uri,
+                "role": str(row.get("role") or "other").strip() or "other",
+                "media_type": str(row.get("media_type") or "").strip(),
+            }
+        )
+    return out
+
+
+def _dump_attachments(rows: list[dict[str, str]]) -> str:
+    if not rows:
+        return ""
+    return json.dumps(rows, separators=(",", ":"))
+
+
+def require_attachment_bound(allowed: bool, attachments: list[dict[str, str]]) -> None:
+    if not allowed and attachments:
+        raise AgendaError(GURU_ATTACHBOUND)
+
+
 def create_item(
     root: Path,
     *,
@@ -604,6 +679,8 @@ def create_item(
     origin_agent: str = "",
     session_prompt: str = "",
     session_materials: str = "",
+    attachments: list[dict[str, str]] | None = None,
+    attachments_allowed: bool | None = None,
 ) -> AgendaItem:
     root = require_kb(root)
     kind = validate_kind(kind)
@@ -638,11 +715,15 @@ def create_item(
         prev_rel = str(prev_path.relative_to(root)).replace("\\", "/")
     if kind == "list" and body.strip() == "":
         body = "- [ ] \n"
-    body = compose_session_body(
-        body,
-        session_prompt=session_prompt,
-        session_materials=session_materials,
+    # session_prompt / session_materials are deprecated; do not stuff the zettel.
+    _ = (session_prompt, session_materials)
+    stored = list(attachments or [])
+    allowed = (
+        bool(attachments_allowed)
+        if attachments_allowed is not None
+        else intent == "session"
     )
+    require_attachment_bound(allowed, stored)
     item = AgendaItem(
         path=rel,
         kind=kind,
@@ -660,6 +741,8 @@ def create_item(
         timezone=tz_name,
         origin_project=(origin_project or "").strip() or "gaius",
         origin_agent=_clean_agent(origin_agent),
+        attachments_allowed=allowed,
+        attachments=stored,
     )
     path.write_text(render_item(item), encoding="utf-8")
     if prev_path is not None:

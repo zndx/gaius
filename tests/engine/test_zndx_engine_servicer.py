@@ -54,12 +54,54 @@ async def test_put_agenda_item_from_hermes_ripley(tmp_path, monkeypatch):
     assert "origin: hermes" in text
     assert "agent: ripley" in text
     assert "## Session prompt" not in text
+    assert resp.item.attachments_allowed is True
+    assert list(resp.item.attachments) == []
+    refused = await servicer.PutAgendaItem(
+        zpb.PutAgendaItemRequest(
+            origin_project="hermes",
+            origin_agent="ripley",
+            item=zpb.AgendaHintItem(
+                title="Blocked attach",
+                kind="event",
+                intent="session",
+                starts_ms=starts,
+                attachments_allowed=False,
+                attachments=[
+                    zpb.Attachment(
+                        name="prompt.md",
+                        uri="s3://hermes/resources/x/prompt.md",
+                        role="prompt",
+                    )
+                ],
+            ),
+        ),
+        MagicMock(),
+    )
+    assert refused.ok is False
+    assert "AG.00000013" in refused.note
     empty = await servicer.PutAgendaItem(
         zpb.PutAgendaItemRequest(origin_project="hermes", origin_agent="grok"),
         MagicMock(),
     )
     assert empty.ok is False
     assert "AG.00000011" in empty.note
+
+
+@pytest.mark.asyncio
+async def test_server_query_resources_empty_is_honest(monkeypatch):
+    servicer = GaiusZndxEngineServicer(_services())
+    monkeypatch.setenv("SIGNALS_RUSTFS_URL", "http://127.0.0.1:1")
+    resp = await servicer.ServerQuery(
+        zpb.ServerQueryRequest(
+            kind=zpb.SERVER_QUERY_KIND_RESOURCES,
+            note_id="scratch/x",
+        ),
+        MagicMock(),
+    )
+    assert resp.project == "gaius"
+    assert resp.resources_hint.note_id == "scratch/x"
+    assert list(resp.resources_hint.objects) == []
+    assert resp.resources_hint.note == "empty"
 
 
 def _services(**kwargs):

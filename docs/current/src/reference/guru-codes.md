@@ -86,6 +86,9 @@ Complete catalog of error codes used across the Gaius platform.
 | `#AG.00000008.NOWRITE` | Thinking did not emit an Agenda write artifact | Retry Ask, or Agenda + |
 | `#AG.00000009.BADORIGIN` | `origin` is not `YYYY-MM-DD` | Pass the caller's calendar today |
 | `#AG.00000010.BADTZ` | `timezone` is not a valid IANA name | Pass `America/Denver`, not `MDT` |
+| `#AG.00000011.NOTITLE` | Agenda item title is empty | Pass a title |
+| `#AG.00000012.PUTFAIL` | PutAgendaItem failed to write | Check KB root and origin fields |
+| `#AG.00000013.ATTACHBOUND` | `attachments_allowed=false` with a nonempty list | Set `attachments_allowed=true` or omit attachments (SHACL maxCount 0) |
 
 ### SS — Server-to-server
 

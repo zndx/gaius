@@ -62,8 +62,48 @@ def test_create_from_hermes_profile_records_origin_not_session_prompt(tmp_path: 
     assert "agent: ripley" in text
     assert "origin: hermes" in text
     assert "## Session prompt" not in text
+    assert item.attachments_allowed is True
+    assert item.attachments == []
     with pytest.raises(AgendaError, match="AG.00000011"):
         create_item(kb, kind="note", title="  ")
+
+
+def test_attachments_upper_bound(tmp_path: Path) -> None:
+    kb = tmp_path / "build" / "dev"
+    (kb / "scratch").mkdir(parents=True)
+    now = datetime(2026, 9, 20, 22, 0, 0, tzinfo=timezone.utc)
+    att = {
+        "name": "prompt.md",
+        "uri": "s3://hermes/resources/scratch/x/prompt.md",
+        "role": "prompt",
+        "media_type": "text/markdown",
+    }
+    with pytest.raises(AgendaError, match="AG.00000013"):
+        create_item(
+            kb,
+            kind="event",
+            title="No attach",
+            starts=now.isoformat(),
+            intent="session",
+            attachments=[att],
+            attachments_allowed=False,
+            now=now,
+        )
+    item = create_item(
+        kb,
+        kind="event",
+        title="With attach",
+        starts=now.isoformat(),
+        intent="session",
+        attachments=[att],
+        attachments_allowed=True,
+        now=now,
+    )
+    assert item.attachments[0]["uri"].startswith("s3://")
+    text = (tmp_path / "build" / "dev" / item.path).read_text(encoding="utf-8")
+    assert "attachments_allowed: true" in text
+    again = get_item(kb, item.path)
+    assert again.attachments[0]["name"] == "prompt.md"
 
 
 def test_create_list_get_update_chain(tmp_path: Path) -> None:
