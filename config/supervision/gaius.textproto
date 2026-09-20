@@ -19,6 +19,10 @@ attrs { key: "timezone" value: "UTC" }
 # Nautilus directive mode for the adoption phase: observe (fill the Backlog, record
 # firings and reclaim FORECASTS, send no directives) → reclaim,consult after promotion.
 attrs { key: "directives" value: "observe" }
+# AUDIT 2026-09-20: ENGINE_GRPC Status was green while ServerQuery THOUGHTS/AGENDA
+# returned UNKNOWN (missing FMP enum crashed every kind). Observe a content
+# ServerQuery or treat UNKNOWN as unhealthy. Do not equate coordination MISSTICK
+# with Airflow down. See docs/notes/2026-09-20/142002_nautilus_spec_audit_serverquery.md.
 
 budgets {
   recycle_k: 3

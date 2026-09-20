@@ -98,7 +98,11 @@ def test_local_response_surfaces(monkeypatch: pytest.MonkeyPatch) -> None:
         zpb.SERVER_QUERY_KIND_SURFACES,
         SimpleNamespace(config=None),
     )
-    assert [s.url for s in resp.surfaces] == ["http://tinybox:9890"]
+    primary = [s.url for s in resp.surfaces if s.kind == "primary"]
+    assert primary == ["http://tinybox:9890"]
+    coord = [s for s in resp.surfaces if s.kind == "coordination"]
+    assert coord
+    assert not coord[0].url.startswith("#")
 
 
 @pytest.mark.asyncio

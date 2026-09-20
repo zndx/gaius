@@ -344,17 +344,17 @@ def local_surfaces() -> list[zpb.Surface]:
     except Exception:  # noqa: BLE001
         co = None
     if co is None:
-        out.append(zpb.Surface(kind="coordination", url="#CO.00000004.NOWATCHER", healthy=False))
+        out.append(zpb.Surface(kind="coordination", url="", healthy=False))
     else:
         st = co.status()
         healthy = bool(st.get("hub_healthy"))
-        detail = str(st.get("last_guru") or "")
-        if st.get("missed_ticks"):
-            detail = (detail + " miss:" + ",".join(st["missed_ticks"])).strip()
+        # Surface.url is a locator, not a guru. MISSTICK/NOWATCHER stay in
+        # status(); stuffing them here made AgentRTC say Airflow was down.
+        url = str(st.get("target") or "").strip()
         out.append(
             zpb.Surface(
                 kind="coordination",
-                url=detail or str(st.get("target") or ""),
+                url=url,
                 healthy=healthy,
             )
         )
