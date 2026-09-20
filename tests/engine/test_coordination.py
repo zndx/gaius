@@ -341,11 +341,12 @@ def _own(aid="w1", kind="article_curate", state="running", horizon=NOW + H):
 class FakePool:
     """Just enough of asyncpg for the workload pass; SQL matched by shape."""
 
-    def __init__(self, gate=True):
+    def __init__(self, gate=True, theta_caught_up=False):
         self.rows: list[dict] = []
         self.gate = gate
         self.sql: list[str] = []
         self._next = 100
+        self.theta_caught_up = theta_caught_up
 
     def add(self, task_type, payload, *, picked=False, completed=None, result=None, error=None, source="pg_cron"):
         self._next += 1
@@ -381,6 +382,8 @@ class FakePool:
         self.sql.append(sql)
         if "should_run_curation" in sql:
             return self.gate
+        if "theta_consolidation_runs" in sql:
+            return 1 if self.theta_caught_up else None
         if "max(completed_at)" in sql:
             tt = args[0]
             times = []
@@ -708,6 +711,119 @@ def test_prior_success_still_counts_when_later_tick_skipped(monkeypatch):
         assert "prospects_check" not in w.missed_ticks
 
     asyncio.run(run())
+
+
+def test_theta_not_caught_up_is_a_persistent_failure(monkeypatch):
+    """A recent Airflow tick for the wrong slice does not clear Theta."""
+    from datetime import datetime, timezone
+
+    monkeypatch.setattr(co, "theta_still_in_admission", lambda _now: False)
+    pool = FakePool(theta_caught_up=False)
+    now = datetime.now(timezone.utc)
+    pool.add(
+        "theta_cycle",
+        {},
+        picked=True,
+        completed=now,
+        result={"status": "completed"},
+        source="airflow",
+    )
+    w, _ = _watcher(pool, monkeypatch)
+
+    async def run():
+        w.ingest([_act(aid="h1")], NOW)
+        await w.workload_pass(NOW)
+        assert "theta_cycle" in w.missed_ticks
+        assert w.theta_not_caught_up is True
+        st = w.status()
+        assert st["theta_not_caught_up"] is True
+        assert "theta_cycle" in st["persistent_failures"]
+        assert st["hub_healthy"] is False
+
+    asyncio.run(run())
+
+
+def test_theta_caught_up_clears_when_previous_week_completed(monkeypatch):
+    from datetime import datetime, timezone
+
+    monkeypatch.setattr(co, "theta_still_in_admission", lambda _now: False)
+    pool = FakePool(theta_caught_up=True)
+    now = datetime.now(timezone.utc)
+    for tt in (
+        "article_curate",
+        "cognition_cycle",
+        "agenda_brief",
+        "prospects_check",
+        "weekly_signals_summary",
+        "publish_cards",
+        "ambient_synthesis",
+        "fmp_roll",
+        "theta_cycle",
+    ):
+        pool.add(tt, {}, picked=True, completed=now, result={"status": "completed"}, source="airflow")
+    w, _ = _watcher(pool, monkeypatch)
+
+    async def run():
+        w.ingest([_act(aid="h1")], NOW)
+        await w.workload_pass(NOW)
+        assert "theta_cycle" not in w.missed_ticks
+        assert w.theta_not_caught_up is False
+        assert w.status()["persistent_failures"] == []
+
+    asyncio.run(run())
+
+
+def test_theta_admission_window_does_not_flag_not_caught_up(monkeypatch):
+    """Monday 00:00–11:00 UTC is the weekly admission, not a miss."""
+    from datetime import datetime, timezone
+
+    monkeypatch.setattr(co, "theta_still_in_admission", lambda _now: True)
+    pool = FakePool(theta_caught_up=False)
+    now = datetime.now(timezone.utc)
+    pool.add(
+        "theta_cycle",
+        {},
+        picked=True,
+        completed=now,
+        result={"status": "completed"},
+        source="airflow",
+    )
+    w, _ = _watcher(pool, monkeypatch)
+
+    async def run():
+        w.ingest([_act(aid="h1")], NOW)
+        await w.workload_pass(NOW)
+        assert w.theta_not_caught_up is False
+        assert "theta_cycle" not in w.missed_ticks
+
+    asyncio.run(run())
+
+
+def test_coordination_endpoint_detail_names_theta_failure():
+    detail = co.coordination_endpoint_detail(
+        {
+            "hub_healthy": False,
+            "last_guru": "#CO.0000000D.MISSTICK",
+            "missed_ticks": ["theta_cycle", "weekly_signals_summary"],
+            "persistent_failures": ["theta_cycle"],
+            "theta_not_caught_up": True,
+        }
+    )
+    assert detail.startswith("#CO.0000000D.MISSTICK")
+    assert "miss:theta_cycle,weekly_signals_summary" in detail
+    assert "fail:theta_cycle" in detail
+    assert "theta_not_caught_up" in detail
+
+
+def test_theta_still_in_admission_monday_morning():
+    from datetime import datetime, timezone
+
+    monday_0800 = datetime(2026, 9, 21, 8, 0, tzinfo=timezone.utc)
+    monday_1200 = datetime(2026, 9, 21, 12, 0, tzinfo=timezone.utc)
+    wednesday = datetime(2026, 9, 23, 15, 0, tzinfo=timezone.utc)
+    assert co.theta_still_in_admission(monday_0800) is True
+    assert co.theta_still_in_admission(monday_1200) is False
+    assert co.theta_still_in_admission(wednesday) is False
 
 
 def test_release_for_task_terminal_outcomes_only(monkeypatch):

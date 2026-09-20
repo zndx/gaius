@@ -77,6 +77,18 @@ LAST_AIRFLOW_TICK_SQL = (
     "IN ('completed', 'ok', 'success')"
 )
 
+# Previous ISO week caught up: a completed consolidation row for that slice.
+# Skip/error/absence is not success. Used with LAST_AIRFLOW_TICK_SQL — a recent
+# tick for the wrong slice does not clear "not caught up".
+THETA_CAUGHT_UP_SQL = (
+    "SELECT 1 FROM theta_consolidation_runs "
+    "WHERE slice_id = $1 AND status = 'completed' "
+    "AND COALESCE(error, '') = '' "
+    "LIMIT 1"
+)
+THETA_TICK_LIMIT_S = 8 * 86400  # weekly Monday 06:00 + 1 d net
+THETA_NET_S = 5 * 3600          # run_net_slot 5
+
 # ── workloads Airflow orders (kind → how pg_cron enqueued the same class) ─────
 # (2026-09-07) The WORKLOAD CATALOGUE (services.workload_catalog) is the one
 # source: every scheduled class with pg_cron's task_type / payload / gate
@@ -88,6 +100,22 @@ LAST_AIRFLOW_TICK_SQL = (
 # Signals Airflow are the catalogue's `enabled` entries (ServerQuery SCHEDULES
 # reports source=airflow for them; pg_cron stays the source for the rest).
 from gaius.engine.services import workload_catalog as _catalog
+
+
+def theta_still_in_admission(now: Any) -> bool:
+    """True until this week's Monday 06:00 UTC + 5 h net has passed.
+
+    The previous ISO week flips at Monday 00:00; the DAG is due 06:00. Flagging
+    'not caught up' inside that window would be an admission, not a miss.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
+    now = now.astimezone(timezone.utc)
+    monday = now.replace(hour=6, minute=0, second=0, microsecond=0)
+    monday = monday - timedelta(days=monday.weekday())
+    return now <= monday + timedelta(seconds=THETA_NET_S)
 
 
 def _spec_of(entry: Any) -> dict[str, Any]:
@@ -364,6 +392,7 @@ class CoordinationWatcher:
     last_guru_detail: str = ""
     last_guru_ns: int = 0
     missed_ticks: list[str] = field(default_factory=list)
+    theta_not_caught_up: bool = False
     _unimplemented_logged: bool = False
 
     # ── lifecycle ────────────────────────────────────────────────────────────
@@ -409,11 +438,19 @@ class CoordinationWatcher:
             "last_guru": self.last_guru,
             "last_guru_detail": self.last_guru_detail,
             "missed_ticks": list(self.missed_ticks),
+            "theta_not_caught_up": bool(self.theta_not_caught_up),
+            "persistent_failures": self.persistent_failures(),
             "hub_healthy": bool(self.connected) and not self.last_guru and not self.missed_ticks,
             "activities": len(self.view.activities),
             "ceded": dict(self._ceded),
             "workloads": {aid: dict(w) for aid, w in self._workloads.items()},
         }
+
+    def persistent_failures(self) -> list[str]:
+        """Theta miss / not-caught-up stay open until a successful Airflow tick."""
+        if "theta_cycle" in self.missed_ticks or self.theta_not_caught_up:
+            return ["theta_cycle"]
+        return []
 
     def _note_guru(self, guru: str, detail: str = "") -> None:
         self.last_guru = guru
@@ -610,6 +647,7 @@ class CoordinationWatcher:
                 "agenda_brief": 36 * 3600,
                 "prospects_check": 36 * 3600,
                 "weekly_signals_summary": 10 * 86400,
+                "theta_cycle": THETA_TICK_LIMIT_S,
                 "publish_cards": 30 * 3600,
                 "ambient_synthesis": 60 * 60,   # 3 × */20
                 "fmp_roll": 90 * 60,            # 3 × :07/:37
@@ -617,6 +655,20 @@ class CoordinationWatcher:
             age = None if last is None else (now - last).total_seconds()
             if last is None or (age is not None and age > limit_s):
                 missed.append(tt)
+        not_caught = False
+        if not theta_still_in_admission(now):
+            try:
+                from gaius.agents.theta.consolidation import get_previous_week_slice_id
+
+                slice_id = get_previous_week_slice_id(now)
+                caught = await pool.fetchval(THETA_CAUGHT_UP_SQL, slice_id)
+            except Exception:  # noqa: BLE001
+                caught = None
+            if not caught:
+                not_caught = True
+                if "theta_cycle" not in missed:
+                    missed.append("theta_cycle")
+        self.theta_not_caught_up = not_caught
         if missed != self.missed_ticks:
             if missed:
                 self._note_guru(GURU_MISSTICK, ",".join(missed))
@@ -967,6 +1019,27 @@ def init_coordination(
     elif pool_getter is not None and _COORD.pool_getter is None:
         _COORD.pool_getter = pool_getter
     return _COORD
+
+
+def coordination_endpoint_detail(st: dict[str, Any] | None) -> str:
+    """Guru / missed ticks / Theta not-caught-up for Engine/Status Endpoint.detail.
+
+    Surface.url stays the Watch target. Sitrep reads this detail.
+    """
+    st = st or {}
+    bits: list[str] = []
+    guru = str(st.get("last_guru") or "").strip()
+    if guru:
+        bits.append(guru)
+    missed = [str(x) for x in (st.get("missed_ticks") or []) if x]
+    if missed:
+        bits.append("miss:" + ",".join(missed))
+    fails = [str(x) for x in (st.get("persistent_failures") or []) if x]
+    if fails:
+        bits.append("fail:" + ",".join(fails))
+    if st.get("theta_not_caught_up"):
+        bits.append("theta_not_caught_up")
+    return " ".join(bits)
 
 
 def get_coordination() -> CoordinationWatcher | None:

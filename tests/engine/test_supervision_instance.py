@@ -42,6 +42,26 @@ def test_expectations_are_well_formed(spec) -> None:
             assert e.backfill_depth >= 1, p.id
 
 
+def test_theta_cycle_miss_is_an_agenda_event_failure(spec) -> None:
+    from gaius.engine.generated.zndx.supervision.v1 import supervision_pb2 as sv
+
+    for pid in ("task.theta_cycle", "flow.ThetaCycleFlow"):
+        e = spec.expectation_for(pid)
+        assert e.category == sv.EXPECTATION_CATEGORY_SLOT, pid
+        assert e.horizon_slot == 3, pid
+        assert e.channel == sv.CHANNEL_AGENDA_EVENT, pid
+        assert e.run_net_slot == 5, pid
+        blob = e.rationale.lower()
+        assert "briefing" not in blob, pid
+        assert "failure" in blob, pid
+        assert "not-caught-up" in blob or "not caught up" in blob, pid
+    obj = next((o for o in spec.supervisor.objectives if o.name == "theta_cycle"), None)
+    assert obj is not None and obj.HasField("expectation")
+    assert obj.expectation.channel == sv.CHANNEL_AGENDA_EVENT
+    assert obj.expectation.horizon_slot == 3
+    assert "failure" in obj.expectation.rationale.lower()
+
+
 def test_theta_cycle_declares_light_floor_for_encode(spec) -> None:
     from gaius.engine.supervision_spec import intent_for
 

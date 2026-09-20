@@ -36,7 +36,9 @@ Observe-only would not have actuated anyway; the gap is **visibility**.
    or treat ServerQuery UNKNOWN as unhealthy.
 2. **Do not equate coordination MISSTICK with Airflow down.** Probe Airflow 3
    at `/api/v2/monitor/health`. Missed kinds (especially `theta_cycle`) are
-   cadence, not hub death. Do not catch up Theta.
+   cadence, not hub death. A Theta miss / not-caught-up previous ISO week is
+   a **persistent failure** (Nautilus `CHANNEL_AGENDA_EVENT`, sitrep
+   `persistent_failures`), not `CHANNEL_BRIEFING`. Do not catch up Theta.
 3. **Surface.url is a URL.** Gurus (`#CO.…`) in `url` make sitrep/voice say
    the hub is unreachable. Keep guru/missed_ticks out of the URL field.
 4. **Proto compile.** Generating `engine_pb2` from a tree missing an enum the

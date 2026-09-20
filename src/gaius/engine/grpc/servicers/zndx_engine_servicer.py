@@ -284,6 +284,24 @@ def build_status_response(services: "ServiceRegistry") -> zpb.StatusResponse:
                     )
                 )
 
+    try:
+        from ...services.coordination import coordination_endpoint_detail, get_coordination
+
+        co = get_coordination()
+    except Exception:  # noqa: BLE001
+        co = None
+    if co is not None:
+        st = co.status()
+        endpoints.append(
+            zpb.Endpoint(
+                capability="coordination",
+                model="",
+                healthy=bool(st.get("hub_healthy")),
+                gpu_ids=[],
+                detail=coordination_endpoint_detail(st),
+            )
+        )
+
     from ...s2s import local_surfaces
 
     return zpb.StatusResponse(
