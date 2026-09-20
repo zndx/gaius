@@ -754,7 +754,8 @@ class GaiusZndxEngineServicer(zpb_grpc.EngineServicer):
                     services=self._services,
                 )
                 resp.search_hint.CopyFrom(search_to_proto(search))
-            if int(request.kind) == zpb.SERVER_QUERY_KIND_FMP:
+            fmp_kind = getattr(zpb, "SERVER_QUERY_KIND_FMP", None)
+            if fmp_kind is not None and int(request.kind) == fmp_kind:
                 from ...services.fmp_hint import collect_fmp, to_proto as fmp_to_proto
 
                 fmp = await collect_fmp(
