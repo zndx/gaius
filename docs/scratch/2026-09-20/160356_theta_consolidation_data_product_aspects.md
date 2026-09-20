@@ -21,14 +21,11 @@ already a bundle of independently reviewable planes:
 | ACP observation | `hx_reasoning` quality / lineage / delta / nominal | History is agent-facing |
 | Discovery | `ServerQuery kind=PRODUCTS` → `ProductHint` | Hint only; warehouse is SoR |
 
-**Aspect** in this note = one independently-shaped object/claim plane of
-**one** product. Each aspect has its own bytes (or honest absence), its
-own `details` facts, and can be scored on quality / lineage / delta
-without pretending the SQL job row is the product.
-
-Do not mint one `product_id` per aspect unless an aspect later proves to
-be a sibling product (the way `gaius.prospects.corpus` is not
-`gaius.curation.cot_reasoning`). Default: one product, several aspects.
+The first draft of this note treated “Aspect” as an object/claim plane of
+one product. That mixed three things the AgentRTC wiki keeps apart.
+Signals still has no proto type named Aspect; the warehouse planes above
+are how a product is *inventoried*. What a product *promises* is the
+wiki vocabulary (NONNORMATIVE) in the next section.
 
 Contract: [signals-protocol `data_products.md`](https://github.com/weathership/signals-protocol)
 (in-tree: Signals `components/signals-protocol/specification/protocol/data_products.md`).
@@ -46,6 +43,102 @@ flow: ThetaCycleFlow
 
 `gaius.cognition.outputs` is a different seed. Do not overload it.
 
+## Wiki vocabulary (NONNORMATIVE)
+
+Source: Hermes AgentRTC wiki
+`current/design/data-product-aspects.md` (sessions as data products)
+and the seed zettel
+`scratch/2026-09-20/211944_a-useful-adaptation-is-to-make-data-product-aspect.md`.
+Not protocol. Not a Signals warehouse table. Considered here because
+Theta’s booked session *is* the first concrete instance of that pattern.
+
+| Concept | Role | Instantiable? | Example here |
+|---------|------|---------------|--------------|
+| **Data Product** | Concrete entity: data + interface + operational commitments | Yes | `gaius.theta.consolidation`; a Theta **session**; the Theta **session series** |
+| **Aspect** | Reusable semantic **contract** (properties, constraints, required evidence) | **No** — \(A \cap P = \varnothing\) | `PreparedSessionMaterials`; `Transcript` (sealed vs in-force); `IdentifiableProductAspect` |
+| **Profile** | Versioned composition of aspects for a product class | Usually no | (none yet — `SessionSeriesProductProfile` is an open question on the wiki) |
+| **Evidence** | Proof of a claim, or an operational observation | Yes | `s3://gaius/resources/<id>/prompt.md`; week \(X_i\); sealed transcript; `hx_reasoning` |
+
+An Aspect does not denote a product. `prompt.md` on rustfs is **evidence**
+that a session satisfies `PreparedSessionMaterials`, not “the aspect.”
+`hx_reasoning` quality / lineage / delta is the Signals-shaped
+**claim–evidence** pair (`AspectClaim` `supportedBy` an artifact). Empty
+`hx_*` is a declaration without proof — the failure the wiki exists to
+prevent.
+
+The 12-aspect vocabulary stays architecture-neutral (no “mesh,” no
+“federated” in the aspect names). Theta needs at least:
+`Identifiable`, `Discoverable`, `ContractedInterface`, `Accessible`,
+`QualityAssured`, `Observable`, `Provenanced`, `LifecycleManaged`,
+`CostTransparent` (LIGHT economics), `Interoperable` (strategy pin /
+SKOS↔OWL). `Governed` / `RiskManaged` when the live aperture change is
+in play (promotion is a control, not a git convenience).
+
+### Sessions as products (the wiki’s worked example)
+
+The session **series** is a **distinct data product** — the union of
+artifacts consumed and produced. Two session-level aspects so far:
+
+1. **Prepared session materials** — *input*. Pre-existing, authored
+   before the run, **immutable** from the session’s point of view.
+   Contract ~ `ContractedInterfaceAspect` + `ProvenancedProductAspect`.
+2. **Transcript** — *output*. Emergent; **in-force** while the session
+   is live, then **seals**. Contract ~ `ProvenancedProductAspect` +
+   `ObservableProductAspect`. Consumers must not read an in-force
+   transcript as final. Live failure:
+   wiki `scratch/2026-09-20/212213_friction-discover-reliability-catch-up-appended-to-wrong-session.md`.
+
+**The test** for a level being a product: does it own aspects of its
+*own*, or is it a view? A series that only lists sessions is a view.
+The moment it owns the consolidated thread (running decisions, standing
+prompts, cross-session continuity, its own access rules) it is a
+product. Theta’s weekly discourse **owns** the promotion decision. That
+answers this note’s earlier “one product vs sibling” question: the
+session series is a sibling product, not an object plane of
+`gaius.theta.consolidation`.
+
+Self-similarity (Protobuf framing, still NONNORMATIVE): an aspect type
+is a **repeated typed entry** in an enclosing envelope. Materials →
+session → series. Field numbers and message names *are* the contract.
+Thin wire: S3-rooted path + typed contract; bytes stay in object
+storage; validate the pointer, then dereference. That is already how
+`ServerQuery RESOURCES` works.
+
+**Invite `can-have-attachment`** is an **upper bound**: declaring
+attachment possible and supplying none is valid; declaring none and
+then supplying one is a violation. Holding a week with an empty
+RESOURCES list is therefore nominal *if* the invite declared the
+capability. Two pointer forms: URL-embedded session-start metadata
+(machine, Connect) vs an **attachment set** (human, pre-session prep).
+
+Open on the wiki and inherited here: is `PreparedSessionMaterials` a
+flat record or nested sub-aspects? Theta wants the nested fork —
+salient theta-cycle vs salient shadow-strategy are sub-aspects the
+evolving `prompt.md` surfaces, not a second product.
+
+### Relabel of the planes below
+
+What this note still calls A–E are **evidence artifacts** of products,
+not Aspects. Kept numbered so the rest of the page stays walkable.
+
+| Label | Wiki class | Belongs to |
+|-------|------------|------------|
+| A `prompt.md` / `materials.md` | Evidence of `PreparedSessionMaterials` | booked **session** (input, immutable) |
+| — transcript | Evidence of `Transcript` | booked **session** (output; seal at close) |
+| — invite attachment capability | `can-have-attachment` (upper bound) | invite / series contract |
+| B week \(X_i\) | Evidence of Quality / Provenance | `gaius.theta.consolidation` |
+| C CLT + MaxSim week binding | Evidence of Interoperable / Quality | consolidation |
+| D KB week-block | Evidence of Quality (cortical write) | consolidation |
+| E shadow aperture delta | Evidence of a **candidate** Risk/Governed claim | consolidation; live membrane only after **sealed** session |
+| F `hx_reasoning` | `AspectClaim` + `supportedBy` | every product `tx` |
+| session series | **Product** | owns standing prompts, promotion decisions, continuity |
+| ledger row | not a product, not an aspect | Nautilus coverage |
+
+Promotion claim: `AspectClaim(consolidation, live-membrane-change)`
+is `supportedBy` a **sealed** Theta-session transcript plus the
+cherry-pick sha. An in-force call must not promote. Week close must
+not promote.
+
 ## What is not an Aspect of this product
 
 **`theta_consolidation_runs`.** Coverage, job health, miss / caught-up,
@@ -55,18 +148,22 @@ LIGHT coverage is in, not that information was consolidated.
 
 The daily cognition **Agenda brief** (`agenda_brief.py`, producer-end +
 day rollover) is also not this product. That brief is a rolling sitrep.
-The Agenda **session materials** aspect below is a **booked** session
-whose origin is Gaius and whose named agent is Theta.
+The Agenda **session** below is a **booked** session whose origin is
+Gaius and whose named agent is Theta — a product in the session series,
+carrying prepared-materials evidence and, after close, a sealed
+transcript.
 
 Daily LIGHT increments (`zndx.window_date`) are **work units**. They
 refine week-level aspects; they are not Aspects and not a ShadowStrategy.
 
 ---
 
-## Aspect A — Agenda session briefing materials
+## A — Prepared session materials (evidence; input aspect)
 
-**This is the first fully specified aspect.** Shape: the AgentRTC
-supporting-materials corpus devised 2026-09-19.
+**First fully specified evidence plane** of the booked Theta session.
+Wiki contract: `PreparedSessionMaterials` — immutable from the
+session’s point of view. Shape: the AgentRTC supporting-materials
+corpus devised 2026-09-19.
 
 ### Shape (already in the protocol)
 
@@ -138,27 +235,36 @@ trunk is the one-main lineage; a shadow is a branch). What was missing:
 a **gate**.
 
 ```
-week aspects ready (B–E)
+week evidence ready (B–E)
         │
         ▼
-Aspect A: book Gaius/Theta session + rustfs briefing
+book Gaius/Theta session  (series member)
+  invite can-have-attachment (upper bound)
+  A  prompt.md + materials.md  (PreparedSessionMaterials; immutable)
         │
         ▼
-AgentRTC (or equivalent) discourse — Theta named
+AgentRTC discourse — Theta named
+  transcript in-force (must not promote)
+        │
+        ▼
+session close → transcript seals
         │
         ▼
   promote? ──yes──▶ cherry-pick shadow → trunk
         │              materialize lens → live Qdrant aperture
+        │              AspectClaim supportedBy sealed transcript + sha
         no
         ▼
   hold the shadow (still a branch; not live)
 ```
 
 Agentic discourse **elevates** a shadow into the **active aperture
-membrane** when it is appropriate to do so. Week completion does not
-auto-promote. A day's LIGHT increment does not promote. Git history
-alone is not the gate: without discourse, shadows either rot or get
-merged by pipeline, both of which violate **controlled** emergence.
+membrane** when it is appropriate to do so — and only from the
+**sealed** record of that discourse. Week completion does not
+auto-promote. A day's LIGHT increment does not promote. An in-force
+call must not promote. Git history alone is not the gate: without
+sealed discourse, shadows either rot or get merged by pipeline, both
+of which violate **controlled** emergence.
 
 The live membrane today is what ambient cognition already admits
 through (`SdgAperture`, ColBERT-Zero MaxSim, unique topic). Promotion
@@ -166,7 +272,7 @@ changes that membrane (typically `lens/` C / τ / e / index; sometimes
 voices). Effective aperture = `(C, regime params, e, index)` —
 `strategy_id` equality is not sufficient (sdg-strategy aperture task).
 
-### Live-tree gaps for Aspect A
+### Live-tree gaps for prepared-materials evidence
 
 - Gaius does not implement `SERVER_QUERY_KIND_RESOURCES`.
 - Gaius does not write `s3://gaius/resources/…` (Hermes writes
@@ -178,6 +284,45 @@ voices). Effective aperture = `(C, regime params, e, index)` —
 
 Do not stuff `prompt.md` into the Agenda zettel. That inversion was
 already rejected for AgentRTC.
+
+Empty RESOURCES after a declared `can-have-attachment` is valid
+(holding). Empty RESOURCES after the week is ready to discuss is
+off-nominal for this **evidence**, not a Nautilus miss.
+
+---
+
+## Transcript (evidence; output aspect) — was missing
+
+The wiki’s second session aspect. Produced only once the session has
+happened. **In-force** during the call (mutable stream); **sealed** at
+session close into a document. Promotion of Aspect E into the live
+aperture is `supportedBy` the **sealed** transcript, never the
+in-force stream.
+
+| Review | Meaning |
+|--------|---------|
+| Quality | Sealed object exists, bound to this session id, not appended to another session. |
+| Lineage | Agenda item id, `origin_agent=theta`, Connect session id, start/end. |
+| Delta | Decisions vs the prepared materials (what was promoted, what was held). |
+| Nominal | Seal at **this** session’s close. Referencing another session’s in-force notes as this session’s open items is off-nominal (212213). |
+
+No transcript store is specified yet. Do not reuse an unsealed AgentRTC
+context pack as the record.
+
+---
+
+## Session series (distinct product)
+
+Not a container and not a view over weeks. Owns: standing Theta
+prompts (the evolving family in sdg-strategy `voices/`), the running
+promotion thread, access rules for who may elevate the membrane,
+cross-week continuity of shadow vs trunk. Member sessions are inputs
+(`dp:consumesProduct`). Consolidation weeks are a **different**
+product the series discusses.
+
+Protobuf self-similarity (NONNORMATIVE): series envelope carries
+`repeated` session entries; each session carries prepared-materials
+entries and, once sealed, a transcript entry.
 
 ---
 
@@ -280,10 +425,11 @@ damage (neighbor concepts losing separation). Bytes on
 | Quality | Delta is computed on week artifacts (B/C), same `slice_id`, two `strategy_id`s; effective aperture identity includes e and index. |
 | Lineage | Branch point sha, both manifests, both lens snapshots. |
 | Delta | This week's shadow vs last week's shadow, **and** shadow vs trunk this week. |
-| Nominal | Candidate only. Live membrane unchanged until Aspect A discourse promotes. |
+| Nominal | Candidate only. Live membrane unchanged until a **sealed** Theta-session transcript supports the promotion claim. |
 
 Promotion target is the **active aperture membrane** (repo → runtime
-materialize of `lens/`). That is the coupling to Aspect A.
+materialize of `lens/`). Coupling: sealed session transcript, not the
+prepared-materials evidence and not week close.
 
 ---
 
@@ -293,14 +439,14 @@ Every `tx` on `gaius.theta.consolidation` must carry quality / lineage /
 delta / nominal. This is the Signals History facet of the **product**,
 not a sixth blob. The reviewing agent observes; it does not
 re-inventory. `agent_focus` (once seeded) should tell that agent to
-read Aspects A–E, and to treat the ledger as coverage evidence only.
+read evidence A–E plus the sealed transcript, and to treat the ledger as coverage only.
 
 Empty `hx_*` would make History a changelog of job rows — the failure
 mode this product must not repeat.
 
 ---
 
-## How the Aspects co-evolve (week loop)
+## How the products co-evolve (week loop)
 
 ```
 UTC days (work units, LIGHT, max_active_runs=1)
@@ -312,29 +458,34 @@ UTC days (work units, LIGHT, max_active_runs=1)
   E  shadow vs trunk admission delta (if a shadow is in play)
         │
         ▼
-  week ready ──▶ A  book Gaius/Theta session
-                     prompt.md  (salient sub-aspects of B–E)
-                     materials.md (briefing; cites B–E, E especially)
+  week ready ──▶ book session (series member)
+                     A  prompt.md / materials.md (immutable input)
+                     invite attachment set (human prep) + Connect URL (machine)
         │
         ▼
-  discourse ──▶ promote E? ──▶ live membrane (lens materialize)
+  discourse (transcript in-force)
+        │
+        ▼
+  seal transcript ──▶ promote E? ──▶ live membrane (lens materialize)
 ```
 
 Prompts and briefing **co-evolve** with the cycle and with E. The
-session is not a notification that the DAG succeeded.
+session is not a notification that the DAG succeeded. The series owns
+the standing prompt family and the running promotion thread.
 
 ## Declared vs live (honest)
 
 | | Live today | Intended |
 |--|------------|----------|
-| Product id | none (`declared_products` has prospects + cot_reasoning only) | `gaius.theta.consolidation` |
-| Warehouse row | none | `tx` + `details` + `hx_reasoning` per week |
-| Aspect A | Hermes RESOURCES for Ripley/Grok; Gaius calendar-only | Gaius/Theta booked session + `s3://gaius/resources/…` |
-| Aspect B | in-process NVAR, empty history per run | durable week series |
-| Aspect C | CLT + MaxSim in the flow; published as ledger jsonb | week-level binding set as product bytes |
-| Aspect D | BEGIN/END blocks in KB | same, scored as the cortical write |
-| Aspect E | strategy submodule pin; no week admission delta object | shadow vs trunk on the same week |
-| Promotion | cherry-pick in git, ungated by discourse | Aspect A session is the gate |
+| Product id | none (`declared_products` has prospects + cot_reasoning only) | `gaius.theta.consolidation` **and** a Theta session-series product |
+| Warehouse row | none | `tx` + `details` + `hx_reasoning` per week / per sealed session |
+| A prepared materials | Hermes RESOURCES for Ripley/Grok; Gaius calendar-only | Gaius/Theta booked session + `s3://gaius/resources/…` |
+| Transcript | none (context pack is not a sealed record) | sealed at session close; never in-force as final |
+| B \(X_i\) | in-process NVAR, empty history per run | durable week series |
+| C CLT + MaxSim | in the flow; published as ledger jsonb | week-level binding set as product bytes |
+| D KB week-block | BEGIN/END blocks in KB | same, scored as the cortical write |
+| E aperture delta | strategy submodule pin; no week admission-delta object | shadow vs trunk on the same week |
+| Promotion | cherry-pick in git, ungated | sealed session transcript is the gate |
 | Ledger | `theta_consolidation_runs` | remains; Nautilus only |
 
 ## What this note does not do
@@ -354,18 +505,28 @@ session is not a notification that the DAG succeeded.
 - Architecture (what runs): `docs/current/src/architecture/theta.md`
 - Strategy repo: `external/sdg-strategy/README.md` (Shadows are branches)
 - AgentRTC materials: signals-plugins `hsengine/engine/resources_store.py`
+- Wiki (NONNORMATIVE): `$WIKI_PATH/current/design/data-product-aspects.md`
+  and `scratch/2026-09-20/211944_a-useful-adaptation-is-to-make-data-product-aspect.md`
 
 ## Open questions
 
 1. **Spoken identity.** `origin_agent=theta` names the session source.
    Does AgentRTC still use Ripley as the voice executing Theta's
    `prompt.md`, or is Theta a spoken profile?
-2. **One product vs sibling.** Keep Aspects A–E under
-   `gaius.theta.consolidation`, or is the booked-session corpus a
-   sibling (`gaius.theta.briefings`) because Connect/RESOURCES is a
-   different object plane than Iceberg?
+2. **Series product id.** Wiki says the series is a distinct product.
+   Name (`gaius.theta.sessions`?) and which 12-vocab aspects a
+   `SessionSeriesProductProfile` requires — still open on the wiki.
 3. **When to book.** Strictly at week-complete, or also a mid-week
-   "holding" session when a shadow delta is already discussable?
+   holding session when a shadow delta is already discussable?
+   (`can-have-attachment` makes empty materials valid; it does not
+   decide whether to book.)
 4. **Objective `theta_cycle`.** Move the gate from ledger
-   `documents_augmented > 0` onto Aspects D (and B/C) in the same
-   change that publishes the product, or later?
+   `documents_augmented > 0` onto D (and B/C) in the same change that
+   publishes the product, or later?
+5. **Transcript seal trigger.** Session close vs series close? May
+   consumers reference an in-force transcript at all? (Wiki open
+   question; Theta should answer “session close; no” unless we have
+   a reason.)
+6. **Nested `PreparedSessionMaterials`.** Defer, or take the nested
+   fork now (theta-cycle salience vs shadow-strategy salience as
+   sub-aspects the prompt surfaces)?
