@@ -11,6 +11,7 @@ from gaius.engine.services.fmp_tools import BY_NAME, call_tool
 
 FMP_STREAMS = frozenset(BY_NAME)
 _MAX = 8
+_MAX_SERIES = 90
 
 
 def _clip(text: str, n: int = 280) -> str:
@@ -73,7 +74,8 @@ async def collect_fmp(
     kind = (stream or "search").strip().lower() or "search"
     if kind not in FMP_STREAMS:
         kind = "search"
-    n = max(1, min(int(limit or 6), _MAX))
+    cap = _MAX_SERIES if kind in ("eod", "price") else _MAX
+    n = max(1, min(int(limit or 6), cap))
     empty = {
         "project": "gaius",
         "query": q,
