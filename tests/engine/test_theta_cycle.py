@@ -47,6 +47,16 @@ async def test_enqueue_theta_cycle_reuses_same_slice_only() -> None:
     assert "2026-W36" in str(conn.inserted[0][0])
 
 
+def test_as_meta_dict_does_not_call_dict_on_a_string() -> None:
+    from gaius.engine.services.theta_cycle import as_meta_dict
+
+    assert as_meta_dict(None) == {}
+    assert as_meta_dict("") == {}
+    assert as_meta_dict({"windows": ["2026-09-14"]})["windows"] == ["2026-09-14"]
+    assert as_meta_dict('{"windows":["2026-09-14"]}')["windows"] == ["2026-09-14"]
+    assert as_meta_dict("not-json") == {}
+
+
 def test_slice_id_for_monday_logical_date_is_previous_iso_week() -> None:
     from datetime import datetime, timezone
 

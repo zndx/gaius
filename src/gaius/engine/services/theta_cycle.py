@@ -47,6 +47,20 @@ def _as_datetime(value: Any):
     return dt
 
 
+def as_meta_dict(value: Any) -> dict[str, Any]:
+    """JSONB/JSON/str metadata → dict. ``dict("…")`` raises ValueError."""
+    if value is None or value == "":
+        return {}
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except json.JSONDecodeError:
+            return {}
+    if isinstance(value, dict):
+        return dict(value)
+    return {}
+
+
 def utc_day(value: Any) -> str:
     """UTC calendar day YYYY-MM-DD, or empty."""
     from datetime import timezone
@@ -238,10 +252,8 @@ async def start_current_job(
     meta_row = await conn.fetchrow(
         "SELECT metadata FROM theta_consolidation_runs WHERE id = $1", job_id
     )
-    meta = {} if meta_row is None else (meta_row["metadata"] or {})
-    if isinstance(meta, str):
-        meta = json.loads(meta)
-    return job_id, superseded, dict(meta or {})
+    meta = {} if meta_row is None else as_meta_dict(meta_row["metadata"])
+    return job_id, superseded, meta
 
 
 async def complete_job(dsn: str, job_id: int, result: dict[str, Any]) -> None:
@@ -253,7 +265,7 @@ async def complete_job(dsn: str, job_id: int, result: dict[str, Any]) -> None:
     window = utc_day(result.get("window_date") or "")
     success = bool(result.get("success"))
     err = None if success else (result.get("error") or result.get("guru_code") or GURU)
-    patch = dict(result.get("metadata") or {})
+    patch = as_meta_dict(result.get("metadata"))
     pool = await asyncpg.create_pool(dsn)
     try:
         async with pool.acquire() as conn:
@@ -264,9 +276,7 @@ async def complete_job(dsn: str, job_id: int, result: dict[str, Any]) -> None:
             )
             if row is None:
                 return
-            meta = dict(row["metadata"] or {})
-            if isinstance(meta, str):
-                meta = json.loads(meta)
+            meta = as_meta_dict(row["metadata"])
             sid = slice_id or str(row["slice_id"] or "")
             windows = [str(w)[:10] for w in (meta.get("windows") or [])]
             if window:
