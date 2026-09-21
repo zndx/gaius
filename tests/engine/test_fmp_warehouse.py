@@ -35,6 +35,28 @@ def test_flatten_earnings_announced():
     assert rows[0]["eps"] == 1.5
 
 
+def test_flatten_quote_keeps_numeric_price():
+    from gaius.hx.fmp_warehouse import flatten_quote
+
+    rows = flatten_quote(
+        [{"symbol": "slb", "name": "Schlumberger", "price": 38.5, "change": 0.4, "volume": 1e6}]
+    )
+    assert rows[0]["symbol"] == "SLB"
+    assert rows[0]["price"] == 38.5
+    assert rows[0]["volume"] == 1000000
+    assert flatten_quote([{"symbol": "SLB"}]) == []
+
+
+def test_flatten_eod_bars():
+    from gaius.hx.fmp_warehouse import flatten_eod
+
+    rows = flatten_eod(
+        [{"symbol": "SLB", "as_of": "2026-09-14", "open": 1, "high": 2, "low": 0.5, "close": 1.5}]
+    )
+    assert rows[0]["bar_date"] == "2026-09-14"
+    assert rows[0]["close"] == 1.5
+
+
 def test_scratch_iris_are_sdg_shaped():
     for cols in COLUMN_IRIS.values():
         for iri in cols.values():
@@ -62,6 +84,15 @@ def test_kudu_rows_are_ths_shaped():
         ),
     )
     assert two[0][1] != two[1][1]
+    from gaius.hx.fmp_warehouse import flatten_eod, flatten_quote
+
+    q = kudu_rows("quote", flatten_quote([{"symbol": "SLB", "price": 38.5, "volume": 10}]))
+    assert q[0][2] == "SLB" and q[0][5] == 38.5
+    e = kudu_rows(
+        "eod",
+        flatten_eod([{"symbol": "SLB", "as_of": "2026-09-14", "close": 38.1}]),
+    )
+    assert e[0][2] == "SLB" and e[0][3] == "2026-09-14" and e[0][7] == 38.1
 
 
 def test_land_kudu_execute_inserts():

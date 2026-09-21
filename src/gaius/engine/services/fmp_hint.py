@@ -1,13 +1,18 @@
-"""ServerQuery FMP — live Financial Modeling Prep, key stays on Gaius.
+"""ServerQuery FMP — Gaius is the federated FMP SDK.
 
-Hermes / AgentRTC hop here over the lattice. Empty hits plus `note` is
-honest (no key, rate limit, no matches). CPU only; no thinking GPU.
+Live FMP is fetched here (key stays on Gaius). Warehouse-ready rows land
+in Kudu ``fmp_*_tier0`` (Iceberg copy best-effort). The lattice wire is a
+projection (FmpHint), not the SoR. Historical questions read the warehouse
+first so Hermes does not re-hit FMP for last week's SLB numbers.
 """
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from gaius.engine.services.fmp_tools import BY_NAME, call_tool
+
+log = logging.getLogger("gaius.engine.services.fmp_hint")
 
 FMP_STREAMS = frozenset(BY_NAME)
 _MAX = 8
@@ -90,9 +95,25 @@ async def collect_fmp(
     if kind == "quote" and not q:
         empty["note"] = "symbol required"
         return empty
+    if kind in ("eod", "price") and q:
+        local = await recall_eod(q, limit=n)
+        if len(local) >= 2:
+            spoken = _spoken(local, "eod")
+            return {
+                "project": "gaius",
+                "query": q,
+                "stream": kind,
+                "hits": local[:n],
+                "note": "warehouse",
+                "spoken": spoken,
+            }
     args: dict[str, Any] = {"query": q, "symbol": q, "limit": n}
     raw = await call_tool(kind, args)
     note = str(raw.get("error") or raw.get("note") or "")
+    try:
+        await persist_stream(kind, list(raw.get("items") or []))
+    except Exception:
+        log.warning("fmp warehouse persist skipped", exc_info=True)
     hits: list[dict[str, str]] = []
     for row in raw.get("items") or []:
         if not isinstance(row, dict):
@@ -150,6 +171,79 @@ async def collect_fmp(
         "note": note,
         "spoken": spoken,
     }
+
+
+async def persist_stream(kind: str, items: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """Land warehouse-ready rows. Fail-soft: ServerQuery still answers."""
+    from gaius.hx.fmp_warehouse import FLATTEN, STREAM_TABLE, land_kudu_async
+
+    table = STREAM_TABLE.get(kind)
+    fn = FLATTEN.get(table or "")
+    if not table or fn is None or not items:
+        return None
+    rows = fn(items)
+    if not rows:
+        return None
+    return await land_kudu_async(table, rows)
+
+
+async def recall_eod(symbol: str, *, limit: int = 90) -> list[dict[str, str]]:
+    """Local Kudu eod bars for a ticker. Empty if the warehouse is not ready."""
+    from gaius.engine.services.warehouse_ingest import warehouse_dsn
+
+    sym = (symbol or "").strip().upper()
+    if not sym:
+        return []
+    try:
+        import asyncpg
+    except Exception:
+        return []
+    try:
+        conn = await asyncpg.connect(warehouse_dsn(), timeout=8)
+    except Exception:
+        log.debug("fmp warehouse recall unavailable", exc_info=True)
+        return []
+    try:
+        rows = await conn.fetch(
+            """
+            SELECT symbol, bar_date, open, high, low, close, volume
+            FROM fmp_eod_tier0
+            WHERE symbol = $1
+            ORDER BY bar_date
+            LIMIT $2
+            """,
+            sym,
+            int(limit),
+        )
+    except Exception:
+        log.debug("fmp eod recall query failed", exc_info=True)
+        return []
+    finally:
+        await conn.close()
+    hits: list[dict[str, str]] = []
+    for row in rows:
+        bar = str(row["bar_date"] or "")
+        snippet = " · ".join(
+            p
+            for p in (
+                f"o={row['open']}" if row["open"] is not None else "",
+                f"h={row['high']}" if row["high"] is not None else "",
+                f"l={row['low']}" if row["low"] is not None else "",
+                f"c={row['close']}" if row["close"] is not None else "",
+                f"vol={row['volume']}" if row["volume"] is not None else "",
+            )
+            if p
+        )
+        hits.append(
+            _hit(
+                symbol=str(row["symbol"] or sym),
+                title=bar,
+                snippet=snippet,
+                as_of=bar,
+                source="eod",
+            )
+        )
+    return hits
 
 
 def to_proto(d: dict[str, Any]):

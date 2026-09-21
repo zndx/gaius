@@ -44,6 +44,24 @@ COLUMN_IRIS: dict[str, dict[str, str]] = {
         "eps_estimated": "https://signals.zndx.org/sdg#EarningsPerShareEstimate",
         "as_of": "https://signals.zndx.org/sdg#ObservationTime",
     },
+    "quote": {
+        "symbol": "https://signals.zndx.org/sdg#TickerSymbol",
+        "price": "https://signals.zndx.org/sdg#LastTradePrice",
+        "change": "https://signals.zndx.org/sdg#PriceChange",
+        "change_percent": "https://signals.zndx.org/sdg#PriceChangePercent",
+        "volume": "https://signals.zndx.org/sdg#TradeVolume",
+        "as_of": "https://signals.zndx.org/sdg#ObservationTime",
+    },
+    "eod": {
+        "symbol": "https://signals.zndx.org/sdg#TickerSymbol",
+        "bar_date": "https://signals.zndx.org/sdg#TradingSessionDate",
+        "open": "https://signals.zndx.org/sdg#SessionOpenPrice",
+        "high": "https://signals.zndx.org/sdg#SessionHighPrice",
+        "low": "https://signals.zndx.org/sdg#SessionLowPrice",
+        "close": "https://signals.zndx.org/sdg#SessionClosePrice",
+        "volume": "https://signals.zndx.org/sdg#TradeVolume",
+        "as_of": "https://signals.zndx.org/sdg#ObservationTime",
+    },
 }
 
 # Metabase / Postgres face. Last path segment is what ProjectWarehouse matches.
@@ -51,12 +69,16 @@ VIEW_NAMES = {
     "profile": f"{VIEW_NAMESPACE}.v_fmp_profile",
     "filings": f"{VIEW_NAMESPACE}.v_fmp_filings",
     "earnings": f"{VIEW_NAMESPACE}.v_fmp_earnings",
+    "quote": f"{VIEW_NAMESPACE}.v_fmp_quote",
+    "eod": f"{VIEW_NAMESPACE}.v_fmp_eod",
 }
 
 KUDU_TABLES = {
     "profile": "fmp_profile_tier0",
     "filings": "fmp_filings_tier0",
     "earnings": "fmp_earnings_tier0",
+    "quote": "fmp_quote_tier0",
+    "eod": "fmp_eod_tier0",
 }
 
 INSERT_SQL = {
@@ -76,6 +98,30 @@ INSERT_SQL = {
             epoch_hour, ts_ns, symbol, announced, eps, eps_estimated
         ) VALUES ($1, $2, $3, $4, $5, $6)
         """,
+    "quote": """
+        INSERT INTO fmp_quote_tier0 (
+            epoch_hour, ts_ns, symbol, name, exchange, price, change,
+            change_percent, volume, day_low, day_high
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+        """,
+    "eod": """
+        INSERT INTO fmp_eod_tier0 (
+            epoch_hour, ts_ns, symbol, bar_date, open, high, low, close, volume
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+        """,
+}
+
+# ServerQuery stream → warehouse table (projection on the wire; SoR is Kudu).
+STREAM_TABLE = {
+    "quote": "quote",
+    "eod": "eod",
+    "price": "eod",
+    "profile": "profile",
+    "filings": "filings",
+    "eight_k": "filings",
+    "8k": "filings",
+    "earnings": "earnings",
+    "calendar": "earnings",
 }
 
 
@@ -122,10 +168,46 @@ def _schema_earnings():
     )
 
 
+def _schema_quote():
+    from pyiceberg.schema import Schema
+    from pyiceberg.types import DoubleType, LongType, NestedField, StringType, TimestamptzType
+
+    return Schema(
+        NestedField(1, "symbol", StringType(), required=True),
+        NestedField(2, "name", StringType(), required=False),
+        NestedField(3, "exchange", StringType(), required=False),
+        NestedField(4, "price", DoubleType(), required=False),
+        NestedField(5, "change", DoubleType(), required=False),
+        NestedField(6, "change_percent", DoubleType(), required=False),
+        NestedField(7, "volume", LongType(), required=False),
+        NestedField(8, "day_low", DoubleType(), required=False),
+        NestedField(9, "day_high", DoubleType(), required=False),
+        NestedField(10, "as_of", TimestamptzType(), required=True),
+    )
+
+
+def _schema_eod():
+    from pyiceberg.schema import Schema
+    from pyiceberg.types import DoubleType, LongType, NestedField, StringType, TimestamptzType
+
+    return Schema(
+        NestedField(1, "symbol", StringType(), required=True),
+        NestedField(2, "bar_date", StringType(), required=True),
+        NestedField(3, "open", DoubleType(), required=False),
+        NestedField(4, "high", DoubleType(), required=False),
+        NestedField(5, "low", DoubleType(), required=False),
+        NestedField(6, "close", DoubleType(), required=False),
+        NestedField(7, "volume", LongType(), required=False),
+        NestedField(8, "as_of", TimestamptzType(), required=True),
+    )
+
+
 SCHEMAS = {
     "profile": _schema_profile,
     "filings": _schema_filings,
     "earnings": _schema_earnings,
+    "quote": _schema_quote,
+    "eod": _schema_eod,
 }
 
 
@@ -201,12 +283,71 @@ def flatten_earnings(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [r for r in out if r["symbol"]]
 
 
+def _fnum(row: dict[str, Any], *keys: str) -> float | None:
+    for key in keys:
+        v = row.get(key)
+        if v in (None, ""):
+            continue
+        try:
+            return float(v)
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
+def flatten_quote(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    now = _now()
+    out = []
+    for row in items:
+        price = _fnum(row, "price", "close")
+        vol = _fnum(row, "volume")
+        out.append(
+            {
+                "symbol": str(row.get("symbol") or "").upper(),
+                "name": str(row.get("name") or row.get("title") or "") or None,
+                "exchange": str(row.get("exchange") or "") or None,
+                "price": price,
+                "change": _fnum(row, "change"),
+                "change_percent": _fnum(row, "change_percent", "changesPercentage"),
+                "volume": int(vol) if vol is not None else None,
+                "day_low": _fnum(row, "day_low", "dayLow"),
+                "day_high": _fnum(row, "day_high", "dayHigh"),
+                "as_of": now,
+            }
+        )
+    return [r for r in out if r["symbol"] and r["price"] is not None]
+
+
+def flatten_eod(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    now = _now()
+    out = []
+    for row in items:
+        bar = str(row.get("bar_date") or row.get("as_of") or row.get("title") or row.get("date") or "")[:10]
+        close = _fnum(row, "close", "c", "price")
+        vol = _fnum(row, "volume")
+        out.append(
+            {
+                "symbol": str(row.get("symbol") or "").upper(),
+                "bar_date": bar or None,
+                "open": _fnum(row, "open", "o"),
+                "high": _fnum(row, "high", "h"),
+                "low": _fnum(row, "low", "l"),
+                "close": close,
+                "volume": int(vol) if vol is not None else None,
+                "as_of": now,
+            }
+        )
+    return [r for r in out if r["symbol"] and r["bar_date"] and r["close"] is not None]
+
+
 FLATTEN = {
     "profile": flatten_profile,
-    "quote": flatten_profile,
+    "quote": flatten_quote,
     "filings": flatten_filings,
     "earnings": flatten_earnings,
     "calendar": flatten_earnings,
+    "eod": flatten_eod,
+    "price": flatten_eod,
 }
 
 
@@ -261,6 +402,43 @@ def kudu_rows(name: str, rows: list[dict[str, Any]]) -> list[tuple[Any, ...]]:
                     row.get("form"),
                     row.get("filed"),
                     row.get("url"),
+                )
+            )
+        elif name == "quote":
+            out.append(
+                (
+                    eh,
+                    ts_ns,
+                    symbol,
+                    row.get("name"),
+                    row.get("exchange"),
+                    row.get("price"),
+                    row.get("change"),
+                    row.get("change_percent"),
+                    row.get("volume"),
+                    row.get("day_low"),
+                    row.get("day_high"),
+                )
+            )
+        elif name == "eod":
+            bar = str(row.get("bar_date") or "")[:10]
+            try:
+                day = datetime.strptime(bar, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+                eh_bar = int(day.timestamp()) // 3600
+                ts_bar = int(day.timestamp() * 1_000_000_000)
+            except ValueError:
+                eh_bar, ts_bar = eh, ts_ns
+            out.append(
+                (
+                    eh_bar,
+                    ts_bar,
+                    symbol,
+                    bar,
+                    row.get("open"),
+                    row.get("high"),
+                    row.get("low"),
+                    row.get("close"),
+                    row.get("volume"),
                 )
             )
         else:

@@ -46,10 +46,10 @@ class FmpWarehouseFlow(GaiusFlow):
 
         async def _pull():
             gathered: dict[str, list] = {}
+            from gaius.hx.fmp_warehouse import STREAM_TABLE
+
             for tool in self.tool_list:
-                key = "profile" if tool in ("quote", "profile") else (
-                    "earnings" if tool in ("calendar", "earnings") else tool
-                )
+                key = STREAM_TABLE.get(tool, tool)
                 gathered.setdefault(key, [])
                 for sym in self.symbol_list:
                     raw = await call_tool(tool, {"symbol": sym, "query": sym, "limit": 8})
@@ -72,7 +72,7 @@ class FmpWarehouseFlow(GaiusFlow):
 
         self.landed = []
         for name, rows in self.tables.items():
-            if name not in ("profile", "filings", "earnings"):
+            if name not in ("profile", "filings", "earnings", "quote", "eod"):
                 continue
             result = land(name, rows)
             self.landed.append(result)

@@ -75,6 +75,21 @@ class _Client:
     async def __aexit__(self, *a):
         return None
 
+    async def get_historical_eod(self, q, from_date=None, to_date=None):
+        return [{"t": "2026-09-14", "o": 1, "h": 2, "l": 0.5, "c": 1.5}]
+
+
+@pytest.fixture(autouse=True)
+def _no_warehouse_io(monkeypatch):
+    async def _persist(*_a, **_k):
+        return None
+
+    async def _recall(*_a, **_k):
+        return []
+
+    monkeypatch.setattr("gaius.engine.services.fmp_hint.persist_stream", _persist)
+    monkeypatch.setattr("gaius.engine.services.fmp_hint.recall_eod", _recall)
+
 
 @pytest.mark.asyncio
 async def test_search_stream_returns_tickers(monkeypatch):
@@ -132,3 +147,44 @@ async def test_news_and_insider_are_per_symbol(monkeypatch):
     insider = await collect_fmp("SLB", stream="insider")
     assert insider["hits"][0]["symbol"] == "SLB"
     assert "CEO" in insider["hits"][0]["title"]
+
+
+@pytest.mark.asyncio
+async def test_eod_uses_warehouse_when_bars_exist(monkeypatch):
+    async def _recall(symbol, *, limit=90):
+        return [
+            {"symbol": "SLB", "title": "2026-09-14", "as_of": "2026-09-14", "snippet": "c=38.1", "source": "eod"},
+            {"symbol": "SLB", "title": "2026-09-15", "as_of": "2026-09-15", "snippet": "c=38.4", "source": "eod"},
+        ]
+
+    called = {"live": 0}
+
+    async def _boom(*_a, **_k):
+        called["live"] += 1
+        raise AssertionError("live FMP should not run when warehouse has eod")
+
+    monkeypatch.setattr("gaius.engine.services.fmp_hint.recall_eod", _recall)
+    monkeypatch.setattr("gaius.engine.services.fmp_tools.call_tool", _boom)
+    d = await collect_fmp("SLB", stream="eod", limit=90)
+    assert d["note"] == "warehouse"
+    assert len(d["hits"]) == 2
+    assert called["live"] == 0
+
+
+@pytest.mark.asyncio
+async def test_quote_persists_warehouse_rows(monkeypatch):
+    seen: list[tuple] = []
+
+    async def _persist(kind, items):
+        seen.append((kind, items))
+        return {"ok": True, "rows": 1}
+
+    async def _client():
+        return _Client()
+
+    monkeypatch.setattr("gaius.engine.services.fmp_hint.persist_stream", _persist)
+    monkeypatch.setattr("gaius.engine.services.fmp_tools.get_fmp_client", _client)
+    d = await collect_fmp("SLB", stream="quote")
+    assert d["hits"]
+    assert seen and seen[0][0] == "quote"
+    assert seen[0][1][0]["price"] == 38.5
