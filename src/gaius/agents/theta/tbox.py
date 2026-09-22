@@ -29,6 +29,82 @@ class ClassVerbalization:
     depth: int
 
 
+CCO_IRI = "https://signals.zndx.org/sdg/imports/cco-module"
+
+
+def ontology_for_owlready(path: Path) -> Path:
+    """RDF/XML owlready2 can load: CCO is local, property/class puns dropped.
+
+    The certified OWL puns some object properties as classes (``bindsProvider``).
+    owlready2 refuses that. DeepOnto keeps the original file.
+    """
+    from rdflib import Graph, Namespace
+
+    src = Path(path)
+    cache = src.parent / ".owlready" / f"{src.stem}.nopun.owl"
+    cco_xml = src.parent / ".owlready" / "cco-module"
+    ttl = src.parent / "imports" / "cco-module.ttl"
+    if (
+        cache.is_file()
+        and cco_xml.is_file()
+        and cache.stat().st_mtime >= src.stat().st_mtime
+        and (not ttl.is_file() or cco_xml.stat().st_mtime >= ttl.stat().st_mtime)
+    ):
+        from owlready2 import onto_path
+
+        folder = str(cco_xml.parent)
+        if folder not in onto_path:
+            onto_path.insert(0, folder)
+        return cache
+    cache.parent.mkdir(exist_ok=True)
+    if ttl.is_file():
+        cco = Graph()
+        cco.parse(ttl, format="turtle")
+        cco.serialize(destination=cco_xml, format="xml")
+    graph = Graph()
+    graph.parse(src, format="xml")
+    OWL = Namespace("http://www.w3.org/2002/07/owl#")
+    RDF = Namespace("http://www.w3.org/1999/02/22-rdf-syntax-ns#")
+    RDFS = Namespace("http://www.w3.org/2000/01/rdf-schema#")
+    props = set(graph.subjects(RDF.type, OWL.ObjectProperty)) | set(
+        graph.subjects(RDF.type, OWL.DatatypeProperty)
+    )
+    for prop in props:
+        graph.remove((prop, RDF.type, OWL.Class))
+        graph.remove((prop, RDFS.subClassOf, None))
+    graph.serialize(destination=cache, format="xml")
+    from owlready2 import onto_path
+
+    folder = str(cache.parent)
+    if folder not in onto_path:
+        onto_path.insert(0, folder)
+    return cache
+
+
+def load_pinned_imports() -> None:
+    """Put CCO on owlready2's onto_path so the import IRI is not fetched.
+
+    owlready2 looks up the IRI tail (``cco-module``) and only parses RDF/XML.
+    The pin is Turtle, so write a sibling RDF/XML cache once.
+    """
+    from owlready2 import onto_path
+    from rdflib import Graph
+
+    ttl = CERTIFIED_OWL.parent / "imports" / "cco-module.ttl"
+    if not ttl.is_file():
+        return
+    cache = ttl.parent / ".owlready"
+    cache.mkdir(exist_ok=True)
+    xml = cache / "cco-module"
+    if not xml.is_file() or xml.stat().st_mtime < ttl.stat().st_mtime:
+        graph = Graph()
+        graph.parse(ttl, format="turtle")
+        graph.serialize(destination=xml, format="xml")
+    folder = str(cache)
+    if folder not in onto_path:
+        onto_path.insert(0, folder)
+
+
 def certified_ontology_path() -> Path:
     """Path to the HermiT-certified SDG OWL. Fail if the corpora pin is absent."""
     if not CERTIFIED_OWL.is_file():
@@ -75,7 +151,9 @@ def tbox_relations(path: str) -> tuple[tuple[ClassVerbalization, ...], frozenset
     """
     from owlready2 import Thing, get_ontology
 
-    onto = get_ontology(Path(path).resolve().as_uri()).load()
+    load_pinned_imports()
+    ready = ontology_for_owlready(Path(path))
+    onto = get_ontology(ready.resolve().as_uri()).load()
     classes = [c for c in onto.classes() if getattr(c, "iri", None) and not _skip(c.iri)]
     records: list[ClassVerbalization] = []
     entailed: set[tuple[str, str]] = set()

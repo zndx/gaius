@@ -697,10 +697,13 @@ def validate_ontology(ontology_path: Path) -> OntologyValidationResult:
     try:
         from owlready2 import get_ontology, default_world
 
+        from gaius.agents.theta.tbox import load_pinned_imports, ontology_for_owlready
+
         # Clear any cached ontology with same IRI
         default_world.ontologies.clear()
+        load_pinned_imports()
 
-        onto = get_ontology(str(ontology_path)).load()
+        onto = get_ontology(str(ontology_for_owlready(Path(ontology_path)).resolve())).load()
         classes = list(onto.classes())
         result.concept_count = len(classes)
 
