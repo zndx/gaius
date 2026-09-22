@@ -47,6 +47,32 @@ async def test_enqueue_theta_cycle_reuses_same_slice_only() -> None:
     assert "2026-W36" in str(conn.inserted[0][0])
 
 
+@pytest.mark.asyncio
+async def test_start_current_job_adopts_running_slice() -> None:
+    from gaius.engine.services.theta_cycle import start_current_job
+
+    class _Conn:
+        async def fetchval(self, sql: str, *args: object):
+            if "supersede" in sql.lower() or "RETURNING id" in sql:
+                return 0
+            if "schedule_theta_consolidation" in sql:
+                return None
+            return None
+
+        async def fetch(self, sql: str, *args: object):
+            return []
+
+        async def fetchrow(self, sql: str, *args: object):
+            if "status = 'running'" in sql:
+                return {"id": 42, "metadata": {"windows": ["2026-09-14"]}}
+            return None
+
+    job_id, superseded, meta = await start_current_job(_Conn(), "2026-W38")
+    assert job_id == 42
+    assert superseded == 0
+    assert meta["windows"] == ["2026-09-14"]
+
+
 def test_as_meta_dict_does_not_call_dict_on_a_string() -> None:
     from gaius.engine.services.theta_cycle import as_meta_dict
 
@@ -136,11 +162,22 @@ def test_flow_is_platform_vessel() -> None:
     assert hasattr(ThetaCycleFlow, "end")
     assert not hasattr(ThetaCycleFlow, "maintain")
     assert not hasattr(ThetaCycleFlow, "settle")
-    # GaiusFlow.kb_root is a Path property; assigning it in start() raises.
     from gaius.flows.base import GaiusFlow
 
     assert "kb_root" not in vars(ThetaCycleFlow)
     assert isinstance(vars(GaiusFlow)["kb_root"], property)
+
+
+def test_cco_catalog_maps_trailing_slash_import() -> None:
+    from pathlib import Path
+
+    catalog = (
+        Path(__file__).resolve().parents[2]
+        / "external/sdg-corpora/ontology/catalog-v001.xml"
+    )
+    text = catalog.read_text(encoding="utf-8")
+    assert "https://signals.zndx.org/sdg/imports/cco-module/" in text
+    assert "imports/cco-module.ttl" in text
 
 
 def test_novel_pairs_drop_entailed_and_score_both_directions() -> None:

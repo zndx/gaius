@@ -43,6 +43,23 @@ class ThetaCycleFlow(GaiusFlow):
         require_signals_metaflow()
         self.dsn = os.environ.get("DATABASE_URL") or get_database_url()
         self.window = utc_day(self.window_date)
+        if not self.window and int(self.scheduled_task_id or 0):
+            import asyncio
+
+            async def _payload_window() -> str:
+                import asyncpg
+
+                conn = await asyncpg.connect(self.dsn)
+                try:
+                    raw = await conn.fetchval(
+                        "SELECT payload->>'window_date' FROM scheduled_tasks WHERE id = $1",
+                        int(self.scheduled_task_id),
+                    )
+                finally:
+                    await conn.close()
+                return utc_day(raw or "")
+
+            self.window = asyncio.run(_payload_window()) or self.window
         if self.window:
             from datetime import datetime, timezone
 

@@ -244,11 +244,25 @@ async def start_current_job(
         if job_id:
             rows = [{"job_id": job_id, "slice_id": slice_id}]
     if not rows:
-        return None, superseded, {}
+        stuck = await conn.fetchrow(
+            """
+            SELECT id, metadata FROM theta_consolidation_runs
+             WHERE slice_id = $1 AND status = 'running'
+             ORDER BY id DESC LIMIT 1
+            """,
+            slice_id,
+        )
+        if stuck is None:
+            return None, superseded, {}
+        return int(stuck["id"]), superseded, as_meta_dict(stuck["metadata"])
     job_id = int(rows[0]["job_id"])
     started = await conn.fetchval("SELECT start_theta_consolidation($1)", job_id)
     if not started:
-        return None, superseded, {}
+        meta_row = await conn.fetchrow(
+            "SELECT metadata FROM theta_consolidation_runs WHERE id = $1", job_id
+        )
+        meta = {} if meta_row is None else as_meta_dict(meta_row["metadata"])
+        return job_id, superseded, meta
     meta_row = await conn.fetchrow(
         "SELECT metadata FROM theta_consolidation_runs WHERE id = $1", job_id
     )
