@@ -326,6 +326,24 @@ def translate_deeponto_training_kwargs(
     return out
 
 
+def translate_deeponto_trainer_kwargs(kwargs: dict, parameters: set[str]) -> dict:
+    """Map DeepOnto's ``tokenizer=`` onto transformers 5 ``processing_class``.
+
+    The rest of BERTSubs still uses its own ``self.tokenizer`` attribute.
+    """
+    out = dict(kwargs)
+    if (
+        "tokenizer" in out
+        and "tokenizer" not in parameters
+        and "processing_class" in parameters
+        and "processing_class" not in out
+    ):
+        out["processing_class"] = out.pop("tokenizer")
+    elif "tokenizer" in out and "tokenizer" not in parameters:
+        out.pop("tokenizer", None)
+    return out
+
+
 def _patch_transformers_training_args() -> None:
     """Patch TrainingArguments so DeepOnto 0.9.3 can construct them.
 
@@ -347,6 +365,19 @@ def _patch_transformers_training_args() -> None:
         setattr(_patched_init, "_gaius_patched", True)
         TrainingArguments.__init__ = _patched_init  # type: ignore[method-assign]
         logger.debug("Applied DeepOnto TrainingArguments compatibility patch")
+
+        from transformers import Trainer
+
+        if not getattr(Trainer.__init__, "_gaius_patched", False):
+            trainer_params = set(inspect.signature(Trainer.__init__).parameters)
+            _original_trainer = Trainer.__init__
+
+            def _patched_trainer(self, *args, **kwargs):
+                kwargs = translate_deeponto_trainer_kwargs(kwargs, trainer_params)
+                return _original_trainer(self, *args, **kwargs)
+
+            setattr(_patched_trainer, "_gaius_patched", True)
+            Trainer.__init__ = _patched_trainer  # type: ignore[method-assign]
 
     except ImportError:
         pass

@@ -367,6 +367,28 @@ def test_deeponto_training_kwargs_match_transformers_5() -> None:
     assert got["weight_decay"] == 0.01
 
 
+def test_deeponto_trainer_tokenizer_is_processing_class() -> None:
+    from gaius.agents.theta.subsumption import translate_deeponto_trainer_kwargs
+
+    parameters = {
+        "self",
+        "model",
+        "args",
+        "train_dataset",
+        "eval_dataset",
+        "processing_class",
+        "compute_metrics",
+    }
+    tok = object()
+    got = translate_deeponto_trainer_kwargs(
+        {"model": "bert", "tokenizer": tok, "compute_metrics": None},
+        parameters,
+    )
+    assert got["processing_class"] is tok
+    assert "tokenizer" not in got
+    assert got["model"] == "bert"
+
+
 def test_theta_cycle_objective_is_declared() -> None:
     from gaius.engine.services.objective_service import OBJECTIVES
 
