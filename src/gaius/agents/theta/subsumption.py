@@ -301,13 +301,33 @@ def _patch_deeponto_datasets_compat() -> None:
         logger.warning(f"Failed to apply DeepOnto datasets patch: {e}")
 
 
+def translate_deeponto_training_kwargs(
+    kwargs: dict, parameters: set[str]
+) -> dict:
+    """Map DeepOnto 0.9.3 TrainingArguments names onto the installed transformers.
+
+    4.46 renamed ``evaluation_strategy`` to ``eval_strategy``. 5.x removed
+    ``warmup_ratio`` (a float ``warmup_steps`` is the ratio) and ``logging_dir``.
+    """
+    out = dict(kwargs)
+    if (
+        "evaluation_strategy" in out
+        and "evaluation_strategy" not in parameters
+        and "eval_strategy" in parameters
+    ):
+        out["eval_strategy"] = out.pop("evaluation_strategy")
+    if "warmup_ratio" in out and "warmup_ratio" not in parameters and "warmup_steps" in parameters:
+        if "warmup_steps" not in out:
+            out["warmup_steps"] = out.pop("warmup_ratio")
+        else:
+            out.pop("warmup_ratio")
+    if "logging_dir" in out and "logging_dir" not in parameters:
+        out.pop("logging_dir")
+    return out
+
+
 def _patch_transformers_training_args() -> None:
-    """Patch TrainingArguments for transformers 4.46+ compatibility.
-
-    In transformers 4.46+, `evaluation_strategy` was renamed to `eval_strategy`.
-    DeepOnto 0.9.3 uses the old parameter name.
-
-    This patches TrainingArguments.__init__ to rename the parameter if needed.
+    """Patch TrainingArguments so DeepOnto 0.9.3 can construct them.
 
     Upstream fix pending: https://github.com/KRR-Oxford/DeepOnto
     """
@@ -315,21 +335,18 @@ def _patch_transformers_training_args() -> None:
         from transformers import TrainingArguments
         import inspect
 
-        # Check if eval_strategy is a valid parameter (newer transformers)
-        sig = inspect.signature(TrainingArguments.__init__)
-        if "eval_strategy" in sig.parameters and "evaluation_strategy" not in sig.parameters:
-            # Need to patch - newer transformers without backward compat
+        if getattr(TrainingArguments.__init__, "_gaius_patched", False):
+            return
+        parameters = set(inspect.signature(TrainingArguments.__init__).parameters)
+        _original_init = TrainingArguments.__init__
 
-            _original_init = TrainingArguments.__init__
+        def _patched_init(self, *args, **kwargs):
+            kwargs = translate_deeponto_training_kwargs(kwargs, parameters)
+            return _original_init(self, *args, **kwargs)
 
-            def _patched_init(self, *args, **kwargs):
-                # Rename evaluation_strategy to eval_strategy
-                if "evaluation_strategy" in kwargs:
-                    kwargs["eval_strategy"] = kwargs.pop("evaluation_strategy")
-                return _original_init(self, *args, **kwargs)
-
-            TrainingArguments.__init__ = _patched_init  # type: ignore[method-assign] - monkey-patching for transformers 4.46+ compatibility
-            logger.debug("Applied transformers 4.46+ TrainingArguments compatibility patch")
+        setattr(_patched_init, "_gaius_patched", True)
+        TrainingArguments.__init__ = _patched_init  # type: ignore[method-assign]
+        logger.debug("Applied DeepOnto TrainingArguments compatibility patch")
 
     except ImportError:
         pass

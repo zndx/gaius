@@ -337,6 +337,36 @@ def test_owlapi_import_is_the_local_cco_file(tmp_path) -> None:
     assert local.endswith("cco-module.rdf")
 
 
+def test_deeponto_training_kwargs_match_transformers_5() -> None:
+    from gaius.agents.theta.subsumption import translate_deeponto_training_kwargs
+
+    # The names TrainingArguments still accepts in transformers 5.15.
+    parameters = {
+        "self",
+        "output_dir",
+        "warmup_steps",
+        "eval_strategy",
+        "weight_decay",
+        "logging_steps",
+    }
+    got = translate_deeponto_training_kwargs(
+        {
+            "output_dir": "/tmp/bertsubs",
+            "warmup_ratio": 0.1,
+            "evaluation_strategy": "steps",
+            "logging_dir": "/tmp/bertsubs/tb",
+            "weight_decay": 0.01,
+        },
+        parameters,
+    )
+    assert got["warmup_steps"] == 0.1
+    assert "warmup_ratio" not in got
+    assert got["eval_strategy"] == "steps"
+    assert "evaluation_strategy" not in got
+    assert "logging_dir" not in got
+    assert got["weight_decay"] == 0.01
+
+
 def test_theta_cycle_objective_is_declared() -> None:
     from gaius.engine.services.objective_service import OBJECTIVES
 
