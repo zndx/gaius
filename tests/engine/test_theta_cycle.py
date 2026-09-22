@@ -298,6 +298,45 @@ def test_tbox_upsert_stays_under_qdrant_body_limit() -> None:
     assert max(client.chunks) <= UPSERT_BATCH
 
 
+def test_owlapi_import_is_the_local_cco_file(tmp_path) -> None:
+    from rdflib import Graph, Namespace
+
+    from gaius.agents.theta.tbox import CCO_IRI, ontology_for_owlapi
+
+    onto = tmp_path / "tiny.owl"
+    onto.write_text(
+        """<?xml version="1.0"?>
+<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
+         xmlns:owl="http://www.w3.org/2002/07/owl#">
+  <owl:Ontology rdf:about="http://example.org/tiny">
+    <owl:imports rdf:resource="https://signals.zndx.org/sdg/imports/cco-module"/>
+  </owl:Ontology>
+</rdf:RDF>
+""",
+        encoding="utf-8",
+    )
+    imports = tmp_path / "imports"
+    imports.mkdir()
+    (imports / "cco-module.ttl").write_text(
+        """@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+<http://example.org/cco> a owl:Ontology .
+""",
+        encoding="utf-8",
+    )
+    ready = ontology_for_owlapi(onto)
+    graph = Graph()
+    graph.parse(ready, format="xml")
+    OWL = Namespace("http://www.w3.org/2002/07/owl#")
+    imported = {str(o) for o in graph.objects(None, OWL.imports)}
+    assert imported
+    assert all(not iri.startswith("https://signals.zndx.org/") for iri in imported)
+    assert all(iri.startswith("file:") for iri in imported)
+    assert CCO_IRI not in imported
+    local = next(iter(imported)).removeprefix("file://")
+    assert local.endswith("cco-module.rdf")
+
+
 def test_theta_cycle_objective_is_declared() -> None:
     from gaius.engine.services.objective_service import OBJECTIVES
 

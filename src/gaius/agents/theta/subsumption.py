@@ -387,7 +387,9 @@ class SubsumptionInferencer:
                 _ensure_jvm_ready()
                 from deeponto.onto import Ontology
 
-                self._ontology = Ontology(str(self.ontology_path))
+                from gaius.agents.theta.tbox import ontology_for_owlapi
+
+                self._ontology = Ontology(str(ontology_for_owlapi(self.ontology_path)))
                 logger.info(f"Loaded ontology from {self.ontology_path}")
             except ImportError as e:
                 raise DeepOntoNotAvailableError("Ontology", e)
@@ -726,7 +728,9 @@ def validate_ontology(ontology_path: Path) -> OntologyValidationResult:
         _ensure_jvm_ready()
         from deeponto.onto import Ontology
 
-        deeponto_onto = Ontology(str(ontology_path))
+        from gaius.agents.theta.tbox import ontology_for_owlapi
+
+        deeponto_onto = Ontology(str(ontology_for_owlapi(Path(ontology_path))))
 
         # Verify we can access classes
         owl_classes = deeponto_onto.owl_classes

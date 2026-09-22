@@ -36,7 +36,8 @@ def ontology_for_owlready(path: Path) -> Path:
     """RDF/XML owlready2 can load: CCO is local, property/class puns dropped.
 
     The certified OWL puns some object properties as classes (``bindsProvider``).
-    owlready2 refuses that. DeepOnto keeps the original file.
+    owlready2 refuses that. OWLAPI (DeepOnto) keeps the puns; it needs a local
+    import instead, see ``ontology_for_owlapi``.
     """
     from rdflib import Graph, Namespace
 
@@ -79,6 +80,49 @@ def ontology_for_owlready(path: Path) -> Path:
     if folder not in onto_path:
         onto_path.insert(0, folder)
     return cache
+
+
+def ontology_for_owlapi(path: Path) -> Path:
+    """RDF/XML whose CCO import is a local file.
+
+    DeepOnto loads through OWLAPI, which does not read ``catalog-v001.xml``.
+    The certified document imports ``https://signals.zndx.org/sdg/imports/cco-module``
+    and OWLAPI then tries to download it (``UnloadableImportException``).
+    """
+    from rdflib import Graph, Namespace, URIRef
+
+    src = Path(path)
+    ttl = src.parent / "imports" / "cco-module.ttl"
+    cache = _REPO / "build" / "dev" / ".cache" / "ontology" / "owlapi" / src.stem
+    cco_xml = cache / "cco-module.rdf"
+    out = cache / f"{src.stem}.localimport.owl"
+    if (
+        out.is_file()
+        and cco_xml.is_file()
+        and out.stat().st_mtime >= src.stat().st_mtime
+        and ttl.is_file()
+        and cco_xml.stat().st_mtime >= ttl.stat().st_mtime
+    ):
+        return out
+    cache.mkdir(parents=True, exist_ok=True)
+    if not ttl.is_file():
+        raise FileNotFoundError(
+            f"{GURU_MISSING}\n  missing CCO pin {ttl}"
+        )
+    cco = Graph()
+    cco.parse(ttl, format="turtle")
+    cco.serialize(destination=cco_xml, format="xml")
+    graph = Graph()
+    graph.parse(src, format="xml")
+    OWL = Namespace("http://www.w3.org/2002/07/owl#")
+    local = URIRef(cco_xml.resolve().as_uri())
+    for subj in list(graph.subjects(OWL.imports, None)):
+        for obj in list(graph.objects(subj, OWL.imports)):
+            if str(obj).rstrip("/") == CCO_IRI:
+                graph.remove((subj, OWL.imports, obj))
+                graph.add((subj, OWL.imports, local))
+    graph.serialize(destination=out, format="xml")
+    return out
 
 
 def load_pinned_imports() -> None:
