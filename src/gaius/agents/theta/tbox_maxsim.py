@@ -17,6 +17,8 @@ COLLECTION = "sdg_tbox"
 QDRANT_HOST = os.getenv("QDRANT_HOST", "localhost")
 QDRANT_PORT = int(os.getenv("QDRANT_PORT", "6339"))
 ZERO_MODEL = "lightonai/ColBERT-Zero"
+# Qdrant rejects one JSON body over 32MiB. 905 ColBERT multivectors are ~45MiB.
+UPSERT_BATCH = 64
 GURU_NOMAXSIM = (
     "#SDG.00000005.NOMAXSIM TBox MaxSim collection is required for consolidation grounding.\n"
     "  Materialize sdg_tbox via tbox_maxsim.materialize_tbox()."
@@ -41,11 +43,59 @@ def _point_id(iri: str) -> int:
     return int(hashlib.sha1(iri.encode("utf-8")).hexdigest()[:15], 16)
 
 
+def tbox_index_ready(client: Any, expected: int) -> bool:
+    """An existing collection with zero points is not an index.
+
+    ``materialize_tbox`` creates the collection before upsert. A 32MiB
+    rejection used to leave ``sdg_tbox`` present and empty, and the next
+    cycle treated that as ready.
+    """
+    if expected < 1 or not client.collection_exists(COLLECTION):
+        return False
+    try:
+        got = int(client.count(COLLECTION).count or 0)
+    except Exception:
+        return False
+    return got >= expected
+
+
+def upsert_in_batches(
+    client: Any, points: list[Any], *, batch_size: int = UPSERT_BATCH
+) -> int:
+    """Upsert multivectors under Qdrant's JSON body limit. Returns points sent."""
+    if batch_size < 1:
+        raise ValueError("batch_size must be positive")
+    sent = 0
+    for start in range(0, len(points), batch_size):
+        chunk = points[start : start + batch_size]
+        if not chunk:
+            continue
+        client.upsert(collection_name=COLLECTION, points=chunk)
+        sent += len(chunk)
+    return sent
+
+
+def _indexable_verbalizations() -> list[Any]:
+    return [
+        rec
+        for rec in class_verbalizations(certified_ontology_path())
+        if rec.retrieval_text.strip()
+    ]
+
+
+def _ensure_tbox_index(*, device: str | None = None) -> None:
+    expected = len(_indexable_verbalizations())
+    client = _qdrant()
+    if tbox_index_ready(client, expected):
+        return
+    materialize_tbox(device=device)
+
+
 def materialize_tbox(*, device: str | None = None) -> dict[str, Any]:
     """Encode each TBox class verbalization into ``sdg_tbox``."""
     from qdrant_client import models
 
-    records = class_verbalizations(certified_ontology_path())
+    records = _indexable_verbalizations()
     if not records:
         raise RuntimeError(f"{GURU_NOMAXSIM}\n  certified OWL has no named classes")
     embedder = _zero(device)
@@ -65,8 +115,6 @@ def materialize_tbox(*, device: str | None = None) -> dict[str, Any]:
     structs = []
     for rec in records:
         text = rec.retrieval_text.strip()
-        if not text:
-            continue
         multi, _ = embedder.encode_text(text, prefix="search_document: ")
         structs.append(
             models.PointStruct(
@@ -75,10 +123,10 @@ def materialize_tbox(*, device: str | None = None) -> dict[str, Any]:
                 payload={"iri": rec.iri, "label": rec.label},
             )
         )
-    client.upsert(collection_name=COLLECTION, points=structs)
+    written = upsert_in_batches(client, structs)
     return {
         "collection": COLLECTION,
-        "points": len(structs),
+        "points": written,
         "dim": embedder.embedding_dim,
         "encoder": ZERO_MODEL,
     }
@@ -93,10 +141,8 @@ def maxsim_tbox_topk(
     """Top-k TBox class IRIs for this text. No harvest-τ filter (C is not the TBox)."""
     if not (text or "").strip() or k < 1:
         return []
+    _ensure_tbox_index()
     client = _qdrant()
-    if not client.collection_exists(COLLECTION):
-        materialize_tbox()
-        client = _qdrant()
     enc = embedder or _zero()
     multi, _ = enc.encode_text(text, prefix="search_query: ")
     hits = client.query_points(
@@ -118,9 +164,7 @@ def maxsim_tbox_topk(
 
 @lru_cache(maxsize=1)
 def live_tbox_maxsim() -> Any:
-    client = _qdrant()
-    if not client.collection_exists(COLLECTION):
-        materialize_tbox()
+    _ensure_tbox_index()
     enc = _zero()
 
     def _fn(chunk: str, k: int = 8) -> list[tuple[str, float]]:

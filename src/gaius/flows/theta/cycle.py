@@ -198,6 +198,7 @@ class ThetaCycleFlow(GaiusFlow):
                     f"dim={self.centroid.shape} grounded={len(self.item_groundings)}"
                 )
             except Exception as e:
+                print(f"theta.cycle.encode error={NOENCODE} {e}")
                 self.result = {
                     "success": False,
                     "slice_id": self.week,
@@ -218,7 +219,10 @@ class ThetaCycleFlow(GaiusFlow):
         """BERTSubs Intra on CLT-linked, MaxSim-grounded pairs (CPU/JVM; ColBERT already done)."""
         from gaius.agents.theta.agent import ThetaAgent
 
-        if getattr(self, "centroid", None) is not None:
+        prior = getattr(self, "result", None) or {}
+        if prior.get("guru_code") and not prior.get("success"):
+            print(f"theta.cycle.infer skipped encode_error={prior.get('error')}")
+        elif getattr(self, "centroid", None) is not None:
             try:
                 from gaius.agents.theta.clt_incidence import pairs_for_slice_with_groundings
 

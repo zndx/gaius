@@ -257,6 +257,47 @@ def test_certified_tbox_is_sdg_ontology() -> None:
         assert certified_ontology_path() == CERTIFIED_OWL
 
 
+def test_empty_tbox_collection_is_not_an_index() -> None:
+    from types import SimpleNamespace
+
+    from gaius.agents.theta.tbox_maxsim import tbox_index_ready
+
+    class Client:
+        def __init__(self, exists: bool, count: int) -> None:
+            self._exists = exists
+            self._count = count
+
+        def collection_exists(self, _name: str) -> bool:
+            return self._exists
+
+        def count(self, _name: str) -> SimpleNamespace:
+            return SimpleNamespace(count=self._count)
+
+    assert tbox_index_ready(Client(True, 0), 905) is False
+    assert tbox_index_ready(Client(True, 904), 905) is False
+    assert tbox_index_ready(Client(True, 905), 905) is True
+    assert tbox_index_ready(Client(False, 905), 905) is False
+
+
+def test_tbox_upsert_stays_under_qdrant_body_limit() -> None:
+    from gaius.agents.theta.tbox_maxsim import UPSERT_BATCH, upsert_in_batches
+
+    class Client:
+        def __init__(self) -> None:
+            self.chunks: list[int] = []
+
+        def upsert(self, *, collection_name: str, points: list[object]) -> None:
+            assert collection_name == "sdg_tbox"
+            self.chunks.append(len(points))
+
+    points = list(range(UPSERT_BATCH * 2 + 3))
+    client = Client()
+    sent = upsert_in_batches(client, points)
+    assert sent == len(points)
+    assert client.chunks == [UPSERT_BATCH, UPSERT_BATCH, 3]
+    assert max(client.chunks) <= UPSERT_BATCH
+
+
 def test_theta_cycle_objective_is_declared() -> None:
     from gaius.engine.services.objective_service import OBJECTIVES
 
