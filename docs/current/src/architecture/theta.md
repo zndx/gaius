@@ -32,6 +32,10 @@ DAG `gaius_theta_cycle` stays `catchup=False`: unpausing must not dump every mis
 
 Remediate from the Signals tree with daily LIGHT increments (`just theta-backfill --from-date … --to-date …`). Each UTC day encodes that day's thoughts and merges centroid, CLT, and groundings into one `theta_consolidation_runs` **ledger** row for the containing ISO week. Completing that row is LIGHT coverage, not the cortical product. `max_active_runs=1` serializes the days. `--weekly` is the coarse one-Monday-run path.
 
+A backfill of a missed week starts on that week's earliest UTC day and walks toward the present. That is the default. `--latest-first` is the old order and does not approximate how the week would have consolidated. Do not open the week as one out-of-band LIGHT occupancy. Leave the week in progress to Monday 06:00. One finished week is a point; the next natural consolidation is the start of a trajectory.
+
+The core objective is to converge on the best OWL-grounded SKOS-in-Qdrant aperture for the week-or-longer timeframe under consolidation, and to stay effective when that aperture is backtested on the accumulated corpus. Novel pairs, a confidence gate, BERTSubs MRR/Hits on a TBox holdout, and `documents_augmented` are process artifacts of the current procedure. They serve that objective and are expected to be replaced by measures of ontology efficacy. A completed ledger row is not the objective.
+
 The authentic Signals data product (`gaius.theta.consolidation`) has **not** been published. Intended product split and evidence planes (booked Gaius/Theta session + rustfs materials, week \(X_i\), CLT/MaxSim week binding, replaceable KB week-block, ShadowStrategy aperture delta, sealed transcript, History) are considered in `docs/scratch/2026-09-20/160356_theta_consolidation_data_product_aspects.md`. AgentRTC wiki `current/design/data-product-aspects.md` is **non-normative** vocabulary (Aspect = contract, not the blob; session series is a distinct product). The ledger remains for Nautilus / sitrep.
 
 ### Stage 2: NVAR Dynamics
