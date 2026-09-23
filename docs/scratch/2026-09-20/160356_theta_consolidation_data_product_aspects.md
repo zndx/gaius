@@ -357,9 +357,16 @@ stateless job.
 
 ## Aspect C — Week CLT incidence + MaxSim groundings
 
+> **2026-09-23.** Do not treat the "pairing substrate" below as the
+> objective. Class–class pairs are the retired Atelier subsumption-alignment
+> habit, not OWL ⊨ SKOS ⊨ SHACL. The week binding that matters is the
+> entailed stack against the aperture, not a BERTSubs pair list.
+
 **What.** Discrete co-activation over `admitted_item × activation` for
-the **week**, SKOS-resolved to HermiT-certified OWL IRIs, MaxSim-bound
-to the aiming aperture. This is the pairing substrate BERTSubs scores.
+the **week**, resolved onto HermiT-certified OWL IRIs and MaxSim-bound
+to the aiming aperture. The review rows below still say "pairs" and
+BERTSubs. That is the retired frame, kept so the old claim is visible.
+It is not what to build next.
 
 **Object plane.** CLT `activation` rows and groundings already have the
 right grain in code (`agents/theta/clt_incidence.py`). The aspect is
