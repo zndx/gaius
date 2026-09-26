@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """KB operations using storage abstraction.
 
 High-level KB operations that use the StorageBackend abstraction.
@@ -9,8 +11,10 @@ All KB operations go through this module to ensure:
 - Proper error handling and validation
 """
 
+import heapq
 import json
 import os
+import re
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -21,6 +25,107 @@ from .protocol import StorageBackend, StorageConfig
 
 # Allowed directories for KB operations
 ALLOWED_DIRS = ("archive", "current", "scratch")
+
+_TOKEN = re.compile(r"[a-z0-9][a-z0-9.-]{2,}")
+_STOP = frozenset({
+    "a", "an", "the", "of", "on", "in", "and", "or", "to", "for",
+    "with", "from", "by", "at", "is", "it", "as", "be", "this", "that",
+})
+
+
+def query_tokens(query: str) -> list[str]:
+    """Content words. The whole question is not one required phrase."""
+    seen: list[str] = []
+    for raw in _TOKEN.findall((query or "").lower()):
+        if raw in _STOP or raw in seen:
+            continue
+        seen.append(raw)
+    return seen
+
+
+def _title_blob(path: str, content: str) -> str:
+    name = path.rsplit("/", 1)[-1].rsplit(".", 1)[0]
+    name = name.replace("-", " ").replace("_", " ")
+    heading = ""
+    for line in content.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("#"):
+            heading = stripped.lstrip("#").strip()
+            break
+    return f"{heading} {name}".lower()
+
+
+def document_rank_key(path: str, content: str, query: str) -> tuple[int, int, int, int] | None:
+    """Higher is a better hit. None means the file does not match.
+
+    Title coverage beats a scratch note that merely shares more body words.
+    A source under ``current/content`` beats an agenda brief. An exact
+    phrase still wins over a partial one when titles tie.
+    """
+    tokens = query_tokens(query)
+    phrase = " ".join((query or "").lower().split())
+    low = content.lower()
+    title = _title_blob(path, content)
+    title_hits = sum(1 for token in tokens if token in title)
+    body_hits = sum(1 for token in tokens if token in low)
+    phrase_hit = 1 if phrase and len(phrase) > 3 and phrase in low else 0
+    if title_hits == 0 and body_hits == 0 and not phrase_hit:
+        return None
+    if "/content/" in f"/{path}":
+        kind = 2
+    elif path.startswith("scratch/"):
+        kind = 0
+    else:
+        kind = 1
+    return (title_hits, phrase_hit, kind, body_hits)
+
+
+def _preview(content: str, query: str) -> str:
+    low = content.lower()
+    tokens = query_tokens(query)
+    idx = -1
+    for token in tokens:
+        found = low.find(token)
+        if found >= 0 and (idx < 0 or found < idx):
+            idx = found
+    if idx < 0:
+        idx = 0
+    start = max(0, idx - 50)
+    end = min(len(content), idx + 80)
+    preview = content[start:end].replace("\n", " ")
+    if start > 0:
+        preview = "..." + preview
+    if end < len(content):
+        preview = preview + "..."
+    return preview
+
+
+def rank_documents(
+    docs: list[tuple[str, str]],
+    query: str,
+    max_results: int,
+) -> list[SearchResult]:
+    """Best ``max_results`` documents. ``docs`` are ``(path, content)``."""
+    n = max(1, int(max_results or 1))
+    heap: list[tuple[tuple[int, int, int, int], str, str]] = []
+    for path, content in docs:
+        key = document_rank_key(path, content, query)
+        if key is None:
+            continue
+        title_hits = key[0]
+        preview = _preview(content, query)
+        match = "filename" if title_hits else "content"
+        item = (key, path, match + "\0" + preview)
+        if len(heap) < n:
+            heapq.heappush(heap, item)
+        elif item > heap[0]:
+            heapq.heapreplace(heap, item)
+    ranked = sorted(heap, reverse=True)
+    out: list[SearchResult] = []
+    for _key, path, packed in ranked:
+        match, preview = packed.split("\0", 1)
+        out.append(SearchResult(path=path, match_type=match, preview=preview))
+    return out
 
 
 @dataclass
@@ -88,45 +193,23 @@ async def search_kb(query: str, max_results: int = 10) -> list[SearchResult]:
         List of SearchResult objects
     """
     backend = get_storage_backend()
-    results: list[SearchResult] = []
-    query_lower = query.lower()
-
+    n = max(1, int(max_results or 1))
+    heap: list[tuple[tuple[int, int, int, int], str, str]] = []
     for doc in backend.iter_documents(extensions=(".md",)):
-        # Check filename
-        filename = doc.path.split("/")[-1]
-        if query_lower in filename.lower():
-            results.append(SearchResult(
-                path=doc.path,
-                match_type="filename",
-                preview=filename,
-            ))
-            if len(results) >= max_results:
-                break
+        key = document_rank_key(doc.path, doc.content, query)
+        if key is None:
             continue
-
-        # Check content
-        content_lower = doc.content.lower()
-        if query_lower in content_lower:
-            # Get preview around match
-            idx = content_lower.find(query_lower)
-            start = max(0, idx - 50)
-            end = min(len(doc.content), idx + len(query) + 50)
-            preview = doc.content[start:end].replace("\n", " ")
-            if start > 0:
-                preview = "..." + preview
-            if end < len(doc.content):
-                preview = preview + "..."
-
-            results.append(SearchResult(
-                path=doc.path,
-                match_type="content",
-                preview=preview,
-            ))
-
-            if len(results) >= max_results:
-                break
-
-    return results
+        match = "filename" if key[0] else "content"
+        item = (key, doc.path, match + "\0" + _preview(doc.content, query))
+        if len(heap) < n:
+            heapq.heappush(heap, item)
+        elif item > heap[0]:
+            heapq.heapreplace(heap, item)
+    out: list[SearchResult] = []
+    for _key, path, packed in sorted(heap, reverse=True):
+        match, preview = packed.split("\0", 1)
+        out.append(SearchResult(path=path, match_type=match, preview=preview))
+    return out
 
 
 async def read_kb(path: str) -> KBEntry | None:

@@ -14,6 +14,7 @@ from gaius.engine.services.buffer_hint import BUFFER_STREAMS, collect_buffer
 log = logging.getLogger("gaius.engine.services.search_hint")
 
 _MAX = 8
+_CARD_URL = "https://gaius.zndx.org/cards/{card_id}"
 
 
 def _clip(text: str, n: int = 280) -> str:
@@ -21,6 +22,67 @@ def _clip(text: str, n: int = 280) -> str:
     if len(t) <= n:
         return t
     return t[: n - 1].rstrip() + "…"
+
+
+def _pool_of(services: Any | None) -> Any | None:
+    pool = getattr(services, "db_pool", None)
+    if pool is not None:
+        return pool
+    cog = getattr(services, "cognition_service", None)
+    return getattr(cog, "_db_pool", None) if cog is not None else None
+
+
+async def published_card_hits(pool: Any | None, query: str, limit: int) -> list[dict[str, Any]]:
+    """Published cards are the local rows gaius.zndx.org serves.
+
+    A voice query often adds words that are not in the card. Title coverage
+    still returns the card; a summary-only scrape of one shared word does not.
+    """
+    from gaius.storage.kb_ops import document_rank_key, query_tokens
+
+    tokens = query_tokens(query)
+    if pool is None or not tokens:
+        return []
+    patterns = [f"%{token}%" for token in tokens[:6]]
+    try:
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT card_id, title, COALESCE(summary, '') AS summary
+                  FROM collections.cards
+                 WHERE status = 'published'
+                   AND (
+                        title ILIKE ANY($1::text[])
+                     OR summary ILIKE ANY($1::text[])
+                   )
+                 ORDER BY published_at DESC NULLS LAST
+                 LIMIT 80
+                """,
+                patterns,
+            )
+    except Exception as e:
+        log.warning("published card search failed: %s", e)
+        raise
+    ranked: list[tuple[tuple[int, int, int, int], dict[str, Any]]] = []
+    for row in rows:
+        title = str(row["title"] or "")
+        summary = str(row["summary"] or "")
+        text = f"# {title}\n{summary}"
+        key = document_rank_key(f"cards/{row['card_id']}.md", text, query)
+        # One shared word ("state") is not the published note. Two title
+        # words are, and a one-word query still matches that one word.
+        need = 2 if len(tokens) >= 2 else 1
+        if key is None or key[0] < need:
+            continue
+        ranked.append((key, {
+            "title": title,
+            "url": _CARD_URL.format(card_id=row["card_id"]),
+            "snippet": _clip(summary or title),
+            "source": "card",
+            "score": 1.0,
+        }))
+    ranked.sort(key=lambda item: item[0], reverse=True)
+    return [hit for _key, hit in ranked[: max(1, limit)]]
 
 
 async def collect_search(
@@ -49,6 +111,11 @@ async def collect_search(
             "note": "empty query",
         }
     if kind in ("kb", "all"):
+        try:
+            hits.extend(await published_card_hits(_pool_of(services), q, min(2, n)))
+        except Exception as e:
+            log.warning("published card search failed: %s", e)
+            notes.append(f"cards: {e}"[:160])
         try:
             from gaius.storage.kb_ops import search_kb
 
