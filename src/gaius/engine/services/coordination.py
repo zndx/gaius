@@ -447,7 +447,7 @@ class CoordinationWatcher:
         }
 
     def persistent_failures(self) -> list[str]:
-        """Theta miss / not-caught-up stay open until a successful Airflow tick."""
+        """Previous ISO week with no completed ledger row. Not a missing hub tick."""
         if "theta_cycle" in self.missed_ticks or self.theta_not_caught_up:
             return ["theta_cycle"]
         return []
@@ -682,6 +682,10 @@ class CoordinationWatcher:
             if last is None or (age is not None and age > limit_s):
                 missed.append(tt)
         not_caught = False
+        # A caught-up previous week is not a backfill we are going to run.
+        # The session opening must not announce it. A missing hub row
+        # (the Sep 22 success never booked scheduled_tasks) is not that signal.
+        # During the Monday admission window the scheduled run is the plan.
         if not theta_still_in_admission(now):
             try:
                 from gaius.agents.theta.consolidation import get_previous_week_slice_id
@@ -694,6 +698,10 @@ class CoordinationWatcher:
                 not_caught = True
                 if "theta_cycle" not in missed:
                     missed.append("theta_cycle")
+            elif "theta_cycle" in missed:
+                missed.remove("theta_cycle")
+        elif "theta_cycle" in missed:
+            missed.remove("theta_cycle")
         self.theta_not_caught_up = not_caught
         if missed != self.missed_ticks:
             if missed:

@@ -743,6 +743,22 @@ def test_theta_not_caught_up_is_a_persistent_failure(monkeypatch):
     asyncio.run(run())
 
 
+def test_caught_up_week_is_not_an_opening_signal_without_a_hub_tick(monkeypatch):
+    """No scheduled_tasks row, ledger complete: we are not backfilling that week."""
+    monkeypatch.setattr(co, "theta_still_in_admission", lambda _now: False)
+    pool = FakePool(theta_caught_up=True)
+    w, _ = _watcher(pool, monkeypatch)
+
+    async def run():
+        w.ingest([_act(aid="h1")], NOW)
+        await w.workload_pass(NOW)
+        assert "theta_cycle" not in w.missed_ticks
+        assert w.theta_not_caught_up is False
+        assert w.status()["persistent_failures"] == []
+
+    asyncio.run(run())
+
+
 def test_theta_caught_up_clears_when_previous_week_completed(monkeypatch):
     from datetime import datetime, timezone
 
