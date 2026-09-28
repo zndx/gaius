@@ -394,10 +394,14 @@ class CoordinationWatcher:
     missed_ticks: list[str] = field(default_factory=list)
     theta_not_caught_up: bool = False
     _unimplemented_logged: bool = False
+    # Live start() turns this on. Tests leave it off so a pass does not call Airflow.
+    reconcile_airflow: bool = False
+    _tick_refreshed_at: float = 0.0
 
     # ── lifecycle ────────────────────────────────────────────────────────────
     def start(self) -> asyncio.Task:
         if self._task is None or self._task.done():
+            self.reconcile_airflow = True
             self._stop.clear()
             self._task = asyncio.create_task(self.run(), name="coordination-watch")
         return self._task
@@ -658,15 +662,23 @@ class CoordinationWatcher:
         missed: list[str] = []
         seen: set[str] = set()
         now = datetime.now(timezone.utc)
+        await self._refresh_ticks(pool)
         for entry in _catalog.enabled_entries():
             tt = entry.task_type
             if tt in seen:
                 continue
             seen.add(tt)
             try:
-                last = await pool.fetchval(LAST_AIRFLOW_TICK_SQL, tt)
+                last_row = await pool.fetchval(LAST_AIRFLOW_TICK_SQL, tt)
             except Exception:  # noqa: BLE001
-                continue
+                last_row = None
+            try:
+                from gaius.engine.services.airflow_ticks import LAST_NOTED_TICK_SQL, later
+
+                last_noted = await pool.fetchval(LAST_NOTED_TICK_SQL, tt)
+                last = later(last_row, last_noted)
+            except Exception:  # noqa: BLE001
+                last = last_row
             limit_s = {
                 "cognition_cycle": 8 * 3600,
                 "article_curate": 40 * 3600,
@@ -711,6 +723,23 @@ class CoordinationWatcher:
                 self.last_guru = ""
                 self.last_guru_detail = ""
         self.missed_ticks = missed
+
+    async def _refresh_ticks(self, pool: Any) -> None:
+        """Pull Airflow's successful runs into the durable tick table, at most once a minute."""
+        if not self.reconcile_airflow:
+            return
+        import time as _time
+
+        now_m = _time.monotonic()
+        if now_m - self._tick_refreshed_at < 60.0:
+            return
+        self._tick_refreshed_at = now_m
+        try:
+            from gaius.engine.services.airflow_ticks import reconcile_airflow_ticks
+
+            await reconcile_airflow_ticks(pool)
+        except Exception:  # noqa: BLE001 — a dark Airflow must not blank the ticks we have
+            logger.warning("airflow tick reconcile failed", exc_info=True)
 
     async def _enqueue(
         self, pool: Any, spec: dict[str, Any], aid: str, kind: str, extra: dict[str, Any] | None = None
@@ -1025,6 +1054,15 @@ async def release_for_task(payload: Any, status: str, task_type: str, task_id: i
         return False
     outcome = f"{status}: {task_type} #{task_id}"
     co = get_coordination()
+    if str(status) in {"completed", "ok", "success"} and co is not None and callable(co.pool_getter):
+        pool = co.pool_getter()
+        if pool is not None:
+            try:
+                from gaius.engine.services.airflow_ticks import note_airflow_tick
+
+                await note_airflow_tick(pool, task_type, outcome=outcome)
+            except Exception:  # noqa: BLE001
+                logger.debug("airflow tick note failed for %s", task_type, exc_info=True)
     if co is not None:
         ok = await co.release_activity(aid, outcome)
         wl = co._workloads.get(aid)

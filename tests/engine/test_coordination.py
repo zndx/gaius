@@ -347,6 +347,7 @@ class FakePool:
         self.sql: list[str] = []
         self._next = 100
         self.theta_caught_up = theta_caught_up
+        self.ticks: dict[str, datetime] = {}
 
     def add(self, task_type, payload, *, picked=False, completed=None, result=None, error=None, source="pg_cron"):
         self._next += 1
@@ -384,6 +385,8 @@ class FakePool:
             return self.gate
         if "theta_consolidation_runs" in sql:
             return 1 if self.theta_caught_up else None
+        if "airflow_workload_ticks" in sql:
+            return self.ticks.get(args[0] if args else "")
         if "max(completed_at)" in sql:
             tt = args[0]
             times = []
@@ -739,6 +742,22 @@ def test_theta_not_caught_up_is_a_persistent_failure(monkeypatch):
         assert st["theta_not_caught_up"] is True
         assert "theta_cycle" in st["persistent_failures"]
         assert st["hub_healthy"] is False
+
+    asyncio.run(run())
+
+
+def test_durable_tick_is_a_recent_airflow_success_after_the_task_row_is_gone(monkeypatch):
+    """Sunday cleanup drops the scheduled_tasks row. The tick remains the run."""
+    from datetime import datetime, timezone
+
+    pool = FakePool()
+    pool.ticks["weekly_signals_summary"] = datetime.now(timezone.utc)
+    w, _ = _watcher(pool, monkeypatch)
+
+    async def run():
+        w.ingest([_act(aid="h1")], NOW)
+        await w.workload_pass(NOW)
+        assert "weekly_signals_summary" not in w.missed_ticks
 
     asyncio.run(run())
 
