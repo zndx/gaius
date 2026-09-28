@@ -54,6 +54,20 @@ def test_dcgm_rows_are_narrow_and_typed() -> None:
     assert {r[2] for r in rows} == {wi.series_id_of(n) for n in gpus[0]}
 
 
+def test_day_range_is_retried_until_show_confirms_it() -> None:
+    assert wi.day_ranges_ready({"signal_tier0": "present"})
+    assert not wi.day_ranges_ready({})
+    assert not wi.day_ranges_ready({"signal_tier0": "TGT have expired"})
+
+
+def test_ingest_backs_off_when_kudu_auth_or_the_flush_is_stuck() -> None:
+    auth = wi.ingest_retry_sleep_s(RuntimeError("client Kerberos credentials (TGT) have expired"))
+    flush = wi.ingest_retry_sleep_s(RuntimeError("Kudu INSERT flush failed: GetPendingErrors"))
+    blip = wi.ingest_retry_sleep_s(RuntimeError("connection reset"))
+    assert auth >= 60.0 and auth > flush > blip
+    assert blip == max(2.0, wi.INTERVAL_S)
+
+
 def test_sample_gpus_live() -> None:
     """Live DCGM :9400; every GPU carries the four core series as ints."""
     try:

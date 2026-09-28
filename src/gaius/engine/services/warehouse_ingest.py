@@ -40,8 +40,11 @@ GURU = (
 
 # 4 Hz (250ms) to match the tinybox LCD (NVML) and the dcgm-exporter collect
 # interval — the source now refreshes every 250ms, so pulling at 1 Hz would drop
-# 3 of every 4 fresh samples. The error path (below) still backs off to >=2s.
+# 3 of every 4 fresh samples. A dead Kudu ticket is not a blip: retrying the
+# insert every 2s is what makes the status query miss its deadline.
 INTERVAL_S = float(os.environ.get("GAIUS_WAREHOUSE_INGEST_S", "0.25"))
+_AUTH_BACKOFF_S = 60.0
+_FLUSH_BACKOFF_S = 15.0
 DCGM_METRICS_URL = os.environ.get("GAIUS_DCGM_METRICS_URL", "http://127.0.0.1:9400/metrics")
 
 VT_INT = 0
@@ -265,6 +268,21 @@ def day_floor(hour: int) -> int:
     return (hour // HOURS_PER_DAY) * HOURS_PER_DAY
 
 
+def day_ranges_ready(status: dict[str, str]) -> bool:
+    """True only when SHOW confirmed the current day range on every table."""
+    return bool(status) and all(v == "present" for v in status.values())
+
+
+def ingest_retry_sleep_s(exc: BaseException) -> float:
+    """Auth and flush failures are sticky. Hammering HS2 is the outage."""
+    msg = " ".join(str(exc).split()).lower()
+    if any(s in msg for s in ("tgt", "kerberos", "authentication token", "gssapi", "not authorized")):
+        return max(_AUTH_BACKOFF_S, INTERVAL_S)
+    if any(s in msg for s in ("flush failed", "getpendingerrors", "no tablet", "not within range")):
+        return max(_FLUSH_BACKOFF_S, INTERVAL_S)
+    return max(2.0, INTERVAL_S)
+
+
 async def ensure_day_partitions(conn: Any, hour: int) -> dict[str, str]:
     """ADD RANGE PARTITION for [today, today+2 days) on every tier0 table."""
     out: dict[str, str] = {}
@@ -416,7 +434,10 @@ async def _loop() -> None:
             if hour != last_hour:
                 status = await ensure_day_partitions(conn, hour)
                 logger.info("warehouse partitions hour=%s day=%s %s", hour, day_floor(hour), status)
-                last_hour = hour
+                # A failed add must be retried this hour. Advancing last_hour
+                # on the error is how a dead ticket skips the whole day range.
+                if day_ranges_ready(status):
+                    last_hour = hour
             rows = dcgm_rows(now, gpus)
             from gaius.engine.services.waterfall_drivers import cognition_samples
 
@@ -435,15 +456,16 @@ async def _loop() -> None:
             if conn is not None and not conn.is_closed():
                 await conn.close()
             raise
-        except Exception:
-            logger.error("%s", GURU, exc_info=True)
+        except Exception as e:
+            cause = " ".join(str(e).split())
+            logger.error("%s\n  %s", GURU, cause[:500], exc_info=True)
             if conn is not None:
                 try:
                     await conn.close()
                 except Exception:
                     pass
                 conn = None
-            await asyncio.sleep(max(2.0, INTERVAL_S))
+            await asyncio.sleep(ingest_retry_sleep_s(e))
             continue
         dt = time.monotonic() - t0
         await asyncio.sleep(max(0.05, INTERVAL_S - dt))
