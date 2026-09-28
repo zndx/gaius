@@ -100,6 +100,39 @@ def test_slice_id_for_monday_logical_date_is_previous_iso_week() -> None:
     assert slice_id_from_activity({}) == ""
 
 
+def test_blank_week_is_a_failure_not_a_completion() -> None:
+    from gaius.engine.services.theta_cycle import BLANK_RESULT, completion_status
+
+    status, err = completion_status(
+        success=True,
+        windows_done=True,
+        has_window=False,
+        total_evaluated=0,
+        total_augmented=0,
+        err=None,
+    )
+    assert status == "failed"
+    assert err == BLANK_RESULT
+    status, err = completion_status(
+        success=True,
+        windows_done=True,
+        has_window=True,
+        total_evaluated=64,
+        total_augmented=0,
+        err=None,
+    )
+    assert status == "completed" and err is None
+    status, err = completion_status(
+        success=True,
+        windows_done=False,
+        has_window=True,
+        total_evaluated=0,
+        total_augmented=0,
+        err=None,
+    )
+    assert status == "scheduled" and err is None
+
+
 def test_daily_window_refines_containing_week_artifact() -> None:
     from gaius.engine.services.theta_cycle import (
         iso_week_days,

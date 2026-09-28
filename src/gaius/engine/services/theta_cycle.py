@@ -89,6 +89,44 @@ def week_is_complete(windows: list[str], slice_id: str) -> bool:
     return bool(need) and need <= {str(w)[:10] for w in windows}
 
 
+# Coverage of the seven days is not a result. Both counters at zero means
+# infer never recorded what it did.
+BLANK_RESULT = (
+    "#THETA.00000013.CONSFAIL coverage without an infer result "
+    "(candidates_evaluated=0 and documents_augmented=0)"
+)
+
+
+def result_is_blank(evaluated: int, augmented: int) -> bool:
+    return int(evaluated or 0) == 0 and int(augmented or 0) == 0
+
+
+def completion_status(
+    *,
+    success: bool,
+    windows_done: bool,
+    has_window: bool,
+    total_evaluated: int,
+    total_augmented: int,
+    err: str | None,
+) -> tuple[str, str | None]:
+    """Ledger status for this increment.
+
+    A day that did not finish the week stays ``scheduled``. A week whose
+    days are all present but whose infer counters are both zero is a
+    failure, not ``completed``.
+    """
+    if success and windows_done and result_is_blank(total_evaluated, total_augmented):
+        return "failed", BLANK_RESULT
+    if not success:
+        if has_window:
+            return "scheduled", err
+        return "failed", err
+    if has_window and not windows_done:
+        return "scheduled", None
+    return "completed", None
+
+
 def merge_centroid(
     prior: list[float] | None, prior_n: int, new_vecs: list[Any]
 ) -> tuple[list[float], int]:
@@ -284,7 +322,8 @@ async def complete_job(dsn: str, job_id: int, result: dict[str, Any]) -> None:
     try:
         async with pool.acquire() as conn:
             row = await conn.fetchrow(
-                "SELECT metadata, slice_id FROM theta_consolidation_runs "
+                "SELECT metadata, slice_id, candidates_evaluated, documents_augmented "
+                "FROM theta_consolidation_runs "
                 "WHERE id = $1 AND status = 'running'",
                 job_id,
             )
@@ -307,13 +346,16 @@ async def complete_job(dsn: str, job_id: int, result: dict[str, Any]) -> None:
                 errors = dict(meta.get("window_errors") or {})
                 errors[window or "week"] = err
                 meta["window_errors"] = errors
-            done = success and week_is_complete(windows, sid)
-            if window:
-                status = "completed" if done else "scheduled"
-                err_col = None if success else err
-            else:
-                status = "completed" if success else "failed"
-                err_col = None if success else err
+            add_evaluated = int(result.get("candidates_evaluated") or 0)
+            add_augmented = int(result.get("documents_augmented") or 0)
+            status, err_col = completion_status(
+                success=success,
+                windows_done=week_is_complete(windows, sid),
+                has_window=bool(window),
+                total_evaluated=int(row["candidates_evaluated"] or 0) + add_evaluated,
+                total_augmented=int(row["documents_augmented"] or 0) + add_augmented,
+                err=err,
+            )
             await conn.execute(
                 """
                 UPDATE theta_consolidation_runs
@@ -338,6 +380,7 @@ async def complete_job(dsn: str, job_id: int, result: dict[str, Any]) -> None:
                 err_col,
                 json.dumps(meta),
             )
+            return status
     finally:
         await pool.close()
 

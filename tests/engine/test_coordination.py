@@ -844,10 +844,9 @@ def test_coordination_endpoint_detail_names_theta_failure():
             "theta_not_caught_up": True,
         }
     )
-    assert detail.startswith("#CO.0000000D.MISSTICK")
-    assert "miss:theta_cycle,weekly_signals_summary" in detail
-    assert "fail:theta_cycle" in detail
-    assert "theta_not_caught_up" in detail
+    assert detail == "#CO.0000000D.MISSTICK miss:theta_cycle,weekly_signals_summary"
+    assert "theta_not_caught_up" not in detail
+    assert "fail:" not in detail
 
 
 def test_theta_activity_enqueues_slice_for_logical_date(monkeypatch):

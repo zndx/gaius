@@ -77,13 +77,15 @@ LAST_AIRFLOW_TICK_SQL = (
     "IN ('completed', 'ok', 'success')"
 )
 
-# Previous ISO week caught up: a completed consolidation row for that slice.
-# Skip/error/absence is not success. Used with LAST_AIRFLOW_TICK_SQL — a recent
-# tick for the wrong slice does not clear "not caught up".
+# Previous ISO week caught up: a completed row that recorded an infer result.
+# A blank pass (both counters zero, empty error) is not caught up. A recent
+# tick for a different slice does not clear a miss of this slice.
 THETA_CAUGHT_UP_SQL = (
     "SELECT 1 FROM theta_consolidation_runs "
     "WHERE slice_id = $1 AND status = 'completed' "
     "AND COALESCE(error, '') = '' "
+    "AND (COALESCE(candidates_evaluated, 0) > 0 "
+    "     OR COALESCE(documents_augmented, 0) > 0) "
     "LIMIT 1"
 )
 THETA_TICK_LIMIT_S = 8 * 86400  # weekly Monday 06:00 + 1 d net
@@ -1098,9 +1100,11 @@ def init_coordination(
 
 
 def coordination_endpoint_detail(st: dict[str, Any] | None) -> str:
-    """Guru / missed ticks / Theta not-caught-up for Engine/Status Endpoint.detail.
+    """Guru and missed kinds for Engine/Status Endpoint.detail.
 
-    Surface.url stays the Watch target. Sitrep reads this detail.
+    One shape for every workload: ``miss:<kind>,…``. A Theta week that is
+    actually behind is ``theta_cycle`` in that list, not its own token.
+    Surface.url stays the Watch target.
     """
     st = st or {}
     bits: list[str] = []
@@ -1110,11 +1114,6 @@ def coordination_endpoint_detail(st: dict[str, Any] | None) -> str:
     missed = [str(x) for x in (st.get("missed_ticks") or []) if x]
     if missed:
         bits.append("miss:" + ",".join(missed))
-    fails = [str(x) for x in (st.get("persistent_failures") or []) if x]
-    if fails:
-        bits.append("fail:" + ",".join(fails))
-    if st.get("theta_not_caught_up"):
-        bits.append("theta_not_caught_up")
     return " ".join(bits)
 
 

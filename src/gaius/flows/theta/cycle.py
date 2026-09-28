@@ -306,13 +306,19 @@ class ThetaCycleFlow(GaiusFlow):
     @step
     def complete(self):
         """Write the queue row: stage reached, never a silent miss."""
-        from gaius.engine.services.theta_cycle import complete_job
+        from gaius.engine.services.theta_cycle import BLANK_RESULT, complete_job
 
-        result = getattr(self, "result", {}) or {}
+        result = dict(getattr(self, "result", {}) or {})
         job_id = getattr(self, "job_id", None)
+        written = ""
         if job_id:
-            asyncio.run(complete_job(self.dsn, int(job_id), result))
-        print(f"theta.cycle.complete job={job_id} stage={result.get('stage')}")
+            written = asyncio.run(complete_job(self.dsn, int(job_id), result)) or ""
+        if written == "failed" and result.get("success"):
+            result["success"] = False
+            result["error"] = result.get("error") or BLANK_RESULT
+            result["guru_code"] = result.get("guru_code") or "#THETA.00000013.CONSFAIL"
+            self.result = result
+        print(f"theta.cycle.complete job={job_id} stage={result.get('stage')} status={written or '-'}")
         self.emit_lineage_complete(
             outputs=[Dataset.from_source("postgres", "theta_consolidation_runs")]
         )
