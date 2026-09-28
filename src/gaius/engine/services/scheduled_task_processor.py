@@ -1458,6 +1458,15 @@ class ScheduledTaskProcessor(BaseDaemon):
 
         self.register_handler("tier_settle", handle_tier_settle)
 
+        async def handle_impala_krb_renew(task: ScheduledTask) -> dict[str, Any]:
+            from gaius.engine.services.impala_krb_renew import renew_impala_ticket
+
+            result = await asyncio.to_thread(renew_impala_ticket)
+            result["task_id"] = str(task.id)
+            return result
+
+        self.register_handler("impala_krb_renew", handle_impala_krb_renew)
+
         async def handle_objective_verify(task: ScheduledTask) -> dict[str, Any]:
             """Verify declared objectives (all, or payload {"objective": name}).
 

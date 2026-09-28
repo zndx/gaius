@@ -325,6 +325,21 @@ WORKLOAD_CATALOG: tuple[WorkloadEntry, ...] = (
         airflow_dag_id="gaius_market_briefing",
         pg_cron_active=False,
     ),
+    # The Kudu Java client re-reads /tmp/krb5cc_impala. ticket_lifetime is 24h.
+    # Airflow is the only clock — no pg_cron job and no resident loop.
+    WorkloadEntry(
+        kind="impala_krb_renew",
+        task_type="impala_krb_renew",
+        payload={},
+        cron="20 */8 * * *",
+        singleton=True,
+        runner=RUNNER_TASK,
+        horizon_s=H1,
+        description="Refresh the Impala Kudu client ticket cache from impala.keytab",
+        enabled=True,
+        airflow_dag_id="gaius_impala_krb_renew",
+        pg_cron_active=False,
+    ),
 )
 
 _BY_KIND: dict[str, WorkloadEntry] = {e.kind: e for e in WORKLOAD_CATALOG}

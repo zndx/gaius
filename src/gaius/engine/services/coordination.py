@@ -691,6 +691,9 @@ class CoordinationWatcher:
                 "publish_cards": 30 * 3600,
                 "ambient_synthesis": 60 * 60,   # 3 × */20
                 "fmp_roll": 90 * 60,            # 3 × :07/:37
+                # 8h cron. One late slot is still inside the 24h ticket;
+                # flag before that ticket expires.
+                "impala_krb_renew": 18 * 3600,
             }.get(tt, max(int(entry.horizon_s) * 3, 8 * 3600))
             age = None if last is None else (now - last).total_seconds()
             if last is None or (age is not None and age > limit_s):

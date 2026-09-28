@@ -133,6 +133,7 @@ AIRFLOW_ENABLED = {
     # GPU Metaflow that pg_cron was still launching while the DAGs sat paused
     "ambient_synthesis", "fmp_roll",
     "theta_cycle",
+    "impala_krb_renew",
 }
 
 
