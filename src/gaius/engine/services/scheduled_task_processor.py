@@ -1413,6 +1413,18 @@ class ScheduledTaskProcessor(BaseDaemon):
         self.register_handler("fmp_roll", handle_fmp_roll)
         self.register_handler("ambient_synthesis", handle_ambient_synthesis)
         self.register_handler("theta_cycle", handle_theta_cycle)
+
+        async def handle_market_briefing(task: ScheduledTask) -> dict[str, Any]:
+            # The DAG stays paused. A stray enqueue must not look like a briefing.
+            return {
+                "status": "skipped",
+                "reason": (
+                    "market_briefing is specified and not scheduled; "
+                    "options quotes are not a verified adapter"
+                ),
+            }
+
+        self.register_handler("market_briefing", handle_market_briefing)
         self.register_handler("fmp_warehouse", handle_fmp_warehouse)
 
         # gpu_metrics settle retired 2026-08-28: superseded by the product-generic

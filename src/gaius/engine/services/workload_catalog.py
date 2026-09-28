@@ -305,6 +305,26 @@ WORKLOAD_CATALOG: tuple[WorkloadEntry, ...] = (
         kind="model_merge", task_type="model_merge", payload={"agents": None}, cron="0 4 1 1,4,7,10 *",
         horizon_s=H5, description="quarterly model merge", pg_cron_job="model-merge-quarterly",
     ),
+    # Paused on purpose. Enabling it would materialise a DAG and, once unpaused,
+    # Airflow would create a run for an interval already past. The briefing
+    # is a catalog plus formulas until the first six views have been run
+    # against stored bars. Options are not part of this workload.
+    WorkloadEntry(
+        kind="market_briefing",
+        task_type="market_briefing",
+        payload={},
+        cron="30 12 * * 1-5",
+        singleton=True,
+        runner=RUNNER_METAFLOW,
+        horizon_s=H2,
+        description=(
+            "Market-to-valuation briefing. Not scheduled. "
+            "Options quotes are not an FMP adapter."
+        ),
+        enabled=False,
+        airflow_dag_id="gaius_market_briefing",
+        pg_cron_active=False,
+    ),
 )
 
 _BY_KIND: dict[str, WorkloadEntry] = {e.kind: e for e in WORKLOAD_CATALOG}
