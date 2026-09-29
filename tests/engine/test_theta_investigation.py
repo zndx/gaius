@@ -77,6 +77,58 @@ def test_a_paraphrase_cloud_outranks_a_repeated_sentence() -> None:
     assert any("KV cache" in item["name"] for item in singles)
 
 
+def test_a_high_salience_unclustered_title_is_kept_and_counted() -> None:
+    """A repeated sharp question stays one inkling. A quiet one does not.
+
+    On a large week the question's own words are too rare to be a cloud,
+    and the padding word is too common. Salience is what keeps the question.
+    """
+    from gaius.engine.services.theta_investigation import notice_inklings
+
+    rows: list[dict] = []
+    for i in range(6):
+        rows.append(
+            {
+                "title": f"Billing sensor number {i}",
+                "salience": 0.5,
+                "thought_type": "pattern",
+                "content": "body",
+            }
+        )
+    for i in range(31):
+        rows.append(
+            {
+                "title": f"Padding topic {i}",
+                "salience": 0.5,
+                "thought_type": "pattern",
+                "content": "body",
+            }
+        )
+    for _ in range(3):
+        rows.append(
+            {
+                "title": "What does CFM MT actually migrate?",
+                "salience": 0.93,
+                "thought_type": "curiosity",
+                "content": "body",
+            }
+        )
+    rows.append(
+        {
+            "title": "A quiet aside today",
+            "salience": 0.4,
+            "thought_type": "curiosity",
+            "content": "body",
+        }
+    )
+    inklings = notice_inklings(rows)
+    singles = [item for item in inklings if item["kind"] == "inkling"]
+    cfm = next(item for item in singles if "CFM MT" in item["name"])
+    assert cfm["n"] == 3
+    assert all("quiet aside" not in item["name"] for item in inklings)
+    assert all(item["name"] != "migrate" for item in inklings if item["kind"] == "cloud")
+
+
 def test_iso_week_window_is_monday_to_monday() -> None:
     from datetime import datetime, timezone
 

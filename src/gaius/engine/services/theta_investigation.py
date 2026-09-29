@@ -35,7 +35,9 @@ _DF_FLOOR_LARGE = 5
 # Above this share of a large week the word is the water, not a subject.
 _DF_CEILING = 0.18
 _CLOUD_LIMIT = 16
-_SINGLE_LIMIT = 3
+_SINGLE_LIMIT = 10
+# The loop's own salience. Below this, an unclustered title is not the subject.
+_SINGLE_SALIENCE = 0.9
 _WELL_MIN = 600
 _CARRY_MAX = 900
 _KNOWN_MIN = 40
@@ -76,7 +78,9 @@ def notice_inklings(rows: list[dict[str, Any]] | None, *, limit: int = _CLOUD_LI
 
     A word above ``_DF_CEILING`` of a large week is the water the thoughts
     swim in, not a subject. A sentence repeated verbatim stays one title,
-    inside a cloud only when it uses that cloud's word.
+    inside a cloud only when it uses that cloud's word. A title that joins
+    no cloud is kept when the loop already scored it at ``_SINGLE_SALIENCE``
+    or above. Its count is fixation, not a separate subject.
     """
     items: list[dict[str, Any]] = []
     for row in rows or []:
@@ -160,22 +164,26 @@ def notice_inklings(rows: list[dict[str, Any]] | None, *, limit: int = _CLOUD_LI
         (item for item in items if not (item["tokens"] & selected)),
         key=lambda item: (-float(item["salience"]), str(item["title"])),
     )
+    repeats: Counter[str] = Counter(item["title"].casefold() for item in unclustered)
     for item in unclustered:
+        if float(item["salience"]) < _SINGLE_SALIENCE:
+            break
         key = item["title"].casefold()
         if key in seen_titles:
             continue
         seen_titles.add(key)
+        repeats_n = int(repeats[key])
         singles.append(
             {
                 "name": item["title"],
                 "kind": "inkling",
-                "n": 1,
+                "n": repeats_n,
                 "titles": 1,
                 "lines": [
                     {
                         "title": item["title"],
                         "gist": item["gist"],
-                        "n": 1,
+                        "n": repeats_n,
                         "salience": item["salience"],
                     }
                 ],
