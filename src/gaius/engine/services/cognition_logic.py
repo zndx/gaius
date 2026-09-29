@@ -583,8 +583,9 @@ Trigger reason: {trigger_reason}"""
                 "prompt": prompt,
                 "system_prompt": "You are a knowledge analyst examining a personal knowledge base. "
                     "Find patterns, connections, and generate curiosity about the content. "
-                    "A week consolidation, when present, is already established. "
-                    "Use it. Do not re-derive it as a new pattern or curiosity.",
+                    "A week consolidation, when present, is the standing implication of "
+                    "that week's investigation. Use it. Do not re-derive it as a new "
+                    "pattern or curiosity.",
                 "agent": "thinking",
                 # xhigh thinking at ~8 tok/s regularly ate a 2048 budget
                 # entirely inside <think> (no answer text, 2026-08-31);

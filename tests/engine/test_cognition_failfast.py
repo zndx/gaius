@@ -143,8 +143,12 @@ async def test_week_consolidation_is_carried_into_the_next_prompt() -> None:
     now = datetime.now(timezone.utc)
     week = {
         "title": "The loop echoed",
-        "summary": "established",
-        "content": "STOP_REPEATING: Durable state is the control plane is already known. " + ("x" * 240),
+        "summary": (
+            "KNOWN: Restart survival is settled.\n"
+            "STOP: Do not ask what survives a restart without a selection rule.\n"
+            "OPEN: The selection rule is still open."
+        ),
+        "content": "WELL_ONLY " + ("investigation " * 80),
         "slice_id": "2026-W39",
     }
     ctx = await _gather_kb_context(
@@ -180,7 +184,8 @@ async def test_week_consolidation_is_carried_into_the_next_prompt() -> None:
 
     await _generate_thoughts(_Client(), ctx, max_thoughts=1, trigger_reason="test")
     assert "WEEK CONSOLIDATION (2026-W39)" in captured["prompt"]
-    assert "STOP_REPEATING" in captured["prompt"]
+    assert "selection rule" in captured["prompt"]
+    assert "WELL_ONLY" not in captured["prompt"]
     assert "do not re-derive" in captured["system"].lower()
 
 

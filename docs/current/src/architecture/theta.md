@@ -60,7 +60,7 @@ Candidate `A ⊑ B` hypotheses are scored by BERTSubs Intra (Chen et al., 2023, 
 | **OWL** | `external/sdg-corpora/ontology/sdg-ontology.owl` — the HermiT-certified TBox (`ontology/HERMIT_CERTIFICATE.md`), the only ontology the pipeline may load |
 | **SKOS** | aperture codes resolve to those OWL IRIs (`SdgAperture.resolve`) |
 | **CLT** | discrete co-activation over `admitted_item × activation` for the slice; items sharing a feature link their codes; distinct grounded IRIs on one feature form a candidate pair (`agents/theta/clt_incidence.py`) |
-| **Thoughts** | `cognition_thoughts` feed the encode step and the NVAR signal only; no classes are derived from thought text |
+| **Thoughts** | `cognition_thoughts` feed the encode step and the NVAR signal. The week's investigation may read them as inklings. No classes are derived from thought text |
 
 The generated `kb_current.owl` and `gaius_domain.owl` of the 2025 pipeline are retired: minting `owl:Class` from markdown or thought tokens was a category error. Requires the JVM (JPype) that DeepOnto starts.
 
