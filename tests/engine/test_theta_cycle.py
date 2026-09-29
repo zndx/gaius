@@ -121,7 +121,8 @@ def test_blank_week_is_a_failure_not_a_completion() -> None:
         total_augmented=0,
         err=None,
     )
-    assert status == "completed" and err is None
+    assert status == "failed"
+    assert err is not None and "NOUNDERSTANDING" in err
     status, err = completion_status(
         success=True,
         windows_done=False,
@@ -131,6 +132,27 @@ def test_blank_week_is_a_failure_not_a_completion() -> None:
         err=None,
     )
     assert status == "scheduled" and err is None
+    status, err = completion_status(
+        success=True,
+        windows_done=True,
+        has_window=False,
+        total_evaluated=0,
+        total_augmented=0,
+        err=None,
+        has_understanding=True,
+    )
+    assert status == "completed" and err is None
+
+
+def test_only_the_closing_run_owes_an_understanding() -> None:
+    from gaius.engine.services.theta_cycle import iso_week_days, run_closes_week
+
+    days = iso_week_days("2026-W39")
+    assert days[0] == "2026-09-21" and days[-1] == "2026-09-27"
+    assert run_closes_week("", [], "2026-W39") is True
+    assert run_closes_week("2026-09-21", ["2026-09-21"], "2026-W39") is False
+    assert run_closes_week("2026-09-27", days[:-1], "2026-W39") is True
+    assert run_closes_week("", [], "") is False
 
 
 def test_daily_window_refines_containing_week_artifact() -> None:

@@ -90,10 +90,14 @@ class _Pool:
 
 
 def _context_script() -> list[object]:
-    """Rows for _gather_kb_context: entries, kb_creates, domains, thoughts."""
+    """Rows for _gather_kb_context.
+
+    Order: entries, kb_creates, domains, day thoughts, week consolidation.
+    The consolidation fetch has no 24h window; an empty list is "no week yet".
+    """
     now = datetime.now(timezone.utc)
     entry = {"title": "t", "domain": "d", "fetched_at": now}
-    return [[entry], [], [{"domain": "d", "entry_count": 1}], []]
+    return [[entry], [], [{"domain": "d", "entry_count": 1}], [], []]
 
 
 @pytest.mark.asyncio
@@ -129,6 +133,55 @@ class _EmptyTextClient:
 
     async def call(self, *a, **k):
         return {"text": "", "tokens_used": 2048, "latency_ms": 1.0, "model": "m"}
+
+
+@pytest.mark.asyncio
+async def test_week_consolidation_is_carried_into_the_next_prompt() -> None:
+    """A consolidation older than the day window is what the next cycle reads."""
+    from gaius.engine.services.cognition_logic import _gather_kb_context, _generate_thoughts
+
+    now = datetime.now(timezone.utc)
+    week = {
+        "title": "The loop echoed",
+        "summary": "established",
+        "content": "STOP_REPEATING: Durable state is the control plane is already known. " + ("x" * 240),
+        "slice_id": "2026-W39",
+    }
+    ctx = await _gather_kb_context(
+        _Pool(
+            [
+                [{"title": "t", "domain": "d", "fetched_at": now}],
+                [],
+                [{"domain": "d", "entry_count": 1}],
+                [{"title": "Durable state is the control plane", "summary": "again", "salience": 0.9}],
+                [week],
+            ]
+        )
+    )
+    assert ctx["week_consolidation"]["slice_id"] == "2026-W39"
+    assert ctx["recent_thoughts"][0]["title"] == "Durable state is the control plane"
+
+    captured: dict[str, str] = {}
+
+    class _Client:
+        async def call(self, *, service, action, params):
+            captured["prompt"] = params["prompt"]
+            captured["system"] = params["system_prompt"]
+            return {
+                "text": (
+                    "TYPE: curiosity\nTITLE: After the week\n"
+                    "SUMMARY: A question that is not the week again.\nSALIENCE: 0.4"
+                ),
+                "tokens_used": 12,
+                "latency_ms": 1.0,
+                "model": "m",
+                "job_id": "j",
+            }
+
+    await _generate_thoughts(_Client(), ctx, max_thoughts=1, trigger_reason="test")
+    assert "WEEK CONSOLIDATION (2026-W39)" in captured["prompt"]
+    assert "STOP_REPEATING" in captured["prompt"]
+    assert "do not re-derive" in captured["system"].lower()
 
 
 @pytest.mark.asyncio

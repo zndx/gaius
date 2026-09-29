@@ -77,15 +77,20 @@ LAST_AIRFLOW_TICK_SQL = (
     "IN ('completed', 'ok', 'success')"
 )
 
-# Previous ISO week caught up: a completed row that recorded an infer result.
-# A blank pass (both counters zero, empty error) is not caught up. A recent
-# tick for a different slice does not clear a miss of this slice.
+# Previous ISO week caught up: a completed row whose consolidation thought
+# is what the cognition loop will read. Pair counters are not that thought.
+# A blank pass is not caught up. A tick for a different slice is not either.
 THETA_CAUGHT_UP_SQL = (
-    "SELECT 1 FROM theta_consolidation_runs "
-    "WHERE slice_id = $1 AND status = 'completed' "
-    "AND COALESCE(error, '') = '' "
-    "AND (COALESCE(candidates_evaluated, 0) > 0 "
-    "     OR COALESCE(documents_augmented, 0) > 0) "
+    "SELECT 1 FROM theta_consolidation_runs r "
+    "WHERE r.slice_id = $1 AND r.status = 'completed' "
+    "AND COALESCE(r.error, '') = '' "
+    "AND EXISTS ("
+    "  SELECT 1 FROM cognition_thoughts t "
+    "  WHERE t.thought_type = 'consolidation' "
+    "    AND t.status = 'active' "
+    "    AND t.generation_context->>'slice_id' = r.slice_id "
+    "    AND char_length(btrim(t.content)) >= 240"
+    ") "
     "LIMIT 1"
 )
 THETA_TICK_LIMIT_S = 8 * 86400  # weekly Monday 06:00 + 1 d net
@@ -453,7 +458,7 @@ class CoordinationWatcher:
         }
 
     def persistent_failures(self) -> list[str]:
-        """Previous ISO week with no completed ledger row. Not a missing hub tick."""
+        """Previous ISO week the cognition loop cannot yet read. Not a missing hub tick."""
         if "theta_cycle" in self.missed_ticks or self.theta_not_caught_up:
             return ["theta_cycle"]
         return []

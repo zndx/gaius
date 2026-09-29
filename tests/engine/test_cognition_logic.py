@@ -374,7 +374,9 @@ class TestProcessCognitionCycle:
             [],
             # domains query
             [{"domain": "ai", "entry_count": 5}],
-            # cognition_thoughts query
+            # cognition_thoughts query (the day, not the week)
+            [],
+            # week consolidation, no 24h cap
             [],
         ])
 
@@ -415,7 +417,7 @@ SALIENCE: 0.8""",
         conn = AsyncMock()
 
         # All queries return empty
-        conn.fetch = AsyncMock(side_effect=[[], [], [], []])
+        conn.fetch = AsyncMock(side_effect=[[], [], [], [], []])
 
         mock_pool.acquire.return_value.__aenter__ = AsyncMock(return_value=conn)
         mock_pool.acquire.return_value.__aexit__ = AsyncMock(return_value=None)

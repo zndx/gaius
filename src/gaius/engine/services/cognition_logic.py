@@ -391,6 +391,7 @@ async def _gather_kb_context(db_pool) -> dict:
         "recent_entries": [],
         "active_domains": [],
         "recent_thoughts": [],
+        "week_consolidation": None,
     }
 
     if not db_pool:
@@ -471,11 +472,28 @@ async def _gather_kb_context(db_pool) -> dict:
                 FROM cognition_thoughts
                 WHERE created_at > NOW() - INTERVAL '24 hours'
                   AND status = 'active'
+                  AND thought_type <> 'consolidation'
                 ORDER BY salience DESC, created_at DESC
                 LIMIT 10
                 """
             )
             context["recent_thoughts"] = [dict(row) for row in thoughts]
+
+            # No 24h cap: the week understanding is what later cycles proceed
+            # from. The newest active consolidation is the one in force.
+            week = await conn.fetch(
+                """
+                SELECT title, summary, content,
+                       generation_context->>'slice_id' AS slice_id
+                FROM cognition_thoughts
+                WHERE thought_type = 'consolidation'
+                  AND status = 'active'
+                  AND char_length(btrim(content)) >= 240
+                ORDER BY created_at DESC
+                LIMIT 1
+                """
+            )
+            context["week_consolidation"] = dict(week[0]) if week else None
 
     except Exception as e:
         # FAIL-FAST: a context-gather failure is a DB problem, not an empty
@@ -523,13 +541,17 @@ async def _generate_thoughts(
             for t in recent_thoughts[:5]
         )
 
+    from gaius.engine.services.theta_understanding import consolidation_prompt_section
+
+    week_text = consolidation_prompt_section(context.get("week_consolidation"))
+
     prompt = f"""Analyze the following recent KB activity and generate insights.
 
 Recent entries:
 {entries_text}
 
 Active domains: {domains_text}
-{thoughts_text}
+{thoughts_text}{week_text}
 
 Generate {max_thoughts} thought(s). For each thought, identify:
 1. Pattern: A recurring theme or structure you notice
@@ -554,7 +576,9 @@ Trigger reason: {trigger_reason}"""
             params={
                 "prompt": prompt,
                 "system_prompt": "You are a knowledge analyst examining a personal knowledge base. "
-                    "Find patterns, connections, and generate curiosity about the content.",
+                    "Find patterns, connections, and generate curiosity about the content. "
+                    "A week consolidation, when present, is already established. "
+                    "Use it. Do not re-derive it as a new pattern or curiosity.",
                 "agent": "thinking",
                 # xhigh thinking at ~8 tok/s regularly ate a 2048 budget
                 # entirely inside <think> (no answer text, 2026-08-31);

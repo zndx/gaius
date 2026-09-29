@@ -301,6 +301,22 @@ class ThetaCycleFlow(GaiusFlow):
                 "stage": "prepare",
                 "metadata": dict(getattr(self, "artifact_meta", None) or {}),
             }
+        from gaius.engine.services.theta_understanding import attach_week_understanding
+
+        self.result = asyncio.run(
+            attach_week_understanding(
+                self.dsn,
+                self.week,
+                getattr(self, "window", "") or "",
+                getattr(self, "result", {}) or {},
+            )
+        )
+        if self.result.get("stage") == "understand":
+            print(
+                "theta.cycle.understand "
+                f"thought={self.result.get('consolidation_thought_id') or '-'} "
+                f"success={self.result.get('success')}"
+            )
         self.next(self.complete)
 
     @step

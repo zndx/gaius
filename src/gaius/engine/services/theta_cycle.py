@@ -10,6 +10,7 @@ Guru:
 - #THETA.00000011.NOPAIRS
 - #THETA.00000012.THINCABI
 - #THETA.00000013.CONSFAIL
+- #THETA.00000014.NOUNDERSTANDING
 """
 
 from __future__ import annotations
@@ -27,6 +28,7 @@ STALE = "#THETA.00000008.STALESLICE"
 NOTHOUGHTS = "#THETA.00000009.NOTHOUGHTS"
 NOENCODE = "#THETA.00000010.NOENCODE"
 NOPAIRS = "#THETA.00000011.NOPAIRS"
+NOUNDERSTANDING = "#THETA.00000014.NOUNDERSTANDING"
 
 # Matches coord_lease postures — not hold-uptime keys.
 LOGICAL_DATE_POSTURE = "zndx.logical_date"
@@ -101,6 +103,19 @@ def result_is_blank(evaluated: int, augmented: int) -> bool:
     return int(evaluated or 0) == 0 and int(augmented or 0) == 0
 
 
+def run_closes_week(window: str, windows: list[str], slice_id: str) -> bool:
+    """Monday (no window) closes the week. A day closes it only as the seventh."""
+    if not slice_id:
+        return False
+    day = str(window or "")[:10]
+    if not day:
+        return True
+    have = [str(w)[:10] for w in windows]
+    if day not in have:
+        have.append(day)
+    return week_is_complete(have, slice_id)
+
+
 def completion_status(
     *,
     success: bool,
@@ -109,22 +124,30 @@ def completion_status(
     total_evaluated: int,
     total_augmented: int,
     err: str | None,
+    has_understanding: bool = False,
 ) -> tuple[str, str | None]:
     """Ledger status for this increment.
 
-    A day that did not finish the week stays ``scheduled``. A week whose
-    days are all present but whose infer counters are both zero is a
-    failure, not ``completed``.
+    A day that did not finish the week stays ``scheduled``. A finished week
+    is completed only when a consolidation thought was written for the
+    cognition loop. Pair counters are not that understanding: both at zero
+    is still ``CONSFAIL``, and a non-zero count without the thought is
+    ``NOUNDERSTANDING``.
     """
-    if success and windows_done and result_is_blank(total_evaluated, total_augmented):
-        return "failed", BLANK_RESULT
     if not success:
         if has_window:
             return "scheduled", err
         return "failed", err
     if has_window and not windows_done:
         return "scheduled", None
-    return "completed", None
+    if has_understanding:
+        return "completed", None
+    if result_is_blank(total_evaluated, total_augmented):
+        return "failed", BLANK_RESULT
+    return "failed", (
+        f"{NOUNDERSTANDING} infer counters were recorded but the week "
+        "was not written back to the cognition loop"
+    )
 
 
 def merge_centroid(
@@ -257,7 +280,8 @@ async def load_thoughts(
 ) -> list[dict[str, Any]]:
     """Thoughts in the week artifact; optional UTC day is the LIGHT increment only."""
     sql = """
-        SELECT id::text AS id, title, content, domains, kb_paths
+        SELECT id::text AS id, thought_type, title, content, summary,
+               salience, domains, kb_paths
           FROM cognition_thoughts
          WHERE to_char(created_at AT TIME ZONE 'UTC', 'IYYY')
                || '-W' || to_char(created_at AT TIME ZONE 'UTC', 'IW')
@@ -342,6 +366,9 @@ async def complete_job(dsn: str, job_id: int, result: dict[str, Any]) -> None:
             for key in ("centroid", "n_encoded", "item_groundings"):
                 if key in patch:
                     meta[key] = patch[key]
+            thought_id = str(result.get("consolidation_thought_id") or "").strip()
+            if thought_id:
+                meta["consolidation_thought_id"] = thought_id
             if not success:
                 errors = dict(meta.get("window_errors") or {})
                 errors[window or "week"] = err
@@ -355,6 +382,7 @@ async def complete_job(dsn: str, job_id: int, result: dict[str, Any]) -> None:
                 total_evaluated=int(row["candidates_evaluated"] or 0) + add_evaluated,
                 total_augmented=int(row["documents_augmented"] or 0) + add_augmented,
                 err=err,
+                has_understanding=bool(thought_id),
             )
             await conn.execute(
                 """
