@@ -28,6 +28,7 @@ _FUNCTION_WORDS = frozenset(
     which their there these those about would could should while where
     after before other every being across between through under again
     still something someone another without within
+    become becomes becoming
     """.split()
 )
 
@@ -48,16 +49,23 @@ _OPEN_MIN = 40
 def _fold(token: str) -> str:
     word = token.casefold()
     if len(word) > 5 and word.endswith("s") and not word.endswith("ss"):
-        return word[:-1]
+        stem = word[:-1]
+        # "consensus" is not the plural of "consensu".
+        if not stem.endswith(("u", "i", "s")):
+            return stem
     return word
 
 
 def _tokens(text: str) -> set[str]:
-    return {
-        _fold(word)
-        for word in _WORD_RE.findall(text or "")
-        if len(word) >= 5 and word.casefold() not in _FUNCTION_WORDS
-    }
+    found: set[str] = set()
+    for word in _WORD_RE.findall(text or ""):
+        if len(word) < 5 or word.casefold() in _FUNCTION_WORDS:
+            continue
+        folded = _fold(word)
+        if folded in _FUNCTION_WORDS:
+            continue
+        found.add(folded)
+    return found
 
 
 def slice_window(slice_id: str) -> tuple[datetime, datetime] | None:

@@ -62,6 +62,26 @@ def _clouds() -> list[dict]:
     return [item for item in notice_inklings(_week()) if item["kind"] == "cloud"]
 
 
+def test_consensus_stays_a_word_and_becoming_is_not_a_subject() -> None:
+    from gaius.engine.services.theta_investigation import _fold, notice_inklings
+
+    assert _fold("consensus") == "consensus"
+    assert _fold("agents") == "agent"
+    rows = [
+        {"title": f"Durability is becoming memory {i}", "salience": 0.5, "thought_type": "pattern", "content": "x"}
+        for i in range(6)
+    ]
+    rows += [
+        {"title": f"Consensus substrate {i}", "salience": 0.5, "thought_type": "pattern", "content": "x"}
+        for i in range(6)
+    ]
+    names = {item["name"] for item in notice_inklings(rows)}
+    assert "consensus" in names
+    assert "consensu" not in names
+    assert "becoming" not in names
+    assert "become" not in names
+
+
 def test_a_paraphrase_cloud_outranks_a_repeated_sentence() -> None:
     from gaius.engine.services.theta_investigation import notice_inklings
 
