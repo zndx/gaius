@@ -182,3 +182,64 @@ async def test_nopairs_is_not_turned_into_an_understanding() -> None:
     assert out["success"] is False
     assert "NOPAIRS" in out["error"]
     assert "consolidation_thought_id" not in out
+
+
+def test_latest_week_is_the_iso_slice_not_when_it_landed() -> None:
+    """A later landing of an earlier week does not become the week in force."""
+    from datetime import datetime, timezone
+
+    from gaius.engine.services.theta_understanding import (
+        choose_latest_consolidation,
+        current_iso_slice,
+    )
+
+    landed_late = datetime(2026, 9, 29, 12, 0, tzinfo=timezone.utc)
+    landed_early = datetime(2026, 9, 29, 1, 31, tzinfo=timezone.utc)
+    rows = [
+        {
+            "title": "W38 backfill",
+            "slice_id": "2026-W38",
+            "created_at": landed_late,
+            "content": "earlier week",
+        },
+        {
+            "title": "W39 in force",
+            "slice_id": "2026-W39",
+            "created_at": landed_early,
+            "content": "later week",
+        },
+        {
+            "title": "not yet",
+            "slice_id": "2026-W41",
+            "created_at": datetime(2026, 9, 29, 18, 0, tzinfo=timezone.utc),
+            "content": "future",
+        },
+        {"title": "no week", "slice_id": "", "created_at": landed_late, "content": "x"},
+    ]
+    chosen = choose_latest_consolidation(rows, "2026-W40")
+    assert chosen is not None
+    assert chosen["slice_id"] == "2026-W39"
+    assert choose_latest_consolidation(rows, "2026-W38")["title"] == "W38 backfill"
+    assert choose_latest_consolidation([rows[2]], "2026-W40") is None
+    assert choose_latest_consolidation(rows, "") is None
+
+    revised = choose_latest_consolidation(
+        [
+            {"title": "first", "slice_id": "2026-W39", "created_at": landed_early},
+            {"title": "revised", "slice_id": "2026-W39", "created_at": landed_late},
+        ],
+        "2026-W40",
+    )
+    assert revised["title"] == "revised"
+
+    # Year boundary is still string order because weeks are zero-padded.
+    boundary = choose_latest_consolidation(
+        [
+            {"title": "old year", "slice_id": "2026-W53", "created_at": landed_late},
+            {"title": "new year", "slice_id": "2027-W01", "created_at": landed_early},
+        ],
+        "2027-W01",
+    )
+    assert boundary["title"] == "new year"
+    assert current_iso_slice(datetime(2026, 9, 29, tzinfo=timezone.utc)) == "2026-W40"
+    assert current_iso_slice(datetime(2026, 9, 14, tzinfo=timezone.utc)) == "2026-W38"

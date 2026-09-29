@@ -479,21 +479,27 @@ async def _gather_kb_context(db_pool) -> dict:
             )
             context["recent_thoughts"] = [dict(row) for row in thoughts]
 
-            # No 24h cap: the week understanding is what later cycles proceed
-            # from. The newest active consolidation is the one in force.
+            # No 24h cap. Valid time is the ISO slice; landed time only
+            # breaks a tie inside that week. A backfill of an earlier week
+            # must not become the week later cycles proceed from.
             week = await conn.fetch(
                 """
-                SELECT title, summary, content,
+                SELECT title, summary, content, created_at,
                        generation_context->>'slice_id' AS slice_id
                 FROM cognition_thoughts
                 WHERE thought_type = 'consolidation'
                   AND status = 'active'
                   AND char_length(btrim(content)) >= 240
-                ORDER BY created_at DESC
-                LIMIT 1
                 """
             )
-            context["week_consolidation"] = dict(week[0]) if week else None
+            from gaius.engine.services.theta_understanding import (
+                choose_latest_consolidation,
+                current_iso_slice,
+            )
+
+            context["week_consolidation"] = choose_latest_consolidation(
+                week, current_iso_slice()
+            )
 
     except Exception as e:
         # FAIL-FAST: a context-gather failure is a DB problem, not an empty

@@ -185,6 +185,45 @@ async def test_week_consolidation_is_carried_into_the_next_prompt() -> None:
 
 
 @pytest.mark.asyncio
+async def test_backfilled_earlier_week_does_not_displace_the_later_iso_week(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Landed time is not the week in force. W38 arriving after W39 stays history."""
+    from gaius.engine.services.cognition_logic import _gather_kb_context
+    from gaius.engine.services import theta_understanding
+
+    monkeypatch.setattr(theta_understanding, "current_iso_slice", lambda now=None: "2026-W40")
+    now = datetime.now(timezone.utc)
+    w38 = {
+        "title": "Earlier week, later landing",
+        "summary": "backfill",
+        "content": "STOP_REPEATING: do not treat the backfill as current. " + ("x" * 240),
+        "slice_id": "2026-W38",
+        "created_at": datetime(2026, 9, 29, 18, 0, tzinfo=timezone.utc),
+    }
+    w39 = {
+        "title": "The loop echoed",
+        "summary": "established",
+        "content": "STOP_REPEATING: Durable state is the control plane is already known. " + ("x" * 240),
+        "slice_id": "2026-W39",
+        "created_at": datetime(2026, 9, 29, 1, 31, tzinfo=timezone.utc),
+    }
+    ctx = await _gather_kb_context(
+        _Pool(
+            [
+                [{"title": "t", "domain": "d", "fetched_at": now}],
+                [],
+                [{"domain": "d", "entry_count": 1}],
+                [],
+                [w38, w39],
+            ]
+        )
+    )
+    assert ctx["week_consolidation"]["slice_id"] == "2026-W39"
+    assert ctx["week_consolidation"]["title"] == "The loop echoed"
+
+
+@pytest.mark.asyncio
 async def test_think_burn_is_loud_not_zero_thoughts() -> None:
     from gaius.engine.services.cognition_logic import process_cognition_cycle
 

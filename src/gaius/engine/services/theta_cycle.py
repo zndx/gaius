@@ -278,7 +278,12 @@ async def supersede_stale(conn: Any, current_slice: str) -> int:
 async def load_thoughts(
     conn: Any, slice_id: str, window_date: str = ""
 ) -> list[dict[str, Any]]:
-    """Thoughts in the week artifact; optional UTC day is the LIGHT increment only."""
+    """Thoughts whose transaction time falls in this ISO week.
+
+    A consolidation is the product of a slice, and a backfill lands later.
+    It is not an input to the week its ``created_at`` happens to fall in.
+    The optional UTC day is the LIGHT increment only.
+    """
     sql = """
         SELECT id::text AS id, thought_type, title, content, summary,
                salience, domains, kb_paths
@@ -286,6 +291,7 @@ async def load_thoughts(
          WHERE to_char(created_at AT TIME ZONE 'UTC', 'IYYY')
                || '-W' || to_char(created_at AT TIME ZONE 'UTC', 'IW')
                = $1
+           AND thought_type IS DISTINCT FROM 'consolidation'
     """
     args: list[Any] = [slice_id]
     if window_date:

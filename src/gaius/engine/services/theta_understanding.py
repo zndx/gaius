@@ -5,7 +5,10 @@ yet a week of understanding: the cognition loop only sees the last day of
 its own thoughts, so it re-derives the same pattern. A consolidation is the
 week's understanding — what was established, what to stop repeating, and
 how the admitted corpus sat on the certified TBox — written back as one
-``cognition_thoughts`` row the next cycles must read.
+``cognition_thoughts`` row the next cycles must read. Which week is in
+force is the ISO slice (valid time), not when the row landed
+(transaction time). A backfill of an earlier week must not displace
+a later one. Landed time only breaks a tie inside the same slice.
 
 Class names in the prompt are existing bindings. This module does not mint
 classes and does not assert subsumption.
@@ -17,6 +20,7 @@ import json
 import logging
 import re
 from collections import Counter
+from datetime import datetime, timezone
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -239,6 +243,66 @@ def understanding_holds(
     if forms and not any(form in aperture for form in forms):
         return False
     return True
+
+
+def current_iso_slice(now: datetime | None = None) -> str:
+    """Zero-padded ISO week, the same shape as a Theta ``slice_id``.
+
+    UTC, matching the encode clock. Weeks are ``W01``–``W53`` so string
+    order is ISO order, including the year boundary.
+    """
+    if now is None:
+        now = datetime.now(timezone.utc)
+    elif now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
+    iso = now.isocalendar()
+    return f"{iso.year}-W{iso.week:02d}"
+
+
+def _mapping_get(row: Any, key: str) -> Any:
+    if isinstance(row, dict):
+        return row.get(key)
+    try:
+        return row[key]
+    except (KeyError, IndexError, TypeError):
+        return None
+
+
+def _landed_sort_key(value: Any) -> tuple[int, str]:
+    """Later transaction time sorts higher. A missing time loses the tie."""
+    if value is None:
+        return (0, "")
+    if isinstance(value, datetime):
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=timezone.utc)
+        return (1, value.astimezone(timezone.utc).isoformat())
+    text = str(value).strip()
+    if not text:
+        return (0, "")
+    return (1, text)
+
+
+def choose_latest_consolidation(
+    rows: list[Any] | None,
+    as_of_slice: str,
+) -> dict[str, Any] | None:
+    """Week in force: greatest ISO slice at or before ``as_of_slice``.
+
+    Valid time is ``slice_id``. ``created_at`` is transaction time and
+    only chooses among revisions of that same slice. A slice after
+    ``as_of_slice`` is not in force. Empty slice ids are not a week.
+    """
+    as_of = (as_of_slice or "").strip()
+    best: tuple[str, tuple[int, str], dict[str, Any]] | None = None
+    for row in rows or []:
+        slice_id = str(_mapping_get(row, "slice_id") or "").strip()
+        if not slice_id or not as_of or slice_id > as_of:
+            continue
+        landed = _landed_sort_key(_mapping_get(row, "created_at"))
+        chosen = dict(row)
+        if best is None or (slice_id, landed) > (best[0], best[1]):
+            best = (slice_id, landed, chosen)
+    return None if best is None else best[2]
 
 
 def consolidation_prompt_section(row: dict[str, Any] | None) -> str:

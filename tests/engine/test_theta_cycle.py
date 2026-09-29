@@ -73,6 +73,25 @@ async def test_start_current_job_adopts_running_slice() -> None:
     assert meta["windows"] == ["2026-09-14"]
 
 
+@pytest.mark.asyncio
+async def test_load_thoughts_does_not_encode_a_consolidation() -> None:
+    """A backfill's landing week must not pick the consolidation up as an input."""
+    from gaius.engine.services.theta_cycle import load_thoughts
+
+    seen: list[str] = []
+
+    class _Conn:
+        async def fetch(self, sql: str, *args: object):
+            seen.append(" ".join(sql.split()))
+            assert args[0] == "2026-W40"
+            return [{"id": "1", "thought_type": "pattern", "title": "kept"}]
+
+    rows = await load_thoughts(_Conn(), "2026-W40", window_date="2026-09-29")
+    assert rows[0]["title"] == "kept"
+    assert "thought_type IS DISTINCT FROM 'consolidation'" in seen[0]
+    assert "2026-09-29" not in seen[0]
+
+
 def test_as_meta_dict_does_not_call_dict_on_a_string() -> None:
     from gaius.engine.services.theta_cycle import as_meta_dict
 
