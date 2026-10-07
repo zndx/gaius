@@ -1,5 +1,10 @@
 """ACP-gated SKOS alignment. Does not admit or extract.
 
+Trigger: only after MaxSim admit and CLT extract both succeed. Timing:
+wiki ``current/design/skos-alignment-timing.md``. Never align on skipped
+or empty extract; ``find_ambiguous`` already joins ``admitted_item`` to
+``activation``.
+
 Ambiguous cases only: a CLT concept whose admitted evidence spans more
 than one SDG aperture code, or whose logits do not mention that code.
 Cadence: at most ``MAX_ACP`` prompts per run. No GitHub issues.
@@ -16,10 +21,37 @@ from gaius.acp.security import sanitize_issue_content
 from gaius.engine.services.clt_skos_propose import CONCEPT_NS
 
 MAX_ACP = 3
+SKIP_BEFORE_ADMIT_EXTRACT = "before_admit_extract"
 GURU_PARSE = (
     "ACP alignment reply was not JSON.\n"
     "  Guru: #CLT.00000011.ACPJSON"
 )
+GURU_TOOEARLY = (
+    "SKOS alignment ran before admit/extract succeeded.\n"
+    "  Guru: #CLT.00000012.TOOEARLY"
+)
+
+
+def extract_succeeded(extract_stats: dict[str, Any] | None) -> bool:
+    """True only when this run extracted and grounded at least one span."""
+    stats = extract_stats or {}
+    if stats.get("skipped"):
+        return False
+    return int(stats.get("rows") or 0) > 0
+
+
+async def admit_extract_ready(pool: Any) -> bool:
+    """True iff at least one admitted window already has a CLT activation."""
+    async with pool.acquire() as conn:
+        n = await conn.fetchval(
+            """
+            SELECT 1
+              FROM admitted_item i
+              JOIN activation a ON a.item_id = i.id
+             LIMIT 1
+            """
+        )
+    return n is not None
 
 # SKOS mapping and hierarchical properties accepted from ACP replies.
 _VERDICTS = frozenset({
@@ -194,6 +226,14 @@ async def run_acp_align(
     max_cases: int = MAX_ACP,
 ) -> dict[str, Any]:
     from gaius.acp import ACPConnectionError, GaiusACPClient
+
+    if not await admit_extract_ready(pool):
+        return {
+            "cases": 0,
+            "aligned": 0,
+            "pending": 0,
+            "skipped": SKIP_BEFORE_ADMIT_EXTRACT,
+        }
 
     cases = await find_ambiguous(pool, limit=max_cases)
     if not cases:

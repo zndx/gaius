@@ -153,6 +153,11 @@ class CltSkosEvalFlow(GaiusFlow):
             f"clt_skos.extract items={self.extract_stats['items']} "
             f"rows={self.extract_stats['rows']}"
         )
+        from gaius.engine.services.clt_skos_align import extract_succeeded
+
+        if not extract_succeeded(self.extract_stats):
+            self.next(self.end)
+            return
         self.next(self.propose)
 
     @step
@@ -204,9 +209,24 @@ class CltSkosEvalFlow(GaiusFlow):
 
     @step
     def acp_align(self):
-        from gaius.engine.services.clt_skos_align import run_acp_align
+        from gaius.engine.services.clt_skos_align import (
+            SKIP_BEFORE_ADMIT_EXTRACT,
+            extract_succeeded,
+            run_acp_align,
+        )
         from gaius.storage.database import get_database_url
         import asyncpg
+
+        if not extract_succeeded(getattr(self, "extract_stats", None)):
+            self.align_stats = {
+                "cases": 0,
+                "aligned": 0,
+                "pending": 0,
+                "skipped": SKIP_BEFORE_ADMIT_EXTRACT,
+            }
+            print(f"clt_skos.acp_align {self.align_stats}")
+            self.next(self.end)
+            return
 
         run_id = str(getattr(self, "_lineage_run_id", "") or "clt-skos")
 

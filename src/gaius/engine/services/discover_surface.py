@@ -731,7 +731,13 @@ def minted_feature_facet(
     salience: float,
     minted: dict[str, str],
 ) -> DiscoverFacet | None:
-    """Facet only when a display prefLabel has been minted."""
+    """Facet only when a display prefLabel has been minted.
+
+    SKOS alignment is after admit/extract, never before — see wiki
+    ``current/design/skos-alignment-timing.md``. Scoped facet counts and
+    the default 36-hour Discover view read admitted/extracted tape; they
+    are not a reason to align early.
+    """
     from .clt_skos_propose import is_minted_pref_label
 
     notation = f"{layer}:{feat}"

@@ -195,6 +195,43 @@ def test_write_candidate_ttl(tmp_path) -> None:
     assert "band_early" in text and "band_late" in text
 
 
+def test_extract_succeeded_requires_rows() -> None:
+    from gaius.engine.services.clt_skos_align import extract_succeeded
+
+    assert extract_succeeded({"skipped": False, "rows": 3})
+    assert not extract_succeeded({"skipped": True, "rows": 12})
+    assert not extract_succeeded({"skipped": False, "rows": 0})
+    assert not extract_succeeded({})
+    assert not extract_succeeded(None)
+
+
+def test_run_acp_align_skips_before_admit_extract() -> None:
+    import asyncio
+
+    from gaius.engine.services.clt_skos_align import (
+        SKIP_BEFORE_ADMIT_EXTRACT,
+        run_acp_align,
+    )
+
+    class _Conn:
+        async def fetchval(self, *_a, **_k):
+            return None
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_a):
+            return False
+
+    class _Pool:
+        def acquire(self):
+            return _Conn()
+
+    got = asyncio.run(run_acp_align(_Pool(), run_id="test"))
+    assert got["skipped"] == SKIP_BEFORE_ADMIT_EXTRACT
+    assert got["aligned"] == 0
+
+
 def test_parse_align_reply_json() -> None:
     from gaius.engine.services.clt_skos_align import parse_align_reply
 
