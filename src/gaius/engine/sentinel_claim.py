@@ -234,6 +234,16 @@ DEPLOYMENT_PROFILES: dict[str, ModelDeploymentProfile] = {
         # by a second endpoint (capabilities.py OPERATING_PROFILES).
         capabilities=("thinking", "instruct", "complete"),
     ),
+    # One light replica of vllm-sr/d3-flash. Requesting `decisions` keeps
+    # thinking on the heavy queue and admits two of these (d3-flash-0 and
+    # d3-flash-1). gpu_tokens describes each replica, not a heavy fence.
+    "decisions": ModelDeploymentProfile(
+        wrk="decisions",
+        model="vllm-sr/d3-flash",
+        gpu_tokens=1,
+        tensor_parallel=1,
+        capabilities=("decisions",),
+    ),
     "ask-sae": ModelDeploymentProfile(
         wrk="ask-sae",
         model="Qwen/Qwen3-8B",
@@ -338,6 +348,14 @@ _KIND_CLASS: dict[str, ResourceClass] = {
     # it through Engine/Complete and never carry a class of their own.
     "thinking": HEAVY,
     "gaius-thinking": HEAVY,
+    # dual-d3-flash: each replica is one light application. The capability
+    # name `decisions` is the same class. Do not admit it as one heavy app.
+    "decisions": LIGHT,
+    "gaius-decisions": LIGHT,
+    "d3-flash-0": LIGHT,
+    "d3-flash-1": LIGHT,
+    "gaius-d3-flash-0": LIGHT,
+    "gaius-d3-flash-1": LIGHT,
     # Cerebras Qwen3.8 (and any peer's cerebras-thinking): token-metered,
     # never subscription.rate-limited (Grok/Bytez only).
     "cerebras-thinking": TOKEN_METERED,
@@ -490,6 +508,12 @@ _KIND_PHASE: dict[str, str] = {
     "metaflow": "work",
     "thinking": "think",
     "gaius-thinking": "think",
+    "decisions": "decide",
+    "gaius-decisions": "decide",
+    "d3-flash-0": "decide",
+    "d3-flash-1": "decide",
+    "gaius-d3-flash-0": "decide",
+    "gaius-d3-flash-1": "decide",
     "optillm": "proxy",
     "gaius-optillm": "proxy",
     "tier-settle": "settle",

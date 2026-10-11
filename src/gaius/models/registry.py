@@ -36,6 +36,7 @@ class ModelCapability(Enum):
     LATENT_MAS_CLT = auto()  # Cross-Layer Transcoder for latent-space operations
     THINKING = auto()  # Request-mode thinking traces (on by default for Qwen3.8)
     OPEN_THINKING = auto()  # Olmo 3: full model flow is public (data, code, checkpoints)
+    DECISIONS = auto()  # Structured reads (d3_server /v1/systemone); dual-d3-flash beside thinking
 
     def surface_label(self) -> str:
         """Operator-facing capability token. Ordered arrays use these strings."""
@@ -80,6 +81,7 @@ class TaskType(Enum):
     # Extended capabilities (on-demand scheduling)
     THINKING = "thinking"  # Extended reasoning with thinking traces
     INSTRUCT = "instruct"  # Long-context instruction following
+    DECISIONS = "decisions"  # Typed questions over a state (choice / noul / score)
 
 
 @dataclass
@@ -131,7 +133,12 @@ class VLLMConfig:
         if self.enable_auto_tool_choice:
             args.append("--enable-auto-tool-choice")
         for key, val in self.extra_args.items():
-            args.append(f"--{key}={val}")
+            if val is True:
+                args.append(f"--{key}")
+            elif val is False or val is None:
+                continue
+            else:
+                args.append(f"--{key}={val}")
         return args
 
     def to_env_vars(self) -> dict[str, str]:
@@ -730,6 +737,35 @@ QWEN38_27B = ModelSpec(
     tags=["vllm", "bf16", "thinking", "vision", "long-context", "qwen3.8", "262k"],
 )
 
+# d3-flash — the decisions deployment's light replica. Requesting the
+# capability `decisions` keeps Qwen3.8-27B on the heavy queue and starts
+# two of these (d3-flash-0, d3-flash-1) via d3_server.py, not vllm serve.
+# vllm_config stays unset so get_resource_requirements() is 1 GPU and
+# nothing builds a `vllm serve` command for the readout head.
+D3_FLASH = ModelSpec(
+    model_id="vllm-sr/d3-flash",
+    name="d3-flash",
+    provider="d3",
+    capabilities=[
+        ModelCapability.DECISIONS,
+        ModelCapability.VISION_LANGUAGE,
+    ],
+    task_scores={
+        TaskType.DECISIONS: 1.0,
+    },
+    context_length=262144,
+    parameters_b=8.39,
+    memory_mb=17000,
+    default_temperature=0.0,
+    default_port=8096,
+    description=(
+        "vllm-sr/d3-flash — decisions capability (choice, noul, score) via "
+        "d3_server POST /v1/systemone. Two light replicas beside thinking "
+        "(dual-d3-flash). The readout is readout.safetensors, not an LM head."
+    ),
+    tags=["d3", "bf16", "decisions", "vision", "d3-flash", "qwen3.5"],
+)
+
 # OLMo3-32B-Think — open-thinking (full model flow is public)
 OLMO3_32B_THINK = ModelSpec(
     model_id="allenai/Olmo-3-32B-Think",
@@ -961,6 +997,7 @@ class ModelRegistry:
         """Register default model set."""
         defaults = [
             QWEN38_27B,
+            D3_FLASH,
             META_LLAMA_3_1_8B_INSTRUCT,
             QWEN3_8B,
             # Local vLLM models

@@ -15,7 +15,9 @@ from gaius.engine.config import (
 from gaius.models.registry import (
     ModelCapability,
     QWEN38_27B,
+    D3_FLASH,
     OLMO3_32B_THINK,
+    TaskType,
     get_model_registry,
 )
 
@@ -62,6 +64,17 @@ def test_agents_conf_thinking_is_primary() -> None:
     assert fast.model == "Qwen/Qwen3.8-27B"
     assert fast.capabilities[:2] == ["thinking", "vision"]
     assert cfg.startup.preload_endpoints == ["thinking"]
+    assert "decisions" not in cfg.agents
+    for alias, port in (("d3-flash-0", 8096), ("d3-flash-1", 8097)):
+        flash = cfg.agents[alias]
+        assert flash.alias == alias
+        assert flash.model == "vllm-sr/d3-flash"
+        assert flash.backend == "d3"
+        assert flash.capabilities == ["decisions"]
+        assert flash.resources.gpus == 1
+        assert flash.endpoint is not None
+        assert flash.endpoint.port == port
+        assert flash.endpoint.extra_args == []
 
 
 def test_registry_registers_qwen() -> None:
@@ -71,6 +84,13 @@ def test_registry_registers_qwen() -> None:
     assert spec.vllm_config is not None
     assert spec.vllm_config.tool_call_parser == "qwen3_coder"
     assert spec.vllm_config.enable_auto_tool_choice is True
+    flash = get_model_registry().get_for_task(TaskType.DECISIONS, require_local=True)
+    assert flash is not None
+    assert flash.model_id == "vllm-sr/d3-flash"
+    assert flash.provider == "d3"
+    assert flash.vllm_config is None
+    assert flash.get_resource_requirements().num_gpus == 1
+    assert D3_FLASH.capability_labels()[0] == "decisions"
     args = spec.vllm_config.to_cli_args()
     assert "--enable-auto-tool-choice" in args
     assert "--tool-call-parser=qwen3_coder" in args

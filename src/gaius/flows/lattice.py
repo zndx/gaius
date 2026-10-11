@@ -187,6 +187,96 @@ def complete(
     )
 
 
+@dataclass(frozen=True)
+class LatticeDecision:
+    id: str
+    model: str
+    answers: dict[str, Any]
+    diagnostics: dict[str, Any]
+    input_tokens: int
+    output_tokens: int
+    latency_ms: float
+    fulfilled_by: str
+
+
+def decide(
+    state: Any,
+    questions: dict[str, dict[str, Any]],
+    *,
+    instructions: str = "",
+    cache_salt: str = "",
+    timeout_s: float = 180.0,
+    target: str | None = None,
+) -> LatticeDecision:
+    """Blocking Engine/Decide for a workload that required ``decisions``.
+
+    ``state`` is a string or a JSON value. ``questions`` is the System One
+    map (``choice`` / ``noul`` / ``score``), in ask order. The engine posts
+    that body to d3_server ``POST /v1/systemone`` on one ``vllm-sr/d3-flash``
+    replica. This does not call Complete and does not fall back to thinking.
+    """
+    import grpc
+
+    from gaius.engine.generated.zndx.engine.v1 import engine_pb2 as zpb
+    from gaius.engine.generated.zndx.engine.v1 import engine_pb2_grpc as zpb_grpc
+
+    addr = target or engine_target()
+    req = zpb.DecideRequest(
+        capability="decisions",
+        state_json=json.dumps(state),
+        instructions=instructions or "",
+        cache_salt=cache_salt or "",
+    )
+    for qid, spec in questions.items():
+        if not isinstance(spec, dict):
+            raise RuntimeError(
+                f"{GURU_NOCAP} question {qid!r} must be an object with "
+                "type, instructions, and criteria"
+            )
+        criteria = spec.get("criteria", None)
+        req.questions.add(
+            id=str(qid),
+            type=str(spec.get("type") or ""),
+            instructions=str(spec.get("instructions") or ""),
+            criteria_json="null" if criteria is None else json.dumps(criteria),
+        )
+    channel = grpc.insecure_channel(addr)
+    try:
+        stub = zpb_grpc.EngineStub(channel)
+        resp = stub.Decide(req, timeout=timeout_s)
+    except grpc.RpcError as e:
+        raise RuntimeError(
+            f"{GURU_NOLATTICE} Engine/Decide failed at {addr}: "
+            f"{e.code().name} {e.details()}\n"
+            "  decisions keeps thinking on the heavy queue and serves "
+            "dual-d3-flash (vllm-sr/d3-flash).\n"
+            "  Try: /gpu status"
+        ) from e
+    finally:
+        channel.close()
+    try:
+        answers = json.loads(resp.answers_json or "{}")
+        diagnostics = json.loads(resp.diagnostics_json or "{}")
+    except json.JSONDecodeError as e:
+        raise RuntimeError(
+            f"{GURU_NOCAP} Decide returned answers that are not JSON: {e}"
+        ) from e
+    if not isinstance(answers, dict) or not answers:
+        raise RuntimeError(
+            f"{GURU_NOCAP} Decide returned no answers for model={resp.model!r}."
+        )
+    return LatticeDecision(
+        id=resp.id or "",
+        model=(resp.model or "").strip(),
+        answers=answers,
+        diagnostics=diagnostics if isinstance(diagnostics, dict) else {},
+        input_tokens=int(resp.input_tokens or 0),
+        output_tokens=int(resp.output_tokens or 0),
+        latency_ms=float(resp.latency_ms or 0.0),
+        fulfilled_by=resp.fulfilled_by or "",
+    )
+
+
 def _require_healthy_capability(stub: Any, cap: str, addr: str, *, timeout_s: float) -> str:
     from gaius.engine.generated.zndx.engine.v1 import engine_pb2 as zpb
 

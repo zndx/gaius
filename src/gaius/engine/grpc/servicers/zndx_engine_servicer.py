@@ -442,6 +442,20 @@ class GaiusZndxEngineServicer(zpb_grpc.EngineServicer):
             agent_alias = plan.model_alias
         else:
             agent_alias = resolve_complete_alias(request.capability, self._services)
+        from ...capabilities import GURU_NOTTEXT, is_decisions_capability
+
+        if is_decisions_capability(request.capability or "") or is_decisions_capability(
+            agent_alias
+        ) or (plan is not None and is_decisions_capability(plan.model_capability)):
+            await context.abort(
+                grpc.StatusCode.FAILED_PRECONDITION,
+                f"{GURU_NOTTEXT} capability decisions is a structured read, "
+                "not a text completion.\n"
+                "  Call Engine/Decide (d3_server POST /v1/systemone, "
+                "model vllm-sr/d3-flash).\n"
+                "  A workload that requires decisions keeps thinking on the "
+                "heavy queue and starts dual-d3-flash on the light queue.",
+            )
         tz = (getattr(request, "timezone", "") or "").strip()
         if tz or (getattr(request, "clock_json", "") or "").strip():
             logger.info(
@@ -630,6 +644,102 @@ class GaiusZndxEngineServicer(zpb_grpc.EngineServicer):
                 plan.method,
             )
         return resp
+
+    async def Decide(
+        self,
+        request: zpb.DecideRequest,
+        context: aio.ServicerContext,
+    ) -> zpb.DecideResponse:
+        import time
+
+        from ...backends.decisions import (
+            DECISIONS_CAPABILITY,
+            DECISIONS_MODEL_ID,
+            DecisionError,
+            build_systemone_body,
+            criteria_from_json,
+            decisions_replicas,
+            parse_state_json,
+            post_decision_replicas,
+        )
+        from ...capabilities import GURU_NOTTEXT, is_decisions_capability
+
+        cap = (request.capability or "").strip()
+        if not is_decisions_capability(cap):
+            await context.abort(
+                grpc.StatusCode.FAILED_PRECONDITION,
+                f"{GURU_NOTTEXT} Engine/Decide capability must be "
+                f"{DECISIONS_CAPABILITY!r} (got {cap!r}).\n"
+                "  Complete serves thinking. Decide serves dual-d3-flash "
+                "(vllm-sr/d3-flash on d3_server).",
+            )
+        try:
+            state = parse_state_json(request.state_json)
+            questions = [
+                (
+                    q.id,
+                    q.type,
+                    q.instructions,
+                    q.criteria_json,
+                )
+                for q in request.questions
+            ]
+            # criteria_json stays a string here; decode per question so a
+            # bad question names itself.
+            decoded: list[tuple[str, str, str, object]] = []
+            for qid, qtype, instructions, criteria_json in questions:
+                decoded.append(
+                    (
+                        qid,
+                        qtype,
+                        instructions,
+                        criteria_from_json(criteria_json, qid=qid or "?"),
+                    )
+                )
+            body = build_systemone_body(
+                state,
+                decoded,
+                instructions=request.instructions or "",
+                cache_salt=request.cache_salt or "",
+                model=DECISIONS_MODEL_ID,
+            )
+            replicas = decisions_replicas(self._services)
+        except DecisionError as e:
+            code = (
+                grpc.StatusCode.INVALID_ARGUMENT
+                if e.guru.endswith("BADDECISION")
+                else grpc.StatusCode.FAILED_PRECONDITION
+            )
+            await context.abort(code, str(e))
+        started = time.perf_counter()
+        cursor = int(getattr(self, "_decide_cursor", 0) or 0)
+        try:
+            result, base, alias, cursor = await post_decision_replicas(
+                replicas, body, cursor=cursor
+            )
+        except DecisionError as e:
+            code = (
+                grpc.StatusCode.INVALID_ARGUMENT
+                if e.guru.endswith("BADDECISION")
+                else grpc.StatusCode.UNAVAILABLE
+            )
+            await context.abort(code, str(e))
+        self._decide_cursor = cursor
+        elapsed_ms = (time.perf_counter() - started) * 1000.0
+        import json as _json
+
+        return zpb.DecideResponse(
+            id=result.id,
+            model=result.model or DECISIONS_MODEL_ID,
+            answers_json=_json.dumps(result.answers),
+            diagnostics_json=_json.dumps(result.diagnostics),
+            input_tokens=result.input_tokens,
+            output_tokens=result.output_tokens,
+            latency_ms=elapsed_ms,
+            fulfilled_by=(
+                f"direct@{alias}/{result.model or DECISIONS_MODEL_ID}@d3:{base}"
+            ),
+        )
 
     async def Remediate(
         self,

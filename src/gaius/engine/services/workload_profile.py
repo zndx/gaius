@@ -46,7 +46,9 @@ PHASE_TRANSITIONING = "transitioning"
 # one symptom and the outer one killed the inner one's progress. The grace an
 # intent gets must exceed the engine's self-restoration time: 610 s (F15).
 _WARMUP_THINKING = int(os.environ.get("GAIUS_WORKLOAD_WARMUP_THINKING", "610"))
+_WARMUP_D3 = int(os.environ.get("GAIUS_WORKLOAD_WARMUP_D3", "300"))
 _WARMUP_DEFAULT = int(os.environ.get("GAIUS_WORKLOAD_WARMUP_DEFAULT", "90"))
+_D3_ALIASES = frozenset({"d3-flash-0", "d3-flash-1"})
 
 # Subscriber queue depth. Small: the watchdog only needs the latest; on overflow we
 # drop the oldest so a slow/absent consumer never blocks a changeover.
@@ -88,7 +90,12 @@ class WorkloadProfilePublisher:
         return list(getattr(startup, "preload_endpoints", []) or [])
 
     def _warmup(self, alias: str, caps: list[str]) -> int:
-        if alias == "thinking" or "thinking" in (caps or []):
+        # Thinking's 27B cold load. d3-flash is one 9B-class checkpoint
+        # on d3_server; it does not take the thinking grace.
+        names = set(caps or [])
+        if alias in _D3_ALIASES or ("decisions" in names and alias not in {"thinking", "instruct"}):
+            return _WARMUP_D3
+        if alias in {"thinking", "instruct"} or "thinking" in names:
             return _WARMUP_THINKING
         return _WARMUP_DEFAULT
 
@@ -135,7 +142,7 @@ class WorkloadProfilePublisher:
                     "model": str(ep.get("model") or ""),
                     "port": int(ep.get("port") or 0),
                     "gpu_ids": [int(g) for g in (ep.get("gpu_ids") or [])],
-                    "backend": "vllm_local",
+                    "backend": str(ep.get("backend") or "vllm_local"),
                     "warmup_seconds": self._warmup(alias, caps),
                     "actual": _map_actual(st),
                 }

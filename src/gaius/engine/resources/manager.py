@@ -209,6 +209,54 @@ class ResourceManager:
 
         return allocation
 
+    def allocate_fixed(
+        self,
+        agent_alias: str,
+        model: str,
+        gpu_ids: list[int],
+        vram_gb: float,
+    ) -> GPUAllocation:
+        """Reserve exactly these GPU ids.
+
+        The scheduler already chose them. ``allocate()`` would pick again
+        and can land a replica on the GPUs thinking is about to take.
+        """
+        wanted = [int(g) for g in gpu_ids]
+        if not wanted:
+            raise ResourceUnavailable(
+                f"allocate_fixed for {agent_alias} got no GPUs",
+                required_gpus=1,
+                available_gpus=len(self.get_free_gpus()),
+            )
+        existing = self.allocations.get(agent_alias)
+        if (
+            existing is not None
+            and list(existing.gpu_ids) == wanted
+            and existing.state not in (AllocationState.FAILED, AllocationState.RELEASING)
+        ):
+            return existing
+        free = set(self.get_free_gpus())
+        missing = [g for g in wanted if g not in free]
+        if missing:
+            raise ResourceUnavailable(
+                f"GPUs {missing} are not free for {agent_alias}",
+                required_gpus=len(wanted),
+                available_gpus=len(free),
+            )
+        allocation = GPUAllocation(
+            agent_alias=agent_alias,
+            model=model,
+            gpu_ids=wanted,
+            vram_reserved_gb=vram_gb,
+            state=AllocationState.ALLOCATED,
+        )
+        self.allocations[agent_alias] = allocation
+        for gpu_id in wanted:
+            if gpu_id in self._gpu_status:
+                self._gpu_status[gpu_id].allocated_to = agent_alias
+        logger.info(f"Allocated fixed GPUs {wanted} for {agent_alias} ({model})")
+        return allocation
+
     async def allocate_async(
         self, request: AllocationRequest
     ) -> AllocationResult:
@@ -525,12 +573,20 @@ class ResourceManager:
             "idle" - nothing allocated
         """
         active_endpoints = set(self.allocations.keys())
+        flash = {"d3-flash-0", "d3-flash-1"}
+        has_flash = bool(active_endpoints & flash)
+        has_thinking = (
+            "thinking" in active_endpoints or "instruct" in active_endpoints
+        )
 
         if "reasoning" in active_endpoints:
             return "reasoning"
-        elif "thinking" in active_endpoints or "instruct" in active_endpoints:
-            return "default"
-        elif active_endpoints:
+        if has_flash and has_thinking:
             return "mixed"
-        else:
-            return "idle"
+        if has_flash:
+            return "decisions"
+        if has_thinking:
+            return "default"
+        if active_endpoints:
+            return "mixed"
+        return "idle"

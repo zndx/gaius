@@ -89,6 +89,16 @@ class TestResolveCapabilities:
         )
         assert plan.model_alias == "thinking"
 
+    def test_decisions_resolves_without_a_method(self):
+        plan = resolve_capabilities(["decisions"])
+        assert plan is not None
+        assert plan.method is None
+        assert plan.model_capability == "decisions"
+
+    def test_method_plus_decisions_is_nomix(self):
+        with pytest.raises(CapabilityMixError, match="decisions"):
+            resolve_capabilities(["cot_reasoning", "decisions"])
+
     def test_healthy_resolver_preferred(self):
         services = SimpleNamespace(
             orchestrator_service=SimpleNamespace(
@@ -112,6 +122,8 @@ class TestOffered:
         offered = offered_model_capabilities()
         assert "thinking" in offered
         assert "thinking" in offered["thinking"]
+        assert "decisions" in offered
+        assert "decisions" in offered["decisions"]
         # the optillm proxy profile advertises "complete" but is not a model alias
         assert "optillm" not in offered.get("complete", [])
 

@@ -50,6 +50,8 @@ if TYPE_CHECKING:
 LOAD_TIME_MS: dict[str, int] = {
     "orchestrator": 45_000,  # 45s for 8B model on 2 GPUs
     "thinking": 60_000,  # 60s for Qwen3.8-27B on 4 GPUs
+    "d3-flash-0": 45_000,  # d3_server load of vllm-sr/d3-flash, one GPU
+    "d3-flash-1": 45_000,
     "reasoning": 120_000,  # 120s for 32B on 4 GPUs
     "cap_reasoning": 120_000,  # Same as reasoning
     "embedding": 20_000,  # 20s for embedding model
@@ -58,6 +60,8 @@ LOAD_TIME_MS: dict[str, int] = {
 UNLOAD_TIME_MS: dict[str, int] = {
     "orchestrator": 10_000,
     "thinking": 10_000,
+    "d3-flash-0": 8_000,
+    "d3-flash-1": 8_000,
     "reasoning": 15_000,
     "cap_reasoning": 15_000,
     "embedding": 5_000,

@@ -266,6 +266,8 @@ class GaiusCLI:
                 # Model registry commands (local model specs)
                 elif command == "model":
                     result["data"] = self._cmd_model(args)
+                elif command == "decide":
+                    result["data"] = self._cmd_decide(args)
                 # Execute via Engine's CommandService (unified entry point)
                 elif command == "exec":
                     result["data"] = self._run_async(self._cmd_exec(args))
@@ -1508,6 +1510,63 @@ class GaiusCLI:
                 else "none"
             )
         return status
+
+    def _cmd_decide(self, args: str) -> dict:
+        """Structured decision read (Engine/Decide, d3_server POST /v1/systemone).
+
+        Usage:
+            /decide <json>
+
+        JSON keys: state (string or object), questions (choice / noul / score
+        map), optional instructions, optional cache_salt.
+
+        The decisions capability keeps thinking on the heavy queue and reads
+        dual-d3-flash (vllm-sr/d3-flash, two light replicas). This command
+        does not start the model and does not fall back to thinking.
+        """
+        import json
+
+        from gaius.flows.lattice import decide
+
+        text = (args or "").strip()
+        if not text:
+            raise ValueError(
+                'Usage: /decide {"state": "...", "questions": {...}}\n'
+                "  Guru: #EP.00000024.BADDECISION"
+            )
+        try:
+            body = json.loads(text)
+        except json.JSONDecodeError as e:
+            raise ValueError(
+                f"decide body is not JSON: {e}\n  Guru: #EP.00000024.BADDECISION"
+            ) from e
+        if not isinstance(body, dict):
+            raise ValueError(
+                "decide body must be an object with state and questions.\n"
+                "  Guru: #EP.00000024.BADDECISION"
+            )
+        questions = body.get("questions")
+        if not isinstance(questions, dict):
+            raise ValueError(
+                "decide questions must be an object keyed by question id.\n"
+                "  Guru: #EP.00000024.BADDECISION"
+            )
+        result = decide(
+            body.get("state"),
+            questions,
+            instructions=str(body.get("instructions") or ""),
+            cache_salt=str(body.get("cache_salt") or ""),
+        )
+        return {
+            "id": result.id,
+            "model": result.model,
+            "answers": result.answers,
+            "diagnostics": result.diagnostics,
+            "input_tokens": result.input_tokens,
+            "output_tokens": result.output_tokens,
+            "latency_ms": result.latency_ms,
+            "fulfilled_by": result.fulfilled_by,
+        }
 
     def _cmd_model(self, args: str) -> dict:
         """Model registry operations.

@@ -40,6 +40,65 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _append_decisions_deployment(
+    target_tasks: list,
+    current_tasks: list,
+    thinking_running,
+    *,
+    salience: float,
+) -> None:
+    """Keep thinking and add both d3-flash replicas. No ``cap_decisions``."""
+    from ..backends.decisions import (
+        D3_FLASH_REPLICAS,
+        DECISIONS_MODEL_ID,
+        THINKING_ENDPOINT,
+        THINKING_MODEL_ID,
+    )
+    from ..scheduling import SchedulingTask
+
+    names = {t.endpoint_name for t in target_tasks}
+    if THINKING_ENDPOINT not in names:
+        if thinking_running is not None:
+            target_tasks.append(thinking_running)
+        else:
+            target_tasks.append(
+                SchedulingTask(
+                    task_id=THINKING_ENDPOINT,
+                    endpoint_name=THINKING_ENDPOINT,
+                    model_id=THINKING_MODEL_ID,
+                    required_gpus=4,
+                    salience=salience,
+                    capability="thinking",
+                    prefer_contiguous=True,
+                    is_current=False,
+                    memory_mb=54000,
+                )
+            )
+            names.add(THINKING_ENDPOINT)
+    current_by = {t.endpoint_name: t for t in current_tasks}
+    for alias in D3_FLASH_REPLICAS:
+        if alias in names:
+            continue
+        existing = current_by.get(alias)
+        if existing is not None:
+            target_tasks.append(existing)
+        else:
+            target_tasks.append(
+                SchedulingTask(
+                    task_id=alias,
+                    endpoint_name=alias,
+                    model_id=DECISIONS_MODEL_ID,
+                    required_gpus=1,
+                    salience=salience,
+                    capability="decisions",
+                    prefer_contiguous=False,
+                    is_current=False,
+                    memory_mb=17000,
+                )
+            )
+        names.add(alias)
+
+
 @dataclass
 class EndpointStatus:
     """Status of an inference endpoint.
@@ -157,6 +216,10 @@ class OrchestratorService:
         # Access controllers through backend router
         self._vllm = backend_router.vllm
         self._optillm: Optional[OptillmController] = backend_router.optillm
+        from ..backends.d3_controller import D3Controller
+
+        # d3_server replicas (decisions → dual-d3-flash). Not a vLLM process.
+        self._d3 = D3Controller(config, resource_manager)
 
         # Health monitoring
         self._health_task: Optional[asyncio.Task] = None
@@ -390,11 +453,18 @@ class OrchestratorService:
                 return contiguous
         return []
 
-    async def start_endpoint(self, agent_alias: str) -> EndpointStatus:
+    async def start_endpoint(
+        self,
+        agent_alias: str,
+        *,
+        gpu_ids: list[int] | None = None,
+    ) -> EndpointStatus:
         """Start an inference endpoint for an agent.
 
         Args:
             agent_alias: Agent identifier
+            gpu_ids: Scheduler-assigned GPUs. When set, the controller
+                reserves these ids instead of picking again.
 
         Returns:
             EndpointStatus with startup state
@@ -430,8 +500,27 @@ class OrchestratorService:
         # Off-loop: the admit wait must never block the engine's event loop.
         await asyncio.to_thread(self._admit_capability_sentinel, agent_alias)
 
+        if backend == "d3":
+            proc = await self._d3.start_endpoint(
+                agent_alias, agent_config, gpu_ids=gpu_ids
+            )
+            if proc.status.value in ("healthy", "starting"):
+                self._register_capability("decisions", agent_alias, proc.model)
+            return EndpointStatus(
+                agent_alias=agent_alias,
+                model=proc.model,
+                port=proc.port or None,
+                gpu_ids=list(proc.gpu_ids),
+                status=proc.status.value,
+                pid=proc.pid,
+                started_at=proc.started_at,
+                startup_message=proc.startup_message,
+            )
+
         # Start vLLM endpoint
-        proc = await self._vllm.start_endpoint(agent_alias, agent_config)
+        proc = await self._vllm.start_endpoint(
+            agent_alias, agent_config, gpu_ids=gpu_ids
+        )
 
         return EndpointStatus(
             agent_alias=agent_alias,
@@ -455,6 +544,10 @@ class OrchestratorService:
         kind = {
             "thinking": "thinking",
             "reasoning": "thinking",
+            # Each flash replica is its own light application. The capability
+            # token stays `decisions`; do not admit one heavy `decisions` app.
+            "d3-flash-0": "d3-flash-0",
+            "d3-flash-1": "d3-flash-1",
             "ask-agent": "ask-agent",
             "interpretable": "ask-agent",
             "interpretable-b": "ask-agent",
@@ -538,7 +631,38 @@ class OrchestratorService:
         if agent_alias == "clt":
             self.stop_clt_capability()
             return True
-        return await self._vllm.stop_endpoint(resolve_agent_name(agent_alias))
+        resolved = resolve_agent_name(agent_alias)
+        cfg = None
+        if self.config is not None:
+            cfg = self.config.agents.get(resolved) or self.config.agents.get(agent_alias)
+        backend = cfg.backend.lower() if cfg is not None else ""
+        if backend == "d3" or self._d3.get_process(resolved) or self._d3.get_process(agent_alias):
+            name = resolved if self._d3.get_process(resolved) else agent_alias
+            stopped = await self._d3.stop_endpoint(name)
+            self._release_d3_sentinel(name)
+            self._unregister_capability(name)
+            return stopped
+        if backend in ("colpali", "colbert"):
+            from ..backends.colpali_controller import get_colpali_controller
+
+            await get_colpali_controller().stop_colpali_endpoint(resolved)
+            self.resource_manager.release(resolved)
+            self._unregister_capability(resolved)
+            return True
+        return await self._vllm.stop_endpoint(resolved)
+
+    def _release_d3_sentinel(self, alias: str) -> None:
+        """Drop the light YK application for one flash replica.
+
+        ``release_kind`` only knows the standing claims. A flash replica
+        is deleted by its workload id so the light seat can be restored.
+        """
+        from gaius.engine.sentinel_claim import (
+            capability_workload_id,
+            delete_flow_sentinel,
+        )
+
+        delete_flow_sentinel(capability_workload_id(alias))
 
     async def restart_endpoint(self, agent_alias: str) -> EndpointStatus:
         """Restart an inference endpoint.
@@ -718,6 +842,24 @@ class OrchestratorService:
         """
         from ..config import resolve_agent_name
 
+        d3_proc = self._d3.get_process(agent_alias) or self._d3.get_process(
+            resolve_agent_name(agent_alias)
+        )
+        if d3_proc is not None:
+            message, progress = self._d3.get_startup_progress(d3_proc.agent_alias)
+            return EndpointStatus(
+                agent_alias=agent_alias,
+                model=d3_proc.model,
+                port=d3_proc.port or None,
+                gpu_ids=list(d3_proc.gpu_ids),
+                status=d3_proc.status.value,
+                pid=d3_proc.pid,
+                started_at=d3_proc.started_at,
+                requests_served=d3_proc.requests_served,
+                startup_progress=progress,
+                startup_message=message,
+            )
+
         # Check vLLM processes first (instruct → thinking)
         proc = self._vllm.get_process(resolve_agent_name(agent_alias))
         if proc is None and agent_alias != resolve_agent_name(agent_alias):
@@ -768,7 +910,7 @@ class OrchestratorService:
             Dict mapping agent alias to status
         """
         result = {}
-        for alias in self._vllm._processes:
+        for alias in list(self._vllm._processes) + list(self._d3.processes()):
             status = self.get_endpoint_status(alias)
             if status:
                 result[alias] = status
@@ -784,6 +926,8 @@ class OrchestratorService:
         Returns:
             List of log lines
         """
+        if self._d3.get_process(agent_alias):
+            return self._d3.get_recent_logs(agent_alias, lines)
         return self._vllm.get_recent_logs(agent_alias, lines)
 
     # ─────────────────────────────────────────────────────────────────────────
@@ -1340,15 +1484,25 @@ class OrchestratorService:
             return self._clt_capability[0]
         return None
 
-    def _build_current_scheduling_tasks(self) -> list["SchedulingTask"]:
+    def _build_current_scheduling_tasks(
+        self,
+        *,
+        include_occupants: bool = False,
+    ) -> list["SchedulingTask"]:
         """Build SchedulingTasks from currently running endpoints.
+
+        ``include_occupants`` also lists d3 replicas and any other GPU
+        allocation (embedding, CLT). A decisions workload needs those so
+        the light seats are stopped and restored with the workload.
 
         Returns:
             List of SchedulingTask objects representing current GPU allocations
         """
+        from ..resources.allocations import AllocationState
         from ..scheduling import SchedulingTask
 
         tasks = []
+        seen: set[str] = set()
 
         # Get all running vLLM processes
         for proc_name, proc in self._vllm._processes.items():
@@ -1373,6 +1527,51 @@ class OrchestratorService:
                     is_current=True,
                 )
             )
+            seen.add(proc_name)
+
+        if not include_occupants:
+            return tasks
+
+        for proc_name, proc in self._d3.processes().items():
+            if proc_name in seen or proc.status.value not in ("healthy", "starting"):
+                continue
+            activity = self._endpoint_activity.get(proc_name)
+            tasks.append(
+                SchedulingTask(
+                    task_id=proc_name,
+                    endpoint_name=proc_name,
+                    model_id=proc.model,
+                    required_gpus=len(proc.gpu_ids) or 1,
+                    salience=float(activity.priority if activity else 2),
+                    capability=(activity.capability if activity else "decisions"),
+                    prefer_contiguous=False,
+                    fixed_gpu_ids=list(proc.gpu_ids),
+                    is_current=True,
+                    memory_mb=17000,
+                )
+            )
+            seen.add(proc_name)
+
+        for alias, alloc in self.resource_manager.allocations.items():
+            if alias in seen or not alloc.gpu_ids:
+                continue
+            if alloc.state in (AllocationState.FAILED, AllocationState.RELEASING):
+                continue
+            activity = self._endpoint_activity.get(alias)
+            tasks.append(
+                SchedulingTask(
+                    task_id=alias,
+                    endpoint_name=alias,
+                    model_id=alloc.model,
+                    required_gpus=len(alloc.gpu_ids),
+                    salience=float(activity.priority if activity else 2),
+                    capability=activity.capability if activity else None,
+                    prefer_contiguous=len(alloc.gpu_ids) > 1,
+                    fixed_gpu_ids=list(alloc.gpu_ids),
+                    is_current=True,
+                )
+            )
+            seen.add(alias)
 
         return tasks
 
@@ -1406,10 +1605,21 @@ class OrchestratorService:
             None,
         )
         # Qwen3.8 thinking covers these; do not evict it for cap_reasoning (QwQ).
+        # `decisions` is not covered by thinking's model. The request keeps
+        # thinking on the heavy queue and adds both d3-flash light replicas.
         thinking_covers = {"reasoning", "thinking", "instruct", "chat"}
 
         for task_type in request.required_capabilities:
             capability_key = task_type.value
+
+            if capability_key == "decisions":
+                _append_decisions_deployment(
+                    target_tasks,
+                    current_tasks,
+                    thinking_running,
+                    salience=float(request.priority.value),
+                )
+                continue
 
             if thinking_running is not None and capability_key in thinking_covers:
                 target_tasks.append(thinking_running)
@@ -1447,7 +1657,7 @@ class OrchestratorService:
     async def _execute_transition_plan(
         self,
         plan: "TransitionPlan",
-    ) -> bool:
+    ) -> tuple[bool, str]:
         """Execute a transition plan from the scheduler.
 
         Executes stops in parallel, then starts in dependency order.
@@ -1456,7 +1666,7 @@ class OrchestratorService:
             plan: TransitionPlan from MakespanScheduler
 
         Returns:
-            True if all steps succeeded
+            ``(ok, error)``. ``error`` is empty when the plan ran.
         """
         from ..scheduling import TransitionType
 
@@ -1503,12 +1713,16 @@ class OrchestratorService:
             )
 
             if status.status not in ("healthy", "starting"):
-                logger.error(f"Failed to start {step.endpoint_name}: {status.status}")
-                return False
+                message = (
+                    status.startup_message
+                    or f"Failed to start {step.endpoint_name}: {status.status}"
+                )
+                logger.error(message)
+                return False, message
 
             completed_steps.add(step.step_id)
 
-        return True
+        return True, ""
 
     async def _start_scheduled_endpoint(
         self,
@@ -1562,8 +1776,9 @@ class OrchestratorService:
                 gpus=gpu_ids,
             )
         else:
-            # Regular endpoint from config
-            return await self.start_endpoint(endpoint_name)
+            # Regular endpoint from config. Pass the plan's GPUs so a
+            # self-allocate cannot take a replica's card.
+            return await self.start_endpoint(endpoint_name, gpu_ids=gpu_ids)
 
     async def _find_and_evict_for_resources(
         self,
@@ -1795,6 +2010,86 @@ class OrchestratorService:
 
         return evicted, restore_plan
 
+    def _record_decisions_allocation(self, allocated: dict, task_type: Any) -> str:
+        """Record both flash replicas. Thinking stays out of the stop list.
+
+        Returns an error string when either replica or thinking is missing.
+        """
+        from ..backends.decisions import (
+            D3_FLASH_REPLICAS,
+            DECISIONS_MODEL_ID,
+            GURU_NOTREADY,
+            THINKING_ENDPOINT,
+        )
+        from ..workloads import EndpointAllocation
+
+        ok = {"healthy", "starting", "running", "ready"}
+
+        def kind(status: Any) -> str:
+            if status is None:
+                return ""
+            return str(status.status or "").lower().replace("process_status_", "")
+
+        statuses = []
+        for name in D3_FLASH_REPLICAS:
+            status = self.get_endpoint_status(name)
+            if kind(status) not in ok:
+                detail = ""
+                if status is not None and status.startup_message:
+                    detail = f"\n  {status.startup_message}"
+                return (
+                    f"{GURU_NOTREADY} decisions workload requires both "
+                    f"dual-d3-flash replicas beside thinking.\n"
+                    f"  {name} status={kind(status) or 'missing'}"
+                    f"{detail}\n"
+                    "  Try: /gpu status"
+                )
+            statuses.append(status)
+        thinking = self.get_endpoint_status(THINKING_ENDPOINT)
+        if kind(thinking) not in ok:
+            return (
+                f"{GURU_NOTREADY} decisions keeps thinking on the heavy queue, "
+                f"and thinking is {kind(thinking) or 'missing'}.\n"
+                "  Try: /gpu status"
+            )
+        primary = statuses[0]
+        allocated[task_type] = EndpointAllocation(
+            endpoint_name=D3_FLASH_REPLICAS[0],
+            capability=task_type,
+            port=primary.port or 0,
+            healthy=kind(primary) in {"healthy", "running", "ready"},
+            model_id=primary.model or DECISIONS_MODEL_ID,
+            companion_endpoints=[D3_FLASH_REPLICAS[1]],
+        )
+        return ""
+
+    async def _abort_decisions_deploy(self, plan: "TransitionPlan") -> None:
+        """Stop flash replicas started by a failed decisions deploy and restore the light seats.
+
+        Thinking is left up when this deploy started it.
+        """
+        from ..backends.decisions import D3_FLASH_REPLICAS, THINKING_ENDPOINT
+        from ..scheduling import TransitionType
+
+        for name in D3_FLASH_REPLICAS:
+            try:
+                await self.stop_endpoint(name)
+            except Exception:
+                logger.exception("failed to stop %s after a decisions deploy error", name)
+        for step in plan.steps:
+            if step.transition_type != TransitionType.STOP_ENDPOINT:
+                continue
+            if step.endpoint_name == THINKING_ENDPOINT:
+                continue
+            try:
+                self._evicted_endpoints.discard(step.endpoint_name)
+                await self.start_endpoint(step.endpoint_name)
+            except Exception:
+                logger.exception(
+                    "failed to restore %s after a decisions deploy error",
+                    step.endpoint_name,
+                )
+
     # ─────────────────────────────────────────────────────────────────────────
     # Workload Management (Yunikorn-Style Makespan)
     # ─────────────────────────────────────────────────────────────────────────
@@ -1866,8 +2161,15 @@ class OrchestratorService:
                     wait_time_ms=int((time.time() - start_time) * 1000),
                 )
 
-            # Build current and target scheduling tasks
-            current_tasks = self._build_current_scheduling_tasks()
+            # Build current and target scheduling tasks.
+            # decisions must see embedding/CLT so those light seats are freed.
+            needs_decisions = any(
+                getattr(task, "value", "") == "decisions"
+                for task in request.required_capabilities
+            )
+            current_tasks = self._build_current_scheduling_tasks(
+                include_occupants=needs_decisions
+            )
             target_tasks = self._build_target_scheduling_tasks(request, current_tasks)
 
             logger.info(
@@ -1903,14 +2205,19 @@ class OrchestratorService:
             )
 
             # Execute the transition plan
-            success = await self._execute_transition_plan(plan)
+            success, exec_error = await self._execute_transition_plan(plan)
 
             if not success:
+                if needs_decisions:
+                    await self._abort_decisions_deploy(plan)
+                detail = exec_error or (
+                    "Transition plan execution failed.\n"
+                    "  Guru Meditation: #SCH.00000003.EXECFAIL"
+                )
                 return WorkloadResult(
                     success=False,
                     workload_id=request.workload_id,
-                    error="Transition plan execution failed.\n"
-                          "  Guru Meditation: #SCH.00000003.EXECFAIL",
+                    error=detail,
                     wait_time_ms=int((time.time() - start_time) * 1000),
                 )
 
@@ -1920,6 +2227,19 @@ class OrchestratorService:
 
             for task_type in request.required_capabilities:
                 capability_key = task_type.value
+                if capability_key == "decisions":
+                    record_error = self._record_decisions_allocation(
+                        allocated, task_type
+                    )
+                    if record_error:
+                        await self._abort_decisions_deploy(plan)
+                        return WorkloadResult(
+                            success=False,
+                            workload_id=request.workload_id,
+                            error=record_error,
+                            wait_time_ms=int((time.time() - start_time) * 1000),
+                        )
+                    continue
                 endpoint_name = f"cap_{capability_key}"
 
                 if endpoint_name in plan.gpu_assignments:
@@ -1993,12 +2313,14 @@ class OrchestratorService:
             f"(duration={workload.elapsed_s:.1f}s)"
         )
 
-        # Step 1: Stop transient endpoints allocated for this workload
-        # These are dynamically created endpoints like cap_reasoning
-        allocated_endpoints = [
-            alloc.endpoint_name
-            for alloc in workload.result.allocated_endpoints.values()
-        ]
+        # Step 1: Stop transient endpoints allocated for this workload.
+        # decisions stops both flash replicas and never stops thinking.
+        allocated_endpoints: list[str] = []
+        for alloc in workload.result.allocated_endpoints.values():
+            for name in [alloc.endpoint_name, *alloc.companion_endpoints]:
+                if name == "thinking" or name in allocated_endpoints:
+                    continue
+                allocated_endpoints.append(name)
 
         if allocated_endpoints:
             logger.info(f"Stopping transient endpoints: {allocated_endpoints}")
@@ -3096,6 +3418,22 @@ class OrchestratorService:
                 # (2026-09-06) intent ceded to a coordination Activity, else None
                 "ceded": dict(self._ceded[alias]) if alias in self._ceded else None,
             }
+        for alias, proc in self._d3.processes().items():
+            message, progress = self._d3.get_startup_progress(alias)
+            agent = self.config.agents.get(alias) if self.config else None
+            endpoints[alias] = {
+                "model": proc.model,
+                "port": proc.port,
+                "gpu_ids": list(proc.gpu_ids),
+                "status": proc.status.value,
+                "pid": proc.pid,
+                "startup_progress": progress,
+                "startup_message": message,
+                "requests_served": proc.requests_served,
+                "capabilities": list(agent.capabilities) if agent else ["decisions"],
+                "backend": "d3",
+                "ceded": dict(self._ceded[alias]) if alias in self._ceded else None,
+            }
 
         return {
             "running": self._running,
@@ -3104,6 +3442,11 @@ class OrchestratorService:
             "total_running": sum(
                 1
                 for p in self._vllm._processes.values()
+                if p.status == ProcessStatus.HEALTHY
+            )
+            + sum(
+                1
+                for p in self._d3.processes().values()
                 if p.status == ProcessStatus.HEALTHY
             ),
             "gpu_utilization": self._gpu_utilization,

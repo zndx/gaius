@@ -3163,6 +3163,50 @@ Use `/evolve stop` to stop orchestrated evolution.
 
         asyncio.create_task(run_sitrep())
 
+    def _handle_decide_command(self, args: str) -> None:
+        """Handle /decide. Same body as the CLI: a System One JSON object."""
+        import json
+
+        from gaius.flows.lattice import decide
+
+        content = self.query_one("#info-panel", InfoPanel)
+        text = (args or "").strip()
+        if not text:
+            content.show_file(
+                "decide.md",
+                '# Decide\n\nUsage: `/decide {"state": "...", "questions": {...}}`\n',
+            )
+            return
+        try:
+            body = json.loads(text)
+            questions = body.get("questions") if isinstance(body, dict) else None
+            if not isinstance(body, dict) or not isinstance(questions, dict):
+                raise ValueError(
+                    "decide body must be an object with state and questions"
+                )
+            result = decide(
+                body.get("state"),
+                questions,
+                instructions=str(body.get("instructions") or ""),
+                cache_salt=str(body.get("cache_salt") or ""),
+            )
+            content.show_file(
+                "decide.md",
+                "# Decide\n\n```json\n"
+                + json.dumps(
+                    {
+                        "model": result.model,
+                        "answers": result.answers,
+                        "diagnostics": result.diagnostics,
+                        "fulfilled_by": result.fulfilled_by,
+                    },
+                    indent=2,
+                )
+                + "\n```\n",
+            )
+        except Exception as e:
+            content.show_file("decide.md", f"# Decide\n\n{e}\n")
+
     def _handle_health_command(self, args: str) -> None:
         """Handle /health command for comprehensive system diagnostics.
 
@@ -9360,6 +9404,9 @@ Use `/reindex` to refresh TDA from current KB.
         elif command == "health":
             # Run comprehensive health check
             self._handle_health_command(args)
+        elif command == "decide":
+            # Structured decisions: thinking stays up, dual-d3-flash serves the read
+            self._handle_decide_command(args)
         elif command == "sitrep":
             # Situational awareness report (ThetaAgent)
             self._handle_sitrep_command(args)

@@ -125,6 +125,10 @@ class EndpointAllocation:
     port: int
     healthy: bool
     model_id: str
+    # Other replicas of the same deployment stopped with endpoint_name.
+    # `decisions` records d3-flash-0 here and d3-flash-1 as the companion.
+    # Thinking is never a companion: completing the workload leaves it up.
+    companion_endpoints: list[str] = field(default_factory=list)
 
 
 @dataclass

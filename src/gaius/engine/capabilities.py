@@ -26,6 +26,13 @@ from gaius.core.budgets import REASONING_MAX_TOKENS
 
 GURU_NOMIX = "#EP.00000020.NOMIX"
 GURU_METHODTRACE = "#EP.00000021.METHODTRACE"
+# decisions is a structured read (Engine/Decide), not a Complete.
+GURU_NOTTEXT = "#EP.00000022.NOTTEXT"
+
+# Model capabilities that are not text completions. A method conjunction
+# with one of these is NOMIX: the method scaffolds a prompt, and these
+# endpoints answer typed questions.
+NON_TEXT_MODEL_CAPABILITIES = frozenset({"decisions"})
 
 # Method-capability synonyms → optillm technique value.
 METHOD_SYNONYMS = {
@@ -72,6 +79,11 @@ OPERATING_PROFILES: dict[str, OperatingProfile] = {
     "thinking": OperatingProfile("thinking", True, "xhigh", "full trace — the corpus value-add"),
     "instruct": OperatingProfile("instruct", True, "low", "same model, brief trace, less overhead"),
 }
+
+
+def is_decisions_capability(capability: str) -> bool:
+    """True when the caller asked for the structured-decision model capability."""
+    return (capability or "").strip().lower() == "decisions"
 
 
 def operating_profile(capability: str) -> Optional[OperatingProfile]:
@@ -238,6 +250,17 @@ def resolve_capabilities(
     model_alias = _resolve_alias(model_capability, offered_models, services)
     if not model_alias:
         raise _nomix(cleaned, methods, [model_capability], [], services)
+
+    if method and model_capability in NON_TEXT_MODEL_CAPABILITIES:
+        raise CapabilityMixError(
+            f"{GURU_NOMIX} unsatisfiable capabilities {cleaned!r}:\n"
+            f"  {model_capability} is a structured read (Engine/Decide, "
+            "d3_server POST /v1/systemone on vllm-sr/d3-flash, two light "
+            "replicas beside thinking), not a text completion, "
+            f"so it cannot conjoin with method {method!r}.\n"
+            '  Try: Engine/Decide capability="decisions"\n'
+            "  A text method with no model capability still defaults to thinking."
+        )
 
     engine_native = bool(method) and method in ENGINE_NATIVE_TECHNIQUES
     if method:

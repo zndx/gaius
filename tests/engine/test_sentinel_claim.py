@@ -610,6 +610,17 @@ def test_colbert_is_light_one_gpu() -> None:
     assert resource_class_for("clt-skos-admit") is LIGHT
     assert DEPLOYMENT_PROFILES["embedding"].gpu_tokens == 1
     assert DEPLOYMENT_PROFILES["embedding"].resource_class() is LIGHT
+    decisions = DEPLOYMENT_PROFILES["decisions"]
+    assert decisions.model == "vllm-sr/d3-flash"
+    assert decisions.gpu_tokens == 1
+    assert decisions.resource_class() is LIGHT
+    assert resource_class_for("decisions") is LIGHT
+    assert resource_class_for("d3-flash-0") is LIGHT
+    assert resource_class_for("d3-flash-1") is LIGHT
+    assert resource_class_for("gaius-d3-flash-0") is LIGHT
+    assert yk_phase_for("d3-flash-0") == "decide"
+    assert yk_phase_for("d3-flash-1") == "decide"
+    assert resource_class_for("thinking") is HEAVY
     assert yk_phase_for("embedding") == "embed"
     doc = yaml.safe_load(application_yaml(EMBEDDING_WORKLOAD_ID, "embedding"))
     req = doc["spec"]["containers"][0]["resources"]["requests"]

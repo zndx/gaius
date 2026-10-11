@@ -5,7 +5,7 @@ import warnings
 
 from gaius.engine.generated.zndx.scheduler.v1 import scheduler_pb2 as zndx_dot_scheduler_dot_v1_dot_scheduler__pb2
 
-GRPC_GENERATED_VERSION = '1.81.1'
+GRPC_GENERATED_VERSION = '1.76.0'
 GRPC_VERSION = grpc.__version__
 _version_not_supported = False
 
@@ -25,7 +25,7 @@ if _version_not_supported:
     )
 
 
-class SchedulerStub:
+class SchedulerStub(object):
     """Missing associated documentation comment in .proto file."""
 
     def __init__(self, channel):
@@ -171,7 +171,7 @@ class SchedulerStub:
                 _registered_method=True)
 
 
-class SchedulerServicer:
+class SchedulerServicer(object):
     """Missing associated documentation comment in .proto file."""
 
     def ListPartitions(self, request, context):
@@ -509,7 +509,7 @@ def add_SchedulerServicer_to_server(servicer, server):
 
 
  # This class is part of an EXPERIMENTAL API.
-class Scheduler:
+class Scheduler(object):
     """Missing associated documentation comment in .proto file."""
 
     @staticmethod

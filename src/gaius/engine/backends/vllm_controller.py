@@ -562,6 +562,8 @@ class VLLMController:
         self,
         agent_alias: str,
         agent_config: Optional[AgentConfig] = None,
+        *,
+        gpu_ids: list[int] | None = None,
     ) -> VLLMProcess:
         """Start a vLLM endpoint for an agent.
 
@@ -597,8 +599,18 @@ class VLLMController:
                         logger.info(f"Endpoint {agent_alias} already running")
                         return proc
 
-                # Allocate GPUs
-                allocation = self.resource_manager.allocate(agent_alias, agent_config)
+                # Honor the scheduler's GPU ids when it already placed this
+                # endpoint. A fresh allocate() can take the GPUs the plan
+                # reserved for a sibling replica.
+                if gpu_ids:
+                    allocation = self.resource_manager.allocate_fixed(
+                        agent_alias,
+                        agent_config.model,
+                        list(gpu_ids),
+                        agent_config.resources.vram_gb,
+                    )
+                else:
+                    allocation = self.resource_manager.allocate(agent_alias, agent_config)
 
                 # Allocate port
                 port = self._allocate_port()
