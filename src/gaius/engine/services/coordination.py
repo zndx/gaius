@@ -1163,7 +1163,9 @@ async def decisions_activity_state(activity_id: str) -> str:
         "ListActivities",
         peer=PROJECT,
         kind=DECISIONS_KIND,
-        active_only=False,
+        # In-force only. active_only=False walks every historical lease and
+        # blows the 15s RPC deadline, so the handover never observes RUNNING.
+        active_only=True,
         limit=20,
     )
     for activity in resp.activities:
