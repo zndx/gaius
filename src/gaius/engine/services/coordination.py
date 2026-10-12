@@ -64,6 +64,7 @@ GURU_RENEWFAIL = "#CO.00000006.RENEWFAIL"         # lease heartbeat refused/unre
 GURU_RELEASEFAIL = "#CO.00000007.RELEASEFAIL"     # release refused/unreachable (the lease TTL expires it)
 GURU_ENQUEUEFAIL = "#CO.00000008.ENQUEUEFAIL"     # could not start/attach the workload row
 GURU_MISSTICK = "#CO.0000000D.MISSTICK"           # enabled Airflow kind missed its cadence (no pg_cron cover)
+GURU_NOHANDOVER = "#CO.00000010.NOHANDOVER"       # decisions: peers still hold GPU leases
 
 # Failed and skipped ticks book completed_at and used to clear MISSTICK
 # (article_curate 2026-09-13 NOSOURCES; prospects_check gate_false skip).
@@ -168,6 +169,25 @@ RPC_TIMEOUT_S = 15.0
 
 PROJECT = "gaius"
 POSTURE_HOLD_UPTIME = "hold-uptime"
+# Signals writes the same posture for kind `decisions`. Gaius sends it on
+# the declare so a Signals process that has not yet loaded the stamp still
+# broadcasts the handover. Light and heavy are the claims, not precludes.
+DECISIONS_KIND = "decisions"
+POSTURE_FEDERATION_GPU = "federation.gpu"
+POSTURE_YIELD = "yield"
+HANDOVER_HORIZON_S = 2 * 3600.0
+HANDOVER_HEARTBEAT_S = 60.0
+HANDOVER_WAIT_S = 150.0
+HANDOVER_MEM_MIB = 2048
+DECISIONS_CLAIMS = (
+    {"leaf": "root.internal.inference.heavy", "gpu": 4},
+    {"leaf": "root.internal.inference.light", "gpu": 2},
+)
+DECISIONS_PRECLUDES = (
+    "root.internal.inference.agent-rtc",
+    "root.internal.inference.medium",
+    "root.internal.inference.extract",
+)
 KIND_ACTIVITY = "activity"  # supervision bus kind (mirrored in supervision_bus)
 
 # ActivityState enum → the lowercase vocabulary ActivityEvent.state carries.
@@ -1029,6 +1049,184 @@ async def _scheduler_call(target: str, method: str, **fields: Any) -> Any:
     async with aio.insecure_channel(target) as channel:
         stub = spb_grpc.SchedulerStub(channel)
         return await getattr(stub, method)(req_cls(**fields), timeout=RPC_TIMEOUT_S)
+
+
+def decisions_handover_declaration() -> dict[str, Any]:
+    """The activity Gaius declares when a workload asks for ``decisions``.
+
+    Signals is the indication peers read. This is the request that asks
+    Signals to publish it: the whole box (heavy 4 + light 2) and
+    ``federation.gpu=yield`` for every other project.
+    """
+    return {
+        "kind": DECISIONS_KIND,
+        "claims": [dict(c) for c in DECISIONS_CLAIMS],
+        "precludes": list(DECISIONS_PRECLUDES),
+        "postures": {POSTURE_FEDERATION_GPU: POSTURE_YIELD},
+        "reason": (
+            "decisions capability: thinking stays on the heavy queue and "
+            "dual-d3-flash takes both light GPUs"
+        ),
+    }
+
+
+def gpu_memory_mib() -> dict[int, int]:
+    """Used MiB per GPU index from nvidia-smi. Fail-fast if the query fails."""
+    import subprocess
+
+    try:
+        result = subprocess.run(
+            [
+                "nvidia-smi",
+                "--query-gpu=index,memory.used",
+                "--format=csv,noheader,nounits",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as e:
+        raise RuntimeError(
+            f"{GURU_NOHANDOVER} nvidia-smi failed while waiting for GPU handover: {e}"
+        ) from e
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or "").strip()[:200]
+        raise RuntimeError(
+            f"{GURU_NOHANDOVER} nvidia-smi exited {result.returncode}: {detail}"
+        )
+    out: dict[int, int] = {}
+    for line in result.stdout.splitlines():
+        parts = [p.strip() for p in line.split(",")]
+        if len(parts) != 2:
+            continue
+        try:
+            out[int(parts[0])] = int(float(parts[1]))
+        except ValueError:
+            continue
+    if not out:
+        raise RuntimeError(f"{GURU_NOHANDOVER} nvidia-smi returned no GPU rows")
+    return out
+
+
+async def declare_decisions_handover(owner: str) -> str:
+    """Ask Signals to tell every other project to hand over its GPUs.
+
+    Returns the activity id. The caller heartbeats and releases it.
+    """
+    from grpc import aio
+
+    from gaius.engine.generated.zndx.scheduler.v1 import scheduler_pb2 as spb
+    from gaius.engine.generated.zndx.scheduler.v1 import scheduler_pb2_grpc as spb_grpc
+    from gaius.engine.queue_share import mint_uuid7
+
+    decl = decisions_handover_declaration()
+    req = spb.DeclareActivityRequest(
+        peer=PROJECT,
+        request_id=mint_uuid7(),
+        kind=decl["kind"],
+        owner=owner,
+        horizon_ns=now_ns() + int(HANDOVER_HORIZON_S * 1_000_000_000),
+        precludes=decl["precludes"],
+        reason=decl["reason"],
+    )
+    for claim in decl["claims"]:
+        req.claims.add(leaf=claim["leaf"], gpu=int(claim["gpu"]))
+    for key, val in decl["postures"].items():
+        req.postures[key] = val
+    target = signals_target()
+    try:
+        async with aio.insecure_channel(target) as channel:
+            stub = spb_grpc.SchedulerStub(channel)
+            resp = await stub.DeclareActivity(req, timeout=RPC_TIMEOUT_S)
+    except Exception as e:
+        raise RuntimeError(
+            f"{GURU_NOHANDOVER} DeclareActivity for decisions failed at {target}: {e}\n"
+            "  Signals publishes the handover. Peers do not get a direct Yield.\n"
+            "  Try: /activities"
+        ) from e
+    activity_id = str(resp.activity.activity_id or "") if resp.accepted else ""
+    if not activity_id:
+        raise RuntimeError(
+            f"{GURU_NOHANDOVER} Signals refused the decisions handover: "
+            f"{resp.error or 'no activity id'}\n"
+            "  Try: /activities"
+        )
+    logger.info("coordination: decisions handover %s owner=%s", activity_id, owner)
+    return activity_id
+
+
+async def decisions_activity_state(activity_id: str) -> str:
+    """Lowercase state of one activity, or ``""`` when Signals no longer lists it."""
+    resp = await _scheduler_call(
+        signals_target(),
+        "ListActivities",
+        peer=PROJECT,
+        kind=DECISIONS_KIND,
+        active_only=False,
+        limit=20,
+    )
+    for activity in resp.activities:
+        if str(activity.activity_id) == activity_id:
+            return STATE_NAMES.get(int(activity.state), "unspecified")
+    return ""
+
+
+async def renew_decisions_handover(activity_id: str) -> None:
+    horizon_ns = now_ns() + int(HANDOVER_HORIZON_S * 1_000_000_000)
+    resp = await _scheduler_call(
+        signals_target(),
+        "RenewActivity",
+        peer=PROJECT,
+        activity_id=activity_id,
+        horizon_ns=horizon_ns,
+    )
+    if not resp.accepted:
+        raise RuntimeError(resp.error or "renew refused")
+
+
+async def wait_for_gpu_handover(activity_id: str, held: set[int]) -> None:
+    """Block until the activity is RUNNING and ``held`` GPUs are actually free.
+
+    ``held`` is the foreign lease set captured before the declare. Peers
+    yield only once the activity is RUNNING. A lease file disappearing is
+    not enough: the card has to drop its used memory too.
+    """
+    from gaius.engine.resources.gpu_leases import live_foreign_leased_gpu_ids
+
+    deadline = time.monotonic() + HANDOVER_WAIT_S
+    last = "declared"
+    while time.monotonic() < deadline:
+        try:
+            state = await decisions_activity_state(activity_id)
+        except Exception as e:  # noqa: BLE001 — keep waiting until the deadline
+            last = f"list failed: {e}"
+            state = ""
+        foreign = live_foreign_leased_gpu_ids()
+        if state == "running" and not foreign:
+            try:
+                mem = gpu_memory_mib()
+            except RuntimeError:
+                raise
+            busy = {gpu: mem.get(gpu, 0) for gpu in held if mem.get(gpu, 0) > HANDOVER_MEM_MIB}
+            if not busy and not live_foreign_leased_gpu_ids():
+                logger.info(
+                    "coordination: decisions handover %s in force; GPUs %s free",
+                    activity_id,
+                    sorted(held) or "none",
+                )
+                return
+            last = f"memory still held {busy}"
+        else:
+            last = f"state={state or 'absent'} foreign={sorted(foreign)}"
+        await asyncio.sleep(2)
+    raise RuntimeError(
+        f"{GURU_NOHANDOVER} federated projects did not hand over GPUs "
+        f"for decisions activity {activity_id} within {int(HANDOVER_WAIT_S)}s ({last}).\n"
+        "  The activity tells peers federation.gpu=yield. They stop their own GPU processes.\n"
+        "  Gaius does not place dual-d3-flash on a foreign lease.\n"
+        "  Try: /activities"
+    )
 
 
 async def release_rpc(target: str, activity_id: str, outcome: str, *, peer: str = PROJECT) -> bool:

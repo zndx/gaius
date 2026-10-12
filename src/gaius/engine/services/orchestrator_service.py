@@ -2063,6 +2063,76 @@ class OrchestratorService:
         )
         return ""
 
+    async def _begin_decisions_handover(self, request: "WorkloadRequest") -> str:
+        """Tell Signals that decisions needs every GPU. Empty string means peers yielded.
+
+        The activity stays up, with a heartbeat, until the workload completes
+        or this deploy aborts. A peer that still holds a lease is
+        ``#CO.00000010.NOHANDOVER`` and the replicas are not started.
+        """
+        from gaius.engine.resources.gpu_leases import live_foreign_leased_gpu_ids
+        from .coordination import (
+            HANDOVER_HEARTBEAT_S,
+            GURU_RENEWFAIL,
+            declare_decisions_handover,
+            renew_decisions_handover,
+            wait_for_gpu_handover,
+        )
+
+        held = set(live_foreign_leased_gpu_ids())
+        try:
+            activity_id = await declare_decisions_handover(request.workload_id)
+        except Exception as e:  # noqa: BLE001 — the text is the workload error
+            return str(e)
+        request.metadata["decisions_activity_id"] = activity_id
+        stop = asyncio.Event()
+        self._decisions_handover_stop = stop
+
+        async def _beat() -> None:
+            while not stop.is_set():
+                try:
+                    await asyncio.wait_for(stop.wait(), timeout=HANDOVER_HEARTBEAT_S)
+                    return
+                except asyncio.TimeoutError:
+                    pass
+                try:
+                    await renew_decisions_handover(activity_id)
+                except Exception as e:  # noqa: BLE001
+                    logger.warning(
+                        "%s decisions handover %s: %s", GURU_RENEWFAIL, activity_id, e
+                    )
+
+        self._decisions_handover_task = asyncio.create_task(_beat(), name="decisions-handover")
+        try:
+            await wait_for_gpu_handover(activity_id, held)
+        except Exception as e:  # noqa: BLE001
+            await self._end_decisions_handover(request, "handover timed out")
+            return str(e)
+        return ""
+
+    async def _end_decisions_handover(self, request: "WorkloadRequest", outcome: str) -> None:
+        """Stop the heartbeat and release the decisions activity, if one is open."""
+        from .coordination import release_rpc, signals_target
+
+        stop = getattr(self, "_decisions_handover_stop", None)
+        task = getattr(self, "_decisions_handover_task", None)
+        if stop is not None:
+            stop.set()
+        if task is not None and task is not asyncio.current_task():
+            try:
+                await asyncio.wait_for(task, timeout=5)
+            except (asyncio.TimeoutError, asyncio.CancelledError):
+                task.cancel()
+            except Exception:
+                logger.exception("decisions handover heartbeat did not stop")
+        self._decisions_handover_task = None
+        self._decisions_handover_stop = None
+        activity_id = str((request.metadata or {}).get("decisions_activity_id") or "")
+        if not activity_id:
+            return
+        request.metadata.pop("decisions_activity_id", None)
+        await release_rpc(signals_target(), activity_id, outcome[:200])
+
     async def _abort_decisions_deploy(self, plan: "TransitionPlan") -> None:
         """Stop flash replicas started by a failed decisions deploy and restore the light seats.
 
@@ -2167,6 +2237,15 @@ class OrchestratorService:
                 getattr(task, "value", "") == "decisions"
                 for task in request.required_capabilities
             )
+            if needs_decisions:
+                handover_error = await self._begin_decisions_handover(request)
+                if handover_error:
+                    return WorkloadResult(
+                        success=False,
+                        workload_id=request.workload_id,
+                        error=handover_error,
+                        wait_time_ms=int((time.time() - start_time) * 1000),
+                    )
             current_tasks = self._build_current_scheduling_tasks(
                 include_occupants=needs_decisions
             )
@@ -2187,6 +2266,8 @@ class OrchestratorService:
 
             if not schedule_result.success:
                 logger.error(f"Scheduling failed: {schedule_result.error}")
+                if needs_decisions:
+                    await self._end_decisions_handover(request, "schedule failed")
                 return WorkloadResult(
                     success=False,
                     workload_id=request.workload_id,
@@ -2210,6 +2291,7 @@ class OrchestratorService:
             if not success:
                 if needs_decisions:
                     await self._abort_decisions_deploy(plan)
+                    await self._end_decisions_handover(request, "deploy failed")
                 detail = exec_error or (
                     "Transition plan execution failed.\n"
                     "  Guru Meditation: #SCH.00000003.EXECFAIL"
@@ -2233,6 +2315,7 @@ class OrchestratorService:
                     )
                     if record_error:
                         await self._abort_decisions_deploy(plan)
+                        await self._end_decisions_handover(request, "replicas not ready")
                         return WorkloadResult(
                             success=False,
                             workload_id=request.workload_id,
@@ -2350,6 +2433,10 @@ class OrchestratorService:
                 restore_success = False
                 restore_error = str(e)
                 logger.error(f"Failed to restore endpoint {endpoint_name}: {e}")
+
+        # The handover activity is what told peers to yield. Release it
+        # after flash is stopped so a peer can take a GPU back.
+        await self._end_decisions_handover(workload.request, "workload complete")
 
         # Complete agenda incident tracking
         if self._agenda_tracker:

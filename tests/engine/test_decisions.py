@@ -230,3 +230,21 @@ async def test_fanout_fails_over_only_when_retryable() -> None:
         await post_decision_replicas(replicas, {"state": "x"}, cursor=1, poster=bad)
     assert exc.value.retryable is False
     assert calls == ["http://127.0.0.1:8097"]
+
+
+def test_decisions_handover_asks_the_federation_to_yield() -> None:
+    from gaius.engine.services.coordination import decisions_handover_declaration
+
+    declaration = decisions_handover_declaration()
+    assert declaration["kind"] == "decisions"
+    assert declaration["postures"] == {"federation.gpu": "yield"}
+    assert {c["leaf"]: c["gpu"] for c in declaration["claims"]} == {
+        "root.internal.inference.heavy": 4,
+        "root.internal.inference.light": 2,
+    }
+    precluded = declaration["precludes"]
+    assert "root.internal.inference.agent-rtc" in precluded
+    assert "root.internal.inference.medium" in precluded
+    assert "root.internal.inference.extract" in precluded
+    assert "root.internal.inference.light" not in precluded
+    assert "root.internal.inference.heavy" not in precluded
