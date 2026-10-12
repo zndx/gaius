@@ -19,9 +19,13 @@ VENV="${GAIUS_D3_VENV:-$ROOT/.devenv/d3-runtime}"
 uv venv "$VENV" --python 3.12
 
 # The d3 card's validated stack is torch 2.13. Product vLLM stays 0.27.
+# torchvision's cu129 wheel is not on PyPI. uv resolves it as
+# torchvision==0.28.0+cu129 once torch 2.13.0+cu129 is installed, and
+# that pin only exists on the PyTorch index.
 uv pip install --python "$VENV/bin/python" \
   --index-url https://download.pytorch.org/whl/cu129 \
-  'torch==2.13.0'
+  'torch==2.13.0' \
+  'torchvision==0.28.0'
 
 uv pip install --python "$VENV/bin/python" \
   'transformers==5.17.0' \
@@ -31,7 +35,6 @@ uv pip install --python "$VENV/bin/python" \
   'flash-linear-attention==0.5.2' \
   'einops' \
   'pillow' \
-  'torchvision' \
   'opencv-python-headless' \
   'fastapi' \
   'uvicorn'
