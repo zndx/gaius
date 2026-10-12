@@ -482,6 +482,57 @@ class CLTService:
 _clt_service: CLTService | None = None
 
 
+def unload_resident_clt() -> bool:
+    """Stop the process-wide CLT worker, if this module started one.
+
+    Yield and StopEndpoint own the orchestrator's ``_clt_capability``.
+    The feature probe also starts a worker through this module and that
+    process is what holds the GPU. Leaving it resident shares the card
+    with the next model.
+    """
+    global _clt_service
+    svc = _clt_service
+    if svc is None:
+        return False
+    try:
+        svc.unload()
+    finally:
+        _clt_service = None
+    return True
+
+
+def stop_resident_clt_workers() -> list[int]:
+    """Take CLT off its GPU: the tracked worker, any leftover worker, and the seat.
+
+    A Yield of the pause pod leaves the CUDA process running. The next
+    model then shares the card. This stops every ``clt_worker`` and
+    retires ``gaius-clt`` so the probe cannot put the model back while
+    the admitted mix owns the light GPUs.
+    """
+    from gaius.engine.resources.gpu_occupancy import list_occupants, terminate_occupant
+
+    unload_resident_clt()
+    stopped: list[int] = []
+    for occ in list_occupants():
+        if occ.workload != "clt":
+            continue
+        try:
+            terminate_occupant(occ.pid)
+        except (ProcessLookupError, RuntimeError) as exc:
+            logger.warning("CLT worker %s did not stop: %s", occ.pid, exc)
+            continue
+        stopped.append(occ.pid)
+    try:
+        from gaius.engine.sentinel_claim import delete_flow_sentinel
+
+        delete_flow_sentinel("gaius-clt")
+    except Exception as exc:  # noqa: BLE001 — the worker stop is the GPU release
+        logger.warning("gaius-clt sentinel retire failed: %s", exc)
+    if stopped:
+        logger.info("CLT workers stopped: %s", stopped)
+    return stopped
+
+
 def get_clt_service(
     model_name: str = "qwen3-1.7b",
     gpu_index: int | None = None,

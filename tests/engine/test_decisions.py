@@ -144,6 +144,55 @@ def test_decisions_target_is_thinking_plus_both_replicas() -> None:
     assert flash.capability == "decisions"
 
 
+def test_decisions_plan_yields_clt_and_assigns_whole_cards() -> None:
+    from gaius.engine.scheduling.makespan_scheduler import MakespanScheduler
+    from gaius.engine.scheduling.types import TransitionType
+
+    thinking = SchedulingTask(
+        task_id="thinking",
+        endpoint_name="thinking",
+        model_id="Qwen/Qwen3.8-27B",
+        required_gpus=4,
+        capability="thinking",
+        fixed_gpu_ids=[0, 1, 2, 3],
+        is_current=True,
+    )
+    clt = SchedulingTask(
+        task_id="clt",
+        endpoint_name="clt",
+        model_id="Qwen/Qwen3-1.7B",
+        required_gpus=1,
+        capability="clt",
+        prefer_contiguous=False,
+        fixed_gpu_ids=[4],
+        is_current=True,
+    )
+    request = SimpleNamespace(
+        required_capabilities=[TaskType.DECISIONS],
+        priority=SimpleNamespace(value=2),
+    )
+    target = OrchestratorService._build_target_scheduling_tasks(
+        None, request, [thinking, clt]
+    )
+    result = MakespanScheduler(total_gpus=6).plan_transition([thinking, clt], target)
+    assert result.success, result.error
+    plan = result.plan
+    assert plan is not None
+    assert "clt" in plan.evicted_endpoints
+    assert "thinking" not in plan.evicted_endpoints
+    stops = [
+        step.endpoint_name
+        for step in plan.steps
+        if step.transition_type == TransitionType.STOP_ENDPOINT
+    ]
+    assert stops == ["clt"]
+    assert plan.gpu_assignments["thinking"] == [0, 1, 2, 3]
+    light = set(plan.gpu_assignments["d3-flash-0"]) | set(plan.gpu_assignments["d3-flash-1"])
+    assert light == {4, 5}
+    flat = [gpu for gpus in plan.gpu_assignments.values() for gpu in gpus]
+    assert len(flat) == len(set(flat))
+
+
 def test_both_up_mode_is_mixed() -> None:
     both = ResourceManager.get_current_mode(
         SimpleNamespace(

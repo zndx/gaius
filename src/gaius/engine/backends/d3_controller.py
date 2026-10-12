@@ -197,6 +197,20 @@ class D3Controller:
             gpu = allocation.gpu_ids[0]
 
         try:
+            from ..resources.gpu_occupancy import GpuStillShared, prepare_exclusive_gpu
+
+            # The admitted replica owns this card. The model already on
+            # it comes down first. A shared card is a failed start.
+            try:
+                await asyncio.to_thread(
+                    prepare_exclusive_gpu, int(gpu), owner=agent_alias
+                )
+            except GpuStillShared as e:
+                self.resource_manager.release(agent_alias)
+                proc.status = ProcessStatus.FAILED
+                proc.startup_message = str(e)
+                return proc
+
             snapshot = await asyncio.to_thread(_snapshot_dir)
             server = Path(snapshot) / "d3_server.py"
             if not server.is_file():
@@ -233,7 +247,12 @@ class D3Controller:
             proc.process = child
             proc.pid = child.pid
             proc.startup_message = "loading d3-flash"
-            allocation.mark_active(port, pid=child.pid)
+            # Stay ALLOCATED until GET /v1/models. mark_active means HEALTHY,
+            # and reconciliation restarts an unhealthy endpoint after three
+            # probes. A 16 GB load is still silent then, so the restart killed
+            # the replica and the retry shared the card with whoever was left.
+            allocation.process_pid = child.pid
+            allocation.endpoint_port = port
             proc.drain_tasks = [
                 asyncio.create_task(self._drain(child.stdout, proc.stdout_buffer)),
                 asyncio.create_task(self._drain(child.stderr, proc.stderr_buffer)),
@@ -317,6 +336,9 @@ class D3Controller:
                 if response.status_code == 200:
                     proc.status = ProcessStatus.HEALTHY
                     proc.startup_message = "d3_server ready"
+                    alloc = self.resource_manager.allocations.get(proc.agent_alias)
+                    if alloc is not None:
+                        alloc.mark_active(proc.port, pid=proc.pid)
                     logger.info("%s healthy on :%s", proc.agent_alias, proc.port)
                     return
             except httpx.HTTPError:

@@ -95,6 +95,35 @@ processes {
   resources { leaf: "root.internal.inference.light" workload: "clt-probe" occupancy: 1 floor: 0 priority: 10
               rationale: "a probe that runs every 5 min can wait; it must never hold a token a run needs" }
 }
+# Decisions sweep: one d3-flash replica per light GPU, the whole card.
+# A decisions admit yields the resident probe. The two replicas do not
+# share a GPU with CLT or with each other, and they do not yield each other.
+processes {
+  id: "endpoint.d3-flash-0"
+  kind: PROCESS_KIND_SERVING_ENDPOINT
+  parent: "engine"
+  restart: RESTART_STRATEGY_NONE
+  observation { source: SOURCE_KIND_HTTP_PROBE locator: "tcp://127.0.0.1:8096" poll_seconds: 30 }
+  warmup_seconds: 900
+  depends_on: "engine"
+  attrs { key: "model" value: "vllm-sr/d3-flash" }
+  attrs { key: "gpus" value: "5" }
+  resources { leaf: "root.internal.inference.light" workload: "d3-flash-0" occupancy: 1 floor: 0 priority: 80
+              rationale: "decisions replica takes one light GPU whole; the resident probe yields" }
+}
+processes {
+  id: "endpoint.d3-flash-1"
+  kind: PROCESS_KIND_SERVING_ENDPOINT
+  parent: "engine"
+  restart: RESTART_STRATEGY_NONE
+  observation { source: SOURCE_KIND_HTTP_PROBE locator: "tcp://127.0.0.1:8097" poll_seconds: 30 }
+  warmup_seconds: 900
+  depends_on: "engine"
+  attrs { key: "model" value: "vllm-sr/d3-flash" }
+  attrs { key: "gpus" value: "4" }
+  resources { leaf: "root.internal.inference.light" workload: "d3-flash-1" occupancy: 1 floor: 0 priority: 80
+              rationale: "decisions replica takes one light GPU whole; the resident probe yields" }
+}
 
 # ── In-engine daemons ──────────────────────────────────────────────────────────
 

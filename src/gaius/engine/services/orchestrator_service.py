@@ -1458,7 +1458,18 @@ class OrchestratorService:
         """Stop CLT capability and release GPU.
 
         Called when CLT workload completes to free resources.
+        The feature-probe singleton is a second owner of the same GPU;
+        yield has to unload that worker too, or the next model shares the card.
         """
+        from .clt_service import stop_resident_clt_workers
+
+        try:
+            stopped = stop_resident_clt_workers()
+            if stopped:
+                logger.info("CLT resident workers stopped: %s", stopped)
+        except Exception as e:
+            logger.warning(f"Error stopping resident CLT worker: {e}")
+
         if self._clt_capability is None:
             return
 
@@ -1572,6 +1583,16 @@ class OrchestratorService:
                 )
             )
             seen.add(alias)
+
+        # nvidia-smi is the mix that is actually on the cards. CLT's
+        # probe worker is not in ``allocations``, so a plan that only
+        # reads that table starts the next model beside it.
+        from ..resources.gpu_occupancy import list_occupants, scheduling_tasks_for
+
+        try:
+            tasks.extend(scheduling_tasks_for(list_occupants(), already=seen))
+        except Exception as exc:  # noqa: BLE001 — a dark GPU must not hide the mix
+            logger.warning("GPU occupant scan failed: %s", exc)
 
         return tasks
 
