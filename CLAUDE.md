@@ -443,6 +443,21 @@ grep -rn "fail_fast\|SELENIUM_AVAILABLE\)" src/gaius/
 grep -rn "240, 240, 240" src/gaius/  # Placeholder image color
 ```
 
+## Federation pins
+
+`external/signals-protocol` `trunk` is the wire contract shared with Signals
+and the other peers. Commit protocol changes on that trunk and push them
+before any parent gitlink moves. Then bump every local parent that pins the
+submodule, regenerate that parent's bindings, and push the parent. A checkout
+must not stay ahead of its recorded pin, and a side branch must not be the
+only published pin.
+
+Gaius `trunk` is pushed to `internal`, `share`, and the raid `origin` mirror
+in the same step. Those three refs stay on one SHA.
+
+Do not commit the local LuxCore `LD_LIBRARY_PATH` patch, semantics Eclipse
+metadata, `python/hdf5_iceberg/uv.lock`, or the repo-root session logs.
+
 ## Pre-Commit Checklist
 
 - Do not rely on fallbacks nor workarounds when testing; all functional aspects of new features must be verified directly.
