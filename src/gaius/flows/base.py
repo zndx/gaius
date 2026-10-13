@@ -210,7 +210,17 @@ class GaiusFlow(FlowSpec):
         return "metaflow"
 
     def _claim_yk(self) -> None:
-        """Admit this Metaflow run as a YK Application via Signals sentinels."""
+        """Admit this Metaflow run only when this process owns the Application.
+
+        An Airflow-ordered run already has its queue configuration: Signals
+        asserted the catalogue claims for the activity. The child records
+        that activity and does not apply a sentinel.
+        """
+        activity = (os.environ.get("GAIUS_YK_ACTIVITY_ID") or "").strip()
+        if activity and not (os.environ.get("GAIUS_YK_APPLICATION_ID") or "").strip():
+            self._yk_workload_id = activity
+            self._yk_minted = False
+            return
         from gaius.engine.sentinel_claim import apply_and_admit
 
         kind = self._yk_kind()

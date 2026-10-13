@@ -127,7 +127,7 @@ AIRFLOW_ENABLED = {
     "article_curate",
     # the agenda producers (2026-09-07 evening) …
     "publish_cards_predawn", "publish_cards_morning", "publish_cards_afternoon", "publish_cards_evening",
-    "prospects_check", "cognition_cycle", "weekly_signals_summary",
+    "prospects_check", "prospects_update", "cognition_cycle", "weekly_signals_summary",
     # … and the digest Airflow initiates when any of them ends
     "agenda_brief",
     # GPU Metaflow that pg_cron was still launching while the DAGs sat paused
@@ -149,18 +149,40 @@ def test_enabled_entries_are_curate_the_agenda_producers_and_the_brief():
     # Airflow is the only initiator for enabled kinds (WatchActivities restored 2026-09-11)
     for kind in AIRFLOW_ENABLED:
         assert not wc.entry_for(kind).pg_cron_active, kind
-    # Airflow orders; Metaflow executes only the heavy enabled flow.
+    # Airflow orders; Metaflow executes the heavy enabled flows.
     assert wc.entry_for("article_curate").runner == wc.RUNNER_METAFLOW
     assert wc.entry_for("prospects_check").runner == wc.RUNNER_TASK
+    assert wc.entry_for("prospects_update").runner == wc.RUNNER_METAFLOW
     assert wc.entry_for("cognition_cycle").runner == wc.RUNNER_TASK
     assert {e.kind for e in wc.enabled_entries() if e.runner == wc.RUNNER_METAFLOW} == {
         "article_curate", "ambient_synthesis", "fmp_roll", "theta_cycle",
+        "prospects_update",
     }
     # every other class: catalogued, pg_cron-sourced, Signals assigns the DAG id
     for other in wc.entries():
         if other.kind not in AIRFLOW_ENABLED:
             assert other.source == "pg_cron"
             assert wc.airflow_dag_id(other) == f"gaius_{other.kind}"
+
+
+def test_prospects_update_follows_the_check_and_claims_extract():
+    """Airflow starts the update when the check ends. Signals asserts extract."""
+    update = wc.entry_for("prospects_update")
+    assert update.enabled and not update.pg_cron_active
+    assert update.runner == wc.RUNNER_METAFLOW
+    assert update.after == ("task.prospects_check",)
+    assert update.after_mode == wc.AFTER_ALL
+    assert wc.wire_cron(update) == ""
+    assert update.payload == {}
+    # Activity claim is the run's extract token. The analyze phase borrows
+    # the shared embedding seat; that floor is emitted when the step starts,
+    # not held for the whole activity.
+    assert wc.claims_for("prospects_update") == [
+        {"leaf": "root.internal.inference.extract", "gpu": 1}
+    ]
+    check = wc.entry_for("prospects_check")
+    assert check.enabled and check.runner == wc.RUNNER_TASK
+    assert "task.prospects_update" in wc.AGENDA_PRODUCERS
 
 
 def test_ordering_is_declared_for_label_after_admit():

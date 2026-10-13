@@ -28,12 +28,16 @@ precedence ``queue_share.share_for_class`` uses at admission), else from the
 kind's resource class occupancy.
 
 ``enabled`` entries are the classes whose schedule lives in the Signals
-Airflow: ``article_curate`` (pg_cron retired 2026-09-07 03:16); the AGENDA
-PRODUCERS — the four publish slots, ``prospects_check``, ``cognition_cycle``,
-``weekly_signals_summary`` — whose Airflow runs end with an Asset event that
-INITIATES ``agenda_brief``; and since 2026-09-12 ``ambient_synthesis`` and
-``fmp_roll`` (pg_cron twins were still launching Metaflow while the DAGs sat
-paused, so GPU burn had no Airflow run). ``agenda_brief`` is asset-scheduled
+Airflow. Airflow schedules Metaflow execution. The entry's ``claims`` are
+the YuniKorn configuration, and Signals asserts them for the run. Gaius
+does not apply a sentinel for that run. ``article_curate`` (pg_cron retired
+2026-09-07 03:16); the AGENDA PRODUCERS — the four publish slots,
+``prospects_check``, ``prospects_update`` (the Metaflow run after the
+check), ``cognition_cycle``, ``weekly_signals_summary`` — whose Airflow
+runs end with an Asset event that INITIATES ``agenda_brief``; and since
+2026-09-12 ``ambient_synthesis`` and ``fmp_roll`` (pg_cron twins were still
+launching Metaflow while the DAGs sat paused, so GPU burn had no Airflow
+run). ``agenda_brief`` is asset-scheduled
 ``after`` ANY producer (``after_mode="any"``) and on the day rollover (``cron``):
 time OR assets. Every other entry is catalogued so the whole procession is
 visible in Airflow (materialised PAUSED) before it migrates by flipping
@@ -69,15 +73,15 @@ AFTER_ALL = "all"   # every named workload must end since the last run (Airflow 
 AFTER_ANY = "any"   # any one ending runs it (AssetAny); with `cron`, time OR assets
 
 # The classes whose completed runs write Agenda items — `agenda_brief` follows
-# ANY of them. prospects_update (engine-enqueued by prospects_check) and the
-# Theta consolidation are not catalogued classes; their items ride the next
-# producer's run or the day rollover.
+# ANY of them. prospects_update is the Metaflow run Airflow starts after
+# prospects_check; its ended Asset refreshes the brief with the new synthesis.
 AGENDA_PRODUCERS: tuple[str, ...] = (
     "task.publish_cards_predawn",
     "task.publish_cards_morning",
     "task.publish_cards_afternoon",
     "task.publish_cards_evening",
     "task.prospects_check",
+    "task.prospects_update",
     "task.cognition_cycle",
     "task.weekly_signals_summary",
 )
@@ -245,9 +249,22 @@ WORKLOAD_CATALOG: tuple[WorkloadEntry, ...] = (
     WorkloadEntry(
         kind="prospects_check", task_type="prospects_check", payload={}, cron="0 7 * * *",
         gate_sql="SELECT meta.should_run_prospects_check()", runner=RUNNER_TASK, horizon_s=H3,
-        description="daily prospects check (in-engine; enqueues Metaflow prospects_update if needed) — agenda producer",
+        description="daily prospects check — records the symbol set; Airflow then starts prospects_update",
         enabled=True, airflow_dag_id="gaius_prospects_check", pg_cron_job="prospects-daily-check",
-        pg_cron_active=False,  # Airflow orders; check is task, update is Metaflow
+        pg_cron_active=False,  # Airflow orders the check; the update DAG follows it
+    ),
+    WorkloadEntry(
+        # Asset-scheduled on the check's ended Asset. wire_cron drops the
+        # daily stamp so the DAG does not also fire at 07:00 on its own.
+        kind="prospects_update", task_type="prospects_update", payload={},
+        cron="0 7 * * *", after=("task.prospects_check",),
+        runner=RUNNER_METAFLOW, horizon_s=H3,
+        description=(
+            "ProspectsUpdateFlow. Airflow starts it when prospects_check ends. "
+            "Signals asserts the extract claim for that run."
+        ),
+        enabled=True, airflow_dag_id="gaius_prospects_update",
+        pg_cron_active=False,
     ),
     WorkloadEntry(
         kind="content_diversity_check", task_type="content_diversity_check", payload={}, cron="0 6,18 * * *",
@@ -366,10 +383,16 @@ def airflow_dag_id(entry: WorkloadEntry) -> str:
 
 # ── claims: the workload's YuniKorn queue configuration ──────────────────────
 def claims_for(kind: str) -> list[dict[str, Any]]:
-    """[{leaf, gpu}] this class occupies while it runs — the same precedence
-    admission uses: the declared intents in the supervision instance for this
-    owner kind (max floor per leaf/workload), else the kind's resource-class
-    occupancy. Zero-GPU classes carry no claims."""
+    """[{leaf, gpu}] Signals asserts for the whole activity.
+
+    The run's own workload is its identity token (prospects-update on
+    extract for the whole ProspectsUpdateFlow). A phase that borrows
+    another workload — analyze borrowing the shared embedding seat — is
+    not an activity floor. The processor emits that intent when the step
+    starts. When the owner declares no workload of its own name, every
+    declared intent counts (ambient's embedding seat). No declared
+    intents falls through to the kind's resource class. Zero-GPU classes
+    carry no claims."""
     entry = entry_for(kind)
     if entry is None:
         return []
@@ -383,7 +406,14 @@ def claims_for(kind: str) -> list[dict[str, Any]]:
         spec = None
     if spec is not None:
         by_owner = getattr(spec, "_by_owner", {}) or {}
-        for workload, intents in (by_owner.get(owner) or {}).items():
+        grouped = by_owner.get(owner) or {}
+        own = {
+            workload: intents
+            for workload, intents in grouped.items()
+            if str(workload).replace("_", "-") == owner
+        }
+        chosen = own or grouped
+        for _workload, intents in chosen.items():
             best = max(intents, key=lambda i: (int(i.floor), int(i.priority)))
             leaf = str(best.leaf)
             out[leaf] = max(out.get(leaf, 0), int(best.floor))

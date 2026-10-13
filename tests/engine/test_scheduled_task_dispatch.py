@@ -11,7 +11,54 @@ from gaius.engine.services.cognition_service import CognitionConfig, CognitionSe
 from gaius.engine.services.scheduled_task_processor import (
     ScheduledTask,
     ScheduledTaskProcessor,
+    _dedupe_symbols,
 )
+
+
+def test_dedupe_symbols_keeps_first_seen_order() -> None:
+    assert _dedupe_symbols(["MTN", "LLY"], ["LLY", "DIS"], "XOM") == [
+        "MTN", "LLY", "DIS", "XOM",
+    ]
+    assert _dedupe_symbols(["", "  ", "SLB"]) == ["SLB"]
+    assert _dedupe_symbols({"CHTR": 1, "XOM": 2}) == ["CHTR", "XOM"]
+
+
+class _CheckConn:
+    def __init__(self, raw: object) -> None:
+        self.raw = raw
+
+    async def fetchval(self, sql: str) -> object:
+        assert "prospects_check" in sql
+        assert "completed_at IS NOT NULL" in sql
+        return self.raw
+
+    async def __aenter__(self) -> "_CheckConn":
+        return self
+
+    async def __aexit__(self, *_exc: object) -> bool:
+        return False
+
+
+class _CheckPool:
+    def __init__(self, raw: object) -> None:
+        self.raw = raw
+
+    def acquire(self) -> _CheckConn:
+        return _CheckConn(self.raw)
+
+
+@pytest.mark.asyncio
+async def test_update_symbols_come_from_the_latest_check_result() -> None:
+    proc = ScheduledTaskProcessor(database_url="postgres://unused")
+    proc._pool = _CheckPool('{"symbols": ["MTN", "LLY", "MTN", " "]}')
+    assert await proc._symbols_from_latest_check() == ["MTN", "LLY"]
+    proc._pool = _CheckPool({"symbols": ["DIS"]})
+    assert await proc._symbols_from_latest_check() == ["DIS"]
+    proc._pool = _CheckPool(None)
+    assert await proc._symbols_from_latest_check() == []
+    proc._pool = None
+    with pytest.raises(RuntimeError, match="no database pool"):
+        await proc._symbols_from_latest_check()
 
 
 @pytest.mark.asyncio
@@ -207,6 +254,47 @@ def test_prospects_requests_the_platform_metaflow_profile() -> None:
     # And the spawner still defaults to local for everything else.
     sig = inspect.signature(stp.ScheduledTaskProcessor._run_spawned_metaflow)
     assert sig.parameters["metaflow_mode"].default == "local"
+
+
+def test_airflow_ordered_metaflow_does_not_admit_its_own_sentinel() -> None:
+    """Signals already asserted the activity claims. The child records them."""
+    import inspect
+
+    from gaius.engine.services import scheduled_task_processor as stp
+    from gaius.flows.base import GaiusFlow
+
+    src = inspect.getsource(stp.ScheduledTaskProcessor._run_spawned_metaflow)
+    mediated = src[src.index("if mediated:"):src.index("else:")]
+    assert "GAIUS_YK_ACTIVITY_ID" in mediated
+    assert "bind_workload_id" not in mediated
+    assert "apply_and_admit" not in mediated
+    legacy = src[src.index("else:"):src.index("create_subprocess_exec")]
+    assert "bind_workload_id" in legacy
+    assert "apply_and_admit" in legacy
+    assert "GAIUS_YK_APPLICATION_ID" in legacy
+
+    claim = inspect.getsource(GaiusFlow._claim_yk)
+    early = claim[:claim.index("apply_and_admit")]
+    assert "GAIUS_YK_ACTIVITY_ID" in early
+    assert "return" in early
+    assert 'getattr(self, "gpu_tokens", 0)' in claim
+
+
+def test_prospects_check_records_symbols_and_the_update_completes_empty() -> None:
+    """The check does not insert the update. An empty symbol set is not a skip."""
+    import inspect
+
+    from gaius.engine.services import scheduled_task_processor as stp
+
+    src = inspect.getsource(stp.ScheduledTaskProcessor)
+    check = src[src.index("async def handle_prospects_check"):src.index("async def handle_prospects_update")]
+    assert "_enqueue_prospects_update" not in check
+    assert '"symbols": symbols_for_update' in check
+    update = src[src.index("async def handle_prospects_update"):src.index("async def handle_metabase_sync")]
+    assert "nothing to update" in update
+    assert '"skipped"' not in update
+    assert 'metaflow_mode="platform"' in update
+    assert "_symbols_from_latest_check" in update
 
 
 def test_spawned_metaflow_defaults_to_local() -> None:

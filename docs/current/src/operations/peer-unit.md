@@ -103,17 +103,22 @@ the optional AGPL Metabase peer (`:3200` / `:50451`).
 ## YK Applications (resource class, not `root.gaius`)
 
 There is no `root.gaius`. Project is identity (`federation.project=gaius`,
-C2, `Engine/Yield`). `article_curate` and `prospects_update` admit a YK
-Application on **`root.internal.inference.extract`** before the Metaflow
-child starts. Host GPU occupancy is `federation.zndx.org/gpu` only — never
-`nvidia.com/gpu` on the CPU-only sentinel.
+C2, `Engine/Yield`). Airflow orders a Metaflow class; the catalogue
+`claims` are that run's YuniKorn configuration. Signals asserts them
+while the activity is in force. `article_curate` and `prospects_update`
+occupy **`root.internal.inference.extract`** (1 GPU) for that run. The
+Gaius child records `GAIUS_YK_ACTIVITY_ID` and does not apply its own
+sentinel. A class that is still pg_cron-only still admits with
+`apply_and_admit`. Host GPU occupancy is `federation.zndx.org/gpu` only
+— never `nvidia.com/gpu` on the CPU-only sentinel.
 
 `BeginWorkload` refuses exclusive GPU if no admitted Application exists
 (`#YK.00000003.NOAPP`). Intra-node `/tmp/zndx-gpu-leases` stay refuse-only.
-Nested render/extract rides the parent Application id. A live extract
-Application is reused (`bind_workload_id`) — next `/article curate` does
-not mint a new `app-id`. Teardown is Yield (or host-child exit). Do not
-call YuniKorn REST; observe via Signals
+Nested render/extract rides the parent Application id. A pg_cron child
+still reuses a live extract Application (`bind_workload_id`). Teardown of
+a sentinel this process minted is Yield (or host-child exit). Signals
+retracts an Airflow activity's queue configuration when the engine
+releases the activity. Do not call YuniKorn REST; observe via Signals
 `zndx.scheduler.v1.Scheduler/ListQueueApplications`.
 
 ## Always-on survey → morning sitrep
@@ -122,22 +127,22 @@ Gaius is meant to stay on: survey the world and condense it so a morning
 sitrep (or a conversation about that sitrep) is already written. That work
 is **YK occupancy**, not silent host CUDA.
 
-| Clock (pg_cron, UTC) | Host child | YK leaf |
-|----------------------|------------|---------|
-| `0 7 * * *` `prospects-daily-check` | FMP triage (API, no GPU) | **`root.external.rate-metered`** — admit, then delete (comes and goes) |
-| then `prospects_update` if recommended | docling / filings / sitrep | **bind** live extract Application |
-| else `record_availability` | History heartbeat (`kind=maintained`) | no new GPU claim |
+| Clock | Host child | YK configuration |
+|-------|------------|------------------|
+| Airflow `gaius_prospects_check`, `0 7 * * *` UTC | FMP triage (API, no GPU) | catalogue claim, if any, asserted by Signals for that activity |
+| Airflow `gaius_prospects_update`, when the check's ended Asset fires | docling / filings / sitrep, or a completed no-op when the check recorded no symbols | Signals asserts **extract** (1 GPU) for the activity. The analyze phase requests the shared embedding seat on **light** when that step starts. Gaius does not bind a sentinel |
+| check with nothing new | `record_availability` heartbeat (`kind=maintained`) plus the symbol list on the check result | the update run still starts and completes with `nothing to update` |
+| Airflow `gaius_article_curate`, `7 9 * * *` UTC | article pipeline | Signals asserts **extract** (1 GPU) for the activity |
+| Engine start (default) / `/ambient stop` | RAM FIFO; Qwen think-summarize when extract is admitted | **`root.internal.compute`** standing (`gaius-ambient`); summarization **binds extract**. Yield **pauses GPU**, buffer stays. |
 
 `gaius.prospects.corpus` stays current **without a human or ACP hop**.
 `gaius.service` (under `signals.target`) keeps `ScheduledTaskProcessor`
 listening. Engine start **catch-up** inserts `prospects_check` when the
-24h cooldown is due, so a recycle cannot skip a day. HX and product
-objects use RustFS `s3://signals-dataproducts/gaius/…`, not devenv
-MinIO. A reused extract Application is **not** deleted when update ends.
-Airflow remains the federation-wide clock for `@kubernetes` platform
-flows; this peer cadence is pg_cron + LISTEN while the unit is up.
-| `0 9 * * *` `article-curate-daily` | article pipeline | **bind** same extract `app-id` |
-| Engine start (default) / `/ambient stop` | RAM FIFO; Qwen think-summarize when extract is admitted | **`root.internal.compute`** standing (`gaius-ambient`); summarization **binds extract**. Yield **pauses GPU**, buffer stays. |
+24h cooldown is due, so a recycle cannot skip a day. It does not insert
+`prospects_update`; that DAG follows the check. HX and product objects
+use RustFS `s3://signals-dataproducts/gaius/…`, not devenv MinIO.
+Signals retracts the activity's queue configuration when the engine
+releases the activity.
 
 One extract Application holds `federation.zndx.org/gpu=1` of parent
 `internal.inference` max 6. Ægir and Atelier keep **instruct / reasoning /

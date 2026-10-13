@@ -38,7 +38,9 @@ stream and is redialled; a Signals that predates the Activity RPCs
   engine restart never double-runs), heartbeats the lease every 60 s while the
   row is queued or in flight, and RELEASES the activity when the row books a
   terminal outcome — which completes the Airflow ``hold`` sensor and retracts
-  the queue configuration. A deferral (YuniKorn backpressure) is retried while
+  the queue configuration. The activity's ``claims`` are the YuniKorn
+  configuration for that run. An Airflow-ordered Metaflow child does not
+  apply its own sentinel. A deferral (YuniKorn backpressure) is retried while
   the activity is in force. pg_cron is NOT a fallback for enabled kinds — that
   hid WatchActivities STREAMDROP for days. Missed Airflow ticks and a dead
   watch stream are first-class failures on Engine/Status.
@@ -711,6 +713,7 @@ class CoordinationWatcher:
                 "article_curate": 40 * 3600,
                 "agenda_brief": 36 * 3600,
                 "prospects_check": 36 * 3600,
+                "prospects_update": 36 * 3600,
                 "weekly_signals_summary": 10 * 86400,
                 "theta_cycle": THETA_TICK_LIMIT_S,
                 "publish_cards": 30 * 3600,

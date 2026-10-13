@@ -176,8 +176,8 @@ def emit_prospects_update(result: dict[str, Any], root: Path | None = None) -> A
             f"Symbols: {sym}.\n\n"
             f"{detail}\n"
             "\n"
-            "- [ ] Re-admit on a prospects-update claim, not the standing "
-            "article-curate pod\n"
+            "- [ ] The next gaius_prospects_update Airflow run retries; "
+            "Signals asserts its extract claim for that run\n"
         )
         return upsert(
             kind="list",

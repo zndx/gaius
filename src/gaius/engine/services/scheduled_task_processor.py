@@ -13,7 +13,10 @@ Design:
 - Marks owned tasks complete with result/error
 - Prospects check/update catch up on engine start after 07:00 UTC
   so a recycle cannot skip the daily Data Product clock, and does
-  not steal Airflow's 07:00 tick.
+  not steal Airflow's 07:00 tick. The check records symbols. Airflow
+  starts the update when that run ends; Signals asserts the extract
+  claim. This processor does not insert the update row, and an
+  Airflow-ordered Metaflow child does not apply its own sentinel.
 - Due pickup is non-blocking (create_task). A LuxCore enrich must
   not stall LISTEN / board_reindex. publish_cards is a singleton.
 
@@ -50,6 +53,25 @@ logger = logging.getLogger(__name__)
 # task-watchdog (migration 20260904000002) resets on 45 min of SILENCE since
 # the last heartbeat, never on age since pick-up.
 HEARTBEAT_INTERVAL_S = 60.0
+
+
+def _dedupe_symbols(*groups: Any) -> list[str]:
+    """Stable union of symbol groups. A bare string is one symbol."""
+    out: list[str] = []
+    for group in groups:
+        if group is None:
+            continue
+        if isinstance(group, str):
+            items: list[Any] = [group]
+        elif isinstance(group, dict):
+            items = list(group.keys())
+        else:
+            items = list(group)
+        for item in items:
+            text = str(item).strip()
+            if text and text not in out:
+                out.append(text)
+    return out
 
 
 def _ms(ts: Any) -> int:
@@ -196,6 +218,7 @@ SINGLETON_TASK_TYPES = frozenset(
         "fmp_roll",
         "ambient_synthesis",
         "theta_cycle",
+        "prospects_update",
     }
 )
 
@@ -282,6 +305,11 @@ class ScheduledTaskProcessor(BaseDaemon):
         after start. A flow whose datastore is the Signals system of record
         must ask for "platform": it calls ``require_signals_metaflow()`` and
         fail-fasts on a local datastore.
+
+        An Airflow-ordered run (``source=airflow`` or a payload ``activity_id``)
+        does not apply a sentinel. Signals already asserted the catalogue
+        claims for that activity. A pg_cron child still admits its own
+        Application until that class moves to Airflow.
         """
         import time
 
@@ -301,148 +329,158 @@ class ScheduledTaskProcessor(BaseDaemon):
         )
 
         proposed = workload_id_for(kind, task.id)
-        try:
-            # Off-loop: the bind may Yield a lower-priority holder (C2 round
-            # trip) when the leaf is at cap.
-            wid = await asyncio.to_thread(bind_workload_id, kind, proposed)
-        except YkAdmitError as e:
-            if GURU_ENVELOPE in str(e):
-                # (2026-09-04) The leaf is full and every holder outranks us:
-                # YuniKorn backpressure. A deferral, not a failure — the
-                # cadence retries (07:00: clt_skos_admit errored in 1 s
-                # against the CLT probe + an ambient run's embedding).
-                logger.warning(
-                    "%s deferred: %s's leaf at cap, no lower-priority holder to yield — "
-                    "next cadence tick retries (%s)",
-                    log_prefix, kind, str(e)[:160].replace("\n", " "),
-                )
-                return {
-                    "status": "deferred",
-                    "reason": "yk_envelope",
-                    "error": str(e)[:300],
-                    "workload_id": proposed,
-                }
-            logger.error(f"{log_prefix} YK bind failed: {e}")
-            return {"status": "error", "error": str(e), "workload_id": proposed}
-        minted = True
+        activity_id = str((task.payload or {}).get("activity_id") or "").strip()
+        mediated = (task.source or "") == "airflow" or bool(activity_id)
         from gaius.flows.config import metaflow_child_env
 
-        # Sentinel-spawned ticks run on this host (YK pause pod + host CUDA).
-        # Platform profile (@kubernetes / S3) hangs the step after start —
-        # except for flows that read/write the Signals datastore, which pass
-        # metaflow_mode="platform" and have no @kubernetes steps.
         env = metaflow_child_env(mode=metaflow_mode)
-        env["GAIUS_YK_APPLICATION_ID"] = wid
         env["GAIUS_YK_KIND"] = kind
         cwd = os.environ.get("GAIUS_ROOT", "/home/rch/local/src/zndx/gaius")
         table = flow_processes()
-        try:
-            # Off-loop: the admit wait (up to GPU_ADMIT_TIMEOUT_S) must never
-            # block the engine's event loop.
-            await asyncio.to_thread(apply_and_admit, wid, kind)
-        except YkAdmitError as e:
-            if GURU_PRECLUDED in str(e):
-                # (2026-09-06) A RUNNING coordination Activity (a peer's declared
-                # run in the Signals Airflow) precludes this class's leaf. A
-                # declared deferral — not a timeout, not a failure; the cadence
-                # retries once the activity ends. No admit-timeout forecast: no
-                # window was waited out.
-                logger.warning(
-                    "%s deferred: %s's leaf precluded by a coordination activity — "
-                    "next cadence tick retries (%s)",
-                    log_prefix, kind, str(e)[:200].replace("\n", " "),
-                )
-                await asyncio.to_thread(delete_flow_sentinel, wid)
-                return {
-                    "status": "deferred",
-                    "reason": "yk_precluded",
-                    "error": str(e)[:300],
-                    "workload_id": wid,
-                }
-            logger.error(f"{log_prefix} YK admit failed: {e}")
-            await asyncio.to_thread(delete_flow_sentinel, wid)
-            # Efficacy ledger (timeout doctrine): the admission timeout is
-            # INCONCLUSIVE about the workload ("would it have been
-            # admitted?") — it is not evidence the queue is broken. What
-            # it IS evidence of gets its own theory: forecast, crisply
-            # resolvable against runs_v3 (is a curation-class flow
-            # occupying the queue right now?). Last night's Sweeps 12–14
-            # showed exactly this verdict being wrong on every curation
-            # window and self-resolving on retry.
+        if mediated:
+            wid = activity_id or proposed
+            minted = False
+            env["GAIUS_YK_ACTIVITY_ID"] = wid
+            logger.info(
+                "%s activity %s: Signals holds the YK claims; no peer sentinel",
+                log_prefix,
+                wid,
+            )
+        else:
             try:
-                from gaius.engine.fsm import (
-                    ADMIT_NOTADMITTED,
-                    position_for_admission,
-                )
-                from gaius.engine.services.efficacy_ledger import get_ledger
-
-                ledger = get_ledger()
-                if ledger is not None:
-                    pos = position_for_admission(kind, ADMIT_NOTADMITTED)
-                    await ledger.record_forecast(
-                        observer="timeout:yk.admit",
-                        observer_kind="timeout",
-                        call_site="scheduled_task_processor._run_spawned_metaflow",
-                        proposition=f"workload {wid} admitted within window",
-                        verdict="inconclusive",
-                        evidence={"kind": kind, "error": str(e)[:300]},
-                        side_effect="spawn_failed",
-                        position=pos,
+                # Off-loop: the bind may Yield a lower-priority holder (C2
+                # round trip) when the leaf is at cap.
+                wid = await asyncio.to_thread(bind_workload_id, kind, proposed)
+            except YkAdmitError as e:
+                if GURU_ENVELOPE in str(e):
+                    # (2026-09-04) The leaf is full and every holder outranks us:
+                    # YuniKorn backpressure. A deferral, not a failure — the
+                    # cadence retries (07:00: clt_skos_admit errored in 1 s
+                    # against the CLT probe + an ambient run's embedding).
+                    logger.warning(
+                        "%s deferred: %s's leaf at cap, no lower-priority holder to yield — "
+                        "next cadence tick retries (%s)",
+                        log_prefix, kind, str(e)[:160].replace("\n", " "),
                     )
+                    return {
+                        "status": "deferred",
+                        "reason": "yk_envelope",
+                        "error": str(e)[:300],
+                        "workload_id": proposed,
+                    }
+                logger.error(f"{log_prefix} YK bind failed: {e}")
+                return {"status": "error", "error": str(e), "workload_id": proposed}
+            minted = True
+            # pg_cron children still place their own Application. Airflow
+            # runs do not reach this branch.
+            env["GAIUS_YK_APPLICATION_ID"] = wid
+            try:
+                # Off-loop: the admit wait (up to GPU_ADMIT_TIMEOUT_S) must never
+                # block the engine's event loop.
+                await asyncio.to_thread(apply_and_admit, wid, kind)
+            except YkAdmitError as e:
+                if GURU_PRECLUDED in str(e):
+                    # (2026-09-06) A RUNNING coordination Activity (a peer's declared
+                    # run in the Signals Airflow) precludes this class's leaf. A
+                    # declared deferral — not a timeout, not a failure; the cadence
+                    # retries once the activity ends. No admit-timeout forecast: no
+                    # window was waited out.
+                    logger.warning(
+                        "%s deferred: %s's leaf precluded by a coordination activity — "
+                        "next cadence tick retries (%s)",
+                        log_prefix, kind, str(e)[:200].replace("\n", " "),
+                    )
+                    await asyncio.to_thread(delete_flow_sentinel, wid)
+                    return {
+                        "status": "deferred",
+                        "reason": "yk_precluded",
+                        "error": str(e)[:300],
+                        "workload_id": wid,
+                    }
+                logger.error(f"{log_prefix} YK admit failed: {e}")
+                await asyncio.to_thread(delete_flow_sentinel, wid)
+                # Efficacy ledger (timeout doctrine): the admission timeout is
+                # INCONCLUSIVE about the workload ("would it have been
+                # admitted?") — it is not evidence the queue is broken. What
+                # it IS evidence of gets its own theory: forecast, crisply
+                # resolvable against runs_v3 (is a curation-class flow
+                # occupying the queue right now?). Last night's Sweeps 12–14
+                # showed exactly this verdict being wrong on every curation
+                # window and self-resolving on retry.
+                try:
+                    from gaius.engine.fsm import (
+                        ADMIT_NOTADMITTED,
+                        position_for_admission,
+                    )
+                    from gaius.engine.services.efficacy_ledger import get_ledger
+
+                    ledger = get_ledger()
+                    if ledger is not None:
+                        pos = position_for_admission(kind, ADMIT_NOTADMITTED)
+                        await ledger.record_forecast(
+                            observer="timeout:yk.admit",
+                            observer_kind="timeout",
+                            call_site="scheduled_task_processor._run_spawned_metaflow",
+                            proposition=f"workload {wid} admitted within window",
+                            verdict="inconclusive",
+                            evidence={"kind": kind, "error": str(e)[:300]},
+                            side_effect="spawn_failed",
+                            position=pos,
+                        )
+                        await ledger.record_forecast(
+                            observer="theory:yk.queue_starved",
+                            observer_kind="theory",
+                            call_site="scheduled_task_processor._run_spawned_metaflow",
+                            proposition=(
+                                f"a long-running flow occupies {kind}'s queue "
+                                f"during task {task.id}"
+                            ),
+                            verdict="pass",
+                            p=0.7,
+                            evidence={"kind": kind, "workload_id": wid},
+                            position=pos,
+                        )
+                except Exception:  # noqa: BLE001 — ledger is fail-open
+                    logger.debug("ledger record for YK admit skipped", exc_info=True)
+                if GURU_NOTADMITTED in str(e) or GURU_ENVELOPE in str(e):
+                    # Not placed within the admit net / leaf at cap: YK backpressure
+                    # is a deferral (the cadence retries), never a failure row.
+                    return {
+                        "status": "deferred",
+                        "reason": "yk_admission",
+                        "error": str(e)[:300],
+                        "workload_id": wid,
+                    }
+                return {"status": "error", "error": str(e), "workload_id": wid}
+            # Efficacy ledger: the Signals arbiter's apply latency is itself a
+            # forecast — "share APPLIED within QUEUE_SHARE_APPLY_EXPECTED_S" —
+            # scored like every other observer. The wait in queue_share is
+            # progress-based (APPLYING resets patience under an outer net); it
+            # hands its outcome back through LAST_APPLY_WAIT for this row.
+            try:
+                from gaius.core.budgets import QUEUE_SHARE_APPLY_EXPECTED_S
+                from gaius.engine import queue_share as _qs
+                from gaius.engine.services.efficacy_ledger import get_ledger
+                w = _qs.LAST_APPLY_WAIT.pop(kind.replace("_", "-"), None)
+                ledger = get_ledger()
+                if w and ledger is not None:
+                    applied = w.get("final_state") == "APPLIED"
+                    elapsed_s = float(w.get("elapsed_s") or 0.0)
+                    within = applied and elapsed_s <= QUEUE_SHARE_APPLY_EXPECTED_S
                     await ledger.record_forecast(
-                        observer="theory:yk.queue_starved",
-                        observer_kind="theory",
+                        observer="probe:queue_share.apply",
+                        observer_kind="probe",
                         call_site="scheduled_task_processor._run_spawned_metaflow",
                         proposition=(
-                            f"a long-running flow occupies {kind}'s queue "
-                            f"during task {task.id}"
+                            f"queue share for {kind} APPLIED within "
+                            f"{QUEUE_SHARE_APPLY_EXPECTED_S:.0f}s"
                         ),
-                        verdict="pass",
-                        p=0.7,
-                        evidence={"kind": kind, "workload_id": wid},
-                        position=pos,
+                        verdict="pass" if within else ("fail" if applied else "inconclusive"),
+                        evidence=w,
+                        elapsed_ms=int(elapsed_s * 1000),
                     )
             except Exception:  # noqa: BLE001 — ledger is fail-open
-                logger.debug("ledger record for YK admit skipped", exc_info=True)
-            if GURU_NOTADMITTED in str(e) or GURU_ENVELOPE in str(e):
-                # Not placed within the admit net / leaf at cap: YK backpressure
-                # is a deferral (the cadence retries), never a failure row.
-                return {
-                    "status": "deferred",
-                    "reason": "yk_admission",
-                    "error": str(e)[:300],
-                    "workload_id": wid,
-                }
-            return {"status": "error", "error": str(e), "workload_id": wid}
-        # Efficacy ledger: the Signals arbiter's apply latency is itself a
-        # forecast — "share APPLIED within QUEUE_SHARE_APPLY_EXPECTED_S" —
-        # scored like every other observer. The wait in queue_share is
-        # progress-based (APPLYING resets patience under an outer net); it
-        # hands its outcome back through LAST_APPLY_WAIT for this row.
-        try:
-            from gaius.core.budgets import QUEUE_SHARE_APPLY_EXPECTED_S
-            from gaius.engine import queue_share as _qs
-            from gaius.engine.services.efficacy_ledger import get_ledger
-            w = _qs.LAST_APPLY_WAIT.pop(kind.replace("_", "-"), None)
-            ledger = get_ledger()
-            if w and ledger is not None:
-                applied = w.get("final_state") == "APPLIED"
-                elapsed_s = float(w.get("elapsed_s") or 0.0)
-                within = applied and elapsed_s <= QUEUE_SHARE_APPLY_EXPECTED_S
-                await ledger.record_forecast(
-                    observer="probe:queue_share.apply",
-                    observer_kind="probe",
-                    call_site="scheduled_task_processor._run_spawned_metaflow",
-                    proposition=(
-                        f"queue share for {kind} APPLIED within "
-                        f"{QUEUE_SHARE_APPLY_EXPECTED_S:.0f}s"
-                    ),
-                    verdict="pass" if within else ("fail" if applied else "inconclusive"),
-                    evidence=w,
-                    elapsed_ms=int(elapsed_s * 1000),
-                )
-        except Exception:  # noqa: BLE001 — ledger is fail-open
-            logger.debug("ledger record for queue-share apply skipped", exc_info=True)
+                logger.debug("ledger record for queue-share apply skipped", exc_info=True)
         try:
             proc = await asyncio.create_subprocess_exec(
                 *argv,
@@ -976,11 +1014,10 @@ class ScheduledTaskProcessor(BaseDaemon):
             )
 
         async def handle_prospects_check(task: ScheduledTask) -> dict[str, Any]:
-            """Handle prospects_check task — lightweight daily FMP check.
+            """Daily FMP check. Records the symbol set; does not start the update.
 
-            Creates a fresh ProspectsService, runs the check, and if updates
-            are recommended, schedules a prospects_update task with the
-            relevant symbols.
+            Airflow starts ``gaius_prospects_update`` when this run's ended
+            Asset fires. The update reads ``symbols`` from this result.
             """
             from .prospects_service import ProspectsService, ProspectsConfig
 
@@ -1005,19 +1042,12 @@ class ScheduledTaskProcessor(BaseDaemon):
                     f"reason={result.get('reason', 'none')}"
                 )
 
-                # If update recommended, schedule prospects_update task
-                # (only if no pending prospects_update task exists)
+                symbols_for_update: list[str] = []
                 if result.get("update_recommended"):
-                    symbols = result.get("symbols_with_new_filings", [])
-                    # Also include symbols with pending analysis/synthesis
-                    pending_symbols = list(result.get("pending_analysis_by_symbol", {}).keys())
-                    synthesis_symbols = result.get("pending_synthesis_symbols", [])
-                    all_symbols = list(set(symbols + pending_symbols + synthesis_symbols))
-
-                    if all_symbols:
-                        await self._enqueue_prospects_update(
-                            all_symbols, source="prospects_check"
-                        )
+                    filings = result.get("symbols_with_new_filings") or []
+                    pending = list((result.get("pending_analysis_by_symbol") or {}).keys())
+                    synthesis = result.get("pending_synthesis_symbols") or []
+                    symbols_for_update = _dedupe_symbols(filings, pending, synthesis)
                 else:
                     from gaius.flows.prospects.publish import record_availability
 
@@ -1046,32 +1076,42 @@ class ScheduledTaskProcessor(BaseDaemon):
                     if avail.get("needs_update"):
                         from gaius.flows.prospects.flow import load_watchlist
 
-                        watch = [
+                        symbols_for_update = _dedupe_symbols(
                             str(e.get("symbol"))
                             for e in load_watchlist()
                             if e.get("symbol")
-                        ]
-                        if watch:
-                            await self._enqueue_prospects_update(
-                                watch, source="prospects_maintain"
-                            )
+                        )
 
                 return {
                     "update_recommended": result.get("update_recommended", False),
                     "reason": result.get("reason", ""),
                     "new_filings_count": result.get("new_filings_count", 0),
                     "symbols_checked": len(result.get("symbols_with_new_filings", [])),
+                    "symbols": symbols_for_update,
                     "availability": result.get("availability"),
                 }
             finally:
                 await service.stop()
 
         async def handle_prospects_update(task: ScheduledTask) -> dict[str, Any]:
-            """ProspectsUpdateFlow via Metaflow CLI (Yield-visible child)."""
-            symbols = task.payload.get("symbols", [])
+            """ProspectsUpdateFlow via Metaflow. Airflow orders it; Signals admits it.
+
+            The catalogue payload has no symbols. An explicit payload list
+            (a hand-enqueued row) wins; otherwise the latest successful
+            prospects_check result supplies them. An empty set completes.
+            A skip would fail the Airflow lease (#CO.0000000F.NOEFFECT).
+            """
+            raw = (task.payload or {}).get("symbols") or []
+            symbols = _dedupe_symbols(raw)
             if not symbols:
-                logger.warning("prospects_update task has no symbols in payload")
-                return {"status": "skipped", "reason": "no symbols"}
+                symbols = await self._symbols_from_latest_check()
+            if not symbols:
+                logger.info("prospects_update: check recorded no symbols")
+                return {
+                    "status": "completed",
+                    "reason": "nothing to update",
+                    "symbols": [],
+                }
             symbols_csv = ",".join(symbols)
             # force=true re-analyzes all extracted filings and
             # re-synthesizes positions — the recovery lever for
@@ -1577,40 +1617,41 @@ class ScheduledTaskProcessor(BaseDaemon):
             )
         logger.info("Scheduled knowledge_summary from %s week=%s", source, week)
 
-    async def _enqueue_prospects_update(
-        self, symbols: list[str], *, source: str
-    ) -> None:
-        if not self._pool or not symbols:
-            return
+    async def _symbols_from_latest_check(self) -> list[str]:
+        """Symbols the latest successful prospects_check stored for the update.
+
+        Airflow's update payload is the catalogue payload (no symbols). The
+        check row is the handoff. A missing pool is a failure: completing
+        with an empty set would release the activity as if there were
+        nothing to update.
+        """
+        if not self._pool:
+            raise RuntimeError(
+                "ScheduledTaskProcessor has no database pool; "
+                "cannot read prospects_check symbols.\n"
+                "  Try: /health fix postgres"
+            )
         async with self._pool.acquire() as conn:
-            pending_count = await conn.fetchval(
+            raw = await conn.fetchval(
                 """
-                SELECT COUNT(*) FROM scheduled_tasks
-                WHERE task_type = 'prospects_update'
-                  AND picked_up_at IS NULL
-                  AND completed_at IS NULL
-                """,
-            )
-            if pending_count:
-                logger.info(
-                    "Skipping prospects_update scheduling: %s pending",
-                    pending_count,
-                )
-                return
-            await conn.execute(
+                SELECT result FROM scheduled_tasks
+                WHERE task_type = 'prospects_check'
+                  AND completed_at IS NOT NULL
+                  AND COALESCE(error, '') = ''
+                ORDER BY completed_at DESC
+                LIMIT 1
                 """
-                INSERT INTO scheduled_tasks (task_type, payload, source, scheduled_for)
-                VALUES ('prospects_update', $1, $2, NOW())
-                """,
-                json.dumps({"symbols": symbols}),
-                source,
             )
-        logger.info(
-            "Scheduled prospects_update from %s for %s symbols: %s",
-            source,
-            len(symbols),
-            ", ".join(symbols),
-        )
+        if raw is None:
+            return []
+        if isinstance(raw, str):
+            try:
+                raw = json.loads(raw)
+            except json.JSONDecodeError:
+                return []
+        if not isinstance(raw, dict):
+            return []
+        return _dedupe_symbols(raw.get("symbols") or [])
 
     async def _catch_up_prospects(self) -> None:
         """Re-arm the daily clock after engine recycle; run leftover tasks.
