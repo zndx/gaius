@@ -94,6 +94,8 @@ def _init_telemetry(config: "TelemetryConfig", entry_point: str = "cli") -> None
             "service.version": "0.2.0",
             "service.instance.id": f"{socket.gethostname()}-{os.getpid()}",
             "deployment.environment.name": os.getenv("GAIUS_ENV", "dev"),
+            # Phoenix groups projects by this attribute, not service.namespace.
+            "openinference.project.name": "gaius",
         })
 
         # Setup tracer
