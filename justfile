@@ -593,6 +593,27 @@ k8s-cleanup:
       echo "✓ No orphaned IPs to clean up"
     fi
 
+# Build grok from the Grok Build fork and install it as ~/.local/bin/grok.
+# Source default is external/oss-grok-build. Point GROK_SRC at a checkout of
+# git@github.com:zndx/oss-grok-build.git when that fork should be built instead.
+# The binary artifact is xai-grok-pager; OptAgent and this UI invoke it as grok.
+grok-build src="":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    root="${GROK_SRC:-{{src}}}"
+    if [[ -z "$root" ]]; then
+      root="external/oss-grok-build"
+    fi
+    if [[ ! -f "$root/Cargo.toml" ]]; then
+      echo "grok source not found at $root" >&2
+      echo "clone git@github.com:zndx/oss-grok-build.git and set GROK_SRC" >&2
+      exit 1
+    fi
+    cargo build -p xai-grok-pager-bin --release --manifest-path "$root/Cargo.toml"
+    install -d "$HOME/.local/bin"
+    install -m 0755 "$root/target/release/xai-grok-pager" "$HOME/.local/bin/grok"
+    echo "installed $HOME/.local/bin/grok"
+
 # Throughput: local vLLM thinking lane vs the Cerebras API on the same model
 # (Qwen3.8-27B), from HX llm.generations. Read-only; never `uv run` beside the engine.
 throughput days="7":
