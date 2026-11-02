@@ -12,6 +12,8 @@ from typing import Optional
 
 from PIL import Image
 
+from gaius.core.chromium_hold import refuse_chromium_156
+
 try:
     from selenium import webdriver
     from selenium.webdriver.chrome.options import Options
@@ -77,6 +79,9 @@ class NiFiScreenshotCapture:
                 "chromium not found in PATH. "
                 "Add 'chromium' to devenv.nix packages."
             )
+
+        # Milestone 156 must not navigate. --version does not open a page.
+        refuse_chromium_156(chromium_path)
 
         # Configure Chrome options
         options = Options()

@@ -8,6 +8,12 @@ Complete catalog of error codes used across the Gaius platform.
 
 ## Catalog
 
+### BR — Browser
+
+| Code | Description | Fix |
+|------|-------------|-----|
+| `#BR.00000001.CHROMIUM156` | Chromium 156 was refused before launch. That milestone has active CVEs, including sandbox escape from a crafted page, and must not make a web request. Other milestones are not this hold. | Use a Chromium whose major version is not 156. Do not `playwright install` a 156 browser. Cognition cycles do not launch Chromium. |
+
 ### DS — DatasetService
 
 | Code | Description | Fix |
