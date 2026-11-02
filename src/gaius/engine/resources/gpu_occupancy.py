@@ -97,6 +97,39 @@ def list_occupants(query=None, command_of=None) -> list[GpuOccupant]:
     return found
 
 
+def card_for_clt(
+    preferred: int,
+    *,
+    occupants: list[GpuOccupant] | None = None,
+    cards: int = 6,
+) -> int:
+    """A whole card for CLT.
+
+    ``preferred`` wins when no other model holds it. Otherwise the highest
+    index that is free. CLT does not share a card with thinking, Aegir, or
+    any other resident above the share floor.
+    """
+    rows = list_occupants() if occupants is None else occupants
+
+    def shared(gpu: int) -> bool:
+        return any(
+            occ.gpu == gpu
+            and occ.workload != "clt"
+            and occ.memory_mib > _SHARE_FLOOR_MIB
+            for occ in rows
+        )
+
+    if not shared(preferred):
+        return int(preferred)
+    for gpu in range(cards - 1, -1, -1):
+        if not shared(gpu):
+            return gpu
+    raise RuntimeError(
+        "#CLT.00000001.NOGPU no whole card is free of another model.\n"
+        "  CLT does not share a GPU."
+    )
+
+
 def occupants_to_yield(
     occupants: list[GpuOccupant],
     *,

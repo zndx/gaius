@@ -14,6 +14,7 @@ for wire format compatibility.
 
 import asyncio
 import logging
+import os
 import subprocess
 import time
 from dataclasses import dataclass, field
@@ -202,7 +203,18 @@ _DEPENDENCY_MAP: dict[str, tuple[str, list[str]]] = {
     "curation_pipeline": ("metaflow_stack", [
         "metaflow_stack", "landing_page_pipeline", "content_freshness",
     ]),
+    # Primary lane — thinking absent fails the flows that need Complete.
+    # An empty endpoint list is this root, not a healthy steady state.
+    "thinking_absent": ("engine_endpoints", [
+        "engine_endpoints", "vllm_service",
+        "periodic_task_freshness", "content_freshness",
+    ]),
 }
+
+
+def defer_marker_path() -> Path:
+    """Unclean-reboot hold. Present means preload of thinking stays off."""
+    return Path(os.environ.get("GAIUS_DEFER_MARKER", "/var/lib/gaius/defer-gpu"))
 
 
 @dataclass
@@ -291,10 +303,18 @@ class HealthChecker:
                 id="engine_endpoints",
                 name="Engine Endpoints",
                 category="engine",
-                description="vLLM endpoints managed by engine",
+                description="vLLM endpoints managed by engine. Empty is a failure: thinking is the primary lane.",
                 check_fn="_check_endpoints",
                 heuristic_id="inference/endpoint_unhealthy",
                 fix_service="endpoints",
+            ),
+            HealthCheck(
+                id="gpu_workload_hold",
+                name="GPU Workload Hold",
+                category="engine",
+                description="Unclean-reboot defer marker holds thinking preload",
+                check_fn="_check_gpu_defer",
+                heuristic_id="inference/gpu_workload_deferred",
             ),
             HealthCheck(
                 id="engine_serving",
@@ -703,8 +723,10 @@ class HealthChecker:
         # Essential service checks for quick view
         essential_ids = [
             "grpc_connection",         # gRPC to engine
-            "optillm_service",         # Primary inference
-            "vllm_service",            # Fallback inference
+            "engine_endpoints",        # Primary lane (thinking) must be serving
+            "gpu_workload_hold",       # Defer marker holds that lane
+            "optillm_service",         # Proxy in front of the lane
+            "vllm_service",            # Direct thinking HTTP
             "database_connection",     # PostgreSQL (critical)
             "qdrant_service",          # Vector DB
             "s3_rustfs_service",        # Object storage
@@ -817,12 +839,23 @@ class HealthChecker:
                 )
 
             result = await check_method()
+            # A check may name its own fix. "" opts out of the catalog
+            # strategy (the GPU-defer hold must not auto-start a model).
+            explicit_fix = result.fix_service
             result.heuristic_id = check.heuristic_id
-            result.fix_service = check.fix_service
+            if explicit_fix == "":
+                result.fix_service = None
+            elif explicit_fix is None:
+                result.fix_service = check.fix_service
             result.duration_ms = int((time.time() - start_time) * 1000)
 
-            # Add suggestion from heuristic if check failed
-            if result.status in (CheckStatus.WARN, CheckStatus.FAIL) and check.heuristic_id:
+            # Fill a suggestion from the heuristic only when the check
+            # did not already name the remediation.
+            if (
+                result.suggestion is None
+                and result.status in (CheckStatus.WARN, CheckStatus.FAIL)
+                and check.heuristic_id
+            ):
                 heuristic = self.loader.get(check.heuristic_id)
                 if heuristic and heuristic.solution:
                     # Extract first paragraph of solution as suggestion
@@ -942,6 +975,42 @@ class HealthChecker:
                 await asyncio.sleep(0.5)
         return False
 
+    async def _check_gpu_defer(self) -> CheckResult:
+        """Fail when the unclean-reboot marker is still holding thinking.
+
+        crash-guard writes ``/var/lib/gaius/defer-gpu`` and the engine
+        boots without preload. The workload watchdog also stands down
+        while the file exists, so nothing else reports the hold.
+        ``/health`` must not clear it: resume is ``just resume-gpu``.
+        """
+        marker = defer_marker_path()
+        if not marker.is_file():
+            return CheckResult(
+                name="GPU Workload Hold",
+                status=CheckStatus.PASS,
+                message="No GPU-defer marker; primary workloads may start",
+                details={"marker": str(marker)},
+            )
+        age = ""
+        mtime = None
+        try:
+            started = datetime.fromtimestamp(marker.stat().st_mtime)
+            mtime = started.isoformat(timespec="seconds")
+            age = _format_timedelta(datetime.now() - started)
+        except OSError:
+            started = None
+        held_for = f" for {age}" if age else ""
+        return CheckResult(
+            name="GPU Workload Hold",
+            status=CheckStatus.FAIL,
+            message=(
+                f"#EP.00000019.GPUDEFER primary lane held{held_for} "
+                f"({marker}). thinking is not preloaded."
+            ),
+            details={"marker": str(marker), "mtime": mtime},
+            suggestion="just resume-gpu",
+        )
+
     async def _check_endpoints(self) -> CheckResult:
         """Check inference endpoint health."""
         try:
@@ -957,11 +1026,24 @@ class HealthChecker:
             healthy = sum(1 for e in endpoints.values() if isinstance(e, dict) and e.get("status") in healthy_statuses)
 
             if total == 0:
+                held = defer_marker_path().is_file()
                 return CheckResult(
                     name="Engine Endpoints",
-                    status=CheckStatus.WARN,
-                    message="No endpoints configured",
-                    details={"total": 0, "healthy": 0},
+                    status=CheckStatus.FAIL,
+                    message=(
+                        "#EP.00000016.NOTREADY thinking is absent. "
+                        "An empty endpoint list is not a configured steady state."
+                        + (" GPU-defer is holding preload." if held else "")
+                    ),
+                    details={
+                        "total": 0,
+                        "healthy": 0,
+                        "primary": "thinking",
+                        "gpu_defer": held,
+                    },
+                    suggestion="just resume-gpu" if held else "/gpu start thinking",
+                    # Do not auto-start over an operator hold.
+                    fix_service="" if held else None,
                 )
 
             if healthy == 0:
@@ -1392,17 +1474,27 @@ class HealthChecker:
                         unavailable.append(name)
 
             if not available:
+                held = defer_marker_path().is_file()
+                thinking_down = "thinking" in unavailable
                 return CheckResult(
                     name="vLLM Service",
-                    status=CheckStatus.WARN,
-                    message="No vLLM endpoints responding",
+                    status=CheckStatus.FAIL if thinking_down else CheckStatus.WARN,
+                    message=(
+                        "#EP.00000016.NOTREADY thinking is not answering"
+                        if thinking_down
+                        else "No vLLM endpoints responding"
+                    ),
                     details={
-                        "role": "fallback",
+                        "role": "primary" if thinking_down else "fallback",
                         "security": "NO_AUTH",
                         "checked": [e[0] for e in endpoints],
+                        "unavailable": unavailable,
+                        "gpu_defer": held,
                         "note": "Direct HTTP bypasses auth - use gRPC engine for production",
                     },
-                    suggestion="Start vLLM: devenv up vllm",
+                    suggestion=(
+                        "just resume-gpu" if held else "/gpu start thinking"
+                    ),
                 )
 
             if unavailable:
@@ -1852,7 +1944,7 @@ class HealthChecker:
                 return CheckResult(
                     name="Stale Processes",
                     status=CheckStatus.PASS,
-                    message="No vLLM processes running",
+                    message="No vLLM processes (orphan check only; a missing primary lane is Engine Endpoints)",
                     details={"vllm_process_count": 0},
                 )
 
@@ -1950,7 +2042,7 @@ class HealthChecker:
                 return CheckResult(
                     name="Stuck Endpoints",
                     status=CheckStatus.PASS,
-                    message="No endpoints configured",
+                    message="No endpoints in a transitional state",
                     details={"endpoint_count": 0},
                 )
 

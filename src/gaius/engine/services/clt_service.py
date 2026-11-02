@@ -560,9 +560,26 @@ def get_clt_service(
     """
     global _clt_service
 
-    # Default to GPU 4 for backward compatibility
+    # Default to GPU 4 for backward compatibility. If that card already
+    # holds another model (thinking's contiguous block, or a sibling
+    # engine), move to a free card instead of sharing it.
     if gpu_index is None:
         gpu_index = 4
+    from gaius.engine.resources.gpu_occupancy import card_for_clt
+
+    gpu_index = card_for_clt(gpu_index)
+
+    if _clt_service is not None and _clt_service.gpu_index != gpu_index:
+        logger.info(
+            "CLT resident on GPU %s; next card is GPU %s (the previous card is shared)",
+            _clt_service.gpu_index,
+            gpu_index,
+        )
+        try:
+            _clt_service.unload()
+        except Exception as exc:  # noqa: BLE001 — the worker must leave the shared card
+            logger.warning("CLT unload before relocate failed: %s", exc)
+        _clt_service = None
 
     if _clt_service is None:
         _clt_service = CLTService(model_name=model_name, gpu_index=gpu_index)
