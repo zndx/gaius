@@ -561,21 +561,58 @@ def iter_scratch_md(root: Path) -> list[Path]:
     return out
 
 
-STANDING_WEEKLY_RE = re.compile(r"_w\d{2}-summary\.md$")
+STANDING_WEEKLY_RE = re.compile(r"_w(\d{2})-summary\.md$")
 
 
-def find_standing_brief(root: Path, slug: str = "w34-summary") -> AgendaItem | None:
-    """Latest weekly memo card (``*_w34-summary.md``), else latest ``*_wNN-summary``."""
+def iso_week_slug(when: datetime) -> str:
+    """Filename slug for the ISO week of ``when`` (``w45-summary``)."""
+    return f"w{when.isocalendar().week:02d}-summary"
+
+
+def summary_week(path: str) -> int | None:
+    m = STANDING_WEEKLY_RE.search(path or "")
+    return int(m.group(1)) if m else None
+
+
+def _agenda_weekly(root: Path, paths: list[Path]) -> list[AgendaItem]:
+    """Weekly files that are agenda cards. Signals summaries share the name
+    and have no ``kind:`` header; those are not the cognition memo."""
+    out: list[AgendaItem] = []
+    for path in paths:
+        try:
+            item = parse_item(root, path)
+        except OSError:
+            continue
+        if item.explicit_kind:
+            out.append(item)
+    out.sort(key=lambda item: item.path)
+    return out
+
+
+def find_standing_brief(
+    root: Path, slug: str = "", *, now: datetime | None = None
+) -> AgendaItem | None:
+    """Cognition's weekly memo.
+
+    With ``slug``, the latest agenda card of that slug. Otherwise the current
+    ISO week's card, or, if this week has none yet, the latest older agenda
+    card of the same shape (the memo to roll forward). A kind-less
+    ``*_wNN-summary.md`` is a Signals weekly note and is not the memo.
+    """
     root = require_kb(root)
-    preferred = [p for p in iter_scratch_md(root) if p.name.endswith(f"_{slug}.md")]
+    when = now or datetime.now(timezone.utc)
+    target = slug or iso_week_slug(when)
+    preferred = _agenda_weekly(
+        root, [p for p in iter_scratch_md(root) if p.name.endswith(f"_{target}.md")]
+    )
     if preferred:
-        preferred.sort(key=lambda p: p.as_posix())
-        return parse_item(root, preferred[-1])
-    weekly = [p for p in iter_scratch_md(root) if STANDING_WEEKLY_RE.search(p.name)]
-    if not weekly:
+        return preferred[-1]
+    if slug:
         return None
-    weekly.sort(key=lambda p: p.as_posix())
-    return parse_item(root, weekly[-1])
+    older = _agenda_weekly(
+        root, [p for p in iter_scratch_md(root) if STANDING_WEEKLY_RE.search(p.name)]
+    )
+    return older[-1] if older else None
 
 
 def find_by_slug(root: Path, day: str, slug: str) -> Path | None:
@@ -675,6 +712,7 @@ def create_item(
     intent: str = "",
     with_whom: str = "",
     tz_name: str = "",
+    slug: str = "",
     origin_project: str = "",
     origin_agent: str = "",
     session_prompt: str = "",
@@ -700,7 +738,8 @@ def create_item(
     now = now or datetime.now(timezone.utc)
     date_str = now.strftime("%Y-%m-%d")
     time_str = now.strftime("%H%M%S")
-    stem = f"{date_str}-{time_str}_{skewer(title, kind)}"
+    stem_slug = skewer(slug, kind) if (slug or "").strip() else skewer(title, kind)
+    stem = f"{date_str}-{time_str}_{stem_slug}"
     day_dir = root / "scratch" / date_str
     day_dir.mkdir(parents=True, exist_ok=True)
     path = day_dir / f"{stem}.md"

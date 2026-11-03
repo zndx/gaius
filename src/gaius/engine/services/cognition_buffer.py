@@ -108,6 +108,28 @@ def thinking_output_tokens(prompt: str) -> int:
     return left
 
 
+def substitute_slices(template: str, body: str) -> str:
+    """Insert ``body`` at the single ``{slices}`` field.
+
+    Doubled braces in the template are literals (``{{`` → ``{``), the same
+    contract as ``str.format``. Braces inside ``body``, and any other
+    single-brace text already in the template, stay literal.
+    ``str.format(slices=body)`` parses those as fields. A prior compaction
+    summary containing ``{2,3}`` then raises ``KeyError: '2,3'`` and the
+    ambient cycle never reaches the agenda (dark since 2026-10-23).
+    """
+    if template.count("{slices}") != 1:
+        raise RuntimeError(
+            "thinking slice template must contain {slices} exactly once"
+        )
+    sentinel = "\uE000SLICES\uE001"
+    protected = template.replace("{slices}", sentinel)
+    unescaped = protected.replace("{{", "{").replace("}}", "}")
+    if sentinel not in unescaped:
+        raise RuntimeError("thinking slice slot was lost while unescaping braces")
+    return unescaped.replace(sentinel, body)
+
+
 def pack_thinking_slices(
     template: str,
     slices: str,
@@ -124,12 +146,13 @@ def pack_thinking_slices(
         if generation_reserve is None
         else max(1, int(generation_reserve))
     )
-    overhead = thinking_token_count(template.replace("{slices}", ""))
+    static = substitute_slices(template, "")
+    overhead = thinking_token_count(static)
     slice_budget = DEFAULT_SCRATCH_TOKEN_BUDGET - reserve - overhead
     if slice_budget < 1:
         raise RuntimeError("SYNTH_PROMPT leaves no room for Aperture slices")
     body = clip_to_token_budget(slices, slice_budget)
-    return template.format(slices=body)
+    return substitute_slices(template, body)
 
 
 def thinking_read_timeout_s(max_tokens: int) -> float:

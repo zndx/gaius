@@ -21,6 +21,13 @@ from gaius.engine.services.cognition_buffer import (
 
 KEEP_RECENT_TOKENS = 20_000
 
+# One Complete finished a ~100KB FMP roll. Packing ~65k tokens of the
+# ambient backlog (3.4MB live, uncompacted since 2026-10-23) thought to
+# the 131_072 generation ceiling and came back #EP.00000017.TRUNCATED,
+# so the agenda step never ran. Brief about one FMP-sized slice of the
+# oldest prefix per call; the next cycle continues. Entry boundaries only.
+MAX_COMPACT_MATERIAL_TOKENS = 24_000
+
 GURU = (
     "Buffer compaction needs thinking.\n"
     "  Guru: #BUF.00000001.COMPACTFAIL\n"
@@ -93,7 +100,9 @@ def compaction_prompt(material: str, prior: str = "") -> str:
     from gaius.core.budgets import COMPACTION_GENERATION_RESERVE_TOKENS
     from gaius.engine.services.cognition_buffer import pack_thinking_slices
 
-    prior_s = prior or "(none)"
+    # Prior is data. A second str.format would read braces in it ({2,3}, JSON)
+    # as fields. Neutralize a literal {slices} so the material slot stays unique.
+    prior_s = (prior or "(none)").replace("{slices}", "{ slices }")
     tmpl = COMPACT_PROMPT.format(prior=prior_s, material="{slices}")
     return pack_thinking_slices(
         tmpl, material, generation_reserve=COMPACTION_GENERATION_RESERVE_TOKENS
@@ -118,6 +127,21 @@ class CompactionPlan:
     dropped: int
 
 
+def _cap_material(prefix: list, limit: int) -> list:
+    """Oldest entries that fit in one briefing. Always keeps the first."""
+    if limit < 1 or len(prefix) <= 1:
+        return prefix
+    acc = 0
+    take = 0
+    for entry in prefix:
+        tokens = estimate_tokens(getattr(entry, "content", "") or "")
+        if take > 0 and acc + tokens > limit:
+            break
+        acc += tokens
+        take += 1
+    return prefix[:take]
+
+
 def plan_compaction(
     entries: list,
     *,
@@ -134,7 +158,8 @@ def plan_compaction(
         cut = find_cut_index(counts, keep_recent_tokens)
     if cut <= 0:
         return None
-    prefix = entries[:cut]
+    prefix = _cap_material(entries[:cut], MAX_COMPACT_MATERIAL_TOKENS)
+    cut = len(prefix)
     kept = entries[cut:]
     prior = ""
     for e in reversed(entries[:cut]):

@@ -396,14 +396,27 @@ async def run_synthesis_cycle(
 
     standing = find_standing_brief(kb_root_from_env())
     if standing is not None:
+        from gaius.engine.services.agenda_notes import summary_week
+
+        week = datetime.now(timezone.utc).isocalendar().week
+        stale = summary_week(standing.path) not in (None, week)
+        # Do not mention the filename slug. The model used "w45-summary" as
+        # the letter's title on the first roll-forward.
+        lead = (
+            f"Write this week's letter (ISO week {week}). "
+            "The memo below is a previous week. Do not keep its week number. "
+            "The title is one sentence an executive would recognize, not a filename or a week id.\n"
+            if stale
+            else (
+                f"REPLACE this weekly memo (ISO week {week}). "
+                "Write one letter in natural-register prose. "
+                "The title is one sentence, not a filename.\n"
+            )
+        )
         slices.append(
             {
                 "source": "agenda_standing_brief",
-                "content": (
-                    f"REPLACE this weekly memo (path={standing.path}). "
-                    "Write one letter in natural-register prose.\n"
-                    f"# {standing.title}\n{standing.body}"
-                ),
+                "content": lead + f"# {standing.title}\n{standing.body}",
             }
         )
     episode_id = str(uuid.uuid4())
@@ -524,6 +537,21 @@ async def run_synthesis_cycle(
     }
 
 
+def _counts_as_open(item: Any) -> bool:
+    """A reminder whose boxes are all ticked is not an open density slot.
+
+    Prospects-failure lists stay in the 7-day window after a clean run ticks
+    them. Counting those as open filled the reminder budget with resolved
+    failures and left the agenda with nothing new to book.
+    """
+    if getattr(item, "intent", "") != "reminder":
+        return True
+    checks = list(getattr(item, "checks", None) or [])
+    if not checks:
+        return True
+    return any(not c.get("done") for c in checks)
+
+
 async def insert_agenda(
     pool: Any,
     episode_id: str,
@@ -544,9 +572,11 @@ async def insert_agenda(
     from gaius.engine.services.agenda_notes import (
         create_item,
         find_standing_brief,
+        iso_week_slug,
         kb_root_from_env,
         list_items,
         parse_when,
+        summary_week,
         update_item,
     )
 
@@ -556,7 +586,7 @@ async def insert_agenda(
     surface_counts = {"session": 0, "brief": 0, "reminder": 0}
     surface_dues: list[datetime] = []
     for it in surface:
-        if it.intent in surface_counts:
+        if it.intent in surface_counts and _counts_as_open(it):
             surface_counts[it.intent] += 1
         if it.intent == "session" and it.starts:
             dt = parse_when(it.starts)
@@ -608,16 +638,34 @@ async def insert_agenda(
                     list(standing.tags or []) + ["cognition", "memo", "weekly"]
                 )
             )
-            update_item(
-                root,
-                standing.path,
-                kind="note",
-                title=title[:240],
-                body=body,
-                intent="brief",
-                pin=True,
-                tags=tags,
-            )
+            file_week = summary_week(standing.path)
+            # An August w34 memo edited in place stays outside the agenda
+            # horizon, so the surface keeps showing only failure reminders.
+            # Roll once onto this ISO week's card; later cycles edit that card.
+            if file_week is not None and file_week != now.isocalendar().week:
+                update_item(root, standing.path, pin=False)
+                create_item(
+                    root,
+                    kind="note",
+                    title=title[:240],
+                    body=body,
+                    intent="brief",
+                    pin=True,
+                    tags=tags,
+                    now=now,
+                    slug=iso_week_slug(now),
+                )
+            else:
+                update_item(
+                    root,
+                    standing.path,
+                    kind="note",
+                    title=title[:240],
+                    body=body,
+                    intent="brief",
+                    pin=True,
+                    tags=tags,
+                )
             await conn.execute(
                 """
                 INSERT INTO agenda_entries

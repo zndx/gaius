@@ -43,6 +43,19 @@ def test_clip_uses_tokenizer_ids_not_char_heuristic(char_tok: None) -> None:
     assert clip_to_token_budget("abcdefghij", 4) == "abcd"
 
 
+def test_pack_leaves_braces_in_the_evidence_literal(char_tok: None) -> None:
+    from gaius.engine.services.cognition_buffer import substitute_slices
+    from gaius.engine.services.cognition_synthesis import SYNTH_PROMPT
+
+    body = "a set {2,3} and a brace"
+    packed = substitute_slices(SYNTH_PROMPT, body)
+    assert packed == SYNTH_PROMPT.format(slices=body)
+    assert "{2,3}" in packed
+    assert '{"briefs"' in packed
+    poisoned = "Prior says {2,3}\n{slices}"
+    assert substitute_slices(poisoned, "material") == "Prior says {2,3}\nmaterial"
+
+
 def test_pack_leaves_full_think_budget(char_tok: None) -> None:
     tmpl = "HEAD{slices}TAIL"
     huge = "x" * (DEFAULT_SCRATCH_TOKEN_BUDGET * 2)

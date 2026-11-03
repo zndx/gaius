@@ -47,6 +47,18 @@ def test_serialize_keeps_full_entry() -> None:
     assert "[content]" in blob
 
 
+def test_plan_compaction_briefs_one_slice_of_a_backlog() -> None:
+    """A multi-megabyte prefix must not be one Complete (2026-11-03 TRUNCATED)."""
+    entries = [BufferEntry.create(BufferRole.CONTENT, "old" * 8000) for _ in range(6)]
+    entries.append(BufferEntry.create(BufferRole.CONTENT, "new"))
+    plan = plan_compaction(entries, keep_recent_tokens=10)
+    assert plan is not None
+    assert plan.dropped == 1
+    assert plan.cut_index == 1
+    assert "old" in plan.material
+    assert "new" not in plan.material
+
+
 def test_plan_compaction_cut_at_entry_boundary() -> None:
     entries = [
         BufferEntry.create(BufferRole.CONTENT, "old " * 8000),
@@ -58,6 +70,19 @@ def test_plan_compaction_cut_at_entry_boundary() -> None:
     assert plan.cut_index >= 1
     assert plan.first_kept_id == entries[plan.cut_index].id
     assert "old" in plan.material or "mid" in plan.material
+
+
+def test_compaction_prompt_keeps_braces_in_prior_and_material(_fake_thinking_tokenizer) -> None:
+    """KeyError '2,3' stalled ambient_synthesis from 2026-10-23."""
+    from gaius.engine.services.buffer_compaction import compaction_prompt
+
+    prompt = compaction_prompt(
+        "set notation {1,2} and {slices} inside the material",
+        prior="prior summary mentions {2,3} and {slices}",
+    )
+    assert "prior summary mentions {2,3} and { slices }" in prompt
+    assert "set notation {1,2} and {slices} inside the material" in prompt
+    assert "## Goal" in prompt
 
 
 def test_compaction_prompt_leaves_xhigh_generation_room(_fake_thinking_tokenizer) -> None:

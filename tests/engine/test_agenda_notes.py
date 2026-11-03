@@ -346,6 +346,39 @@ def test_list_skips_legacy_scratch_without_kind(tmp_path: Path) -> None:
     assert listed[0].prev == ""
 
 
+def test_find_standing_brief_prefers_current_week_agenda_card(tmp_path: Path) -> None:
+    from gaius.engine.services.agenda_notes import find_standing_brief, iso_week_slug
+
+    kb = tmp_path / "kb"
+    old = kb / "scratch" / "2026-08-24"
+    signals = kb / "scratch" / "2026-11-03"
+    old.mkdir(parents=True)
+    signals.mkdir(parents=True)
+    when = datetime(2026, 11, 3, 12, 0, tzinfo=timezone.utc)
+    slug = iso_week_slug(when)
+    (old / "2026-08-24-150000_w34-summary.md").write_text(
+        "kind: note\nintent: brief\n\n# Week 34 memo\n\nold\n",
+        encoding="utf-8",
+    )
+    (signals / f"2026-11-03-120006_{slug}.md").write_text(
+        "# Weekly Signals Summary\n\nnot an agenda card\n",
+        encoding="utf-8",
+    )
+    (signals / f"2026-11-03-130000_{slug}.md").write_text(
+        "kind: note\nintent: brief\npin: true\n\n# This week\n\ncurrent\n",
+        encoding="utf-8",
+    )
+    hit = find_standing_brief(kb, now=when)
+    assert hit is not None
+    assert hit.path.endswith(f"2026-11-03-130000_{slug}.md")
+    assert hit.title == "This week"
+    # No current-week agenda card: the older memo is what gets rolled forward.
+    (signals / f"2026-11-03-130000_{slug}.md").unlink()
+    rolled = find_standing_brief(kb, now=when)
+    assert rolled is not None
+    assert rolled.path.endswith("w34-summary.md")
+
+
 def test_find_standing_brief_prefers_latest_w34(tmp_path: Path) -> None:
     kb = tmp_path / "kb"
     old = kb / "scratch" / "2026-08-17"

@@ -143,16 +143,20 @@ def test_synth_prompt_names_letter_list_catchup_genres() -> None:
 async def test_insert_agenda_replaces_standing_weekly_brief(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    from datetime import datetime, timezone
+
+    from gaius.engine.services.agenda_notes import iso_week_slug
+
     kb = tmp_path / "kb"
     day = kb / "scratch" / "2026-08-24"
     day.mkdir(parents=True)
-    rel = "scratch/2026-08-24/2026-08-24-150000_w34-summary.md"
+    slug = iso_week_slug(datetime.now(timezone.utc))
+    rel = f"scratch/2026-08-24/2026-08-24-150000_{slug}.md"
     (kb / rel).write_text(
         "kind: note\nintent: brief\n\n# Weekly Signals Summary · 2026-W34\n\n"
         "changelog of Gaius commits\n",
         encoding="utf-8",
     )
-    from datetime import datetime, timezone
     from gaius.engine.services.agenda_notes import create_item
 
     now = datetime(2026, 8, 24, 18, 0, tzinfo=timezone.utc)
@@ -187,6 +191,92 @@ async def test_insert_agenda_replaces_standing_weekly_brief(
     assert "commit log" in item.body
     assert "changelog of Gaius" not in item.body
     assert "What the week actually changed" in item.title
+
+
+@pytest.mark.asyncio
+async def test_insert_agenda_rolls_a_stale_week_onto_a_new_card(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Week 34 edited in place never enters the 7-day horizon."""
+    from datetime import datetime, timezone
+
+    from gaius.engine.services.agenda_notes import iso_week_slug, list_items
+
+    kb = tmp_path / "kb"
+    day = kb / "scratch" / "2026-08-24"
+    day.mkdir(parents=True)
+    current = datetime.now(timezone.utc).isocalendar().week
+    stale = 1 if current != 1 else 2
+    old_rel = f"scratch/2026-08-24/2026-08-24-150000_w{stale:02d}-summary.md"
+    (kb / old_rel).write_text(
+        "kind: note\nintent: brief\npin: true\n\n# Week of the old memo\n\n"
+        "changelog of Gaius commits\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("GAIUS_KB_ROOT", str(kb))
+    n = await insert_agenda(
+        _Pool(_Conn()),
+        "ep-roll",
+        "hx-roll",
+        {
+            "briefs": [
+                {
+                    "title": "What this week changed",
+                    "body": "Iceberg holds the closed hours. Kudu holds the open hour.",
+                }
+            ],
+            "reminders": [],
+            "sessions": [],
+        },
+    )
+    assert n == 1
+    old = get_item(kb, old_rel)
+    assert old.pin is False
+    assert "changelog of Gaius" in old.body
+    assert "Iceberg" not in old.body
+    fresh = [
+        i for i in list_items(kb, window_days=2)
+        if i.path.endswith(f"_{iso_week_slug(datetime.now(timezone.utc))}.md")
+    ]
+    assert len(fresh) == 1
+    assert fresh[0].pin is True
+    assert "Iceberg" in fresh[0].body
+    assert "What this week changed" in fresh[0].title
+
+
+@pytest.mark.asyncio
+async def test_resolved_reminders_do_not_consume_open_slots(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from datetime import datetime, timezone
+
+    from gaius.engine.services.agenda_notes import create_item, list_items
+
+    kb = tmp_path / "kb"
+    (kb / "scratch").mkdir(parents=True)
+    now = datetime.now(timezone.utc)
+    for i in range(8):
+        create_item(
+            kb,
+            kind="list",
+            title=f"Prospects update failed {i}",
+            intent="reminder",
+            body="- [x] retried clean\n",
+            now=now,
+        )
+    monkeypatch.setenv("GAIUS_KB_ROOT", str(kb))
+    n = await insert_agenda(
+        _Pool(_Conn()),
+        "ep-open",
+        "hx-open",
+        {
+            "briefs": [],
+            "reminders": [{"title": "Watch the tape", "body": "CHTR filings moved"}],
+            "sessions": [],
+        },
+    )
+    assert n == 1
+    assert "Watch the tape" in [i.title for i in list_items(kb, window_days=2)]
 
 
 @pytest.mark.asyncio
