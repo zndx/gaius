@@ -17,12 +17,11 @@ from gaius.core.budgets import EXPLAIN_MAX_TOKENS
 # These warnings occur when tokenizers are used after process forking
 os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 
-# Configure joblib to use threading instead of multiprocessing
-# This avoids fork() conflicts with gRPC while preserving parallelism.
-# Threading works well for NumPy/sklearn/UMAP since they release the GIL.
+# Threading, not loky. A bare parallel_config() call does not stick.
 os.environ.setdefault("LOKY_PICKLER", "pickle")  # Ensure compatibility
-from joblib import parallel_config
-parallel_config(backend="threading", n_jobs=-1)
+from gaius.core.fork_safety import pin_joblib_threading
+
+pin_joblib_threading()
 
 from pathlib import Path
 

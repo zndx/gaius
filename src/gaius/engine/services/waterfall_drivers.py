@@ -512,13 +512,12 @@ def ollivier_mean(vecs: Any) -> float | None:
         from GraphRicciCurvature.OllivierRicci import OllivierRicci
     except ImportError:
         return None
-    # proc=1: NEVER let GraphRicciCurvature spawn a multiprocessing.Pool here. Its
-    # default (proc=cpu_count) uses the fork start method, so each worker inherits
-    # this long-running engine's :50051 socket, open thinking connections, and
-    # locked library threads. A forked worker deadlocked (fork-after-threads),
-    # became a rogue duplicate engine holding :50051, and leaked the inherited
-    # thinking connections until the vLLM frontend jammed (2026-08-28). Single
-    # process is plenty for these tiny topology graphs.
+    # proc=1 still opens a fork Pool. The in-process wrapper is what keeps
+    # the worker from inheriting :50051 and deadlocking the engine
+    # (2026-08-28, and the UI CANCELLED outage on 2026-11-07).
+    from gaius.core.fork_safety import install_inprocess_ricci
+
+    install_inprocess_ricci()
     orc = OllivierRicci(graph, alpha=0.5, method="OTD", verbose="ERROR", proc=1)
     orc.compute_ricci_curvature()
     vals: list[float] = []

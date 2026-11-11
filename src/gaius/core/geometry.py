@@ -150,12 +150,16 @@ class GeometryComputer:
             norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
             norms[norms == 0] = 1  # Avoid division by zero
             normalized = embeddings / norms
+            # n_jobs=1: joblib's default backend is loky, which fork-execs.
+            # A worker that deadlocks before exec inherits :50051 and the
+            # parent waits forever on the asyncio loop (2026-11-07).
+            # 390-point card manifolds are one thread of work.
             distances_matrix = pairwise_distances(
-                normalized, metric="cosine", n_jobs=-1
+                normalized, metric="cosine", n_jobs=1
             )
         else:
             distances_matrix = pairwise_distances(
-                embeddings, metric=self.metric, n_jobs=-1
+                embeddings, metric=self.metric, n_jobs=1
             )
 
         # Build graph
@@ -202,14 +206,14 @@ class GeometryComputer:
             try:
                 from GraphRicciCurvature.OllivierRicci import OllivierRicci
 
+                from gaius.core.fork_safety import install_inprocess_ricci
+
                 logger.debug("Using GraphRicciCurvature library for Ricci curvature")
 
-                # Compute Ollivier-Ricci curvature on graph
-                # alpha=0.5 is standard, method="OTD" is fastest
-                # proc=1: never spawn a multiprocessing.Pool (fork start method)
-                # from inside the long-running engine — a forked worker inherits
-                # the :50051 socket + open thinking connections + locked threads
-                # and can deadlock into a rogue duplicate engine (2026-08-28).
+                # proc=1 still builds multiprocessing.get_context("fork").Pool.
+                # install_inprocess_ricci runs that kernel on this thread so
+                # the worker cannot inherit :50051 (2026-08-28, 2026-11-07).
+                install_inprocess_ricci()
                 orc = OllivierRicci(
                     graph, alpha=0.5, method="OTD", verbose="ERROR", proc=1
                 )

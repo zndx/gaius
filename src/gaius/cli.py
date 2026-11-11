@@ -25,14 +25,10 @@ Usage:
 import os
 from gaius.core.budgets import EXPLAIN_MAX_TOKENS, REASONING_MAX_TOKENS
 
-# Configure joblib to use threading instead of multiprocessing
-# This avoids fork() conflicts with gRPC while preserving parallelism.
-# Threading works well for NumPy/sklearn/UMAP since they release the GIL.
-try:
-    from joblib import parallel_config
-    parallel_config(backend="threading", n_jobs=-1)
-except ImportError:
-    pass  # joblib not available yet
+# Threading, not loky. A bare parallel_config() call does not stick.
+from gaius.core.fork_safety import pin_joblib_threading
+
+pin_joblib_threading()
 
 import argparse
 import asyncio

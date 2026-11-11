@@ -1,22 +1,44 @@
 """Regression guard: the engine must never fork-and-inherit itself.
 
 2026-08-28 outage: GraphRicciCurvature defaulted to a fork-based
-multiprocessing.Pool(proc=64), forking the whole gaius engine. Each worker
-inherited the :50051 listen socket and the live thinking connections; a
-deadlocked worker became a rogue duplicate engine that jammed thinking's vLLM
-frontend for hours. Two defenses close the class; this locks them so a future
-edit cannot silently reopen the door:
+multiprocessing.Pool(proc=64). Each worker inherited the :50051 listen
+socket. 2026-11-07: proc=1 still builds get_context("fork").Pool, and a
+bare joblib.parallel_config() does not leave the threading backend in
+place. A card render forked one worker, the parent blocked in the pool
+on the asyncio loop, and every UI RPC returned CANCELLED for four days.
 
-  1. Every OllivierRicci() call pins proc=1 (no multiprocessing.Pool at all).
-  2. The engine main() forces the 'spawn' start method, so ANY raw
-     multiprocessing.Pool re-imports instead of inheriting the engine.
+Three defenses:
+
+  1. Every OllivierRicci() call pins proc=1 (caps the pool; does not
+     remove it — the library has no in-process switch).
+  2. install_inprocess_ricci runs that pool on the calling thread.
+  3. The engine main() forces the 'spawn' start method, and joblib's
+     default backend is threading, so a raw Pool or n_jobs=-1 cannot
+     fork-and-inherit the engine.
 """
 from __future__ import annotations
 
 import ast
+import os
 import pathlib
 
 SRC = pathlib.Path(__file__).resolve().parents[1] / "src" / "gaius"
+
+
+def _child_pids() -> set[int]:
+    me = os.getpid()
+    found: set[int] = set()
+    for name in os.listdir("/proc"):
+        if not name.isdigit():
+            continue
+        try:
+            stat = open(f"/proc/{name}/stat").read()
+        except OSError:
+            continue
+        fields = stat[stat.rfind(")") + 2 :].split()
+        if len(fields) > 1 and fields[1] == str(me):
+            found.add(int(name))
+    return found
 
 
 def _ollivier_calls(path: pathlib.Path):
@@ -58,3 +80,36 @@ def test_engine_main_forces_spawn() -> None:
         "engine main() must force the 'spawn' start method so a raw "
         "multiprocessing.Pool cannot fork-and-inherit the engine"
     )
+
+
+def test_joblib_default_is_threading() -> None:
+    """A bare parallel_config() call must not be the pin. The default is."""
+    from gaius.core.fork_safety import pin_joblib_threading
+    import joblib.parallel as parallel
+
+    pin_joblib_threading()
+    assert parallel.DEFAULT_BACKEND == "threading"
+    assert parallel.DEFAULT_PROCESS_BACKEND == "threading"
+
+
+def test_ricci_compute_does_not_fork() -> None:
+    """OllivierRicci.compute_ricci_curvature must not spawn a child."""
+    import networkx as nx
+    from GraphRicciCurvature.OllivierRicci import OllivierRicci
+
+    from gaius.core.fork_safety import install_inprocess_ricci
+
+    install_inprocess_ricci()
+    graph = nx.cycle_graph(6)
+    for u, v in graph.edges():
+        graph[u][v]["weight"] = 1.0
+    before = _child_pids()
+    orc = OllivierRicci(graph, alpha=0.5, method="OTD", verbose="ERROR", proc=1)
+    orc.compute_ricci_curvature()
+    after = _child_pids()
+    assert after == before, f"ricci forked: {after - before}"
+    curved = [
+        data.get("ricciCurvature")
+        for _u, _v, data in orc.G.edges(data=True)
+    ]
+    assert curved and all(isinstance(c, float) for c in curved)
