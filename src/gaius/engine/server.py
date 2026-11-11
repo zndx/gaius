@@ -327,6 +327,14 @@ class GaiusEngine:
         if self._grpc_server:
             self._grpc_server.update_service("orchestrator_service", self._orchestrator_service)
 
+        # Cognition reads Postgres and serves the UI. Preload waits out a
+        # healthy thinking endpoint (up to 900s). Leaving this call after
+        # that wait made /cognition return #COG.00000024.NOSVC for the
+        # whole model load (2026-11-11). Do not advance InitPhase here:
+        # COGNITION is weighted at 99%, and preload still owns 10–90%.
+        if self.config.startup.auto_start_cognition:
+            await self._autonomous_start_cognition()
+
         # 6. Autonomous startup: clean start and preload if configured
         if self.config.startup.clean_start:
             await self._init_controller.start_phase(InitPhase.PRELOAD, "Starting endpoint preload")
@@ -389,10 +397,11 @@ class GaiusEngine:
             await self._init_controller.start_phase(InitPhase.EVOLUTION, "Starting evolution daemon")
             await self._autonomous_start_evolution()
 
-        # Autonomous startup: start cognition daemon if configured
+        # Phase marker stays after preload. The service itself started above.
         if self.config.startup.auto_start_cognition:
-            await self._init_controller.start_phase(InitPhase.COGNITION, "Starting cognition daemon")
-            await self._autonomous_start_cognition()
+            await self._init_controller.start_phase(InitPhase.COGNITION, "Cognition daemon")
+            if self._cognition_service is None:
+                await self._autonomous_start_cognition()
 
         # Autonomous startup: start flow scheduler if configured
         if self.config.startup.auto_start_flow_scheduler and self.config.flow_scheduler.enabled:
