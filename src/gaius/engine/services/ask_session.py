@@ -25,7 +25,7 @@ from gaius.engine.backends.vllm_controller import (
     parse_qwen_tool_call_markup,
     qwen_tool_call_markup,
 )
-from gaius.engine.sentinel_claim import COMPUTE, LIGHT, MEDIUM, RATE_METERED
+from gaius.engine.sentinel_claim import COMPUTE, LIGHT, MEDIUM
 from gaius.engine.services.coordination import (
     GURU_RENEWFAIL,
     PROJECT,
@@ -44,7 +44,6 @@ GURU_NOCALL = "#AS.00000001.NOCALL"
 ASK_FACES = frozenset({"ask", "ask-sae", "interpretable", "interpretable-b"})
 _MEDIUM = frozenset({"ask-sae", "ask_sae", "ask-medium"})
 _LIGHT = frozenset({"ask-agent", "ask_agent", "ask-light", "interpretable", "interpretable-b"})
-_STANDING = frozenset({"thinking", "instruct"})
 
 HORIZON_S = 3600
 HEARTBEAT_S = 60
@@ -92,17 +91,16 @@ def claims_for_alias(alias: str) -> list[tuple[str, int]]:
     The resolved endpoint decides the leaf. Standing thinking is already
     admitted on heavy; this session must not set that floor. Medium is the
     ask-sae pair. Light is the 1.7B ask replica. A thinking fallback records
-    compute and the FMP rate-meter at gpu 0, the same way a token-metered
-    dialog records no local GPU.
+    compute at gpu 0 so Signals can see the session without taking a GPU.
+    The live YuniKorn config does not know ``root.external.rate-metered``,
+    and claiming it is ``#CO.00000009.OVERCLAIM``.
     """
     name = (alias or "").strip()
     if name in _MEDIUM:
         return [(MEDIUM.queue, MEDIUM.gpu_tokens)]
     if name in _LIGHT:
         return [(LIGHT.queue, LIGHT.gpu_tokens)]
-    if name in _STANDING or not name:
-        return [(COMPUTE.queue, 0), (RATE_METERED.queue, 0)]
-    return [(COMPUTE.queue, 0), (RATE_METERED.queue, 0)]
+    return [(COMPUTE.queue, 0)]
 
 
 def wants_tool_loop(system_prompt: str, tools_json: str, messages_json: str) -> bool:

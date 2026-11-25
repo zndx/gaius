@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 from gaius.engine.backends.backend_router import InferenceResponse
-from gaius.engine.sentinel_claim import HEAVY, LIGHT, MEDIUM
+from gaius.engine.sentinel_claim import COMPUTE, HEAVY, LIGHT, MEDIUM, RATE_METERED
 from gaius.engine.services.ask_session import (
     GURU_NOCALL,
     GURU_NODECLARE,
@@ -83,8 +83,9 @@ def test_claims_follow_the_endpoint_that_will_serve():
     assert claims_for_alias("ask-sae") == [(MEDIUM.queue, 2)]
     assert claims_for_alias("interpretable") == [(LIGHT.queue, 1)]
     thinking = claims_for_alias("thinking")
+    assert thinking == [(COMPUTE.queue, 0)]
     assert HEAVY.queue not in {leaf for leaf, _ in thinking}
-    assert all(gpu == 0 for _, gpu in thinking)
+    assert RATE_METERED.queue not in {leaf for leaf, _ in thinking}
     assert is_ask_face("ask-sae")
     assert is_ask_face("interpretable")
     assert not is_ask_face("thinking")
