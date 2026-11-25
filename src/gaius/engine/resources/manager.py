@@ -26,6 +26,15 @@ from .allocations import (
 
 logger = logging.getLogger(__name__)
 
+# Standing layout on this host: thinking is the heavy fence on 0–3.
+# Leftover work (ask-sae, the 1.7B ask replica) uses 4 and 5. A foreign
+# lease must not slide thinking onto that pair.
+THINKING_GPUS = (0, 1, 2, 3)
+LEFTOVER_GPUS = (4, 5)
+_THINKING_ALIASES = frozenset({"thinking", "gaius-thinking"})
+_MEDIUM_ALIASES = frozenset({"ask-sae", "ask-medium", "ask_sae"})
+_LIGHT_ALIASES = frozenset({"interpretable", "interpretable-b", "ask-agent", "ask_agent"})
+
 
 @dataclass
 class SwapPlan:
@@ -174,6 +183,30 @@ class ResourceManager:
             ResourceUnavailable: If not enough GPUs available
         """
         required = agent_config.resources.gpus
+        pinned = self._pinned_gpus(agent_alias, required)
+        if pinned is not None:
+            try:
+                return self.allocate_fixed(
+                    agent_alias,
+                    agent_config.model,
+                    pinned,
+                    agent_config.resources.vram_gb,
+                )
+            except ResourceUnavailable as e:
+                from gaius.engine.resources.gpu_leases import live_foreign_leased_gpu_ids
+
+                foreign = sorted(live_foreign_leased_gpu_ids())
+                blocked = [g for g in pinned if g in foreign]
+                if blocked:
+                    raise ResourceUnavailable(
+                        f"{e}. {agent_alias} is pinned to GPUs {list(pinned)} and does not "
+                        f"slide onto the leftover pair {list(LEFTOVER_GPUS)}. "
+                        f"A foreign lease holds {blocked}.",
+                        required_gpus=required,
+                        available_gpus=e.available_gpus,
+                    ) from e
+                raise
+
         free_gpus = self.get_free_gpus()
 
         if len(free_gpus) < required:
@@ -208,6 +241,20 @@ class ResourceManager:
         )
 
         return allocation
+
+    def _pinned_gpus(self, agent_alias: str, required: int) -> list[int] | None:
+        """Fixed ids for the standing layout. None keeps first-fit."""
+        if agent_alias in _THINKING_ALIASES:
+            return list(THINKING_GPUS)
+        if agent_alias in _MEDIUM_ALIASES and required == 2:
+            return list(LEFTOVER_GPUS)
+        if agent_alias in _LIGHT_ALIASES and required == 1:
+            free = set(self.get_free_gpus())
+            for gpu in reversed(LEFTOVER_GPUS):
+                if gpu in free:
+                    return [gpu]
+            return [LEFTOVER_GPUS[-1]]
+        return None
 
     def allocate_fixed(
         self,
