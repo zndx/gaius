@@ -25,7 +25,7 @@ from gaius.engine.backends.vllm_controller import (
     parse_qwen_tool_call_markup,
     qwen_tool_call_markup,
 )
-from gaius.engine.sentinel_claim import COMPUTE, LIGHT, MEDIUM
+from gaius.engine.sentinel_claim import LIGHT, MEDIUM
 from gaius.engine.services.coordination import (
     GURU_RENEWFAIL,
     PROJECT,
@@ -40,6 +40,19 @@ log = logging.getLogger(__name__)
 KIND = "interactive_session"
 GURU_NODECLARE = "#CO.00000011.NODECLARE"
 GURU_NOCALL = "#AS.00000001.NOCALL"
+GURU_NOENDPOINT = "#AS.00000002.NOENDPOINT"
+# The activity stays up between turns so Signals keeps the floor while the
+# panel is in use. Idle release drops the claim and stops the endpoint.
+IDLE_S = 900
+ENDPOINT_WAIT_S = 300.0
+_READY = frozenset({"healthy", "running", "ready"})
+_DEAD = frozenset({
+    "insufficient_resources",
+    "no_contiguous_gpus",
+    "error",
+    "failed",
+    "stopped",
+})
 
 ASK_FACES = frozenset({"ask", "ask-sae", "interpretable", "interpretable-b"})
 _MEDIUM = frozenset({"ask-sae", "ask_sae", "ask-medium"})
@@ -85,22 +98,149 @@ def is_ask_face(capability: str) -> bool:
     return (capability or "").strip() in ASK_FACES
 
 
-def claims_for_alias(alias: str) -> list[tuple[str, int]]:
-    """YK leaves this turn occupies while its activity is RUNNING.
+def deployment_for(capability: str) -> tuple[str, list[tuple[str, int]]]:
+    """The endpoint this session asks Signals to allocate.
 
-    The resolved endpoint decides the leaf. Standing thinking is already
-    admitted on heavy; this session must not set that floor. Medium is the
-    ask-sae pair. Light is the 1.7B ask replica. A thinking fallback records
-    compute at gpu 0 so Signals can see the session without taking a GPU.
-    The live YuniKorn config does not know ``root.external.rate-metered``,
-    and claiming it is ``#CO.00000009.OVERCLAIM``.
+    ``ask`` and ``ask-sae`` are the on-demand SAE (medium, 2 GPUs).
+    ``interpretable`` and ``interpretable-b`` are the 1.7B replica (light, 1).
+    Thinking is not in this map. The standing queue hint leaves both floors
+    at 0; the claim below is what Signals asserts while the activity runs.
     """
+    raw = (capability or "").strip()
+    if raw in ("ask", "ask-sae"):
+        alias = "ask-sae"
+    elif raw in _LIGHT:
+        alias = raw
+    else:
+        raise AskSessionError(
+            f"{GURU_NODECLARE} {capability!r} is not an Ask deployment.\n"
+            "  Name ask-sae or interpretable. Signals allocates that leaf.\n"
+            "  There is no substitute endpoint.\n"
+            "  Try: /activities"
+        )
+    return alias, claims_for_alias(alias)
+
+
+def claims_for_alias(alias: str) -> list[tuple[str, int]]:
+    """YK leaves this deployment occupies while its activity is RUNNING."""
     name = (alias or "").strip()
-    if name in _MEDIUM:
+    if name in _MEDIUM or name == "ask":
         return [(MEDIUM.queue, MEDIUM.gpu_tokens)]
     if name in _LIGHT:
         return [(LIGHT.queue, LIGHT.gpu_tokens)]
-    return [(COMPUTE.queue, 0)]
+    raise AskSessionError(
+        f"{GURU_NODECLARE} {alias!r} has no interactive_session claim.\n"
+        "  Ask does not complete on thinking.\n"
+        "  Try: /activities"
+    )
+
+
+def _status_name(status: Any) -> str:
+    return str(getattr(status, "status", "") or "").lower()
+
+
+async def ensure_ready(orchestrator: Any, alias: str) -> None:
+    """Start the endpoint Signals just allocated. Do not pick another model."""
+    if orchestrator is None:
+        raise AskSessionError(
+            f"{GURU_NOENDPOINT} orchestrator is not available to start {alias}.\n"
+            "  Try: /health fix engine"
+        )
+    status = await orchestrator.ensure_endpoint(alias)
+    deadline = time.monotonic() + ENDPOINT_WAIT_S
+    while _status_name(status) not in _READY:
+        name = _status_name(status)
+        detail = str(getattr(status, "startup_message", "") or name or "not ready")
+        if name in _DEAD:
+            raise AskSessionError(
+                f"{GURU_NOENDPOINT} {alias} did not start after Signals allocated it ({detail}).\n"
+                "  The interactive_session claim is the floor. There is no substitute endpoint.\n"
+                "  Try: /gpu status\n"
+                "  Try: /activities"
+            )
+        if time.monotonic() >= deadline:
+            raise AskSessionError(
+                f"{GURU_NOENDPOINT} {alias} was still {name or 'starting'} after "
+                f"{int(ENDPOINT_WAIT_S)}s.\n"
+                "  Try: /gpu status"
+            )
+        await asyncio.sleep(2)
+        nxt = orchestrator.get_endpoint_status(alias)
+        if nxt is not None:
+            status = nxt
+
+
+_HELD: dict[str, dict[str, Any]] = {}
+_HELD_LOCK = asyncio.Lock()
+
+
+async def release_held(alias: str, outcome: str = "idle") -> None:
+    """Drop one held Ask activity and stop its endpoint."""
+    async with _HELD_LOCK:
+        held = _HELD.pop(alias, None)
+    if held is None:
+        return
+    idle = held.get("idle")
+    if idle is not None and idle is not asyncio.current_task():
+        idle.cancel()
+    held["stop"].set()
+    beater = held.get("beater")
+    if beater is not None:
+        beater.cancel()
+        try:
+            await beater
+        except asyncio.CancelledError:
+            pass
+    try:
+        await held["scheduler"].release(activity_id=held["activity_id"], outcome=outcome)
+    except Exception as e:  # noqa: BLE001 — lease TTL expires a missed release
+        log.warning("%s Ask release %s: %s", GURU_RENEWFAIL, held["activity_id"], e)
+    stop_endpoint = held.get("stop_endpoint")
+    if stop_endpoint is not None:
+        try:
+            await stop_endpoint(alias)
+        except Exception as e:  # noqa: BLE001 — the floor is already released
+            log.warning("%s stopping %s: %s", GURU_NOENDPOINT, alias, e)
+
+
+async def _take_held(alias: str, scheduler: Any) -> dict[str, Any] | None:
+    """Reuse a still-RUNNING activity for this deployment. None starts a new one."""
+    async with _HELD_LOCK:
+        held = _HELD.pop(alias, None)
+    if held is None:
+        return None
+    idle = held.get("idle")
+    if idle is not None:
+        idle.cancel()
+    try:
+        view = await scheduler.fetch(activity_id=str(held.get("activity_id") or ""))
+    except Exception as e:  # noqa: BLE001 — a dark list means the lease is not reusable
+        log.warning("%s reuse %s: %s", GURU_NODECLARE, alias, e)
+        view = None
+    if view is not None and str(view.get("state") or "") == "running":
+        return held
+    held["stop"].set()
+    beater = held.get("beater")
+    if beater is not None:
+        beater.cancel()
+    return None
+
+
+def _arm_idle(alias: str) -> None:
+    async def _later() -> None:
+        try:
+            await asyncio.sleep(IDLE_S)
+        except asyncio.CancelledError:
+            return
+        await release_held(alias, "idle")
+
+    task = asyncio.create_task(_later(), name=f"ask-idle-{alias}")
+    held = _HELD.get(alias)
+    if held is not None:
+        prior = held.get("idle")
+        if prior is not None and prior is not task:
+            prior.cancel()
+        held["idle"] = task
 
 
 def wants_tool_loop(system_prompt: str, tools_json: str, messages_json: str) -> bool:
@@ -475,44 +615,70 @@ async def serve(
     messages: list[dict[str, Any]] | None = None,
     scheduler: Any | None = None,
     execute=None,
+    ensure=None,
+    hold: bool = False,
+    stop_endpoint=None,
 ) -> Any:
-    """Declare the session, complete, release. Fail closed if Signals refuses."""
+    """Declare the session to Signals, start that endpoint, complete.
+
+    ``hold`` keeps the activity between turns so the floor stays asserted.
+    An idle timer releases it and stops the endpoint. Fail closed if Signals
+    refuses the claim or the named endpoint does not become healthy.
+    """
+    del agent_alias  # the capability names the deployment; do not substitute
     if not is_ask_face(capability):
         raise AskSessionError(
             f"{GURU_NODECLARE} {capability!r} is not an Ask face.\n  Try: /activities"
         )
     from gaius.engine.queue_share import mint_uuid7
 
+    alias, claims = deployment_for(capability)
+    agent_alias = alias
     sched = scheduler or _GrpcScheduler()
-    claims = claims_for_alias(agent_alias)
-    owner = f"ask:{mint_uuid7()}"
+    owner = f"ask:{alias}"
     reason = (
-        f"agenda ask on {agent_alias} ("
+        f"agenda ask allocates {alias} ("
         + ", ".join(f"{leaf} gpu={gpu}" for leaf, gpu in claims)
-        + "). Signals observes the lease; claims are the YuniKorn floor while RUNNING."
+        + "). Signals asserts this floor while the activity is RUNNING."
     )
-    view = await sched.declare(
-        owner=owner,
-        request_id=mint_uuid7(),
-        claims=claims,
-        reason=reason,
-        horizon_ns=now_ns() + HORIZON_S * 1_000_000_000,
-    )
-    activity_id = str(view.get("activity_id") or "")
-    stop = asyncio.Event()
-    beater: asyncio.Task | None = None
+    reused = await _take_held(alias, sched) if hold else None
+    created = reused is None
+    if reused is None:
+        view = await sched.declare(
+            owner=owner,
+            request_id=mint_uuid7(),
+            claims=claims,
+            reason=reason,
+            horizon_ns=now_ns() + HORIZON_S * 1_000_000_000,
+        )
+        activity_id = str(view.get("activity_id") or "")
+        stop = asyncio.Event()
+        beater: asyncio.Task | None = None
+    else:
+        view = {"activity_id": reused["activity_id"], "state": "running", "note": ""}
+        activity_id = reused["activity_id"]
+        stop = reused["stop"]
+        beater = reused["beater"]
     outcome = "aborted"
     try:
-        view = await _wait_running(sched, view)
-        activity_id = str(view["activity_id"])
+        if created:
+            view = await _wait_running(sched, view)
+            activity_id = str(view["activity_id"])
+            log.info(
+                "ask session %s RUNNING owner=%s alias=%s claims=%s",
+                activity_id, owner, agent_alias, claims,
+            )
+            beater = asyncio.create_task(
+                _beat(sched, activity_id, stop), name=f"ask-activity-{activity_id}"
+            )
+        else:
+            await sched.renew(
+                activity_id=activity_id,
+                horizon_ns=now_ns() + HORIZON_S * 1_000_000_000,
+            )
+        if ensure is not None:
+            await ensure(agent_alias)
         outcome = "running"
-        log.info(
-            "ask session %s RUNNING owner=%s alias=%s claims=%s",
-            activity_id, owner, agent_alias, claims,
-        )
-        beater = asyncio.create_task(
-            _beat(sched, activity_id, stop), name=f"ask-activity-{activity_id}"
-        )
         if wants_tool_loop(system_prompt, tools_json, messages_json):
             result = await _tool_loop(
                 router,
@@ -552,15 +718,27 @@ async def serve(
         outcome = "error"
         raise
     finally:
-        stop.set()
-        if beater is not None:
-            beater.cancel()
-            try:
-                await beater
-            except asyncio.CancelledError:
-                pass
-        if activity_id:
-            try:
-                await sched.release(activity_id=activity_id, outcome=outcome)
-            except Exception as e:  # noqa: BLE001 — lease TTL expires a missed release
-                log.warning("%s Ask release %s: %s", GURU_RENEWFAIL, activity_id, e)
+        if hold and activity_id and outcome in ("running", "completed", "no-call"):
+            async with _HELD_LOCK:
+                _HELD[alias] = {
+                    "activity_id": activity_id,
+                    "scheduler": sched,
+                    "stop": stop,
+                    "beater": beater,
+                    "stop_endpoint": stop_endpoint,
+                    "idle": None,
+                }
+            _arm_idle(alias)
+        else:
+            stop.set()
+            if beater is not None:
+                beater.cancel()
+                try:
+                    await beater
+                except asyncio.CancelledError:
+                    pass
+            if activity_id:
+                try:
+                    await sched.release(activity_id=activity_id, outcome=outcome)
+                except Exception as e:  # noqa: BLE001 — lease TTL expires a missed release
+                    log.warning("%s Ask release %s: %s", GURU_RENEWFAIL, activity_id, e)

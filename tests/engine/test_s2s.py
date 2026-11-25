@@ -199,8 +199,10 @@ def test_declared_queues_light_medium_heavy() -> None:
     assert "root.internal.inference.heavy" in paths
     assert "root.internal.inference.embedding" not in paths
     light = next(q for q in declared_queues() if q.role == "light")
-    assert light.gpu_guarantee == 1
+    assert light.gpu_guarantee == 0
+    assert light.gpu_max == 2
     med = next(q for q in declared_queues() if q.role == "medium")
+    assert med.gpu_guarantee == 0
     assert med.gpu_max == 2
     offers = {o.model: o for o in declared_workloads()}
     emb = offers["lightonai/ColBERT-Zero"]

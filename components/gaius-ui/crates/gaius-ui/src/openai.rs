@@ -623,14 +623,6 @@ fn openai_completion(
     }
 }
 
-/// Signals refused the session, or the model narrated a call and never
-/// emitted one. Falling through to thinking would complete outside the
-/// activity and repeat the empty tool turn.
-fn ask_session_refused(err: &EngineError) -> bool {
-    let text = err.to_string();
-    text.contains("#CO.00000011.NODECLARE") || text.contains("#AS.00000001.NOCALL")
-}
-
 fn ask_capability(state: &AppState, model: Option<&str>) -> String {
     match model {
         Some("ask") | Some("gaius-ask") => {
@@ -1128,30 +1120,6 @@ async fn stream_complete(
             ctx.clone(),
         )
         .await;
-        let first = match first {
-            Err(e) if small && cap != thinking_cap && !ask_session_refused(&e) => {
-                send(ctx.delta(
-                    Some(&format!("Ask light/medium not ready — using {thinking_cap}")),
-                    None,
-                    Some(&format!("{e}")),
-                ))
-                .await;
-                complete_ticked(
-                    state.lattice.clone(),
-                    tx.clone(),
-                    thinking_cap.clone(),
-                    intent.clone(),
-                    first_system,
-                    first_max,
-                    temperature,
-                    pin_est,
-                    extras.clone(),
-                    ctx.clone(),
-                )
-                .await
-            }
-            other => other,
-        };
 
         let first_out = match first {
             Err(e) => {

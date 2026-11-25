@@ -897,7 +897,9 @@ def declared_queues() -> list[zpb.QueueHint]:
         zpb.QueueHint(
             path=LIGHT.queue,
             resource_class=LIGHT.name,
-            gpu_guarantee=1,
+            # No standing floor. An interactive_session claim raises it
+            # while the session runs; Signals allocates the endpoint.
+            gpu_guarantee=0,
             gpu_max=2,
             max_applications=LIGHT.max_applications,
             preemption_delay="5s",
@@ -907,7 +909,9 @@ def declared_queues() -> list[zpb.QueueHint]:
         zpb.QueueHint(
             path=MEDIUM.queue,
             resource_class=MEDIUM.name,
-            gpu_guarantee=2,
+            # On-demand SAE. Guarantee stays 0 in the hint; the session
+            # claim is the floor Signals asserts.
+            gpu_guarantee=0,
             gpu_max=2,
             max_applications=MEDIUM.max_applications,
             preemption_delay="5s",

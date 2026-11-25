@@ -66,8 +66,6 @@ def _agenda_item_to_proto(item) -> zpb.AgendaHintItem:
     return hint
 
 
-ASK_REPLICAS = ("interpretable", "interpretable-b")
-ASK_SAE = ("ask-sae",)
 _HEALTHY_STATUSES = frozenset({"healthy", "running", "ready"})
 
 _MESSAGE_ROLES = frozenset({"system", "developer", "user", "assistant", "tool"})
@@ -155,52 +153,19 @@ def normalize_tool_choice(raw: str) -> str | dict:
 def resolve_complete_alias(capability: str, services: object | None = None) -> str:
     """Empty / lattice cognition face → standing thinking endpoint.
 
-    Ask prefers light (1.7B) or medium (SAE) if HEALTHY, then thinking.
-    STARTING is occupied — skip, do not wait 900s.
+    An Ask face names its deployment (``ask`` / ``ask-sae`` → ask-sae,
+    ``interpretable`` / ``interpretable-b`` → that replica). Signals
+    allocates that leaf from the interactive_session claim. A healthy
+    thinking endpoint is not a substitute.
     """
     raw = (capability or "").strip()
     if raw in ("", CAPABILITY_COGNITION):
         return CAPABILITY_THINKING
     if raw in ("ask", "ask-sae", "interpretable", "interpretable-b"):
-        return pick_ask_cascade(raw, services)
+        from ...services.ask_session import deployment_for
+
+        return deployment_for(raw)[0]
     return raw
-
-
-def _alias_healthy(services: object | None, alias: str) -> bool:
-    orch = getattr(services, "orchestrator_service", None) if services else None
-    if orch is None:
-        return False
-    st = orch.get_endpoint_status(alias)
-    if st is None:
-        return False
-    return str(getattr(st, "status", "") or "").lower() in _HEALTHY_STATUSES
-
-
-def pick_ask_cascade(requested: str, services: object | None) -> str:
-    """Prefer light (1.7B) or medium (SAE) if already HEALTHY.
-
-    If those are down, Complete on standing thinking. Never return a
-    STARTING alias so Complete does not start vLLM without a YK
-    light/medium admit (OOM / contention).
-    """
-    if requested == "ask-sae":
-        small = list(ASK_SAE) + list(ASK_REPLICAS)
-    else:
-        small = list(ASK_REPLICAS) + list(ASK_SAE)
-    for alias in small:
-        if _alias_healthy(services, alias):
-            return alias
-    if _alias_healthy(services, CAPABILITY_THINKING):
-        return CAPABILITY_THINKING
-    from ...sentinel_claim import light_wait_available
-
-    if light_wait_available():
-        return small[0]
-    return CAPABILITY_THINKING
-
-
-def pick_ask_replica(services: object | None) -> str:
-    return pick_ask_cascade("ask", services)
 
 
 def _alias_to_capability(orchestrator: object) -> dict[str, str]:
@@ -410,6 +375,24 @@ class GaiusZndxEngineServicer(zpb_grpc.EngineServicer):
     ) -> zpb.StatusResponse:
         return build_status_response(self._services)
 
+    async def _ensure_ask_endpoint(self, alias: str) -> None:
+        """Start the deployment Signals allocated. No other model."""
+        from ...services.ask_session import GURU_NOENDPOINT, AskSessionError, ensure_ready
+
+        orch = getattr(self._services, "orchestrator_service", None)
+        if orch is None:
+            raise AskSessionError(
+                f"{GURU_NOENDPOINT} orchestrator is not available to start {alias}.\n"
+                "  Try: /health fix engine"
+            )
+        await ensure_ready(orch, alias)
+
+    async def _stop_ask_endpoint(self, alias: str) -> None:
+        orch = getattr(self._services, "orchestrator_service", None)
+        if orch is None:
+            return
+        await orch.stop_endpoint(alias)
+
     async def Complete(
         self,
         request: zpb.CompleteRequest,
@@ -596,6 +579,9 @@ class GaiusZndxEngineServicer(zpb_grpc.EngineServicer):
                     tools_json=raw_tools,
                     messages_json=(getattr(request, "messages_json", "") or ""),
                     messages=messages,
+                    ensure=self._ensure_ask_endpoint,
+                    hold=True,
+                    stop_endpoint=self._stop_ask_endpoint,
                 )
             else:
                 result = await router.complete(

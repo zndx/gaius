@@ -5,13 +5,15 @@ from __future__ import annotations
 import pytest
 
 from gaius.engine.backends.backend_router import InferenceResponse
-from gaius.engine.sentinel_claim import COMPUTE, HEAVY, LIGHT, MEDIUM, RATE_METERED
+from gaius.engine.sentinel_claim import HEAVY, LIGHT, MEDIUM
 from gaius.engine.services.ask_session import (
     GURU_NOCALL,
     GURU_NODECLARE,
     AskSessionError,
     claims_for_alias,
+    deployment_for,
     is_ask_face,
+    release_held,
     serve,
 )
 
@@ -79,13 +81,13 @@ def _serve_kwargs(router, scheduler, **overrides):
     return base
 
 
-def test_claims_follow_the_endpoint_that_will_serve():
-    assert claims_for_alias("ask-sae") == [(MEDIUM.queue, 2)]
+def test_claims_follow_the_endpoint_signals_allocates():
+    assert deployment_for("ask") == ("ask-sae", [(MEDIUM.queue, 2)])
+    assert deployment_for("ask-sae")[1] == [(MEDIUM.queue, 2)]
     assert claims_for_alias("interpretable") == [(LIGHT.queue, 1)]
-    thinking = claims_for_alias("thinking")
-    assert thinking == [(COMPUTE.queue, 0)]
-    assert HEAVY.queue not in {leaf for leaf, _ in thinking}
-    assert RATE_METERED.queue not in {leaf for leaf, _ in thinking}
+    assert HEAVY.queue not in {leaf for leaf, _ in claims_for_alias("ask-sae")}
+    with pytest.raises(AskSessionError, match="NODECLARE"):
+        claims_for_alias("thinking")
     assert is_ask_face("ask-sae")
     assert is_ask_face("interpretable")
     assert not is_ask_face("thinking")
@@ -177,6 +179,50 @@ async def test_a_plan_that_never_emits_a_call_fails_closed():
 
 async def _unused(name, arguments):
     raise AssertionError(f"tool ran: {name}")
+
+
+@pytest.mark.asyncio
+async def test_the_named_endpoint_starts_before_complete():
+    order: list[str] = []
+    router = Router([("ready", "")])
+
+    async def ensure(alias):
+        order.append(alias)
+        assert router.calls == []
+
+    result = await serve(router, ensure=ensure, **_serve_kwargs(router, Scheduler()))
+    assert order == ["ask-sae"]
+    assert result.content == "ready"
+    assert router.calls
+
+
+@pytest.mark.asyncio
+async def test_a_missing_endpoint_does_not_complete_on_another_model():
+    router = Router([("should-not-run", "")])
+
+    async def ensure(alias):
+        raise AskSessionError(f"{GURU_NODECLARE} {alias} was not allocated")
+
+    scheduler = Scheduler()
+    with pytest.raises(AskSessionError, match="not allocated"):
+        await serve(router, ensure=ensure, **_serve_kwargs(router, scheduler))
+    assert router.calls == []
+    assert scheduler.released[0]["outcome"] == "aborted"
+
+
+@pytest.mark.asyncio
+async def test_a_held_session_reuses_the_activity():
+    router = Router([("one", ""), ("two", "")])
+    scheduler = Scheduler()
+    kwargs = _serve_kwargs(router, scheduler)
+    try:
+        await serve(router, hold=True, **kwargs)
+        await serve(router, hold=True, **kwargs)
+        assert len(scheduler.declared) == 1
+        assert scheduler.released == []
+    finally:
+        await release_held("ask-sae", "test")
+    assert scheduler.released == [{"activity_id": "act-ask-1", "outcome": "test"}]
 
 
 @pytest.mark.asyncio

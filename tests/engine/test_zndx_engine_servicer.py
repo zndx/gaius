@@ -21,7 +21,6 @@ from gaius.engine.grpc.servicers.zndx_engine_servicer import (
     build_status_response,
     normalize_tool_choice,
     parse_messages_json,
-    pick_ask_replica,
     resolve_complete_alias,
 )
 
@@ -125,29 +124,20 @@ class TestBuildStatusResponse:
         assert cognition.healthy is True
         assert any(s.kind == "primary" and s.url for s in resp.surfaces)
 
-    def test_ask_picks_healthy_replica(self):
-        orch = MagicMock()
-        def status(name):
-            if name == "interpretable":
-                return SimpleNamespace(status="starting")
-            if name == "interpretable-b":
-                return SimpleNamespace(status="healthy")
-            return None
-        orch.get_endpoint_status.side_effect = status
-        svc = _services(orchestrator_service=orch)
-        assert resolve_complete_alias("ask", svc) == "interpretable-b"
-        assert pick_ask_replica(svc) == "interpretable-b"
-
-    def test_ask_sae_falls_through_to_thinking(self):
+    def test_ask_names_its_deployment_without_a_healthy_substitute(self):
         orch = MagicMock()
         def status(name):
             if name == "thinking":
                 return SimpleNamespace(status="healthy")
-            return SimpleNamespace(status="starting")
+            if name == "interpretable-b":
+                return SimpleNamespace(status="healthy")
+            return SimpleNamespace(status="stopped")
         orch.get_endpoint_status.side_effect = status
         svc = _services(orchestrator_service=orch)
-        assert resolve_complete_alias("ask-sae", svc) == "thinking"
-        assert resolve_complete_alias("ask", svc) == "thinking"
+        assert resolve_complete_alias("ask", svc) == "ask-sae"
+        assert resolve_complete_alias("ask-sae", svc) == "ask-sae"
+        assert resolve_complete_alias("interpretable", svc) == "interpretable"
+        assert resolve_complete_alias("interpretable-b", svc) == "interpretable-b"
 
     def test_includes_live_orchestrator_endpoints(self):
         orch = MagicMock()
