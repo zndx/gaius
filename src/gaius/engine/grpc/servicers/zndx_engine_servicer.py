@@ -573,21 +573,48 @@ class GaiusZndxEngineServicer(zpb_grpc.EngineServicer):
         enable_thinking = (profile.thinking if profile is not None else True) and not bool(request.json_schema)
         reasoning_effort = profile.reasoning_effort if profile is not None else "xhigh"
 
+        from ...services.ask_session import AskSessionError, is_ask_face, serve as serve_ask
+
+        ask_face = is_ask_face(request.capability or "") and plan is None
         try:
-            result = await router.complete(
-                prompt=request.prompt,
-                agent_alias=agent_alias,
-                system_prompt=request.system_prompt or None,
-                messages=messages,
-                temperature=request.temperature or default_temperature,
-                max_tokens=request.max_tokens or default_max_tokens,
-                plan=plan,
-                task_type="zndx_complete",
-                enable_thinking=enable_thinking,
-                reasoning_effort=reasoning_effort,
-                preserve_thinking=enable_thinking,
-                extra_body=extra_body,
-            )
+            if ask_face:
+                # Agenda Ask declares interactive_session (this engine → Signals
+                # → Airflow) and runs its own tool loop. A refused declare does
+                # not fall through to a local completion.
+                result = await serve_ask(
+                    router,
+                    capability=request.capability or "",
+                    agent_alias=agent_alias,
+                    prompt=request.prompt,
+                    system_prompt=request.system_prompt or "",
+                    temperature=request.temperature or default_temperature,
+                    max_tokens=request.max_tokens or default_max_tokens,
+                    enable_thinking=enable_thinking,
+                    reasoning_effort=reasoning_effort,
+                    extra_body=extra_body,
+                    plan=plan,
+                    tools_json=raw_tools,
+                    messages_json=(getattr(request, "messages_json", "") or ""),
+                    messages=messages,
+                )
+            else:
+                result = await router.complete(
+                    prompt=request.prompt,
+                    agent_alias=agent_alias,
+                    system_prompt=request.system_prompt or None,
+                    messages=messages,
+                    temperature=request.temperature or default_temperature,
+                    max_tokens=request.max_tokens or default_max_tokens,
+                    plan=plan,
+                    task_type="zndx_complete",
+                    enable_thinking=enable_thinking,
+                    reasoning_effort=reasoning_effort,
+                    preserve_thinking=enable_thinking,
+                    extra_body=extra_body,
+                )
+        except AskSessionError as e:
+            logger.warning("ask session refused capability=%s: %s", agent_alias, e)
+            await context.abort(grpc.StatusCode.FAILED_PRECONDITION, str(e))
         except Exception as e:
             logger.exception("zndx Complete failed capability=%s", agent_alias)
             await context.abort(

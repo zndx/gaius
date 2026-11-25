@@ -4,6 +4,13 @@ use thiserror::Error;
 use tonic::transport::Channel;
 
 pub mod pb {
+    // engine.proto imports zndx.platform.v1. The generated field path is
+    // super::super::platform::v1 from pb::engine::v1, so the module sits here.
+    pub mod platform {
+        pub mod v1 {
+            tonic::include_proto!("zndx.platform.v1");
+        }
+    }
     pub mod engine {
         pub mod v1 {
             tonic::include_proto!("zndx.engine.v1");

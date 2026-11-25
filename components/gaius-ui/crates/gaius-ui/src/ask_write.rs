@@ -60,6 +60,27 @@ pub fn is_small_ask(cap: &str) -> bool {
     matches!(cap, "interpretable" | "interpretable-b" | "ask-sae" | "ask")
 }
 
+/// System text for the first Complete of a turn.
+///
+/// Small Ask does not receive the terminal capability card. That card names
+/// FMP tools the façade does not execute; the engine declares the
+/// interactive_session and runs the calls. A write still gets its fence
+/// instructions.
+pub fn opening_system(system: &str, small: bool, want_write: bool, clock_note: &str) -> String {
+    if want_write && small {
+        format!("{system}\n\n{HANDOFF_ADDENDUM}")
+    } else if want_write {
+        format!("{system}\n\n{WRITE_ADDENDUM}{clock_note}")
+    } else if small {
+        system.to_string()
+    } else {
+        format!(
+            "{system}\n\n{}",
+            crate::gaius_slash::thinking_capability_card()
+        )
+    }
+}
+
 pub fn looks_like_chart(prompt: &str) -> bool {
     let q = user_intent_text(prompt);
     let t = q.to_ascii_lowercase();
@@ -822,6 +843,18 @@ Everything nominal."#;
         assert!(is_small_ask("interpretable"));
         assert!(is_small_ask("ask-sae"));
         assert!(!is_small_ask("thinking"));
+    }
+
+    #[test]
+    fn opening_system_leaves_ask_tools_to_the_engine() {
+        let ask = opening_system("panel", true, false, "");
+        assert_eq!(ask, "panel");
+        assert!(!ask.contains("gaius__fmp_news"));
+        let terminal = opening_system("panel", false, false, "");
+        assert!(terminal.contains("gaius__fmp_news"));
+        let handoff = opening_system("panel", true, true, "");
+        assert!(handoff.contains("agenda.write"));
+        assert!(!handoff.contains("gaius__fmp_news"));
     }
 
     #[test]

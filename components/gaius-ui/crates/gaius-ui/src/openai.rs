@@ -623,6 +623,14 @@ fn openai_completion(
     }
 }
 
+/// Signals refused the session, or the model narrated a call and never
+/// emitted one. Falling through to thinking would complete outside the
+/// activity and repeat the empty tool turn.
+fn ask_session_refused(err: &EngineError) -> bool {
+    let text = err.to_string();
+    text.contains("#CO.00000011.NODECLARE") || text.contains("#AS.00000001.NOCALL")
+}
+
 fn ask_capability(state: &AppState, model: Option<&str>) -> String {
     match model {
         Some("ask") | Some("gaius-ask") => {
@@ -1057,16 +1065,7 @@ async fn stream_complete(
             .await;
         }
 
-        let mut first_system = if want_write && small {
-            format!("{system}\n\n{}", ask_write::HANDOFF_ADDENDUM)
-        } else if want_write {
-            format!("{system}\n\n{}{clock_note}", ask_write::WRITE_ADDENDUM)
-        } else {
-            format!(
-                "{system}\n\n{}",
-                crate::gaius_slash::thinking_capability_card()
-            )
-        };
+        let mut first_system = ask_write::opening_system(&system, small, want_write, &clock_note);
         if small {
             let backend = state.ask_backend.read().expect("ask lock").clone();
             let ask_cap = crate::brand::ask_complete_alias(&backend);
@@ -1108,6 +1107,14 @@ async fn stream_complete(
             tool_choice,
             messages_json,
         };
+        if small {
+            send(ctx.delta(
+                Some("Declaring interactive_session…"),
+                None,
+                None,
+            ))
+            .await;
+        }
         let first = complete_ticked(
             state.lattice.clone(),
             tx.clone(),
@@ -1122,7 +1129,7 @@ async fn stream_complete(
         )
         .await;
         let first = match first {
-            Err(e) if small && cap != thinking_cap => {
+            Err(e) if small && cap != thinking_cap && !ask_session_refused(&e) => {
                 send(ctx.delta(
                     Some(&format!("Ask light/medium not ready — using {thinking_cap}")),
                     None,
@@ -1320,9 +1327,10 @@ pub async fn chat_completions(
     let stream = req.stream.unwrap_or(false);
     let cap = ask_capability(&state, req.model.as_deref());
     let small = ask_write::is_small_ask(&cap);
-    // Ask (1.7B / SAE) is served by endpoints launched without
-    // --enable-auto-tool-choice and has no tool harness: it answers in
-    // artifact fences. Only the Terminal capability declares tools[].
+    // Ask (1.7B / SAE) is served without --enable-auto-tool-choice. The
+    // façade does not declare tools[]. The engine runs the Ask tool loop
+    // inside an interactive_session. Only the Terminal capability forwards
+    // the harness tools[].
     //
     // These used to be dropped to keep the prompt small (ACP can attach ~180
     // MCP schemas). That is no longer optional: the thinking endpoint's
@@ -1679,7 +1687,8 @@ gaius__theta_sitrep
 
     /// The thinking endpoint's engine-level parser eats <tool_call> markup
     /// when the request declares no tools[], so a Terminal turn must always
-    /// forward them. Ask has no tool harness and its endpoints lack the flag.
+    /// forward them. The Ask façade still sends no tools[]; the engine runs
+    /// that loop inside the interactive session.
     #[test]
     fn ask_capability_never_declares_tools() {
         assert!(ask_write::is_small_ask("interpretable"));

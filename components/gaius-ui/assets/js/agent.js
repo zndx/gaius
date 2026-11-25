@@ -8,10 +8,9 @@
     "off to thinking (:::gaius-handoff) — do not write the card in prose. " +
     "For a stock candlestick, emit " +
     ":::gaius-artifact {\"type\":\"ohlc\",\"symbol\":\"TICKER\"} " +
-    "with TICKER from the user message. Emit that markup as text in your reply — " +
-    "the panel renders it. Do NOT call a tool (this panel has no tool loop; a " +
-    "tool call is dropped by the engine parser and the reply comes back empty). " +
-    "Do not invent OHLC bars or substitute another ticker. " +
+    "with TICKER from the user message, or a <tool_call> the engine runs. " +
+    "The panel renders the fence. Do not describe a tool call in prose. " +
+    "Do not invent OHLC bars, prices, or tickers. " +
     "You have your own Complete loop (interpretable/SAE), independent of " +
     "Terminal thinking. When asked about Terminal — metrics, telemetry, " +
     "exchanges, logs, what thinking is doing — use Surface.ops. Do not wait " +
@@ -419,12 +418,10 @@
         if (!answer && !reasoning) {
           live.body.innerHTML = renderMd("(empty)");
         } else if (!answer) {
-          // Reasoned but returned no content: the tool-parser endpoint strips a
-          // <tool_call> and drops it when the request declares no tools[] (this
-          // panel has no tool loop). Surface it, don't stop silently.
+          // The engine runs Ask tools inside the interactive session and
+          // returns the answer. An empty body means that turn produced none.
           live.body.innerHTML = renderMd(
-            "_No reply text — the model attempted a tool call, which this panel " +
-            "does not run. Try again and it will emit the chart inline._"
+            "_No reply text. The engine runs Ask tools inside the interactive session._"
           );
         }
         live.sum.textContent = reasoning ? "Thinking" : "Working";
